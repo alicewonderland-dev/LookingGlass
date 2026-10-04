@@ -53,10 +53,11 @@ on a private network such as your tailnet: anyone who can reach a Development
 server can register (or take over) any debug account, including the echo bot.
 
 1. Make sure the machine's firewall allows TCP 5180 from the tailnet.
-2. In game, open `/lookingglass`, expand **Settings**, and set the server URL
+2. In game, open `/lookingglass`, click the gear at the top right (or the
+   plugin's settings button in Dalamud's plugin list), and set the server URL
    to `ws://<machine-name>:5180/ws` (the Tailscale MagicDNS name or 100.x IP).
-3. Register your character. The plugin shows a code to paste into your
-   Lodestone profile; then press **Verify**.
+3. Register your character. The main window walks you through it: get a
+   code, paste it into your Lodestone profile, then press **Verify**.
 
 Tailscale already encrypts traffic between devices, and message contents are
 end-to-end encrypted regardless. For TLS anyway, `tailscale serve` can put
@@ -104,7 +105,7 @@ delete **both** the secrets file and its `.bak`, then connect again.
 
 | Command | What it does |
 | --- | --- |
-| `/lookingglass` or `/lg` | Open the main window: register, create and manage channels, settings |
+| `/lookingglass` or `/lg` | Open the main window: register, create and manage channels and invites |
 | `/lgc1 <message>` … `/lgc50 <message>` | Send to the channel on that number |
 | `/lgc <nickname> <message>` | Send to the channel with that nickname, numbered or not |
 | `/lgdebug` | Open the debug window |
@@ -116,18 +117,29 @@ prints how to use it.
 **Numbers.** Each channel you're in gets a number automatically, and keeps it
 across restarts until you leave it (or it's disbanded, or you're removed);
 the freed number then goes to the next channel without one. To change a
-channel's number, select it in the main window and pick another under
-**Command**: if another channel has that number, the two swap. The list shows
-which channel has each number. Typing a number with no channel on it says so.
+channel's number, select it in the main window's channel list and click its
+`/lgcN` button under the name: if another channel has the number you pick, the
+two swap. The list shows which channel has each number. Typing a number with
+no channel on it says so.
 
-**Nicknames.** Select a channel in the main window, type a nickname next to
-its number, and press **Set nickname** (clear the box and press **Clear
-nickname** to remove it). A nickname is 1 to 16 letters, digits, `-` or `_`,
+**Nicknames.** Select a channel, click **+ Nickname** (or its `/lgc <nickname>`
+button) next to its number, type one and press **Set** (or **Clear** to
+remove it). A nickname is 1 to 16 letters, digits, `-` or `_`,
 can't be only digits (so `/lgc 3` is never confused with `/lgc3`), and must
 be different from your other channels' nicknames, ignoring case: `/lgc Sky hi`
 and `/lgc sky hi` go to the same channel. Problems are shown under the box.
 Nicknames, like numbers, are kept per character in the plugin's settings and
 are never sent to the server; a channel's nickname goes away when you leave it.
+
+**Colours.** Click the swatch next to a channel's commands to give it one of
+the game's own chat colours. Its lines in chat take that colour (or only the
+`[LGC]` tag, if you turn that off in Settings), and so does its place in the
+channel list. **Default** colours only the tag, as before. Colours are kept
+per character like nicknames.
+
+**Unread messages.** The channel list counts messages from others since you
+last looked at a channel in the main window or talked in it, and the window's
+title shows the total. The counts start again from zero when you log in.
 
 ## Server configuration
 
@@ -172,7 +184,7 @@ What the encryption does today:
   see a 25-digit fingerprint. Clients pin each user's keys and name on first
   use and show a persistent "key changed" warning when they change. Members
   whose fingerprint you haven't compared show "not compared" (compare
-  fingerprints over /tell, then press "Mark verified").
+  fingerprints over /tell: a member's ... menu, **Compare fingerprints**, then **Mark verified**).
 - Who is in a channel, and with what rank, comes from the channel's
   membership log: a hash-chained list of changes, each signed by the member
   who made it. Invites are signed by a moderator or the admin, accepts by the
