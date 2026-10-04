@@ -95,6 +95,34 @@ public sealed class MembershipRulesTests : IDisposable {
     }
 
     [Fact]
+    public void InvitesDieWithTheInvitersStanding() {
+        var state = this.WithMember(this.WithMember(this.Genesis(), Bob, this._bob), Carol, this._carol);
+        state = state.Apply(state.Create(MembershipEntryKind.SetRank, Bob, this._alice, Alice, this.Now(), rank: Rank.Moderator));
+        state = state.Apply(state.Create(MembershipEntryKind.SetRank, Carol, this._alice, Alice, this.Now(), rank: Rank.Moderator));
+        state = state.Apply(state.Create(MembershipEntryKind.Invite, Dave, this._bob, Bob, this.Now(), MemberKeys.Of(this._dave)));
+        using var erin = IdentityKeys.Generate();
+        state = state.Apply(state.Create(MembershipEntryKind.Invite, 5, this._carol, Carol, this.Now(), MemberKeys.Of(erin)));
+
+        // Bob is removed, Carol demoted: what they signed as moderators no longer lets anyone in.
+        state = state.Apply(state.Create(MembershipEntryKind.Remove, Bob, this._alice, Alice, this.Now()));
+        state = state.Apply(state.Create(MembershipEntryKind.SetRank, Carol, this._alice, Alice, this.Now(), rank: Rank.Member));
+        Assert.Empty(state.Invitees);
+        Assert.Throws<MembershipException>(() => state.Create(MembershipEntryKind.Accept, Dave, this._dave, Dave, this.Now()));
+    }
+
+    [Fact]
+    public void OneSetOfKeysCannotBeAdmittedTwice() {
+        var state = this.WithMember(this.Genesis(), Bob, this._bob);
+
+        // A moderator could otherwise admit their own keys under a second user ID, to keep a seat after removal.
+        Assert.Equal(MembershipVerdictKind.Conflict, Assert.Throws<MembershipException>(() =>
+            state.Create(MembershipEntryKind.Invite, Dave, this._alice, Alice, this.Now(), MemberKeys.Of(this._bob))).Verdict.Kind);
+        state = state.Apply(state.Create(MembershipEntryKind.Invite, Carol, this._alice, Alice, this.Now(), MemberKeys.Of(this._carol)));
+        Assert.Equal(MembershipVerdictKind.Conflict, Assert.Throws<MembershipException>(() =>
+            state.Create(MembershipEntryKind.Invite, Dave, this._alice, Alice, this.Now(), MemberKeys.Of(this._carol))).Verdict.Kind);
+    }
+
+    [Fact]
     public void ANewKeyForAMemberIsNotAMember() {
         var state = this.WithMember(this.Genesis(), Bob, this._bob);
         using var bobsNewKeys = IdentityKeys.Generate();
