@@ -356,6 +356,31 @@ public sealed class MaliciousServerTests : IAsyncLifetime {
         Assert.Equal("(encrypted channel abc)", new ChannelView("abc", null, 0, 0, false, false, Rank.Member, []).DisplayName);
     }
 
+    [Fact]
+    public async Task UnusableAgreementKeyFromTheServerIsRejectedAndNamedInTheRekeyError() {
+        var alice = await this._server.RegisterAsync("Alice Zero");
+        var bob = await this._server.RegisterAsync("Bob Zero");
+        var channelId = await alice.Session.CreateChannelAsync("Zero", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+
+        // The server hands out an all-zero agreement key for Bob, validly bound to his signing key.
+        using var bobKeys = bob.LoadIdentity();
+        var bundle = CryptoTests.BundleWithAgreementKey(bobKeys, new byte[32]);
+        this._server.ExecuteSql("UPDATE users SET agreement_key = $key, binding_signature = $signature WHERE user_id = $id;",
+            ("$key", bundle.AgreementPublicKey.ToByteArray()), ("$signature", bundle.BindingSignature.ToByteArray()), ("$id", bob.UserId));
+
+        // Alice restarts, so she only has what GetIdentities returns now.
+        var log = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        await alice.Session.DisposeAsync();
+        var aliceAgain = await this._server.RestartAsync(alice, this._server.Options(log: (_, text) => log.Enqueue(text)));
+        Assert.Contains(log, line => line.Contains($"Rejected an invalid identity for user {bob.UserId}"));
+        Assert.Null(aliceAgain.Session.Snapshot.FindChannel(channelId)!.Members.Single(m => m.User.UserId == bob.UserId).Fingerprint);
+
+        // Rekeying fails, and says whose key is the problem.
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => aliceAgain.Session.RekeyAsync(channelId, Ct, force: true));
+        Assert.Contains("Bob Zero@Debug", error.Message);
+    }
+
     private void StoreName(string channelId, EncryptedName name) {
         this._server.ExecuteSql("""
             UPDATE channels SET name_epoch = $epoch, name_revision = $revision, name_author = $author,

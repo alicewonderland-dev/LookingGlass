@@ -455,11 +455,12 @@ public sealed class ClientSession : IAsyncDisposable {
         try {
             for (var attempt = 0; attempt < 3; attempt++) {
                 var (identity, me) = this.RequireIdentityAndUser();
-                var (serverEpoch, name, memberIds, pending) = this.Read(() => {
+                var (serverEpoch, name, members, pending) = this.Read(() => {
                     var channel = this._channels.GetValueOrDefault(channelId) ?? throw new InvalidOperationException("Unknown channel.");
-                    var ids = channel.Members.Where(member => member.Rank >= Rank.Member).Select(member => member.User.UserId).ToList();
-                    return (channel.ServerEpoch, channel.Name, ids, channel.RekeyPending);
+                    var current = channel.Members.Where(member => member.Rank >= Rank.Member).Select(member => member.User).ToList();
+                    return (channel.ServerEpoch, channel.Name, current, channel.RekeyPending);
                 });
+                var memberIds = members.Select(member => member.UserId).ToList();
 
                 // Someone else (or an earlier call) may have rekeyed while we waited for the gate.
                 if (!pending && !force) {
@@ -482,12 +483,18 @@ public sealed class ClientSession : IAsyncDisposable {
                     KeyCommitment = ByteString.CopyFrom(ChannelCrypto.KeyCommitment(channelId, newEpoch, key)),
                 };
 
-                foreach (var memberId in memberIds) {
-                    if (!identities.TryGetValue(memberId, out var memberIdentity)) {
-                        throw new InvalidOperationException($"No identity key for member {memberId}.");
+                foreach (var member in members) {
+                    // Name the member at fault: otherwise one bad key leaves everyone guessing why the channel is stuck.
+                    var who = $"{member.Name}@{member.WorldName}";
+                    if (!identities.TryGetValue(member.UserId, out var memberIdentity)) {
+                        throw new InvalidOperationException($"Can't rekey: {who} has no valid identity key on the server. They need to register again, or be removed.");
                     }
 
-                    request.Keys.Add(ChannelCrypto.SealEpochKey(key, channelId, newEpoch, identity, me.UserId, memberId, memberIdentity.Identity.AgreementPublicKey.Span));
+                    try {
+                        request.Keys.Add(ChannelCrypto.SealEpochKey(key, channelId, newEpoch, identity, me.UserId, member.UserId, memberIdentity.Identity.AgreementPublicKey.Span));
+                    } catch (Exception ex) {
+                        throw new InvalidOperationException($"Can't rekey: the key couldn't be sealed to {who}'s identity key ({ex.Message}). They need to register again, or be removed.", ex);
+                    }
                 }
 
                 try {

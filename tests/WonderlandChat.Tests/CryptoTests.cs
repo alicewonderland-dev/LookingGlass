@@ -22,6 +22,30 @@ public class CryptoTests {
         Assert.False(IdentityKeys.IsValidBundle(bundle));
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    public void IdentityBundleWithLowOrderAgreementKeyFails(byte first) {
+        // All zeros, and u = 1: points of small order, so no agreement with them yields a secret.
+        using var identity = IdentityKeys.Generate();
+        var lowOrder = new byte[32];
+        lowOrder[0] = first;
+        Assert.False(IdentityKeys.IsValidBundle(BundleWithAgreementKey(identity, lowOrder)));
+        Assert.Throws<InvalidOperationException>(() => SealedBoxes.Seal([1, 2, 3], lowOrder, [9]));
+
+        // The same construction with a real key is fine.
+        Assert.True(IdentityKeys.IsValidBundle(BundleWithAgreementKey(identity, identity.AgreementPublicKey)));
+    }
+
+    /// <summary>A bundle whose binding signature is valid for any agreement key, as a misbehaving client could send.</summary>
+    internal static IdentityBundle BundleWithAgreementKey(IdentityKeys identity, byte[] agreementPublicKey) {
+        return new IdentityBundle {
+            SigningPublicKey = ByteString.CopyFrom(identity.SigningPublicKey),
+            AgreementPublicKey = ByteString.CopyFrom(agreementPublicKey),
+            BindingSignature = ByteString.CopyFrom(identity.Sign(new SigningPayload(Domains.IdentityBinding).Add(agreementPublicKey).ToArray())),
+        };
+    }
+
     [Fact]
     public void IdentityRoundTripsThroughExport() {
         using var original = IdentityKeys.Generate();

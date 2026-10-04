@@ -89,6 +89,23 @@ public sealed class RequestHandlerTests : IDisposable {
         Assert.False(this._registry.IsOnline(RequestHandler.DebugUserId("Reauth Two")));
     }
 
+    [Fact]
+    public async Task RegistrationWithAnAllZeroAgreementKeyIsRejected() {
+        // Validly bound to the signing key, but nothing can be sealed to it, so it would block every rekey.
+        using var keys = IdentityKeys.Generate();
+        var connection = await this.HelloAsync("203.0.113.40");
+        var response = await this.SendAsync(connection, new ClientFrame {
+            StartRegistration = new StartRegistration {
+                Character = new Character { Name = "Zero Key", WorldName = ProtocolInfo.DebugWorldName },
+                Identity = CryptoTests.BundleWithAgreementKey(keys, new byte[32]),
+            },
+        });
+
+        Assert.Equal(ErrorCode.InvalidRequest, response.Error?.Code);
+        Assert.Null(connection.PendingRegistration);
+        Assert.Null(this._db.GetUser(RequestHandler.DebugUserId("Zero Key")));
+    }
+
     // ---------------------------------------------------------------- helpers
 
     private Task<Response> SendAsync(ClientConnection connection, ClientFrame frame) => this._handler.HandleAsync(connection, frame, Ct);
