@@ -429,3 +429,29 @@ public sealed class TestClient {
         };
     }
 }
+
+/// <summary>Keeps everything logged through it, for tests of what the server tells its operator.</summary>
+public sealed class CapturingLoggerProvider : Microsoft.Extensions.Logging.ILoggerProvider {
+    private readonly ConcurrentQueue<(Microsoft.Extensions.Logging.LogLevel Level, string Category, string Message)> _entries = new();
+
+    public IReadOnlyCollection<(Microsoft.Extensions.Logging.LogLevel Level, string Category, string Message)> Entries => this._entries.ToArray();
+
+    /// <summary>The messages logged at <paramref name="level"/> or above.</summary>
+    public IReadOnlyList<string> AtLeast(Microsoft.Extensions.Logging.LogLevel level) => this.Entries.Where(e => e.Level >= level).Select(e => e.Message).ToList();
+
+    public Microsoft.Extensions.Logging.ILogger CreateLogger(string categoryName) => new Logger(this, categoryName);
+
+    public void Dispose() {
+    }
+
+    private sealed class Logger(CapturingLoggerProvider provider, string category) : Microsoft.Extensions.Logging.ILogger {
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+
+        public void Log<TState>(Microsoft.Extensions.Logging.LogLevel logLevel, Microsoft.Extensions.Logging.EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter) {
+            provider._entries.Enqueue((logLevel, category, formatter(state, exception)));
+        }
+    }
+}

@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using Google.Protobuf;
 using Microsoft.Data.Sqlite;
 using LookingGlass.Core.Membership;
@@ -64,10 +65,13 @@ public sealed class Database {
 
     private readonly string _path;
     private readonly string _connectionString;
+    private readonly ILogger? _logger;
 
+    /// <param name="logger">Where upgrading the file reports what the operator should look at.</param>
     /// <exception cref="UnsupportedDatabaseException">The file is from a version whose channels this one can't use.</exception>
-    public Database(string path) {
+    public Database(string path, ILogger? logger = null) {
         this._path = path;
+        this._logger = logger;
         this._connectionString = new SqliteConnectionStringBuilder {
             DataSource = path,
             Mode = SqliteOpenMode.ReadWriteCreate,
@@ -117,6 +121,7 @@ public sealed class Database {
         }
 
         using var tx = connection.BeginTransaction();
+        List<(byte[] Key, string Accounts, long? RetiredFor)> traces = [];
         if (current < 1) {
             CreateVersion1(connection, tx);
         }
@@ -202,10 +207,68 @@ public sealed class Database {
                 CREATE INDEX IF NOT EXISTS users_by_signing_key ON users (signing_key);
                 INSERT INTO schema_version (version) VALUES (6);
                 """);
+            traces = FindSharedKeys(connection, tx);
         }
 
         tx.Commit();
+        this.ReportSharedKeys(traces);
     }
+
+    /// <summary>
+    /// What registrations from before they were signed may have left: a signing key registered to several accounts (anyone
+    /// could register another user's public key as theirs), and a key retired for one account that another is registered
+    /// with (schema 5 retired a key for everyone, under the account that replaced it, and kept one row per key, so a later
+    /// retirement of the same key by another account was dropped).
+    /// </summary>
+    private static List<(byte[] Key, string Accounts, long? RetiredFor)> FindSharedKeys(SqliteConnection connection, SqliteTransaction tx) {
+        var found = new List<(byte[], string, long?)>();
+        using (var command = Command(connection, tx, """
+                   SELECT signing_key, GROUP_CONCAT(user_id, ', ') FROM (SELECT signing_key, user_id FROM users ORDER BY user_id)
+                   GROUP BY signing_key HAVING COUNT(*) > 1;
+                   """)) {
+            using var reader = command.ExecuteReader();
+            while (reader.Read()) {
+                found.Add(((byte[]) reader.GetValue(0), reader.GetString(1), null));
+            }
+        }
+
+        using (var command = Command(connection, tx, """
+                   SELECT retired_keys.signing_key, GROUP_CONCAT(users.user_id, ', '), retired_keys.user_id
+                   FROM retired_keys JOIN users ON users.signing_key = retired_keys.signing_key AND users.user_id <> retired_keys.user_id
+                   GROUP BY retired_keys.signing_key, retired_keys.user_id;
+                   """)) {
+            using var reader = command.ExecuteReader();
+            while (reader.Read()) {
+                found.Add(((byte[]) reader.GetValue(0), reader.GetString(1), reader.GetInt64(2)));
+            }
+        }
+
+        return found;
+    }
+
+    /// <summary>
+    /// Tells the operator about <see cref="FindSharedKeys"/>'s findings, by account and a short fingerprint of the key.
+    /// They are left as they are: only the key's owner can use the key, and which account that is the server can't tell.
+    /// </summary>
+    private void ReportSharedKeys(List<(byte[] Key, string Accounts, long? RetiredFor)> traces) {
+        foreach (var (key, accounts, retiredFor) in traces) {
+            if (retiredFor == null) {
+                this._logger?.LogWarning(
+                    "Upgrading the database: identity key {Key} is registered to more than one account ({Accounts}). Before registrations were signed, " +
+                    "anyone could register another user's public key as theirs, so all but one of these may not be its owner's. They were left as they " +
+                    "are: none of them can register again with this key while another has it (the owner is told to reset their identity).",
+                    ShortKeyId(key), accounts);
+            } else {
+                this._logger?.LogWarning(
+                    "Upgrading the database: identity key {Key}, retired for account {RetiredFor}, is the current key of account {Accounts}. One of them " +
+                    "registered the other's public key before registrations were signed. The retirement now counts only for the account it was recorded for.",
+                    ShortKeyId(key), retiredFor, accounts);
+            }
+        }
+    }
+
+    /// <summary>A short, stable name for a signing key in the server's log: the start of its SHA-256 hash, not the key.</summary>
+    internal static string ShortKeyId(byte[] signingKey) => "sha256:" + Convert.ToHexStringLower(SHA256.HashData(signingKey))[..16];
 
     private static void CreateVersion1(SqliteConnection connection, SqliteTransaction tx) {
         Execute(connection, tx, """

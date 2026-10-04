@@ -26,7 +26,7 @@ builder.Services.PostConfigure<ServerOptions>(options => {
 builder.Services.AddSingleton(services => {
     var options = services.GetRequiredService<IOptions<ServerOptions>>().Value;
     Directory.CreateDirectory(options.DataDirectory);
-    return new Database(Path.Combine(options.DataDirectory, "lookingglass.db"));
+    return new Database(Path.Combine(options.DataDirectory, "lookingglass.db"), services.GetRequiredService<ILogger<Database>>());
 });
 // The membership and group-key layers, behind interfaces so MLS can replace them later.
 builder.Services.AddSingleton<IMembershipProvider>(SignedLogMembershipProvider.Instance);

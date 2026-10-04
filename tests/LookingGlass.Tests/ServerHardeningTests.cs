@@ -221,6 +221,93 @@ public sealed class ServerHardeningTests {
         }
     }
 
+    /// <summary>
+    /// Before registrations were signed, anyone could register another user's public key for their own character, so a
+    /// database from then (schema 4 or 5) may hold one key for two accounts, or (schema 5) a key retired for an account
+    /// other than the one now registered with it. The upgrade leaves them as they are but warns the operator, naming the
+    /// accounts and a short fingerprint of the key, never the key itself. A database without them is upgraded quietly.
+    /// </summary>
+    [Theory]
+    [InlineData(4)]
+    [InlineData(5)]
+    public void UpgradingWarnsAboutKeysTwoAccountsRegistered(int schema) {
+        var (db, directory) = NewDatabase();
+        try {
+            var path = Path.Combine(directory, "test.db");
+            var (alice, aliceKeys) = RegisterUser(db, "Shared Key Alice");
+            var (mallory, _) = RegisterUser(db, "Shared Key Mallory");
+            var (bob, bobKeys) = RegisterUser(db, "Shared Key Bob");
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={path};Pooling=False")) {
+                connection.Open();
+                using var command = connection.CreateCommand();
+                // Mallory registered Alice's public key as theirs, as an unsigned registration could. In schema 5, someone
+                // also registered Bob's and replaced it, which retired it (for everyone, then) under their own account.
+                command.CommandText = """
+                    UPDATE users SET signing_key = $aliceKey WHERE user_id = $mallory;
+                    DROP TABLE retired_keys;
+                    DROP INDEX users_by_signing_key;
+                    """ + (schema == 5
+                        ? """
+                          CREATE TABLE retired_keys (
+                              signing_key BLOB    PRIMARY KEY,
+                              user_id     INTEGER NOT NULL,
+                              retired_at  INTEGER NOT NULL
+                          );
+                          INSERT INTO retired_keys (signing_key, user_id, retired_at) VALUES ($bobKey, $mallory, 1);
+                          DELETE FROM schema_version WHERE version >= 6;
+                          """
+                        : "DELETE FROM schema_version WHERE version >= 5;");
+                command.Parameters.AddWithValue("$aliceKey", aliceKeys.SigningPublicKey);
+                command.Parameters.AddWithValue("$bobKey", bobKeys.SigningPublicKey);
+                command.Parameters.AddWithValue("$mallory", mallory);
+                command.ExecuteNonQuery();
+            }
+
+            using var logs = new CapturingLoggerProvider();
+            _ = new Database(path, logs.CreateLogger("Database"));
+            Assert.Equal(6L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
+            var warnings = logs.AtLeast(Microsoft.Extensions.Logging.LogLevel.Warning);
+            Assert.Equal(schema == 5 ? 2 : 1, warnings.Count);
+
+            var shared = Assert.Single(warnings, w => w.Contains(Database.ShortKeyId(aliceKeys.SigningPublicKey)));
+            Assert.Contains(alice.ToString(), shared);
+            Assert.Contains(mallory.ToString(), shared);
+            Assert.DoesNotContain(bob.ToString(), shared);
+            if (schema == 5) {
+                var retired = Assert.Single(warnings, w => w.Contains(Database.ShortKeyId(bobKeys.SigningPublicKey)));
+                Assert.Contains(bob.ToString(), retired);
+                Assert.Contains(mallory.ToString(), retired);
+            }
+
+            // Never the keys themselves.
+            foreach (var key in new[] { aliceKeys.SigningPublicKey, bobKeys.SigningPublicKey }) {
+                Assert.DoesNotContain(warnings, w => w.Contains(Convert.ToHexString(key), StringComparison.OrdinalIgnoreCase) || w.Contains(Convert.ToBase64String(key)));
+            }
+
+            // Left as they were: the key is still both accounts', and registering it again is refused while the other has it.
+            Assert.Equal(2L, QueryLong(path, "SELECT COUNT(*) FROM users WHERE signing_key = x'" + Convert.ToHexString(aliceKeys.SigningPublicKey) + "';"));
+
+            // Upgrading a database that has none of this says nothing.
+            var (clean, cleanDirectory) = NewDatabase();
+            try {
+                var cleanPath = Path.Combine(cleanDirectory, "test.db");
+                RegisterUser(clean, "Clean Alice");
+                QueryLong(cleanPath, "DROP TABLE retired_keys; DROP INDEX users_by_signing_key; DELETE FROM schema_version WHERE version >= 5; SELECT 0;");
+                Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+                using var quiet = new CapturingLoggerProvider();
+                _ = new Database(cleanPath, quiet.CreateLogger("Database"));
+                Assert.Empty(quiet.AtLeast(Microsoft.Extensions.Logging.LogLevel.Warning));
+            } finally {
+                Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+                DeleteDirectory(cleanDirectory);
+            }
+        } finally {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            DeleteDirectory(directory);
+        }
+    }
+
     [Fact]
     public void PreReleaseDatabaseWithChannelsIsRefusedAndLeftAlone() {
         var (db, directory) = NewDatabase();
