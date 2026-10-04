@@ -19,6 +19,7 @@ public sealed class SessionManager : IDisposable {
     private ClientSession? _session;
     private PlayerInfo? _sessionPlayer;
     private volatile ImmutableDictionary<string, int> _slots = ImmutableDictionary<string, int>.Empty;
+    private volatile ImmutableDictionary<string, string> _nicknames = ImmutableDictionary<string, string>.Empty;
     private Task? _closing;
     // Framework thread only. Bumped by every start and stop, so a start that was
     // waiting for the previous session to close is dropped if anything changed meanwhile.
@@ -67,15 +68,15 @@ public sealed class SessionManager : IDisposable {
         return this._slots.TryGetValue(channelId, out var slot) ? slot : null;
     }
 
-    /// <summary>Safe from any thread.</summary>
-    public string? ChannelInSlot(int slot) {
-        foreach (var (channelId, assigned) in this._slots) {
-            if (assigned == slot) {
-                return channelId;
-            }
-        }
+    /// <summary>The current character's command slots (channel ID → slot). Safe from any thread.</summary>
+    public IReadOnlyDictionary<string, int> Slots => this._slots;
 
-        return null;
+    /// <summary>The current character's channel nicknames (channel ID → nickname). Safe from any thread.</summary>
+    public IReadOnlyDictionary<string, string> Nicknames => this._nicknames;
+
+    /// <summary>The nickname of a channel for the current character. Safe from any thread.</summary>
+    public string? NicknameOf(string channelId) {
+        return this._nicknames.TryGetValue(channelId, out var nickname) ? nickname : null;
     }
 
     /// <summary>Call on the framework thread.</summary>
@@ -83,18 +84,39 @@ public sealed class SessionManager : IDisposable {
         if (this._sessionPlayer is { } player) {
             this._config.ForCharacter(player.ContentId).AssignSlot(channelId, slot);
             this._config.Save();
-            this.RefreshSlotCache();
+            this.RefreshCommandCache();
         }
     }
 
+    /// <summary>Sets or (with an empty one) clears a channel's nickname. Call on the framework thread.</summary>
+    /// <returns>Why it was refused, or null.</returns>
+    public string? SetNickname(string channelId, string nickname) {
+        if (this._sessionPlayer is not { } player) {
+            return "Not connected.";
+        }
+
+        var error = this._config.ForCharacter(player.ContentId).SetNickname(channelId, nickname);
+        if (error == null) {
+            this._config.Save();
+            this.RefreshCommandCache();
+        }
+
+        return error;
+    }
+
     /// <summary>
-    /// Configuration is only touched on the framework thread; other threads
-    /// read this immutable copy of the current character's slots.
+    /// Configuration is only touched on the framework thread; other threads read
+    /// these immutable copies of the current character's slots and nicknames.
     /// </summary>
-    private void RefreshSlotCache() {
-        this._slots = this._sessionPlayer is { } player
-            ? this._config.ForCharacter(player.ContentId).ChannelSlots.ToImmutableDictionary()
-            : ImmutableDictionary<string, int>.Empty;
+    private void RefreshCommandCache() {
+        if (this._sessionPlayer is { } player) {
+            var settings = this._config.ForCharacter(player.ContentId);
+            this._slots = settings.ChannelSlots.ToImmutableDictionary();
+            this._nicknames = settings.Nicknames.ToImmutableDictionary();
+        } else {
+            this._slots = ImmutableDictionary<string, int>.Empty;
+            this._nicknames = ImmutableDictionary<string, string>.Empty;
+        }
     }
 
     /// <summary>Prints a fake incoming message locally, to test chat output without the server.</summary>
@@ -176,12 +198,12 @@ public sealed class SessionManager : IDisposable {
         // Snapshots can arrive out of order; always sync against the latest one of the current session.
         session.SnapshotChanged += _ => Services.Framework.RunOnFrameworkThread(() => {
             if (this.Session == session) {
-                this.SyncSlots(session.Snapshot);
+                this.SyncCommands(session.Snapshot);
             }
         });
 
         this._sessionPlayer = player;
-        this.RefreshSlotCache();
+        this.RefreshCommandCache();
         Volatile.Write(ref this._session, session);
         session.Start();
     }
@@ -197,15 +219,15 @@ public sealed class SessionManager : IDisposable {
         this._chat.Notice(notice.Level, notice.Text);
     }
 
-    private void SyncSlots(SessionSnapshot snapshot) {
-        // Only against the complete channel list; a partial one would free (and then hand out) slots in use.
+    private void SyncCommands(SessionSnapshot snapshot) {
+        // Only against the complete channel list; a partial one would free (and then hand out) slots in use, and drop nicknames.
         if (this._sessionPlayer is not { } player || snapshot is not { State: ConnectionState.Ready, ChannelsLoaded: true }) {
             return;
         }
 
-        if (this._config.ForCharacter(player.ContentId).SyncSlots(snapshot)) {
+        if (this._config.ForCharacter(player.ContentId).Sync(snapshot)) {
             this._config.Save();
-            this.RefreshSlotCache();
+            this.RefreshCommandCache();
         }
     }
 
@@ -219,7 +241,7 @@ public sealed class SessionManager : IDisposable {
         this._generation++;
         var session = Interlocked.Exchange(ref this._session, null);
         this._sessionPlayer = null;
-        this.RefreshSlotCache();
+        this.RefreshCommandCache();
         if (session == null) {
             return;
         }

@@ -37,7 +37,7 @@ public sealed class CommandSlotTests {
     [Fact]
     public void ThereIsASlotForEveryChannelTheServerAllows() {
         Assert.Equal(50, CommandSlots.Count);
-        Assert.Equal((int) ProtocolInfo.DefaultLimits().MaxChannelsPerUser, CommandSlots.Count);
+        Assert.Equal(CommandSlots.Count, (int) ProtocolInfo.DefaultLimits().MaxChannelsPerUser);
     }
 
     [Fact]

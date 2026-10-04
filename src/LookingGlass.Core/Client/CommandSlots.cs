@@ -1,11 +1,32 @@
+using System.Globalization;
+
 namespace LookingGlass.Core.Client;
 
 /// <summary>
-/// The rules for the plugin's numbered channel commands (/lgc1 and so on), as a
+/// The rules for the plugin's numbered channel commands (/lgc1 to /lgc50), as a
 /// map from channel ID to slot. Kept free of game types so they can be tested.
 /// A slot stays with its channel until that channel is gone, across restarts.
 /// </summary>
 public static class CommandSlots {
+    /// <summary>The channel commands: /lgc1 to /lgc50, and /lgc &lt;nickname&gt; (see <see cref="ChannelNicknames"/>).</summary>
+    public const string Prefix = "/lgc";
+
+    /// <summary>One slot for every channel the server lets a user be in (its default <c>MaxChannelsPerUser</c>).</summary>
+    public const int Count = 50;
+
+    /// <summary>The slot of a numbered command such as /lgc12, or null if it isn't one.</summary>
+    public static int? SlotOfCommand(string command) {
+        if (!command.StartsWith(Prefix, StringComparison.OrdinalIgnoreCase)) {
+            return null;
+        }
+
+        var digits = command.AsSpan(Prefix.Length);
+        if (digits.IsEmpty || digits[0] == '0' || !int.TryParse(digits, NumberStyles.None, CultureInfo.InvariantCulture, out var slot)) {
+            return null;
+        }
+
+        return slot <= Count ? slot : null;
+    }
     public static string? ChannelIn(IReadOnlyDictionary<string, int> slots, int slot) {
         foreach (var (channelId, assigned) in slots) {
             if (assigned == slot) {

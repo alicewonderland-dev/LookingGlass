@@ -11,6 +11,7 @@ namespace LookingGlass.Plugin.Ui;
 public sealed class MainWindow : Window {
     private static readonly XivChatType[] ChatTypes = [XivChatType.Debug, XivChatType.Echo, XivChatType.Notice, XivChatType.SystemMessage];
     private static readonly Vector4 KeyChangedColour = new(1f, 0.7f, 0.2f, 1f);
+    private static readonly Vector4 ErrorColour = new(1f, 0.45f, 0.4f, 1f);
 
     private readonly Configuration _config;
     private readonly SessionManager _sessions;
@@ -21,6 +22,8 @@ public sealed class MainWindow : Window {
     private string _inviteName = "";
     private string _inviteWorld = "";
     private string _renameTo = "";
+    private string _nickname = "";
+    private string? _nicknameError;
     private string? _selectedChannel;
 
     public MainWindow(Configuration config, SessionManager sessions) : base("LookingGlass###lookingglass-main") {
@@ -210,8 +213,9 @@ public sealed class MainWindow : Window {
             return;
         }
 
-        if (ImGui.BeginTable("channels", 4, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH)) {
+        if (ImGui.BeginTable("channels", 5, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH)) {
             ImGui.TableSetupColumn("Command", ImGuiTableColumnFlags.WidthFixed, 70);
+            ImGui.TableSetupColumn("Nickname", ImGuiTableColumnFlags.WidthFixed, 120);
             ImGui.TableSetupColumn("Channel");
             ImGui.TableSetupColumn("Members", ImGuiTableColumnFlags.WidthFixed, 70);
             ImGui.TableSetupColumn("Key", ImGuiTableColumnFlags.WidthFixed, 110);
@@ -221,11 +225,15 @@ public sealed class MainWindow : Window {
                 ImGui.TableNextRow();
                 ImGui.TableNextColumn();
                 var slot = this._sessions.SlotOf(channel.Id);
-                ImGui.TextUnformatted(slot is { } s ? $"/lgc{s}" : "-");
+                ImGui.TextUnformatted(slot is { } s ? $"{CommandSlots.Prefix}{s}" : "-");
+                ImGui.TableNextColumn();
+                ImGui.TextUnformatted(this._sessions.NicknameOf(channel.Id) ?? "-");
                 ImGui.TableNextColumn();
                 if (ImGui.Selectable($"{channel.DisplayName}##{channel.Id}", this._selectedChannel == channel.Id)) {
                     this._selectedChannel = channel.Id;
                     this._renameTo = channel.Name ?? "";
+                    this._nickname = this._sessions.NicknameOf(channel.Id) ?? "";
+                    this._nicknameError = null;
                 }
 
                 ImGui.TableNextColumn();
@@ -256,17 +264,63 @@ public sealed class MainWindow : Window {
             ImGui.PopStyleColor();
         }
 
-        // Command slot.
+        // Command slot. Fifty is a long list: the popup is wide enough to say which channel has each
+        // slot, and scrolls after 16. (Setting constraints replaces the combo's own height limit.)
         var slot = this._sessions.SlotOf(channel.Id) ?? 0;
         ImGui.SetNextItemWidth(90);
-        if (ImGui.BeginCombo("Command", slot == 0 ? "none" : $"/lgc{slot}")) {
+        ImGui.SetNextWindowSizeConstraints(new Vector2(280, 0), new Vector2(float.MaxValue, ImGui.GetTextLineHeightWithSpacing() * 16));
+        if (ImGui.BeginCombo("Command", slot == 0 ? "none" : $"{CommandSlots.Prefix}{slot}")) {
+            var slots = this._sessions.Slots;
             for (var i = 1; i <= Configuration.SlotCount; i++) {
-                if (ImGui.Selectable($"/lgc{i}", i == slot)) {
+                if (ImGui.Selectable($"{CommandSlots.Prefix}{i}", i == slot)) {
                     this._sessions.AssignSlot(channel.Id, i);
+                }
+
+                if (i == slot) {
+                    ImGui.SetItemDefaultFocus();
+                }
+
+                if (CommandSlots.ChannelIn(slots, i) is { } other && other != channel.Id) {
+                    ImGui.SameLine(70);
+                    ImGui.TextDisabled(snapshot.FindChannel(other)?.DisplayName ?? "(another channel)");
                 }
             }
 
             ImGui.EndCombo();
+        }
+
+        if (ImGui.IsItemHovered()) {
+            ImGui.SetTooltip($"Talk in this channel with {CommandSlots.Prefix}<number> <message>.\nPicking a number another channel has swaps the two.");
+        }
+
+        // Nickname, for /lgc <nickname> <message>. Only this character has it; it never goes to the server.
+        ImGui.SameLine();
+        ImGui.SetNextItemWidth(140);
+        if (ImGui.InputTextWithHint("##nickname", "Nickname", ref this._nickname, 32)) {
+            this._nicknameError = null;
+        }
+
+        if (ImGui.IsItemHovered()) {
+            ImGui.SetTooltip($"Talk in this channel with {CommandSlots.Prefix} <nickname> <message>.\nUp to {ChannelNicknames.MaxLength} letters, digits, - or _. Only you see it.");
+        }
+
+        var current = this._sessions.NicknameOf(channel.Id) ?? "";
+        var wanted = this._nickname.Trim();
+        var problem = wanted.Length == 0 ? null : ChannelNicknames.Check(this._sessions.Nicknames, channel.Id, wanted);
+        ImGui.SameLine();
+        ImGui.BeginDisabled(problem != null || wanted == current);
+        if (ImGui.Button(wanted.Length == 0 && current.Length > 0 ? "Clear nickname" : "Set nickname")) {
+            this._nicknameError = this._sessions.SetNickname(channel.Id, wanted);
+            if (this._nicknameError == null) {
+                this._nickname = wanted;
+            }
+        }
+
+        ImGui.EndDisabled();
+        if ((problem ?? this._nicknameError) is { } nicknameError) {
+            ImGui.TextColored(ErrorColour, nicknameError);
+        } else if (current.Length > 0) {
+            ImGui.TextDisabled($"Talk here with {CommandSlots.Prefix} {current} <message>.");
         }
 
         // Members.

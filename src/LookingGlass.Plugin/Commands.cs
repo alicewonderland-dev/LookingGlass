@@ -3,9 +3,12 @@ using LookingGlass.Core.Client;
 
 namespace LookingGlass.Plugin;
 
-/// <summary>/lgc1 to /lgc8 send to a channel; /lookingglass and /lgdebug open the windows.</summary>
+/// <summary>
+/// /lgc1 to /lgc50 and /lgc &lt;nickname&gt; send to a channel; /lookingglass (or /lg) and
+/// /lgdebug open the windows. Handlers run on the framework thread; they read only the
+/// session manager's immutable copies of the slots and nicknames, and send in the background.
+/// </summary>
 public sealed class Commands : IDisposable {
-    private const string SlotPrefix = "/lgc";
     private const string MainCommand = "/lookingglass";
     private const string ShortMainCommand = "/lg";
     private const string DebugCommand = "/lgdebug";
@@ -21,13 +24,18 @@ public sealed class Commands : IDisposable {
         this._toggleMain = toggleMain;
         this._toggleDebug = toggleDebug;
 
+        // Fifty numbered commands would swamp Dalamud's command list, so only /lgc is listed, and explains them.
         for (var slot = 1; slot <= Configuration.SlotCount; slot++) {
-            Services.Commands.AddHandler(SlotPrefix + slot, new CommandInfo(this.OnSlotCommand) {
-                HelpMessage = $"Send a message to your LookingGlass channel in slot {slot}.",
-                ShowInHelp = slot == 1,
+            Services.Commands.AddHandler(CommandSlots.Prefix + slot, new CommandInfo(this.OnSlotCommand) {
+                HelpMessage = $"Send a message to the channel on {CommandSlots.Prefix}{slot}.",
+                ShowInHelp = false,
             });
         }
 
+        Services.Commands.AddHandler(CommandSlots.Prefix, new CommandInfo(this.OnNicknameCommand) {
+            HelpMessage = $"Send a message to a channel: {CommandSlots.Prefix}<N> <message> by its number ({CommandSlots.Prefix}1 to {CommandSlots.Prefix}{Configuration.SlotCount}), " +
+                          $"or {CommandSlots.Prefix} <nickname> <message> by its nickname. Set both in {ShortMainCommand}.",
+        });
         Services.Commands.AddHandler(MainCommand, new CommandInfo((_, _) => this._toggleMain()) {
             HelpMessage = "Open LookingGlass (register, create and manage channels).",
         });
@@ -40,13 +48,21 @@ public sealed class Commands : IDisposable {
     }
 
     private void OnSlotCommand(string command, string arguments) {
-        if (!int.TryParse(command.AsSpan(SlotPrefix.Length), out var slot)) {
+        if (CommandSlots.SlotOfCommand(command) is not { } slot) {
             return;
         }
 
-        var text = arguments.Trim();
-        if (text.Length == 0) {
-            this._chat.Notice(NoticeLevel.Info, $"Usage: {SlotPrefix}{slot} <message>");
+        this.Run(ChannelCommand.ForSlot(this._sessions.Slots, slot, arguments));
+    }
+
+    private void OnNicknameCommand(string command, string arguments) {
+        this.Run(ChannelCommand.ForNickname(this._sessions.Nicknames, arguments));
+    }
+
+    /// <summary>The one send path for both kinds of channel command.</summary>
+    private void Run(ChannelCommand command) {
+        if (command is ChannelCommand.Usage usage) {
+            this._chat.Notice(NoticeLevel.Info, usage.Text);
             return;
         }
 
@@ -56,26 +72,28 @@ public sealed class Commands : IDisposable {
             return;
         }
 
-        var channelId = this._sessions.ChannelInSlot(slot);
-        if (channelId == null) {
-            this._chat.Notice(NoticeLevel.Warning, $"No channel in slot {slot}. Assign one in /lookingglass.");
-            return;
+        switch (command) {
+            case ChannelCommand.NotFound notFound:
+                this._chat.Notice(NoticeLevel.Warning, notFound.Text);
+                break;
+            case ChannelCommand.Send send:
+                _ = Task.Run(async () => {
+                    try {
+                        await session.SendTextAsync(send.ChannelId, send.Text);
+                    } catch (Exception ex) {
+                        this._chat.Notice(NoticeLevel.Error, $"Not sent: {ex.Message}");
+                    }
+                });
+                break;
         }
-
-        _ = Task.Run(async () => {
-            try {
-                await session.SendTextAsync(channelId, text);
-            } catch (Exception ex) {
-                this._chat.Notice(NoticeLevel.Error, $"Not sent: {ex.Message}");
-            }
-        });
     }
 
     public void Dispose() {
         for (var slot = 1; slot <= Configuration.SlotCount; slot++) {
-            Services.Commands.RemoveHandler(SlotPrefix + slot);
+            Services.Commands.RemoveHandler(CommandSlots.Prefix + slot);
         }
 
+        Services.Commands.RemoveHandler(CommandSlots.Prefix);
         Services.Commands.RemoveHandler(MainCommand);
         Services.Commands.RemoveHandler(ShortMainCommand);
         Services.Commands.RemoveHandler(DebugCommand);
