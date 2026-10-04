@@ -393,6 +393,38 @@ public sealed class EndToEndTests : IAsyncLifetime {
     }
 
     /// <summary>
+    /// "Mark verified" vouches for the fingerprint the user was shown and compared, nothing else. A member who
+    /// registered again is shown with the key the log binds them to; marking that row verified must not mark
+    /// their new key, which wasn't shown, as compared, so it isn't after they are removed and invited again.
+    /// </summary>
+    [Fact]
+    public async Task MarkingAMemberVerifiedOnlyVouchesForTheFingerprintShown() {
+        var alice = await this._server.RegisterAsync("Alice Vouches");
+        var carol = await this._server.RegisterAsync("Carol Vouched For");
+        var channelId = await alice.Session.CreateChannelAsync("Vouching", Ct);
+        await AddMemberAsync(alice, channelId, carol);
+        await carol.Session.DisposeAsync();
+        var carolAgain = await this._server.RegisterAsync(carol.Name);
+        var newFingerprint = carolAgain.Session.Snapshot.MyFingerprint;
+
+        await alice.Session.RefreshAsync(Ct);
+        var row = alice.Session.Snapshot.FindChannel(channelId)!.Members.Single(m => m.User.UserId == carolAgain.UserId);
+        Assert.True(row is { KeyChanged: true, KeyReplaced: true });
+        Assert.NotEqual(newFingerprint, row.Fingerprint);
+
+        // Alice compares the fingerprint shown (Carol's old key) and presses "Mark verified" on that row.
+        alice.Session.AcknowledgeKeyChange(carolAgain.UserId);
+
+        // Removed and invited again, Carol's new key, whose fingerprint Alice was never shown, isn't compared.
+        await alice.Session.KickAsync(channelId, carolAgain.UserId, Ct);
+        await AddMemberAsync(alice, channelId, carolAgain);
+        var rejoined = alice.Session.Snapshot.FindChannel(channelId)!.Members.Single(m => m.User.UserId == carolAgain.UserId);
+        Assert.Equal(newFingerprint, rejoined.Fingerprint);
+        Assert.False(rejoined.FingerprintCompared);
+        Assert.True(rejoined.KeyChanged);
+    }
+
+    /// <summary>
     /// Adapted: in 0.1 Bob's new key counted as soon as a member rekeyed to it. Now it counts once he is
     /// removed and invited again. Carol, who has his old key, must take the new one from the log without
     /// restarting, and still be warned that his key changed.
