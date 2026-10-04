@@ -48,7 +48,7 @@ public sealed class RequestHandler(
     // two per channel when it connects, so the burst covers a full channel list.
     private readonly UserRateLimits _reads = new(perSecond: 4, burst: 120);
 
-    public Limits Limits { get; } = ProtocolInfo.DefaultLimits();
+    public Limits Limits { get; } = BuildLimits(options.Value);
 
     public async Task<Response> HandleAsync(ClientConnection connection, ClientFrame frame, CancellationToken ct) {
         try {
@@ -86,6 +86,13 @@ public sealed class RequestHandler(
             logger.LogError(ex, "Request {Kind} failed", frame.BodyCase);
             return Error(ErrorCode.Internal, "Internal server error.");
         }
+    }
+
+    private static Limits BuildLimits(ServerOptions options) {
+        var limits = ProtocolInfo.DefaultLimits();
+        // Advertised so clients split big identity lookups to fit, instead of failing on connect.
+        limits.MaxIdentitiesPerRequest = (uint) Math.Max(0, options.Limits.MaxIdentitiesPerRequest);
+        return limits;
     }
 
     // ================================================================ handshake and identity
@@ -314,6 +321,7 @@ public sealed class RequestHandler(
 
         this.ValidateName(request.Name, channelId, 0, me);
         RequireFirstRevision(request.Name);
+        RequireNoSource(request.Name);
         db.CreateChannel(channelId, me.UserId, request.CreatorKey, request.Name);
         logger.LogDebug("User {User} created channel {Channel}", me.UserId, channelId);
         return new Response { Channel = this.BuildChannelInfo(db.GetChannel(channelId)!, me.UserId) };
@@ -403,7 +411,10 @@ public sealed class RequestHandler(
         var members = db.GetMembers(channelId);
 
         if (members.Count == 1) {
+            // The last member is leaving, so the channel goes, and with it any pending invites.
+            var invitees = db.GetInvitees(channelId).Select(invitee => invitee.User.UserId).ToList();
             db.DeleteChannel(channelId);
+            registry.SendToAll(invitees, new Event { InviteRevoked = new InviteRevoked { ChannelId = channelId } });
             return Ack();
         }
 
@@ -511,6 +522,8 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.InvalidRequest, "The name's revision is out of range.");
         }
 
+        RequireNoSource(request.Name);
+
         if (channel.Name is { } current && current.Epoch == request.Name.Epoch && request.Name.Revision <= current.Revision) {
             // Clients refuse a name that isn't newer than theirs, so storing it would hide later renames.
             throw new RequestException(ErrorCode.Conflict, "The name's revision must be newer than the current one; refresh and try again.");
@@ -558,6 +571,9 @@ public sealed class RequestHandler(
 
         this.ValidateName(request.Name, channelId, request.NewEpoch, me);
         RequireFirstRevision(request.Name);
+        if (request.Name.CarriedFrom is { } source && (source.Epoch >= request.NewEpoch || source.Revision > ProtocolInfo.MaxNameRevision)) {
+            throw new RequestException(ErrorCode.InvalidRequest, "A rekey can only carry over a name from an earlier epoch.");
+        }
 
         switch (db.ApplyRekey(channelId, request.NewEpoch, me.UserId, request.Keys, request.Name)) {
             case RekeyResult.EpochStale:
@@ -735,6 +751,13 @@ public sealed class RequestHandler(
     private static void RequireFirstRevision(EncryptedName name) {
         if (name.Revision != 0) {
             throw new RequestException(ErrorCode.InvalidRequest, "A new epoch's name must have revision 0; only a rename can change it.");
+        }
+    }
+
+    /// <summary>Only a rekey carries a name over from an earlier version.</summary>
+    private static void RequireNoSource(EncryptedName name) {
+        if (name.CarriedFrom != null) {
+            throw new RequestException(ErrorCode.InvalidRequest, "Only a rekey's name says which name it carries over.");
         }
     }
 

@@ -22,6 +22,60 @@ public sealed class ServerLimitTests : IAsyncLifetime {
     }
 
     [Fact]
+    public async Task IdentityLookupsAreSplitToFitTheServersLimit() {
+        await using var server = new Harness(settings: ("WonderlandChat:Limits:MaxIdentitiesPerRequest", "2"));
+        try {
+            var alice = await server.RegisterAsync("Alice Crowd");
+            Assert.Equal(2u, alice.Session.Snapshot.Limits!.MaxIdentitiesPerRequest);
+            var channelId = await alice.Session.CreateChannelAsync("Crowd", Ct);
+            var members = new List<TestClient>();
+            foreach (var name in new[] { "Bob Crowd", "Carol Crowd", "Dave Crowd" }) {
+                var member = await server.RegisterAsync(name);
+                await AddMemberAsync(alice, channelId, member);
+                members.Add(member);
+            }
+
+            // A new session has nothing cached, so it needs all four identities when it connects.
+            await alice.Session.DisposeAsync();
+            var restarted = await server.RestartAsync(alice);
+            Assert.True(restarted.Session.Snapshot.ChannelsLoaded);
+            var channel = restarted.Session.Snapshot.FindChannel(channelId)!;
+            Assert.Equal("Crowd", channel.Name);
+            Assert.Equal(4, channel.Members.Length);
+            Assert.All(channel.Members, member => Assert.NotNull(member.Fingerprint));
+
+            await members[2].Session.SendTextAsync(channelId, "can you all hear me", Ct);
+            await WaitFor(() => restarted.Messages.FirstOrDefault(m => m.Text == "can you all hear me"));
+        } finally {
+            DeleteDirectory(server.DataDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task FailedIdentityLookupOnConnectKeepsTheConnection() {
+        // A server that refuses every identity lookup (as one with a limit the client exceeds would).
+        await using var server = new Harness(settings: ("WonderlandChat:Limits:MaxIdentitiesPerRequest", "0"));
+        try {
+            var store = new InMemorySecretStore();
+            var alice = await server.RegisterAsync("Alice Refused", store);
+            var channelId = await alice.Session.CreateChannelAsync("Still Listed", Ct);
+            await alice.Session.DisposeAsync();
+
+            var restarted = server.StartClient(alice.Name, store);
+            await WaitFor(() => restarted.Session.Snapshot.ChannelsLoaded ? new object() : null);
+            await WaitFor(() => restarted.Notices.FirstOrDefault(n => n.Level == NoticeLevel.Warning && n.Text.Contains("identity keys")));
+            Assert.NotNull(restarted.Session.Snapshot.FindChannel(channelId));
+
+            // Connected once and stayed connected, rather than reconnecting forever.
+            await Task.Delay(300, Ct);
+            Assert.Equal(ConnectionState.Ready, restarted.Session.Snapshot.State);
+            Assert.Single(restarted.Session.GetTrace(), entry => entry.Outgoing && entry.Summary.EndsWith(" Hello"));
+        } finally {
+            DeleteDirectory(server.DataDirectory);
+        }
+    }
+
+    [Fact]
     public async Task InvitesMustBeSmallAndCorrectlySigned() {
         var alice = await this._server.RegisterAsync("Alice Invite Checks");
         var bob = await this._server.RegisterAsync("Bob Invite Checks");

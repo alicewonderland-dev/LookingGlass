@@ -32,7 +32,7 @@ switch (command) {
 async Task<int> RunBot() {
     var name = Option("--name") ?? "Echo Bot";
     var secrets = Option("--secrets") ?? $"{name.Replace(' ', '-').ToLowerInvariant()}-secrets.json";
-    await using var bot = new EchoBot(Options(), new FileSecretStore(secrets), name, Log);
+    await using var bot = new EchoBot(Options(), new FileSecretStore(secrets, Log), name, Log);
     bot.Start();
     Log($"Echo bot \"{name}\" connecting to {server}. Invite it as \"{name}\" on world \"{ProtocolInfo.DebugWorldName}\". Ctrl+C to stop.");
 

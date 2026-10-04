@@ -94,24 +94,32 @@ public static class ChannelCrypto {
 
     // ------------------------------------------------------------ channel names
 
-    private static byte[] NameAssociatedData(string channelId, ulong epoch, ulong revision, long authorId) {
-        return new SigningPayload(Domains.ChannelName).Add(channelId).Add(epoch).Add(revision).Add(authorId).ToArray();
+    private static byte[] NameAssociatedData(string channelId, ulong epoch, ulong revision, long authorId, NameSource? carriedFrom) {
+        var payload = new SigningPayload(Domains.ChannelName).Add(channelId).Add(epoch).Add(revision).Add(authorId);
+        // Fields are length-prefixed, so a name with a source can't pass for one without.
+        if (carriedFrom != null) {
+            payload.Add(carriedFrom.Epoch).Add(carriedFrom.Revision);
+        }
+
+        return payload.ToArray();
     }
 
     private static byte[] NameSignaturePayload(string channelId, EncryptedName name) {
         return new SigningPayload(Domains.ChannelName)
-            .Add(NameAssociatedData(channelId, name.Epoch, name.Revision, name.AuthorId))
+            .Add(NameAssociatedData(channelId, name.Epoch, name.Revision, name.AuthorId, name.CarriedFrom))
             .Add(name.Ciphertext.Span)
             .ToArray();
     }
 
     /// <param name="revision">Incremented by every rename within the epoch; 0 for a new channel or a rekey.</param>
-    public static EncryptedName EncryptName(string name, byte[] epochKey, string channelId, ulong epoch, IdentityKeys author, long authorId, ulong revision = 0) {
+    /// <param name="carriedFrom">For a rekey: the version of the name being carried into the new epoch.</param>
+    public static EncryptedName EncryptName(string name, byte[] epochKey, string channelId, ulong epoch, IdentityKeys author, long authorId, ulong revision = 0, NameSource? carriedFrom = null) {
         var encrypted = new EncryptedName {
             Epoch = epoch,
             Revision = revision,
             AuthorId = authorId,
-            Ciphertext = ByteString.CopyFrom(EncryptWithNonce(epochKey, NameAssociatedData(channelId, epoch, revision, authorId), Encoding.UTF8.GetBytes(name))),
+            CarriedFrom = carriedFrom,
+            Ciphertext = ByteString.CopyFrom(EncryptWithNonce(epochKey, NameAssociatedData(channelId, epoch, revision, authorId, carriedFrom), Encoding.UTF8.GetBytes(name))),
         };
         encrypted.Signature = ByteString.CopyFrom(author.Sign(NameSignaturePayload(channelId, encrypted)));
         return encrypted;
@@ -126,7 +134,7 @@ public static class ChannelCrypto {
             return null;
         }
 
-        var plaintext = DecryptWithNonce(epochKey, NameAssociatedData(channelId, name.Epoch, name.Revision, name.AuthorId), name.Ciphertext.Span);
+        var plaintext = DecryptWithNonce(epochKey, NameAssociatedData(channelId, name.Epoch, name.Revision, name.AuthorId, name.CarriedFrom), name.Ciphertext.Span);
         return plaintext == null ? null : Encoding.UTF8.GetString(plaintext);
     }
 

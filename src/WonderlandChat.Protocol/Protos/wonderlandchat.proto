@@ -128,6 +128,9 @@ message Limits {
   uint32 messages_per_second = 5;
   uint32 message_burst = 6;
   uint32 max_pending_invites_per_channel = 7;
+  // The most user IDs one GetIdentities may ask for; clients split larger lookups.
+  // 0 (an older server) means unknown.
+  uint32 max_identities_per_request = 8;
 }
 
 message Welcome {
@@ -264,6 +267,15 @@ message EncryptedName {
   // Increases with every rename within an epoch (a rekey starts again at 0).
   // Signed, so clients can refuse an older name replayed within the same epoch.
   uint64 revision = 5;
+  // Set only by a rekey: the version of the name the rekeyer carried into the
+  // new epoch. Signed, so a client that knows that version under another name
+  // can tell the rekeyer changed it. Absent for new channels and renames.
+  NameSource carried_from = 6;
+}
+
+message NameSource {
+  uint64 epoch = 1;
+  uint64 revision = 2;
 }
 
 message ChannelInfo {

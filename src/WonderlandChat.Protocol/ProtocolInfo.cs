@@ -27,6 +27,7 @@ public static class ProtocolInfo {
         MessagesPerSecond = 1,
         MessageBurst = 5,
         MaxPendingInvitesPerChannel = 50,
+        MaxIdentitiesPerRequest = 500,
     };
 
     /// <summary>Normalises a channel ID to 32 lowercase hex digits, or returns null if invalid.</summary>

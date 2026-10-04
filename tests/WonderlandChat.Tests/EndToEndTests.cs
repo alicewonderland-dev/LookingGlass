@@ -1,4 +1,5 @@
 using WonderlandChat.Core.Client;
+using WonderlandChat.Core.Crypto;
 using WonderlandChat.Core.Debug;
 using WonderlandChat.Protocol;
 using static WonderlandChat.Tests.Harness;
@@ -193,6 +194,50 @@ public sealed class EndToEndTests : IAsyncLifetime {
     }
 
     [Fact]
+    public async Task InvitesDisappearWhenTheirChannelIsDeleted() {
+        var alice = await this._server.RegisterAsync("Alice Deletes");
+        var bob = await this._server.RegisterAsync("Bob Invited");
+
+        // Disbanded by the admin: the invitee is told.
+        var disbanded = await this.InviteAsync(alice, bob, "Disbanded");
+        await alice.Session.DisbandAsync(disbanded, Ct);
+        await WaitFor(() => bob.Session.Snapshot.Invites.Any(i => i.ChannelId == disbanded) ? null : new object());
+        await WaitFor(() => bob.Notices.FirstOrDefault(n => n.Text == "The admin disbanded Disbanded."));
+
+        // Deleted because its last member left.
+        var abandoned = await this.InviteAsync(alice, bob, "Abandoned");
+        await alice.Session.LeaveAsync(abandoned, Ct);
+        await WaitFor(() => bob.Session.Snapshot.Invites.Any(i => i.ChannelId == abandoned) ? null : new object());
+        Assert.Null(this._server.Database.GetChannel(abandoned));
+    }
+
+    [Fact]
+    public async Task AnsweringAnInviteThatNoLongerExistsRemovesIt() {
+        var alice = await this._server.RegisterAsync("Alice Vanishes");
+        var bob = await this._server.RegisterAsync("Bob Too Late");
+        var accepted = await this.InviteAsync(alice, bob, "Vanished");
+        var declined = await this.InviteAsync(alice, bob, "Also Vanished");
+
+        // Gone without the invitee being told (as an older server would do).
+        this._server.Database.DeleteChannel(accepted);
+        this._server.Database.DeleteChannel(declined);
+
+        var error = await Assert.ThrowsAsync<ServerErrorException>(() => bob.Session.RespondToInviteAsync(accepted, true, Ct));
+        Assert.Equal(ErrorCode.NotFound, error.Code);
+        error = await Assert.ThrowsAsync<ServerErrorException>(() => bob.Session.RespondToInviteAsync(declined, false, Ct));
+        Assert.Equal(ErrorCode.NotFound, error.Code);
+        Assert.Empty(bob.Session.Snapshot.Invites);
+    }
+
+    /// <summary>Creates a channel and invites <paramref name="invitee"/>, waiting until they can read the invite.</summary>
+    private async Task<string> InviteAsync(TestClient admin, TestClient invitee, string channelName) {
+        var channelId = await admin.Session.CreateChannelAsync(channelName, Ct);
+        await admin.Session.InviteAsync(channelId, invitee.Name, ProtocolInfo.DebugWorldName, Ct);
+        await WaitFor(() => invitee.Session.Snapshot.Invites.FirstOrDefault(i => i.ChannelId == channelId && i.ChannelName != null));
+        return channelId;
+    }
+
+    [Fact]
     public async Task MemberCannotKickModerator() {
         var alice = await this._server.RegisterAsync("Alice Rank");
         var bob = await this._server.RegisterAsync("Bob Rank");
@@ -260,5 +305,101 @@ public sealed class EndToEndTests : IAsyncLifetime {
 
         await carolAgain.Session.SendTextAsync(channelId, "I'm back", Ct);
         await WaitFor(() => alice.Messages.FirstOrDefault(m => m.Text == "I'm back"));
+    }
+
+    [Fact]
+    public async Task OtherMembersPickUpAReRegisteredMembersNewKeyWithoutRestarting() {
+        var (alice, bob, carol, channelId) = await this.ThreeMembersAsync("Stale");
+        await bob.Session.DisposeAsync();
+
+        // Bob registers again with new keys; Alice rekeys to them. Carol still has his old key cached.
+        var bobAgain = await this._server.RegisterAsync(bob.Name);
+        await WaitFor(() => bobAgain.Session.Snapshot.FindChannel(channelId) is { HasKey: true, RekeyPending: false } c ? c : null);
+        Assert.False(carol.Session.Snapshot.FindChannel(channelId)!.Members.Single(m => m.User.UserId == bobAgain.UserId).KeyChanged);
+
+        await bobAgain.Session.SendTextAsync(channelId, "new keys, same Bob", Ct);
+        await WaitFor(() => carol.Messages.FirstOrDefault(m => m.Text == "new keys, same Bob"));
+
+        // The new key is still treated as a change to check, not silently trusted.
+        Assert.Contains(carol.Notices, n => n.Level == NoticeLevel.Warning && n.Text.StartsWith($"{bob.Name}@Debug's identity key changed"));
+        var member = carol.Session.Snapshot.FindChannel(channelId)!.Members.Single(m => m.User.UserId == bobAgain.UserId);
+        Assert.True(member.KeyChanged);
+        Assert.Equal(bobAgain.Session.Snapshot.MyFingerprint, member.Fingerprint);
+        Assert.DoesNotContain(carol.Notices, n => n.Text.Contains("failed signature"));
+    }
+
+    [Fact]
+    public async Task ReconnectingFetchesIdentitiesAgain() {
+        var (_, bob, carol, channelId) = await this.ThreeMembersAsync("Reconnect");
+        var epoch = carol.Session.Snapshot.FindChannel(channelId)!.Epoch;
+        await bob.Session.DisposeAsync();
+        var bobAgain = await this._server.RegisterAsync(bob.Name);
+        await WaitFor(() => carol.Session.Snapshot.FindChannel(channelId) is { Epoch: var e, HasKey: true } c && e > epoch ? c : null);
+        Assert.False(carol.Session.Snapshot.FindChannel(channelId)!.Members.Single(m => m.User.UserId == bobAgain.UserId).KeyChanged);
+
+        // Nothing from Bob has arrived, but reconnecting is enough to notice his new key.
+        carol.Session.Reconnect();
+        var member = await WaitFor(() => carol.Session.Snapshot.FindChannel(channelId)?.Members.FirstOrDefault(m => m.User.UserId == bobAgain.UserId && m.KeyChanged));
+        Assert.Equal(bobAgain.Session.Snapshot.MyFingerprint, member.Fingerprint);
+        await WaitFor(() => carol.Notices.FirstOrDefault(n => n.Level == NoticeLevel.Warning && n.Text.StartsWith($"{bob.Name}@Debug's identity key changed")));
+    }
+
+    [Fact]
+    public async Task NameSignedWithAnAuthorsNewKeyIsShownAfterFetchingItAgain() {
+        var alice = await this._server.RegisterAsync("Alice Renamer");
+        // Carol doesn't rekey when asked, which would also fetch Alice's new identity.
+        var carol = await this._server.RegisterAsync("Carol Renamed", options: this._server.Options(autoRekey: false));
+        var channelId = await alice.Session.CreateChannelAsync("Old Name", Ct);
+        await AddMemberAsync(alice, channelId, carol);
+        var epoch = carol.Session.Snapshot.FindChannel(channelId)!.Epoch;
+        await alice.Session.DisposeAsync();
+        var aliceAgain = await this._server.RegisterAsync(alice.Name);
+
+        // A name signed with Alice's new keys reaches Carol, who has her old ones cached.
+        using var newKeys = aliceAgain.LoadIdentity();
+        var name = ChannelCrypto.EncryptName("New Name", carol.LoadEpochKey(channelId, epoch), channelId, epoch, newKeys, aliceAgain.UserId, revision: 1);
+        this._server.Registry.Send(carol.UserId, new Event { ChannelRenamed = new ChannelRenamed { ChannelId = channelId, Name = name } });
+
+        await WaitFor(() => carol.Session.Snapshot.FindChannel(channelId)?.Name == "New Name" ? new object() : null);
+        await WaitFor(() => carol.Notices.FirstOrDefault(n => n.Level == NoticeLevel.Warning && n.Text.StartsWith($"{alice.Name}@Debug's identity key changed")));
+    }
+
+    [Fact]
+    public async Task RenameMissedWhileOfflineIsNotBlamedOnTheNextRekey() {
+        var online = Task.CompletedTask;
+        var alice = await this._server.RegisterAsync("Alice Offline");
+        var bob = await this._server.RegisterAsync("Bob Offline", options: this._server.Options(beforeConnect: ct => online.WaitAsync(ct)));
+        var carol = await this._server.RegisterAsync("Carol Offline");
+        var channelId = await alice.Session.CreateChannelAsync("First Name", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        await AddMemberAsync(alice, channelId, carol);
+        var epoch = carol.Session.Snapshot.FindChannel(channelId)!.Epoch;
+
+        // Bob drops off; meanwhile Alice renames and Carol rekeys, carrying the new name over.
+        var reconnect = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        online = reconnect.Task;
+        bob.Session.Reconnect();
+        await WaitFor(() => this._server.Registry.IsOnline(bob.UserId) ? null : new object());
+        await alice.Session.RenameAsync(channelId, "Second Name", Ct);
+        await WaitFor(() => carol.Session.Snapshot.FindChannel(channelId)?.Name == "Second Name" ? new object() : null);
+        await carol.Session.RekeyAsync(channelId, Ct, force: true);
+
+        // Bob, back online, still holds "First Name" (epoch N, revision 0) but missed revision 1.
+        Assert.Equal("First Name", bob.Session.Snapshot.FindChannel(channelId)!.Name);
+        reconnect.SetResult();
+        await WaitFor(() => bob.Session.Snapshot.FindChannel(channelId) is { Name: "Second Name", HasKey: true } c && c.Epoch == epoch + 1 ? c : null);
+        Assert.DoesNotContain(bob.Notices, n => n.Text.Contains("while rekeying"));
+    }
+
+    /// <summary>Alice (admin), Bob and Carol in one channel, all holding its current key.</summary>
+    private async Task<(TestClient Alice, TestClient Bob, TestClient Carol, string ChannelId)> ThreeMembersAsync(string suffix) {
+        var alice = await this._server.RegisterAsync("Alice " + suffix);
+        var bob = await this._server.RegisterAsync("Bob " + suffix);
+        var carol = await this._server.RegisterAsync("Carol " + suffix);
+        var channelId = await alice.Session.CreateChannelAsync("Trio " + suffix, Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        await AddMemberAsync(alice, channelId, carol);
+        await WaitFor(() => bob.Session.Snapshot.FindChannel(channelId) is { HasKey: true, RekeyPending: false } c ? c : null);
+        return (alice, bob, carol, channelId);
     }
 }

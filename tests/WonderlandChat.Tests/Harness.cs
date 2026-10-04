@@ -17,12 +17,16 @@ public sealed class Harness : IAsyncDisposable {
 
     private readonly List<IAsyncDisposable> _disposables = [];
 
-    public Harness(string? dataDirectory = null, bool allowDebugAccounts = true) {
+    /// <param name="settings">Extra server configuration, for example <c>("WonderlandChat:Limits:MaxIdentitiesPerRequest", "2")</c>.</param>
+    public Harness(string? dataDirectory = null, bool allowDebugAccounts = true, params (string Key, string Value)[] settings) {
         this.DataDirectory = dataDirectory ?? Path.Combine(Path.GetTempPath(), "wct-" + Guid.NewGuid().ToString("N"));
         this.Factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder => {
             builder.UseSetting("WonderlandChat:DataDirectory", this.DataDirectory);
             builder.UseSetting("WonderlandChat:Dev:AllowDebugAccounts", allowDebugAccounts ? "true" : "false");
             builder.UseSetting("WonderlandChat:Dev:HostEchoBot", "false");
+            foreach (var (key, value) in settings) {
+                builder.UseSetting(key, value);
+            }
         });
         _ = this.Factory.Server;
     }
@@ -38,9 +42,16 @@ public sealed class Harness : IAsyncDisposable {
     /// <summary>The server's database, for tests that play a malicious or misbehaving server.</summary>
     public Database Database => this.Factory.Services.GetRequiredService<Database>();
 
-    public ClientSessionOptions Options(bool autoRekey = true, Action<NoticeLevel, string>? log = null, TimeProvider? time = null) => new() {
+    /// <param name="beforeConnect">Awaited before every connection attempt, so a test can keep a client offline.</param>
+    public ClientSessionOptions Options(bool autoRekey = true, Action<NoticeLevel, string>? log = null, TimeProvider? time = null, Func<CancellationToken, Task>? beforeConnect = null) => new() {
         ServerUri = new Uri(this.Factory.Server.BaseAddress, ProtocolInfo.WebSocketPath),
-        Connect = (uri, ct) => this.Factory.Server.CreateWebSocketClient().ConnectAsync(uri, ct),
+        Connect = async (uri, ct) => {
+            if (beforeConnect != null) {
+                await beforeConnect(ct);
+            }
+
+            return await this.Factory.Server.CreateWebSocketClient().ConnectAsync(uri, ct);
+        },
         ReconnectMinDelay = TimeSpan.FromMilliseconds(100),
         AutoRekeyWhenDesignated = autoRekey,
         Log = log,

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Runtime.ExceptionServices;
 using System.Text.Json;
 
 namespace WonderlandChat.Core.Client;
@@ -95,11 +96,10 @@ public sealed class InMemorySecretStore : ISecretStore {
 /// Plain JSON file. Only for the echo bot and tests: the plugin uses an
 /// encrypted store instead.
 /// </summary>
-public sealed class FileSecretStore(string path) : ISecretStore {
+/// <param name="warn">Told when the file couldn't be used and its backup was loaded instead.</param>
+public sealed class FileSecretStore(string path, Action<string>? warn = null) : ISecretStore {
     public ClientSecrets Load() {
-        lock (AtomicFile.LockFor(path)) {
-            return File.Exists(path) ? ClientSecrets.Deserialize(File.ReadAllBytes(path)) : new ClientSecrets();
-        }
+        return AtomicFile.Read(path, ClientSecrets.Deserialize, warn) ?? new ClientSecrets();
     }
 
     public void Save(ClientSecrets secrets) {
@@ -117,7 +117,14 @@ public static class AtomicFile {
     /// </summary>
     public static Lock LockFor(string path) => Locks.GetOrAdd(Path.GetFullPath(path), _ => new Lock());
 
-    /// <summary>Writes to a temporary file, then replaces the target, so a crash never leaves a half-written file.</summary>
+    /// <summary>Where <see cref="Write"/> keeps the previous version of a file.</summary>
+    public static string BackupPath(string path) => path + ".bak";
+
+    /// <summary>
+    /// Writes to a temporary file and flushes it to disk, then replaces the target, keeping the
+    /// previous version as <see cref="BackupPath"/>. A crash or power cut leaves the old file or
+    /// the new one, or at worst only the backup, which <see cref="Read{T}"/> falls back to.
+    /// </summary>
     public static void Write(string path, byte[] data) {
         var directory = Path.GetDirectoryName(Path.GetFullPath(path));
         if (directory != null) {
@@ -128,13 +135,99 @@ public static class AtomicFile {
             // Unique, so a writer in another process (or a leftover from a crash) can't collide with it.
             var temp = $"{path}.{Guid.NewGuid():N}.tmp";
             try {
-                File.WriteAllBytes(temp, data);
-                File.Move(temp, path, overwrite: true);
+                WriteToDisk(temp, data);
+                if (File.Exists(path)) {
+                    ReplaceKeepingBackup(temp, path, BackupPath(path));
+                } else {
+                    File.Move(temp, path);
+                }
             } finally {
                 if (File.Exists(temp)) {
                     File.Delete(temp);
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// Reads a file written by <see cref="Write"/>. If it is missing, empty or can't be parsed,
+    /// its backup is used instead and <paramref name="warn"/> is told. Errors reading the disk
+    /// aren't covered: loading an older backup then would lose whatever was saved since.
+    /// </summary>
+    /// <param name="parse">Turns the bytes into the result; throws if they're unusable.</param>
+    /// <returns>The parsed file, or null if neither it nor a backup exists.</returns>
+    public static T? Read<T>(string path, Func<byte[], T> parse, Action<string>? warn = null) where T : class {
+        lock (LockFor(path)) {
+            Exception? failure = null;
+            if (File.Exists(path)) {
+                try {
+                    return Parse(File.ReadAllBytes(path), parse);
+                } catch (Exception ex) when (ex is not IOException and not UnauthorizedAccessException) {
+                    failure = ex;
+                }
+            }
+
+            var backup = BackupPath(path);
+            if (!File.Exists(backup)) {
+                if (failure != null) {
+                    ExceptionDispatchInfo.Throw(failure);
+                }
+
+                return null;
+            }
+
+            T result;
+            try {
+                result = Parse(File.ReadAllBytes(backup), parse);
+            } catch when (failure != null) {
+                // Report what is wrong with the file itself, not its backup.
+                ExceptionDispatchInfo.Throw(failure);
+                throw;
+            }
+
+            warn?.Invoke(failure == null
+                ? $"{Path.GetFileName(path)} is missing; loaded the backup {Path.GetFileName(backup)} instead."
+                : $"{Path.GetFileName(path)} couldn't be read ({failure.Message}); loaded the backup {Path.GetFileName(backup)} instead.");
+            return result;
+        }
+    }
+
+    private static T Parse<T>(byte[] data, Func<byte[], T> parse) {
+        if (data.Length == 0) {
+            throw new InvalidDataException("The file is empty.");
+        }
+
+        return parse(data);
+    }
+
+    private static void WriteToDisk(string path, ReadOnlySpan<byte> data) {
+        using var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+        stream.Write(data);
+        // Without this, a power cut soon after the rename can leave an empty or garbled file.
+        stream.Flush(flushToDisk: true);
+    }
+
+    private static void ReplaceKeepingBackup(string temp, string path, string backup) {
+        try {
+            File.Replace(temp, path, backup, ignoreMetadataErrors: true);
+            return;
+        } catch (Exception ex) when (ex is IOException or PlatformNotSupportedException or UnauthorizedAccessException) {
+            // Not supported everywhere (some Wine versions and file systems). Do it in steps,
+            // each of which leaves a complete file under the path or the backup path.
+        }
+
+        if (File.Exists(path)) {
+            var backupTemp = $"{backup}.{Guid.NewGuid():N}.tmp";
+            try {
+                WriteToDisk(backupTemp, File.ReadAllBytes(path));
+                File.Move(backupTemp, backup, overwrite: true);
+            } finally {
+                if (File.Exists(backupTemp)) {
+                    File.Delete(backupTemp);
+                }
+            }
+        }
+
+        File.Move(temp, path, overwrite: true);
     }
 }

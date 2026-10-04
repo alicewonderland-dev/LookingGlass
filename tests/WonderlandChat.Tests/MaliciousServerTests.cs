@@ -52,6 +52,46 @@ public sealed class MaliciousServerTests : IAsyncLifetime {
     }
 
     [Fact]
+    public async Task ForgedMessagesAreDroppedWithoutRepeatedIdentityLookups() {
+        var clock = new ManualClock();
+        var alice = await this._server.RegisterAsync("Alice Lookups");
+        var bob = await this._server.RegisterAsync("Bob Lookups");
+        var carol = await this._server.RegisterAsync("Carol Lookups", options: this._server.Options(time: clock));
+        var channelId = await alice.Session.CreateChannelAsync("Lookups", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        await AddMemberAsync(alice, channelId, carol);
+        var epoch = carol.Session.Snapshot.FindChannel(channelId)!.Epoch;
+        int Lookups() => carol.Session.GetTrace().Count(entry => entry.Outgoing && entry.Summary.EndsWith(" GetIdentities"));
+
+        // Messages "from Bob" with bad signatures: his key hasn't changed, so each is dropped,
+        // and only the first makes Carol check his identity again.
+        async Task SendForgedAsync(int count, string barrier) {
+            for (var i = 0; i < count; i++) {
+                var forged = bob.ForgeMessage(channelId, epoch, $"forged {barrier} {i}", clock.GetUtcNow());
+                forged.Signature = ByteString.CopyFrom(new byte[64]);
+                this._server.Registry.Send(carol.UserId, new Event { ChatMessage = forged });
+            }
+
+            // Messages are handled in order, so once this arrives the forgeries have been too.
+            await alice.Session.SendTextAsync(channelId, barrier, Ct);
+            await WaitFor(() => carol.Messages.FirstOrDefault(m => m.Text == barrier));
+        }
+
+        var before = Lookups();
+        await SendForgedAsync(5, "first barrier");
+        Assert.Equal(before + 1, Lookups());
+        Assert.Equal(5, carol.Notices.Count(n => n.Text.Contains("failed signature")));
+
+        // A minute later, one more check is allowed.
+        clock.Offset = TimeSpan.FromMinutes(2);
+        await SendForgedAsync(3, "second barrier");
+        Assert.Equal(before + 2, Lookups());
+        Assert.Equal(8, carol.Notices.Count(n => n.Text.Contains("failed signature")));
+        Assert.DoesNotContain(carol.Messages, m => m.Text?.StartsWith("forged") == true);
+        Assert.DoesNotContain(carol.Notices, n => n.Text.Contains("identity key changed"));
+    }
+
+    [Fact]
     public async Task ReplayedOlderEpochKeyIsRejected() {
         var alice = await this._server.RegisterAsync("Alice Wedge");
         var bob = await this._server.RegisterAsync("Bob Wedge");
