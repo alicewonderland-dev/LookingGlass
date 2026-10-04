@@ -125,8 +125,18 @@ public sealed class SessionManager : IDisposable {
         var session = this._sessionPlayer?.ContentId == player.ContentId ? this.Session : null;
         return Task.Run(async () => {
             var notRetired = await Retire(session);
-            var reset = await await Services.Framework.RunOnFrameworkThread<Task<IdentityReset>>(() =>
-                this.ReplaceSecrets(player, () => ProtectedSecretStore.ResetIdentity(player.ContentId, serverUrl)));
+            IdentityReset reset;
+            try {
+                reset = await await Services.Framework.RunOnFrameworkThread<Task<IdentityReset>>(() =>
+                    this.ReplaceSecrets(player, () => ProtectedSecretStore.ResetIdentity(player.ContentId, serverUrl)));
+            } catch (Exception ex) when (notRetired == null) {
+                // The old key is already gone on the server, so the files still holding it are of no use there now.
+                this._chat.Notice(NoticeLevel.Warning,
+                    $"The server at {serverUrl} retired your old key, but resetting your keys here failed ({ex.Message}). " +
+                    "Try \"Reset my identity\" again: until you do, you can't register or sign in there.");
+                throw;
+            }
+
             Services.Log.Information($"Reset the LookingGlass identity of a character ({reset.Scrubbed.Count} other files held the old one)");
 
             if (notRetired == null) {
