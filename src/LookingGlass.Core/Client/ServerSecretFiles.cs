@@ -78,18 +78,25 @@ public static partial class ServerSecretFiles {
 
     /// <summary>
     /// The old-style file kept for a character and address, if it holds an identity and the address has none of its own
-    /// (no identity keys, no login; say, the new file was lost): what the user may choose to restore. Reads and decrypts
-    /// files. An old file that was never moved is moved first (as <see cref="Open"/> does), and then isn't a backup.
+    /// (no identity keys, no login; say, the new file was lost): what the user may choose to restore. Only reads (and
+    /// decrypts) files, so it may run alongside a session. An old file that was never moved isn't a backup: <see cref="Open"/>
+    /// moves it when the address is used.
     /// </summary>
     /// <exception cref="SecretsServerMismatchException">The old file belongs to another address.</exception>
     public static SecretsBackup? FindBackup(string directory, ulong contentId, string serverUrl, Func<string, ISecretStore> storeAt) {
         var legacyPath = Path.Combine(directory, LegacyFileName(contentId, serverUrl));
         var file = File.Exists(legacyPath) ? legacyPath : File.Exists(AtomicFile.BackupPath(legacyPath)) ? AtomicFile.BackupPath(legacyPath) : null;
-        if (file == null || HoldsAnything(Open(directory, contentId, serverUrl, storeAt).Load())) {
+        var path = Path.Combine(directory, FileName(contentId, serverUrl));
+        if (file == null || HoldsAnything(new ServerBoundSecretStore(storeAt(path), serverUrl, path).Load())) {
             return null;
         }
 
         var backup = new ServerBoundSecretStore(storeAt(legacyPath), serverUrl, legacyPath).Load();
+        if (!IsStamped(backup) && File.Exists(legacyPath)) {
+            // Never moved: moved by itself when the address is used (see TryMigrate), not offered.
+            return null;
+        }
+
         return HoldsIdentity(backup) ? new SecretsBackup(file, new DateTimeOffset(File.GetLastWriteTimeUtc(file), TimeSpan.Zero)) : null;
     }
 
