@@ -525,27 +525,30 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.RekeyRequired, "Membership changed; rekey the channel before renaming it.");
         }
 
-        if (request.Name != null && !MembershipEntries.SamePosition(request.Name.LogPosition, channel.LogHead)) {
+        var name = request.Name ?? throw new RequestException(ErrorCode.InvalidRequest, "The encrypted channel name is missing.");
+
+        // A name made at an older log position is CONFLICT (catch up and retry), not invalid.
+        if (name.LogPosition != null && !MembershipEntries.SamePosition(name.LogPosition, channel.LogHead)) {
             throw new RequestException(ErrorCode.Conflict, "The channel's membership changed meanwhile; refresh and rename it again.");
         }
 
-        this.ValidateName(request.Name, channelId, channel.Epoch, me, channel.LogHead);
-        if (request.Name.Revision > ProtocolInfo.MaxNameRevision) {
+        this.ValidateName(name, channelId, channel.Epoch, me, channel.LogHead);
+        if (name.Revision > ProtocolInfo.MaxNameRevision) {
             throw new RequestException(ErrorCode.InvalidRequest, "The name's revision is out of range.");
         }
 
-        RequireNoSource(request.Name);
+        RequireNoSource(name);
 
-        if (channel.Name is { } current && current.Epoch == request.Name.Epoch && request.Name.Revision <= current.Revision) {
+        if (channel.Name is { } current && current.Epoch == name.Epoch && name.Revision <= current.Revision) {
             // Clients refuse a name that isn't newer than theirs, so storing it would hide later renames.
             throw new RequestException(ErrorCode.Conflict, "The name's revision must be newer than the current one; refresh and try again.");
         }
 
-        if (!db.RenameChannel(channelId, request.Name)) {
+        if (!db.RenameChannel(channelId, name)) {
             throw new RequestException(ErrorCode.Conflict, "The channel changed while renaming; try again.");
         }
         var members = db.GetMembers(channelId).Select(member => member.User.UserId);
-        registry.SendToAll(members, new Event { ChannelRenamed = new ChannelRenamed { ChannelId = channelId, Name = request.Name } }, except: me.UserId);
+        registry.SendToAll(members, new Event { ChannelRenamed = new ChannelRenamed { ChannelId = channelId, Name = name } }, except: me.UserId);
         return Ack();
     }
 

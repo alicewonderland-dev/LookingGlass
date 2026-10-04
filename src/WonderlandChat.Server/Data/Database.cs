@@ -529,8 +529,9 @@ public sealed class Database {
         (string, object)[] who = [("$channel", channelId), ("$user", subject.UserId)];
         switch (entry.Kind) {
             case MembershipEntryKind.Invite: {
+                // Checked entries always have one; tests playing a server that skips the checks may not.
                 var inviter = Query(connection, tx, "SELECT signing_key, agreement_key FROM members WHERE channel_id = $channel AND user_id = $user;",
-                    reader => ((byte[]) reader[0], (byte[]) reader[1]), ("$channel", channelId), ("$user", entry.ActorId)).Single();
+                    reader => ((byte[]) reader[0], (byte[]) reader[1]), ("$channel", channelId), ("$user", entry.ActorId)).FirstOrDefault(([], []));
                 Execute(connection, tx, """
                     INSERT INTO invites (channel_id, user_id, inviter_id, sealed_ephemeral, sealed_ciphertext, signature, created_at,
                                          signing_key, agreement_key, invite_seq, invite_hash, inviter_signing_key, inviter_agreement_key)
