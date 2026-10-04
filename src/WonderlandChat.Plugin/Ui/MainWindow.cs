@@ -152,9 +152,10 @@ public sealed class MainWindow : Window {
                 }
 
                 ImGui.SameLine();
-                ImGui.BeginDisabled(this._actions.Busy);
-                if (ImGui.SmallButton("Mark verified")) {
-                    this._actions.Run("Marking verified", () => session.AcknowledgeKeyChange(invite.Inviter.UserId));
+                ImGui.BeginDisabled(this._actions.Busy || invite.InviterFingerprint == null);
+                if (ImGui.SmallButton("Mark verified") && invite.InviterFingerprint is { } shown) {
+                    // The fingerprint shown above, and only that.
+                    this._actions.Run("Marking verified", () => session.AcknowledgeKeyChange(invite.Inviter.UserId, shown));
                 }
 
                 ImGui.EndDisabled();
@@ -282,12 +283,19 @@ public sealed class MainWindow : Window {
                 ImGui.TableNextRow();
                 ImGui.TableNextColumn();
                 ImGui.TextUnformatted($"{member.User.Name}@{member.User.WorldName}{(isMe ? " (you)" : "")}");
-                if (member.KeyChanged || (!isMe && !member.FingerprintCompared)) {
+
+                // "Mark verified" vouches for the fingerprint shown, and only that. For someone who registered again, the
+                // warning is about their new key, so that is the one shown (in the fingerprint column) and marked; the key the
+                // log binds them to can't be compared any more (they no longer have it).
+                var shown = member.KeyReplaced ? member.NewFingerprint : member.Fingerprint;
+                if (member.KeyReplaced ? member.KeyChanged : member.KeyChanged || (!isMe && !member.FingerprintCompared)) {
                     ImGui.SameLine();
                     if (member.KeyChanged) {
                         ImGui.TextColored(KeyChangedColour, "key changed!");
                         if (ImGui.IsItemHovered()) {
-                            ImGui.SetTooltip("Their identity key changed, or this name now belongs to a different account.\nCompare fingerprints with them over /tell, then mark it verified.");
+                            ImGui.SetTooltip(member.KeyReplaced
+                                ? $"They registered again with a new identity key: {shown}\nCompare that fingerprint with them over /tell, then mark it verified."
+                                : "Their identity key changed, or this name now belongs to a different account.\nCompare fingerprints with them over /tell, then mark it verified.");
                         }
                     } else {
                         ImGui.TextDisabled("not compared");
@@ -297,9 +305,9 @@ public sealed class MainWindow : Window {
                     }
 
                     ImGui.SameLine();
-                    ImGui.BeginDisabled(this._actions.Busy);
-                    if (ImGui.SmallButton("Mark verified")) {
-                        this._actions.Run("Marking verified", () => session.AcknowledgeKeyChange(member.User.UserId));
+                    ImGui.BeginDisabled(this._actions.Busy || shown == null);
+                    if (ImGui.SmallButton(member.KeyReplaced ? "Mark new key verified" : "Mark verified") && shown is { } fingerprint) {
+                        this._actions.Run("Marking verified", () => session.AcknowledgeKeyChange(member.User.UserId, fingerprint));
                     }
 
                     ImGui.EndDisabled();
@@ -317,6 +325,12 @@ public sealed class MainWindow : Window {
                 ImGui.TextUnformatted(ClientSession.RankName(member.Rank));
                 ImGui.TableNextColumn();
                 ImGui.TextDisabled(member.Fingerprint ?? "-");
+                if (member is { KeyReplaced: true, NewFingerprint: { } newFingerprint }) {
+                    ImGui.TextColored(KeyChangedColour, $"new: {newFingerprint}");
+                    if (ImGui.IsItemHovered()) {
+                        ImGui.SetTooltip("The key they registered again with. The one above is the key that is a member of this channel.");
+                    }
+                }
                 ImGui.TableNextColumn();
 
                 if (!isMe && !this._actions.Busy) {

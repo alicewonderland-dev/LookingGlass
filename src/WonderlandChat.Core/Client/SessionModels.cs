@@ -88,7 +88,12 @@ public sealed record ChannelView(
 /// They registered again: the server has other keys for them now, which aren't a member until
 /// someone removes them and invites them again.
 /// </param>
-public sealed record MemberView(User User, Rank Rank, string? Fingerprint, bool KeyChanged, bool FingerprintCompared = false, bool KeyReplaced = false);
+/// <param name="NewFingerprint">
+/// If <paramref name="KeyReplaced"/>, the fingerprint of the keys they registered again with. <see cref="KeyChanged"/>
+/// is about those keys, so it is this fingerprint, not <paramref name="Fingerprint"/>, that is shown and marked verified.
+/// </param>
+public sealed record MemberView(User User, Rank Rank, string? Fingerprint, bool KeyChanged, bool FingerprintCompared = false, bool KeyReplaced = false,
+    string? NewFingerprint = null);
 
 /// <param name="Verified">The invite is signed by the inviter's current identity key.</param>
 /// <param name="InviterKeyChanged">

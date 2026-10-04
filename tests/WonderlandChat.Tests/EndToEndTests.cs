@@ -190,7 +190,7 @@ public sealed class EndToEndTests : IAsyncLifetime {
         Assert.True(after.InviterKeyChanged);
         Assert.Equal(aliceAgain.Session.Snapshot.MyFingerprint, after.InviterFingerprint);
 
-        bob.Session.AcknowledgeKeyChange(aliceAgain.UserId);
+        bob.Session.AcknowledgeKeyChange(aliceAgain.UserId, after.InviterFingerprint!);
         Assert.False(bob.Session.Snapshot.Invites.Single(i => i.ChannelId == second).InviterKeyChanged);
     }
 
@@ -383,7 +383,7 @@ public sealed class EndToEndTests : IAsyncLifetime {
         Assert.Equal(carolAgain.Session.Snapshot.MyFingerprint, rejoined.Fingerprint);
         Assert.False(rejoined.KeyReplaced);
         Assert.True(rejoined.KeyChanged);
-        alice.Session.AcknowledgeKeyChange(carolAgain.UserId);
+        alice.Session.AcknowledgeKeyChange(carolAgain.UserId, rejoined.Fingerprint!);
         rejoined = alice.Session.Snapshot.FindChannel(channelId)!.Members.Single(m => m.User.UserId == carolAgain.UserId);
         Assert.False(rejoined.KeyChanged);
         Assert.True(rejoined.FingerprintCompared);
@@ -412,8 +412,10 @@ public sealed class EndToEndTests : IAsyncLifetime {
         Assert.True(row is { KeyChanged: true, KeyReplaced: true });
         Assert.NotEqual(newFingerprint, row.Fingerprint);
 
-        // Alice compares the fingerprint shown (Carol's old key) and presses "Mark verified" on that row.
-        alice.Session.AcknowledgeKeyChange(carolAgain.UserId);
+        // Alice compares the fingerprint shown in the row's fingerprint column (Carol's old key) and marks it verified.
+        // That isn't the key held for Carol now, so nothing is marked. (Before the fix, the call took no fingerprint, as
+        // the UI's button did, and marked the server's new key.)
+        Assert.Throws<InvalidOperationException>(() => alice.Session.AcknowledgeKeyChange(carolAgain.UserId, row.Fingerprint!));
 
         // Removed and invited again, Carol's new key, whose fingerprint Alice was never shown, isn't compared.
         await alice.Session.KickAsync(channelId, carolAgain.UserId, Ct);
@@ -422,6 +424,40 @@ public sealed class EndToEndTests : IAsyncLifetime {
         Assert.Equal(newFingerprint, rejoined.Fingerprint);
         Assert.False(rejoined.FingerprintCompared);
         Assert.True(rejoined.KeyChanged);
+
+        // Until its own fingerprint, now shown, is compared and marked.
+        alice.Session.AcknowledgeKeyChange(carolAgain.UserId, rejoined.Fingerprint!);
+        rejoined = alice.Session.Snapshot.FindChannel(channelId)!.Members.Single(m => m.User.UserId == carolAgain.UserId);
+        Assert.True(rejoined.FingerprintCompared);
+        Assert.False(rejoined.KeyChanged);
+    }
+
+    /// <summary>A "registered again" row shows the new key's fingerprint, which is what its "Mark new key verified" vouches for.</summary>
+    [Fact]
+    public async Task ARegisteredAgainRowShowsTheNewFingerprintItMarksVerified() {
+        var alice = await this._server.RegisterAsync("Alice Shown");
+        var carol = await this._server.RegisterAsync("Carol Shown");
+        var channelId = await alice.Session.CreateChannelAsync("Shown", Ct);
+        await AddMemberAsync(alice, channelId, carol);
+        await carol.Session.DisposeAsync();
+        var carolAgain = await this._server.RegisterAsync(carol.Name);
+
+        await alice.Session.RefreshAsync(Ct);
+        var row = alice.Session.Snapshot.FindChannel(channelId)!.Members.Single(m => m.User.UserId == carolAgain.UserId);
+        Assert.True(row is { KeyChanged: true, KeyReplaced: true });
+        Assert.Equal(carolAgain.Session.Snapshot.MyFingerprint, row.NewFingerprint);
+
+        alice.Session.AcknowledgeKeyChange(carolAgain.UserId, row.NewFingerprint!);
+        row = alice.Session.Snapshot.FindChannel(channelId)!.Members.Single(m => m.User.UserId == carolAgain.UserId);
+        Assert.False(row.KeyChanged);
+        // The key that is the member (her old one) wasn't compared, and isn't marked.
+        Assert.False(row.FingerprintCompared);
+
+        // Invited again, the new key, compared before, shows as compared.
+        await alice.Session.KickAsync(channelId, carolAgain.UserId, Ct);
+        await AddMemberAsync(alice, channelId, carolAgain);
+        var rejoined = alice.Session.Snapshot.FindChannel(channelId)!.Members.Single(m => m.User.UserId == carolAgain.UserId);
+        Assert.True(rejoined is { FingerprintCompared: true, KeyChanged: false, KeyReplaced: false, NewFingerprint: null });
     }
 
     /// <summary>

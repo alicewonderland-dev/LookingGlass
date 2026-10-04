@@ -249,12 +249,22 @@ public sealed class ClientSession : IAsyncDisposable {
     }
 
     /// <summary>
-    /// Marks a user's current keys verified, after comparing fingerprints with them over /tell:
-    /// clears the "key changed" warning and the "fingerprint not compared" state.
+    /// Marks a user's keys verified, after comparing <paramref name="fingerprint"/> with them over /tell:
+    /// clears the "key changed" warning and the "fingerprint not compared" state. Only the keys the user
+    /// was shown are marked, and only while they are still the ones held for that user, never others
+    /// (say, the key someone registered again with, while a row shows the one the log binds them to).
     /// </summary>
-    public void AcknowledgeKeyChange(long userId) {
+    /// <param name="fingerprint">The fingerprint the user was shown, and compared.</param>
+    /// <exception cref="InvalidOperationException">The keys held for the user now don't have that fingerprint.</exception>
+    public void AcknowledgeKeyChange(long userId, string fingerprint) {
         lock (this._lock) {
-            if (this._secrets.PinnedIdentities.TryGetValue(userId, out var pinned) && (pinned.KeyChangeUnacknowledged || !pinned.Compared)) {
+            if (!this._secrets.PinnedIdentities.TryGetValue(userId, out var pinned)
+                || IdentityKeys.FingerprintOf(pinned.SigningPublicKey, pinned.AgreementPublicKey) != fingerprint) {
+                throw new InvalidOperationException(
+                    "That fingerprint isn't the identity key held for them now: they registered again, or their key changed since it was shown. Nothing was marked verified.");
+            }
+
+            if (pinned.KeyChangeUnacknowledged || !pinned.Compared) {
                 pinned.KeyChangeUnacknowledged = false;
                 pinned.Compared = true;
                 this._secretsVersion++;
@@ -2548,8 +2558,10 @@ public sealed class ClientSession : IAsyncDisposable {
                 var isMe = member.UserId == this._me?.UserId && member.Keys == this._myKeys;
                 var compared = isMe || (pinned is { Compared: true } && pinned.SigningPublicKey.AsSpan().SequenceEqual(member.Keys.SigningPublicKey)
                                                                      && pinned.AgreementPublicKey.AsSpan().SequenceEqual(member.Keys.AgreementPublicKey));
-                var replaced = this._identities.TryGetValue(member.UserId, out var identity) && MemberKeys.Of(identity.Identity) != member.Keys;
-                return new MemberView(user, member.Rank, member.Keys.Fingerprint, pinned is { KeyChangeUnacknowledged: true }, compared, replaced);
+                var current = this._identities.TryGetValue(member.UserId, out var identity) ? MemberKeys.Of(identity.Identity) : null;
+                var replaced = current != null && current != member.Keys;
+                return new MemberView(user, member.Rank, member.Keys.Fingerprint, pinned is { KeyChangeUnacknowledged: true }, compared, replaced,
+                    replaced ? current!.Fingerprint : null);
             })
             .OrderByDescending(member => member.Rank)
             .ThenBy(member => member.User.Name, StringComparer.OrdinalIgnoreCase)
