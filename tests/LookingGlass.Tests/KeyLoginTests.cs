@@ -279,40 +279,35 @@ public sealed class KeyLoginTests : IAsyncLifetime {
 
     /// <summary>
     /// Outside Development the Host header proves nothing (a relay sets it to whatever the user signed for), so without
-    /// configured PublicUrls the server has no address it can trust, and refuses key login outright. The client falls
-    /// back as it does for any refused key login: it keeps its login and says the server doesn't recognise it.
+    /// configured PublicUrls the server has no address to check the signed ones against: a malicious server could pass on
+    /// a registration made on it and get a login to the character's account here. Such a server refuses to start, and
+    /// says what to set; it starts once they are set (see <see cref="OutsideDevelopmentKeyLoginWorksForThePublicUrls"/>).
     /// </summary>
     [Fact]
-    public async Task OutsideDevelopmentKeyLoginNeedsPublicUrls() {
-        await using var server = new Harness(environment: "Production");
+    public async Task OutsideDevelopmentTheServerNeedsPublicUrls() {
+        var logs = new CapturingLoggerProvider();
+        var exitCode = Environment.ExitCode;
+        var directory = Path.Combine(Path.GetTempPath(), "lgt-" + Guid.NewGuid().ToString("N"));
         try {
-            var alice = await server.RegisterAsync("Alice Production");
-            using var keys = alice.LoadIdentity();
+            Exception? failed = null;
+            try {
+                await using var server = new Harness(directory, environment: "Production", logs: logs);
+                await using var raw = await server.ConnectRawAsync();
+            } catch (Exception ex) {
+                failed = ex;
+            }
 
-            // Refused before any challenge is issued, with the same error whoever asks.
-            await using var raw = await server.ConnectRawAsync();
-            var refused = await raw.SendAsync(new ClientFrame { StartKeyLogin = new StartKeyLogin { UserId = alice.UserId } });
-            Assert.Equal(ErrorCode.NotAuthenticated, refused.Error?.Code);
-            Assert.Null(refused.KeyLoginChallenge);
-            var unknown = await raw.SendAsync(new ClientFrame { StartKeyLogin = new StartKeyLogin { UserId = 4242424242 } });
-            Assert.Equal(refused.Error!.Message, unknown.Error?.Message);
-            // Not even a signature made for the address this connection names in its Host header gets anywhere.
-            var url = server.ServerUri.AbsoluteUri;
-            var forged = await this.CompleteAsync(raw, new byte[KeyLoginProof.ChallengeSize], url, KeyLoginProof.Sign(keys, new byte[KeyLoginProof.ChallengeSize], alice.UserId, url));
-            Assert.Equal(ErrorCode.NotAuthenticated, forged.Error?.Code);
-
-            // The client tries, is refused, and keeps its (lost) login, as with any refused key login.
-            var token = alice.Store.Load().DeviceToken;
-            await alice.Session.DisposeAsync();
-            server.ExecuteSql("DELETE FROM devices WHERE user_id = $id;", ("$id", alice.UserId));
-            var restarted = server.StartClient(alice.Name, alice.Store, server.Options(loginRetryDelay: TimeSpan.FromHours(1)));
-            var snapshot = await WaitFor(() => restarted.Session.Snapshot is { State: ConnectionState.LoginNotRecognized } s ? s : null);
-            Assert.True(snapshot.LoginRejected);
-            Assert.Contains(restarted.Session.GetTrace(), entry => entry.Outgoing && entry.Summary.EndsWith(" StartKeyLogin"));
-            Assert.DoesNotContain(restarted.Session.GetTrace(), entry => entry.Outgoing && entry.Summary.EndsWith(" CompleteKeyLogin"));
-            Assert.Equal(token, alice.Store.Load().DeviceToken);
+            // Nothing answers: the server stopped before it began listening...
+            Assert.NotNull(failed);
+            // ...and said why, and what to set.
+            var critical = Assert.Single(logs.AtLeast(Microsoft.Extensions.Logging.LogLevel.Critical));
+            Assert.Equal(RequestHandler.PublicUrlsRequired, critical);
+            Assert.Contains("LookingGlass__PublicUrls__0=wss://", critical);
+            Assert.Equal(1, Environment.ExitCode);
         } finally {
-            DeleteDirectory(server.DataDirectory);
+            // The server's exit code, which the test process doesn't share.
+            Environment.ExitCode = exitCode;
+            DeleteDirectory(directory);
         }
     }
 
@@ -508,10 +503,11 @@ public sealed class KeyLoginTests : IAsyncLifetime {
             using var keys = alice.LoadIdentity();
             var url = server.ServerUri.AbsoluteUri;
 
-            // Two failures from one address, and it gets no more challenges...
+            // Two failures from one address (for two accounts, so the per-account limit for the address isn't what stops
+            // it), and it gets no more challenges, for any account...
             await using var first = await server.ConnectRawAsync(remoteAddress: "203.0.113.1");
-            for (var i = 0; i < 2; i++) {
-                var challenge = await this.ChallengeAsync(first, alice.UserId);
+            foreach (var userId in new[] { alice.UserId, 4242424242L }) {
+                var challenge = await this.ChallengeAsync(first, userId);
                 Assert.Equal(ErrorCode.NotAuthenticated, (await this.CompleteAsync(first, challenge, url, new byte[64])).Error?.Code);
             }
 
@@ -537,44 +533,74 @@ public sealed class KeyLoginTests : IAsyncLifetime {
     }
 
     /// <summary>
-    /// Failed key logins are limited per account, whoever makes them: many addresses (each within its own limits)
-    /// failing for one account end up refused challenges for it. Successful ones don't count.
+    /// Failed key logins for an account are counted per address too, and one address that keeps failing for an account
+    /// is refused challenges for it, below its own limit: for that account only, from that address only. Successful
+    /// ones don't count.
     /// </summary>
     [Fact]
-    public async Task FailedKeyLoginsAreLimitedPerUser() {
+    public async Task FailedKeyLoginsAreLimitedPerAccountAndAddress() {
         var alice = await this._server.RegisterAsync("Alice Targeted");
         var bob = await this._server.RegisterAsync("Bob Untargeted");
         using var keys = alice.LoadIdentity();
         var url = this._server.ServerUri.AbsoluteUri;
 
-        // More successful key logins than the account allows failures: none of them is held against it.
-        for (var address = 1; address <= 25; address++) {
-            await using var honest = await this._server.ConnectRawAsync(remoteAddress: $"192.0.2.{address}");
+        // More successful key logins from one address than it may fail: none of them is held against the account.
+        for (var i = 0; i < 12; i++) {
+            await using var honest = await this._server.ConnectRawAsync(remoteAddress: "192.0.2.1");
             Assert.NotNull((await this.KeyLoginAsync(honest, keys, alice.UserId)).KeyLoginComplete);
         }
 
-        var refused = false;
-        for (var address = 1; address <= 10 && !refused; address++) {
-            for (var connection = 0; connection < 4 && !refused; connection++) {
-                await using var raw = await this._server.ConnectRawAsync(remoteAddress: $"198.51.100.{address}");
-                for (var i = 0; i < 3 && !refused; i++) {
-                    var response = await raw.SendAsync(new ClientFrame { StartKeyLogin = new StartKeyLogin { UserId = alice.UserId } });
-                    if (response.Error?.Code == ErrorCode.RateLimited) {
-                        // Either this address's failures, or the account's: only the account's counts here.
-                        refused = response.Error.Message.Contains("account");
-                        break;
-                    }
+        // The default limits: 10 failures per address, and so 5 per account from one address.
+        await using var attacker = await this._server.ConnectRawAsync(remoteAddress: "198.51.100.1");
+        for (var i = 0; i < 5; i++) {
+            await using var raw = await this._server.ConnectRawAsync(remoteAddress: "198.51.100.1");
+            var challenge = await this.ChallengeAsync(raw, alice.UserId);
+            Assert.Equal(ErrorCode.NotAuthenticated, (await this.CompleteAsync(raw, challenge, url, new byte[64])).Error?.Code);
+        }
 
-                    var challenge = response.KeyLoginChallenge.Challenge.ToByteArray();
-                    Assert.Equal(ErrorCode.NotAuthenticated, (await this.CompleteAsync(raw, challenge, url, new byte[64])).Error?.Code);
+        var refused = (await attacker.SendAsync(new ClientFrame { StartKeyLogin = new StartKeyLogin { UserId = alice.UserId } })).Error;
+        Assert.Equal(ErrorCode.RateLimited, refused?.Code);
+        Assert.Contains("account", refused!.Message);
+
+        // The address isn't out of key logins (Bob's still work from it), and Alice's still work from elsewhere.
+        using var bobKeys = bob.LoadIdentity();
+        Assert.NotNull((await this.KeyLoginAsync(attacker, bobKeys, bob.UserId)).KeyLoginComplete);
+        await using var own = await this._server.ConnectRawAsync(remoteAddress: "192.0.2.1");
+        Assert.NotNull((await this.KeyLoginAsync(own, keys, alice.UserId)).KeyLoginComplete);
+    }
+
+    /// <summary>
+    /// Failures from other addresses never lock an account out of key login from its own: however many addresses fail
+    /// for it (each up to its own limit), the owner's address still signs in. An Ed25519 signature can't be guessed, so
+    /// there is nothing to protect by refusing everyone; each address that fails is limited on its own.
+    /// </summary>
+    [Fact]
+    public async Task FailuresFromOtherAddressesDoNotLockTheAccountOut() {
+        var alice = await this._server.RegisterAsync("Alice Besieged Widely");
+        using var keys = alice.LoadIdentity();
+        var url = this._server.ServerUri.AbsoluteUri;
+
+        // Ten addresses fail for Alice until each is refused (by its own limits): far more than any one address may.
+        var failures = 0;
+        for (var address = 1; address <= 10; address++) {
+            while (true) {
+                await using var raw = await this._server.ConnectRawAsync(remoteAddress: $"198.51.100.{address}");
+                var response = await raw.SendAsync(new ClientFrame { StartKeyLogin = new StartKeyLogin { UserId = alice.UserId } });
+                if (response.Error?.Code == ErrorCode.RateLimited) {
+                    break;
                 }
+
+                var challenge = response.KeyLoginChallenge.Challenge.ToByteArray();
+                Assert.Equal(ErrorCode.NotAuthenticated, (await this.CompleteAsync(raw, challenge, url, new byte[64])).Error?.Code);
+                failures++;
             }
         }
 
-        Assert.True(refused);
-        // Another user isn't affected.
-        await using var other = await this._server.ConnectRawAsync(remoteAddress: "198.51.100.200");
-        Assert.NotNull((await other.SendAsync(new ClientFrame { StartKeyLogin = new StartKeyLogin { UserId = bob.UserId } })).KeyLoginChallenge);
+        Assert.True(failures >= 40, $"Only {failures} failures were allowed");
+
+        // Alice, from her own address, still signs in with her key.
+        await using var own = await this._server.ConnectRawAsync(remoteAddress: "203.0.113.7");
+        Assert.NotNull((await this.KeyLoginAsync(own, keys, alice.UserId)).KeyLoginComplete);
     }
 
     /// <summary>

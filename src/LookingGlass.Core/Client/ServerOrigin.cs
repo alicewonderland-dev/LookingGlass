@@ -67,5 +67,8 @@ public sealed record ServerOrigin(bool Secure, string Host, int Port) {
         return FromUrl($"{scheme}://{host}/");
     }
 
+    /// <summary>Whether any of <paramref name="urls"/> (such as Welcome's public_urls) has this origin.</summary>
+    public bool IsListedIn(IEnumerable<string> urls) => urls.Any(url => FromUrl(url.Trim()) == this);
+
     public override string ToString() => $"{(this.Secure ? "wss" : "ws")}://{this.Host}:{this.Port}";
 }

@@ -21,14 +21,6 @@ public sealed class TokenBucket(double perSecond, double burst) {
         }
     }
 
-    /// <summary>Whether a token could be taken now, without taking it.</summary>
-    public bool HasToken() {
-        lock (this._lock) {
-            this.Refill();
-            return this._tokens >= 1;
-        }
-    }
-
     private void Refill() {
         var now = DateTimeOffset.UtcNow;
         this._tokens = Math.Min(this._burst, this._tokens + (now - this._updated).TotalSeconds * perSecond);
@@ -60,11 +52,6 @@ public sealed class UserRateLimits(double perSecond, double burst) {
         }
 
         return entry.Bucket.TryTake();
-    }
-
-    /// <summary>Whether <see cref="TryTake"/> would succeed now, without taking anything or tracking the user.</summary>
-    public bool HasToken(long userId) {
-        return !this._buckets.TryGetValue(userId, out var entry) || entry.Bucket.HasToken();
     }
 }
 

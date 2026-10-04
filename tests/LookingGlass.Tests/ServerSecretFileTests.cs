@@ -112,6 +112,267 @@ public sealed class ServerSecretFileTests : IDisposable {
         Assert.False(File.Exists(this.PathFor(OtherUrl)));
     }
 
+    /// <summary>
+    /// Once moved, the old file is a backup: if the new file (and its own backup) go missing later, the old one is never
+    /// moved again by itself, which would bring back an old login, old channel keys, or a key replaced since. It is only
+    /// offered, and restored when asked. Nothing is deleted.
+    /// </summary>
+    [Fact]
+    public void AMovedOldFileIsNeverRestoredSilently() {
+        new FileSecretStore(this.LegacyPathFor(Url)).Save(Registered("old token"));
+        Assert.Equal("old token", this.Open(Url).Load().DeviceToken);
+        this.Open(Url).Save(Registered("newer token"));
+
+        // The new file and its backup are lost.
+        File.Delete(this.PathFor(Url));
+        File.Delete(this.PathFor(Url) + ".bak");
+
+        var log = new List<string>();
+        var loaded = this.Open(Url, log.Add).Load();
+        Assert.Null(loaded.DeviceToken);
+        Assert.Null(loaded.SigningPrivateKey);
+        Assert.Empty(log);
+        Assert.Equal(0, ServerSecretFiles.MigrateAll(this._directory, Url, path => new FileSecretStore(path)));
+        Assert.False(File.Exists(this.PathFor(Url)));
+        Assert.True(File.Exists(this.LegacyPathFor(Url)));
+
+        // Offered instead, dated, and restored only when asked; the old file stays.
+        var backup = ServerSecretFiles.FindBackup(this._directory, ContentId, Url, path => new FileSecretStore(path));
+        Assert.NotNull(backup);
+        Assert.Equal(this.LegacyPathFor(Url), backup.Path);
+        Assert.Equal(File.GetLastWriteTimeUtc(this.LegacyPathFor(Url)), backup.SavedAt.UtcDateTime);
+        ServerSecretFiles.RestoreBackup(this._directory, ContentId, Url, path => new FileSecretStore(path));
+        var restored = this.Open(Url).Load();
+        Assert.Equal("old token", restored.DeviceToken);
+        Assert.Equal("ws://lookingglasschat:5180/ws", restored.ServerUrl);
+        Assert.True(File.Exists(this.LegacyPathFor(Url)));
+        Assert.Null(ServerSecretFiles.FindBackup(this._directory, ContentId, Url, path => new FileSecretStore(path)));
+    }
+
+    /// <summary>
+    /// Only an old file that was never moved (it names no address) is moved by itself, and only when the file itself is
+    /// there: one whose own backup is all that is left may be what a move kept, so it is offered instead.
+    /// </summary>
+    [Fact]
+    public void AnOldFileWithOnlyItsBackupLeftIsOfferedNotMoved() {
+        var legacy = this.LegacyPathFor(Url);
+        new FileSecretStore(legacy).Save(Registered("older"));
+        new FileSecretStore(legacy).Save(Registered("old"));
+        File.Delete(legacy);
+
+        Assert.Null(this.Open(Url).Load().DeviceToken);
+        Assert.False(File.Exists(this.PathFor(Url)));
+        var backup = ServerSecretFiles.FindBackup(this._directory, ContentId, Url, path => new FileSecretStore(path));
+        Assert.Equal(legacy + ".bak", backup?.Path);
+        ServerSecretFiles.RestoreBackup(this._directory, ContentId, Url, path => new FileSecretStore(path));
+        Assert.Equal("older", this.Open(Url).Load().DeviceToken);
+    }
+
+    /// <summary>
+    /// Whether an old file was moved is decided by the file itself, never its backup: when the file is damaged, a load
+    /// falls back to the .bak, which a move left holding the original bytes, naming no address. So a moved file that is
+    /// damaged later is never moved again by itself; it is offered, and restored when asked.
+    /// </summary>
+    [Fact]
+    public void ADamagedMovedOldFileIsOfferedNotMoved() {
+        var legacy = this.LegacyPathFor(Url);
+        new FileSecretStore(legacy).Save(Registered("old token"));
+        Assert.Equal("old token", this.Open(Url).Load().DeviceToken);
+        // Moved: the old file names its address, its .bak holds the bytes from before, which don't.
+        Assert.NotNull(new FileSecretStore(legacy).Load().ServerUrl);
+        Assert.Null(new FileSecretStore(legacy + ".bak").Load().ServerUrl);
+
+        // The new file is lost, and the old one damaged.
+        File.Delete(this.PathFor(Url));
+        File.Delete(this.PathFor(Url) + ".bak");
+        File.WriteAllText(legacy, "damaged");
+
+        Assert.Null(this.Open(Url).Load().DeviceToken);
+        Assert.False(File.Exists(this.PathFor(Url)));
+        Assert.Equal(0, ServerSecretFiles.MigrateAll(this._directory, Url, path => new FileSecretStore(path)));
+        Assert.False(File.Exists(this.PathFor(Url)));
+
+        var backup = ServerSecretFiles.FindBackup(this._directory, ContentId, Url, path => new FileSecretStore(path));
+        Assert.Equal(legacy + ".bak", backup?.Path);
+        ServerSecretFiles.RestoreBackup(this._directory, ContentId, Url, path => new FileSecretStore(path));
+        Assert.Equal("old token", this.Open(Url).Load().DeviceToken);
+    }
+
+    /// <summary>The same for an old file that was never moved: damaged, it can't say so, and its .bak is offered instead.</summary>
+    [Fact]
+    public void ADamagedOldFileIsOfferedNotMoved() {
+        var legacy = this.LegacyPathFor(Url);
+        new FileSecretStore(legacy).Save(Registered("older"));
+        new FileSecretStore(legacy).Save(Registered("old"));
+        File.WriteAllBytes(legacy, []);
+
+        Assert.Null(this.Open(Url).Load().DeviceToken);
+        Assert.False(File.Exists(this.PathFor(Url)));
+        Assert.Equal(legacy + ".bak", ServerSecretFiles.FindBackup(this._directory, ContentId, Url, path => new FileSecretStore(path))?.Path);
+    }
+
+    /// <summary>
+    /// A write that never finished (a crash between writing the temporary file and replacing the file) leaves a .tmp
+    /// file, which is never loaded but may hold the old identity. Resetting deletes this character's.
+    /// </summary>
+    [Fact]
+    public void ResettingDeletesLeftoverTemporaryFiles() {
+        var old = Registered("old token");
+        this.Open(Url).Save(old.Clone());
+        var leftovers = new[] {
+            $"{this.PathFor(Url)}.{Guid.NewGuid():N}.tmp",
+            $"{this.LegacyPathFor(Url)}.bak.{Guid.NewGuid():N}.tmp",
+            $"{this.PathFor(OtherUrl)}.{Guid.NewGuid():N}.tmp",
+        };
+        foreach (var file in leftovers) {
+            File.WriteAllBytes(file, old.Serialize());
+        }
+
+        var otherCharacter = Path.Combine(this._directory, ServerSecretFiles.FileName(0x0040_0000_0000_0099, Url)) + $".{Guid.NewGuid():N}.tmp";
+        File.WriteAllBytes(otherCharacter, old.Serialize());
+        var unrelated = Path.Combine(this._directory, "notes.tmp");
+        File.WriteAllText(unrelated, "kept");
+
+        var reset = ServerSecretFiles.ResetIdentity(this._directory, ContentId, Url, path => new FileSecretStore(path));
+        Assert.Empty(reset.Problems);
+        Assert.All(leftovers, file => Assert.False(File.Exists(file), $"{Path.GetFileName(file)} is still there"));
+        Assert.True(File.Exists(otherCharacter));
+        Assert.True(File.Exists(unrelated));
+        Assert.Null(this.Open(Url).Load().DeviceToken);
+    }
+
+    /// <summary>
+    /// Looking for a backup only reads, since Settings does it alongside a running session: an old file never moved
+    /// isn't offered, and isn't moved either (a session using the address moves it).
+    /// </summary>
+    [Fact]
+    public void LookingForABackupChangesNothing() {
+        new FileSecretStore(this.LegacyPathFor(Url)).Save(Registered("never moved"));
+        Assert.Null(ServerSecretFiles.FindBackup(this._directory, ContentId, Url, path => new FileSecretStore(path)));
+        Assert.False(File.Exists(this.PathFor(Url)));
+        Assert.Null(new FileSecretStore(this.LegacyPathFor(Url)).Load().ServerUrl);
+    }
+
+    /// <summary>
+    /// A backup is only offered (or restored) for an address with no identity and no login of its own, and only if it
+    /// holds an identity: it never replaces one, and one with nothing in it (say, scrubbed by a reset) isn't worth it.
+    /// </summary>
+    [Fact]
+    public void ABackupNeverReplacesAnIdentity() {
+        new FileSecretStore(this.LegacyPathFor(Url)).Save(Registered("old"));
+        this.Open(Url).Load();
+        this.Open(Url).Save(Registered("current"));
+        Assert.Null(ServerSecretFiles.FindBackup(this._directory, ContentId, Url, path => new FileSecretStore(path)));
+        Assert.Throws<InvalidOperationException>(() => ServerSecretFiles.RestoreBackup(this._directory, ContentId, Url, path => new FileSecretStore(path)));
+        Assert.Equal("current", this.Open(Url).Load().DeviceToken);
+
+        // A backup without an identity in it isn't offered.
+        var empty = this.Open(Url).Load();
+        empty.SigningPrivateKey = null;
+        empty.AgreementPrivateKey = null;
+        empty.DeviceToken = null;
+        var legacy = new ServerBoundSecretStore(new FileSecretStore(this.LegacyPathFor(Url)), Url, this.LegacyPathFor(Url));
+        legacy.Save(empty);
+        File.Delete(this.PathFor(Url));
+        File.Delete(this.PathFor(Url) + ".bak");
+        Assert.Null(ServerSecretFiles.FindBackup(this._directory, ContentId, Url, path => new FileSecretStore(path)));
+    }
+
+    /// <summary>
+    /// "Reset my identity" removes the old identity from every file of the character that holds its key, not just the
+    /// address's own: other addresses it was carried to by a move, the old-style file, and every .bak. Otherwise switching
+    /// back, or a backup, would bring the old key and login back ("Register again" keeps the key). What is about others
+    /// and the channels (pins, blocks, verified log positions) stays in each file. Other identities, and other
+    /// characters' files, aren't touched.
+    /// </summary>
+    [Fact]
+    public void ResettingRemovesTheOldIdentityFromEveryFile() {
+        const string moved = "wss://chat-new.example/ws";
+        const string elsewhere = "wss://other.example/ws";
+        const string reregistered = "wss://third.example/ws";
+        const ulong otherCharacter = 0x0040_0000_0000_0099;
+
+        // The identity, first in an old-style file (moved to the new name, the old one kept with its .bak)...
+        var old = Registered("old token");
+        old.PinnedIdentities[77] = new PinnedIdentity { Name = "Bob Pinned" };
+        old.BlockedUsers.Add(4242);
+        old.EpochKeys["channel"] = new Dictionary<ulong, byte[]> { [0] = new byte[32] };
+        new FileSecretStore(this.LegacyPathFor(Url)).Save(old.Clone());
+        this.Open(Url).Load();
+        // ...saved again (so its own .bak holds it too)...
+        this.Open(Url).Save(this.Open(Url).Load());
+        // ...carried to another address by a move, and saved there twice.
+        var copy = this.Open(Url).Load();
+        copy.ServerUrl = null;
+        copy.ServerOrigin = null;
+        this.Open(moved).Save(copy);
+        this.Open(moved).Save(this.Open(moved).Load());
+
+        // Another identity at another address; one whose .bak still holds the old key; another character's copy.
+        this.Open(elsewhere).Save(Registered("theirs"));
+        var replaced = this.Open(Url).Load();
+        replaced.ServerUrl = null;
+        replaced.ServerOrigin = null;
+        this.Open(reregistered).Save(replaced);
+        this.Open(reregistered).Save(Registered("re-registered"));
+        var otherPath = Path.Combine(this._directory, ServerSecretFiles.FileName(otherCharacter, Url));
+        new FileSecretStore(otherPath).Save(old.Clone());
+
+        var reset = ServerSecretFiles.ResetIdentity(this._directory, ContentId, Url, path => new FileSecretStore(path));
+        Assert.Empty(reset.Problems);
+        Assert.Equal(
+            new[] { this.PathFor(moved), this.PathFor(reregistered), this.LegacyPathFor(Url) }.Select(Path.GetFileName).Order(),
+            reset.Scrubbed.Select(Path.GetFileName).Order());
+
+        // No file of this character holds the old key any more, .bak files included.
+        var files = Directory.EnumerateFiles(this._directory, $"secrets-{ContentId:X16}-*").ToList();
+        Assert.Contains(files, file => file.EndsWith(".bak"));
+        foreach (var file in files) {
+            Assert.False(old.SigningPrivateKey.AsSpan().SequenceEqual(new FileSecretStore(file).Load().SigningPrivateKey), $"{Path.GetFileName(file)} still holds the old key");
+            Assert.NotEqual("old token", new FileSecretStore(file).Load().DeviceToken);
+        }
+
+        // The address: new keys, no login, no channel keys; pins of others and blocks kept.
+        var mine = this.Open(Url).Load();
+        Assert.NotNull(mine.SigningPrivateKey);
+        Assert.Null(mine.DeviceToken);
+        Assert.Null(mine.UserId);
+        Assert.Empty(mine.EpochKeys);
+        Assert.Contains(77L, mine.PinnedIdentities.Keys);
+        Assert.Contains(4242L, mine.BlockedUsers);
+
+        // The moved copy: nothing of the identity (a vouched move can carry the new one there), the rest kept, still bound.
+        var there = this.Open(moved).Load();
+        Assert.Null(there.SigningPrivateKey);
+        Assert.Null(there.AgreementPrivateKey);
+        Assert.Null(there.DeviceToken);
+        Assert.Empty(there.EpochKeys);
+        Assert.Contains(77L, there.PinnedIdentities.Keys);
+        Assert.Contains(4242L, there.BlockedUsers);
+        Assert.Equal(ServerSecretFiles.NormaliseUrl(moved), there.ServerUrl);
+
+        // The old-style file: still a backup for its address, with nothing of the identity in it, so not offered.
+        Assert.Null(new FileSecretStore(this.LegacyPathFor(Url)).Load().SigningPrivateKey);
+        Assert.Equal(ServerSecretFiles.NormaliseUrl(Url), new FileSecretStore(this.LegacyPathFor(Url)).Load().ServerUrl);
+
+        // Untouched: another identity, the newer identity whose .bak held the old key, another character.
+        Assert.Equal("theirs", this.Open(elsewhere).Load().DeviceToken);
+        Assert.Equal("re-registered", this.Open(reregistered).Load().DeviceToken);
+        Assert.Equal("old token", new FileSecretStore(otherPath).Load().DeviceToken);
+    }
+
+    /// <summary>A file that can't be read is reported, not skipped silently, and doesn't stop the reset.</summary>
+    [Fact]
+    public void AnUnreadableFileIsReportedAndTheResetGoesOn() {
+        this.Open(Url).Save(Registered("token"));
+        var broken = this.PathFor("wss://broken.example/ws");
+        File.WriteAllText(broken, "not json");
+
+        var reset = ServerSecretFiles.ResetIdentity(this._directory, ContentId, Url, path => new FileSecretStore(path));
+        Assert.Contains(reset.Problems, problem => problem.Contains(Path.GetFileName(broken)));
+        Assert.Null(this.Open(Url).Load().DeviceToken);
+    }
+
     [Fact]
     public void TheNewFileWinsOverAnOldOne() {
         this.Open(Url).Save(Registered("new"));

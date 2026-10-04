@@ -48,6 +48,26 @@ public sealed class RequestHandler(
     // Said to anyone asking, before looking at the account, on a server with key login off.
     private const string KeyLoginUnavailable = "Signing in with the identity key isn't available on this server.";
 
+    // Registering a key the account replaced, or retired with "Reset my identity": what the plugin says to do.
+    private const string KeyRetired =
+        "This identity key was replaced (by registering again with new keys, or \"Reset my identity\"), so it can't be registered again. " +
+        "Use \"Reset my identity\" in Settings to make new keys, then register.";
+
+    // Registering a key another account is registered with. With registrations signed, only the key's owner can get here,
+    // registering a second character with one character's keys, which the plugin never does (it keeps keys per character).
+    private const string KeyInUse =
+        "This identity key is already registered to another character on this server, and each character needs its own. " +
+        "Use \"Reset my identity\" in Settings to make new keys for this character, then register.";
+
+    /// <summary>Why a server outside Development without <see cref="ServerOptions.PublicUrls"/> doesn't start, and what to set.</summary>
+    internal const string PublicUrlsRequired =
+        "LookingGlass:PublicUrls is not set, so the server won't start. Outside Development it must know every address clients connect to: " +
+        "registrations, key logins and \"Reset my identity\" are signed for the address the plugin connected to, and only a listed address shows " +
+        "that a signature was made for this server rather than passed on by another (a malicious server could otherwise relay a registration " +
+        "made on it, and get a login to that character's account here). List each address, for example " +
+        "LookingGlass__PublicUrls__0=wss://chat.example.com/ws (LookingGlass__PublicUrls__1=... for the next one), or a \"PublicUrls\" list " +
+        "under \"LookingGlass\" in appsettings.json. For a private test server, run in Development instead (ASPNETCORE_ENVIRONMENT=Development).";
+
     /// <summary>Pending invites one user can have at once, across all channels.</summary>
     public const int MaxPendingInvitesPerUser = 20;
 
@@ -58,18 +78,19 @@ public sealed class RequestHandler(
     private readonly WindowCounter _registrations = new(options.Value.Limits.RegistrationsPerHourPerIp, TimeSpan.FromHours(1));
     // Key login: challenges per address; failures per address, where a challenge counts as one from when it is issued
     // until it is answered correctly (so asking and never answering is limited like failing); and failed answers per
-    // account, by anyone. Each challenge allows one attempt, so these bound attempts per connection and account too.
+    // account and address. Each challenge allows one attempt, so these bound attempts per connection too.
     //
-    // Only failed answers count against an account, never challenges or successes: anyone can ask for challenges for
-    // any account, and counting those let one address keep an account's key login locked. The account's allowance is
-    // sized from the per-address one so no single address can empty it (twice as many at once, refilling three times as
-    // fast), so keeping an account locked takes the whole failure allowance of several addresses, each of which is then
-    // blocked from key login itself.
+    // Nothing is counted per account alone. An Ed25519 signature can't be guessed, so limiting failures only keeps
+    // addresses from spamming attempts (each costs a signature check and a log line), and every address is limited on
+    // its own; a limit per account, by anyone, only let enough addresses together lock the owner out of their own
+    // key login. Per account and address, only failed answers count, never challenges or successes (anyone can ask
+    // for challenges for any account), and the allowance is half the address's (rounded up), so one address can't
+    // spend all of its failures on one account. Both counters drop keys whose events have expired, so memory stays
+    // bounded by the addresses (and accounts per address) seen within the hour.
     private readonly WindowCounter _keyLoginsPerIp = new(options.Value.Limits.KeyLoginsPerHourPerIp, TimeSpan.FromHours(1));
     private readonly WindowCounter _keyLoginFailuresPerIp = new(options.Value.Limits.KeyLoginFailuresPerHourPerIp, TimeSpan.FromHours(1));
-    private readonly UserRateLimits _keyLoginFailuresPerUser = new(
-        perSecond: Math.Max(1, options.Value.Limits.KeyLoginFailuresPerHourPerIp) * 3 / 3600.0,
-        burst: Math.Max(1, options.Value.Limits.KeyLoginFailuresPerHourPerIp) * 2);
+    private readonly WindowCounter _keyLoginFailuresPerAccountAndIp = new(
+        Math.Max(1, (options.Value.Limits.KeyLoginFailuresPerHourPerIp + 1) / 2), TimeSpan.FromHours(1));
     private readonly IReadOnlyList<ServerOrigin> _publicOrigins = ParsePublicUrls(options.Value.PublicUrls);
     private readonly string[] _advertisedUrls = (options.Value.PublicUrls ?? []).Where(url => !string.IsNullOrWhiteSpace(url)).Select(url => url.Trim()).Distinct().ToArray();
     private readonly KeyLoginOrigins _keyLoginOrigins =ChooseKeyLoginOrigins(ParsePublicUrls(options.Value.PublicUrls), environment?.IsDevelopment() == true);
@@ -102,6 +123,19 @@ public sealed class RequestHandler(
     /// </summary>
     internal Action? BeforeKeyLoginDeviceAddedForTests { get; set; }
 
+    /// <summary>
+    /// Runs once, after a login (Authenticate) has gone online and before it is checked again, so tests can have the
+    /// account's devices revoked only now, as a concurrent retirement or registration could have done just before the
+    /// connection went online (its disconnect then finding nothing to close). Only a check made after going online sees it.
+    /// </summary>
+    internal Action? AfterAuthenticateSetOnlineForTests { get; set; }
+
+    /// <summary>
+    /// Runs once, after a retirement has been checked and before the key is retired, so tests can have another connection
+    /// of the account log in meanwhile.
+    /// </summary>
+    internal Action? BeforeIdentityRetiredForTests { get; set; }
+
     public async Task<Response> HandleAsync(ClientConnection connection, ClientFrame frame, CancellationToken ct) {
         try {
             if (!connection.HelloDone && frame.BodyCase != ClientFrame.BodyOneofCase.Hello) {
@@ -117,10 +151,11 @@ public sealed class RequestHandler(
                 ClientFrame.BodyOneofCase.Hello => this.Hello(connection, frame.Hello),
                 ClientFrame.BodyOneofCase.Ping => new Response { Pong = new Pong { ServerTimeUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() } },
                 ClientFrame.BodyOneofCase.StartRegistration => await this.StartRegistration(connection, frame.StartRegistration, ct),
-                ClientFrame.BodyOneofCase.CompleteRegistration => await this.CompleteRegistration(connection, ct),
+                ClientFrame.BodyOneofCase.CompleteRegistration => await this.CompleteRegistration(connection, frame.CompleteRegistration, ct),
                 ClientFrame.BodyOneofCase.Authenticate => this.Authenticate(connection, frame.Authenticate),
                 ClientFrame.BodyOneofCase.StartKeyLogin => this.StartKeyLogin(connection, frame.StartKeyLogin),
                 ClientFrame.BodyOneofCase.CompleteKeyLogin => this.CompleteKeyLogin(connection, frame.CompleteKeyLogin),
+                ClientFrame.BodyOneofCase.RetireIdentity => this.RetireIdentity(connection, frame.RetireIdentity),
                 ClientFrame.BodyOneofCase.GetIdentities => this.GetIdentities(connection, frame.GetIdentities),
                 ClientFrame.BodyOneofCase.LookupUser => this.LookupUser(connection, frame.LookupUser),
                 ClientFrame.BodyOneofCase.ListChannels => this.ListChannels(connection, frame.ListChannels),
@@ -195,14 +230,16 @@ public sealed class RequestHandler(
                 throw new RequestException(ErrorCode.RegistrationFailed, "Debug accounts are disabled on this server.");
             }
 
+            this.CheckKeyRegistrable(DebugUserId(name), request.Identity);
             connection.PendingRegistration = new PendingRegistration(
-                DebugUserId(name), name, 0, ProtocolInfo.DebugWorldName, request.Identity, "", DateTimeOffset.UtcNow.AddMinutes(minutes), true);
+                DebugUserId(name), name, 0, ProtocolInfo.DebugWorldName, request.Identity, "", DateTimeOffset.UtcNow.AddMinutes(minutes), true, NewRegistrationNonce());
             return new Response {
                 RegistrationChallenge = new RegistrationChallenge {
                     Code = "",
                     ExpiresUnix = connection.PendingRegistration.Expires.ToUnixTimeSeconds(),
                     LodestoneId = connection.PendingRegistration.UserId,
                     VerificationSkipped = true,
+                    Nonce = ByteString.CopyFrom(connection.PendingRegistration.Nonce),
                 },
             };
         }
@@ -224,9 +261,11 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.RegistrationFailed, $"Couldn't find {name} on {worldName} in the Lodestone.");
         }
 
+        // Once the account is known (the lookup is cached, so asking again costs nothing).
+        this.CheckKeyRegistrable(found.Id, request.Identity);
         var code = "LGC-" + RandomCode(8);
         connection.PendingRegistration = new PendingRegistration(
-            found.Id, found.Name, character.WorldId, found.WorldName, request.Identity, code, DateTimeOffset.UtcNow.AddMinutes(minutes), false);
+            found.Id, found.Name, character.WorldId, found.WorldName, request.Identity, code, DateTimeOffset.UtcNow.AddMinutes(minutes), false, NewRegistrationNonce());
         connection.VerifyAttempts = 0;
 
         return new Response {
@@ -234,11 +273,30 @@ public sealed class RequestHandler(
                 Code = code,
                 ExpiresUnix = connection.PendingRegistration.Expires.ToUnixTimeSeconds(),
                 LodestoneId = found.Id,
+                Nonce = ByteString.CopyFrom(connection.PendingRegistration.Nonce),
             },
         };
     }
 
-    private async Task<Response> CompleteRegistration(ClientConnection connection, CancellationToken ct) {
+    private static byte[] NewRegistrationNonce() => RandomNumberGenerator.GetBytes(RegistrationProof.NonceSize);
+
+    /// <summary>
+    /// Refuses, when registering starts, a key the account replaced or retired, or one another account is registered
+    /// with, so the user is told before putting a code in their profile. Checked again when it completes (see
+    /// <see cref="Database.RegisterUser"/>), where it counts.
+    /// </summary>
+    private void CheckKeyRegistrable(long userId, IdentityBundle identity) {
+        var signing = identity.SigningPublicKey.ToByteArray();
+        if (db.IsKeyRetired(userId, signing)) {
+            throw new RequestException(ErrorCode.RegistrationFailed, KeyRetired);
+        }
+
+        if (db.IsKeyInUseByAnother(userId, signing)) {
+            throw new RequestException(ErrorCode.RegistrationFailed, KeyInUse);
+        }
+    }
+
+    private async Task<Response> CompleteRegistration(ClientConnection connection, CompleteRegistration request, CancellationToken ct) {
         var pending = connection.PendingRegistration
             ?? throw new RequestException(ErrorCode.RegistrationFailed, "Start registration on this connection first.");
 
@@ -246,6 +304,9 @@ public sealed class RequestHandler(
             connection.PendingRegistration = null;
             throw new RequestException(ErrorCode.RegistrationFailed, "The challenge expired; start again.");
         }
+
+        // Before asking the Lodestone, and before anything is stored: the client holds the key it registers.
+        this.CheckRegistrationProof(connection, pending, request);
 
         if (!pending.IsDebug) {
             // Each attempt costs a Lodestone request, which is shared by the whole server.
@@ -280,15 +341,60 @@ public sealed class RequestHandler(
 
         connection.PendingRegistration = null;
         // New keys don't change any channel's members (the log binds them to the old ones), so nothing needs a rekey.
-        var (user, _) = db.RegisterUser(pending.UserId, pending.Name, pending.WorldId, pending.WorldName, pending.Identity, pending.IsDebug);
+        UserRow user;
+        try {
+            (user, _) = db.RegisterUser(pending.UserId, pending.Name, pending.WorldId, pending.WorldName, pending.Identity, pending.IsDebug);
+        } catch (KeyRetiredException) {
+            // Replaced or retired since this registration started.
+            throw new RequestException(ErrorCode.RegistrationFailed, KeyRetired);
+        } catch (KeyInUseException) {
+            // Registered by another account since this registration started.
+            throw new RequestException(ErrorCode.RegistrationFailed, KeyInUse);
+        }
 
+        // Only while the key just registered is still the account's, and not retired: a retirement or another
+        // registration landing in between revokes every device, and this one mustn't outlive that.
         var token = NewDeviceToken();
-        db.AddDevice(user.UserId, HashToken(token));
+        if (!db.AddDeviceForKey(user.UserId, user.SigningKey, user.KeyVersion, HashToken(token))) {
+            throw new RequestException(ErrorCode.RegistrationFailed, "This character's keys changed while registering; start again.");
+        }
 
         // Old devices were revoked; drop any session still using one.
         registry.Disconnect(user.UserId, "This character registered again");
         logger.LogInformation("Registered {User} ({Kind})", user.UserId, pending.IsDebug ? "debug" : "verified");
         return new Response { RegistrationComplete = new RegistrationComplete { DeviceToken = token, User = user.ToProto() } };
+    }
+
+    /// <summary>
+    /// Checks that a registration is signed by the identity key it registers, over this connection's nonce, the account
+    /// and this server's address (see <see cref="RegistrationProof"/>). Anyone can fetch a user's public identity bundle,
+    /// binding signature and all; without this, someone could register another user's key for their own character, then
+    /// register again with new keys and so have it retired. The address is checked for registrations through the Lodestone,
+    /// as for key login, so a malicious server can't relay this server's challenge to its users and register their keys
+    /// here, receiving the login this hands out (the plugin's separate keys per address don't stop that: registering
+    /// registers whatever key was signed with); a debug account proves nothing about who registers it anyway (anyone may register any name), and the echo bot
+    /// connects to a local address that PublicUrls don't list.
+    /// </summary>
+    /// <exception cref="RequestException">Not signed, or not like that. The registration can still be completed.</exception>
+    private void CheckRegistrationProof(ClientConnection connection, PendingRegistration pending, CompleteRegistration request) {
+        if (request.Signature.IsEmpty) {
+            // A plugin from before registrations were signed.
+            throw new RequestException(ErrorCode.RegistrationFailed,
+                "This server needs a newer version of LookingGlass to register: please update the plugin, then register again.");
+        }
+
+        if (!pending.IsDebug && this.NotThisServer(connection, request.ServerUrl) is { } elsewhere) {
+            logger.LogWarning("Registration of {User} from {Address} refused: {Reason}", pending.UserId, connection.RemoteAddress, elsewhere);
+            throw new RequestException(ErrorCode.RegistrationFailed,
+                this.WrongAddressMessage(connection, request.ServerUrl) +
+                " Nothing was registered: set the server address in Settings to one this server accepts, then register again.");
+        }
+
+        if (!RegistrationProof.Verify(pending.Identity.SigningPublicKey.Span, pending.Nonce, pending.UserId, request.ServerUrl, request.Signature.Span)) {
+            logger.LogInformation("Registration of {User} from {Address} refused: not signed by the key being registered", pending.UserId, connection.RemoteAddress);
+            throw new RequestException(ErrorCode.RegistrationFailed,
+                "That registration isn't signed with the identity key being registered on this connection, so nothing was registered.");
+        }
     }
 
     private Response Authenticate(ClientConnection connection, Authenticate request) {
@@ -297,9 +403,12 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.InvalidRequest, "Already logged in on this connection.");
         }
 
-        var userId = string.IsNullOrEmpty(request.DeviceToken) ? null : db.FindDevice(HashToken(request.DeviceToken));
+        var tokenHash = string.IsNullOrEmpty(request.DeviceToken) ? null : HashToken(request.DeviceToken);
+        var userId = tokenHash == null ? null : db.FindDevice(tokenHash);
         var user = userId == null ? null : db.GetUser(userId.Value);
-        if (user == null) {
+        // A retired key has no devices (retiring deletes them, and none are added for it); checked here too, so that holds
+        // whatever adds a device.
+        if (user == null || db.IsKeyRetired(user.UserId, user.SigningKey)) {
             throw new RequestException(ErrorCode.NotAuthenticated, "Unknown or revoked device token.");
         }
 
@@ -308,7 +417,25 @@ public sealed class RequestHandler(
         }
 
         connection.User = user;
+        connection.DeviceTokenHash = tokenHash;
         registry.SetOnline(user.UserId, connection);
+
+        if (this.AfterAuthenticateSetOnlineForTests is { } hook) {
+            this.AfterAuthenticateSetOnlineForTests = null;
+            hook();
+        }
+
+        // A retirement or registration (each revokes every device, then disconnects the account) that landed after the
+        // checks above, and disconnected the account before this connection was online, would leave it logged in with a
+        // deleted login. Checked again now that it is online: anything revoking the login from here on disconnects it.
+        var current = db.FindDevice(tokenHash!) == user.UserId ? db.GetUser(user.UserId) : null;
+        if (current == null || db.IsKeyRetired(current.UserId, current.SigningKey)) {
+            connection.User = null;
+            connection.DeviceTokenHash = null;
+            registry.SetOffline(user.UserId, connection);
+            throw new RequestException(ErrorCode.NotAuthenticated, "Unknown or revoked device token.");
+        }
+
         return new Response { AuthenticateOk = new AuthenticateOk { User = user.ToProto(), KeyVersion = user.KeyVersion } };
     }
 
@@ -336,10 +463,10 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.RateLimited, "Too many key login attempts; try again later.");
         }
 
-        // Checked, not taken: only a failed answer uses up the account's allowance.
-        if (!this._keyLoginFailuresPerUser.HasToken(request.UserId)) {
-            logger.LogDebug("Key login for {User} from {Address} refused: too many failures for this account", request.UserId, address);
-            throw new RequestException(ErrorCode.RateLimited, "Too many key login attempts for this account; try again later.");
+        // Checked, not counted: only a failed answer uses up this address's allowance for the account.
+        if (this._keyLoginFailuresPerAccountAndIp.IsFull(AccountAndAddress(request.UserId, address))) {
+            logger.LogDebug("Key login for {User} from {Address} refused: too many failures for this account from this address", request.UserId, address);
+            throw new RequestException(ErrorCode.RateLimited, "Too many failed key logins for this account from your address; try again later.");
         }
 
         // The challenge, and (until it is answered correctly) a failure. Both checked above, but a request on another
@@ -378,7 +505,7 @@ public sealed class RequestHandler(
         var pending = connection.PendingKeyLogin;
         connection.PendingKeyLogin = null;
 
-        var refusal = this.CheckKeyLogin(connection, pending, request, out var user);
+        var refusal = this.CheckKeyLogin(connection, pending, request, out var user, out var wrongAddress);
         string? token = null;
         if (refusal == null) {
             token = NewDeviceToken();
@@ -399,11 +526,13 @@ public sealed class RequestHandler(
                 // An answer without a challenge: nothing was counted for it yet.
                 this._keyLoginFailuresPerIp.TryAdd(connection.RemoteAddress);
             } else {
-                // The address's failure was counted with the challenge; this is the account's.
-                this._keyLoginFailuresPerUser.TryTake(pending.UserId);
+                // The address's failure was counted with the challenge; this is the one for the account from this address.
+                this._keyLoginFailuresPerAccountAndIp.TryAdd(AccountAndAddress(pending.UserId, connection.RemoteAddress));
             }
 
-            logger.LogInformation("Key login for {User} from {Address} refused: {Reason}", pending?.UserId, connection.RemoteAddress, refusal);
+            // Signed for an address that isn't listed: most likely a client set up with an address the operator should list.
+            logger.Log(wrongAddress ? LogLevel.Warning : LogLevel.Information,
+                "Key login for {User} from {Address} refused: {Reason}", pending?.UserId, connection.RemoteAddress, refusal);
             throw new RequestException(ErrorCode.NotAuthenticated, KeyLoginFailed);
         }
 
@@ -414,8 +543,10 @@ public sealed class RequestHandler(
     }
 
     /// <returns>Why the key login is refused (for the log only, never the client), or null if it may go ahead.</returns>
-    private string? CheckKeyLogin(ClientConnection connection, PendingKeyLogin? pending, CompleteKeyLogin request, out UserRow? user) {
+    /// <param name="wrongAddress">Refused because it was signed for an address that isn't this server's.</param>
+    private string? CheckKeyLogin(ClientConnection connection, PendingKeyLogin? pending, CompleteKeyLogin request, out UserRow? user, out bool wrongAddress) {
         user = null;
+        wrongAddress = false;
         if (pending == null) {
             return "no challenge on this connection";
         }
@@ -429,29 +560,23 @@ public sealed class RequestHandler(
         }
 
         // Before the signature: a signature made for another server is what a relay would bring.
-        var signed = ServerOrigin.FromUrl(request.ServerUrl);
-        var ours = this._keyLoginOrigins switch {
-            KeyLoginOrigins.PublicUrls => signed != null && this._publicOrigins.Contains(signed),
-            KeyLoginOrigins.HostHeader => signed != null && signed == connection.RequestOrigin,
-            _ => false,
-        };
-        if (!ours) {
-            return $"signed for {signed?.ToString() ?? "an invalid address"}, which isn't this server ("
-                   + this._keyLoginOrigins switch {
-                       KeyLoginOrigins.PublicUrls => string.Join(", ", this._publicOrigins),
-                       KeyLoginOrigins.HostHeader => $"Host header: {connection.RequestOrigin?.ToString() ?? "unknown address"}",
-                       _ => "key login is off: no PublicUrls",
-                   } + ")";
+        if (this.NotThisServer(connection, request.ServerUrl) is { } elsewhere) {
+            wrongAddress = true;
+            return elsewhere;
         }
 
         user = db.GetUser(pending.UserId);
+        // Looked up for unknown accounts too (a key nobody holds is never retired), so the work doesn't tell them apart.
+        var retired = db.IsKeyRetired(pending.UserId, user?.SigningKey ?? NobodysKey);
         var refused = user == null ? "no such account"
             : user.IsDebug && !options.Value.Dev.AllowDebugAccounts ? "debug accounts are disabled"
+            : retired ? "the account's key was retired"
             : null;
 
-        // Against the account's current key only: keys replaced by registering again can't sign in. An account that
-        // doesn't exist, or may not sign in, is checked against a key nobody holds, so every answer that gets this far
-        // costs one verification and the time a failure takes doesn't tell whether the account exists.
+        // Against the account's current key only: keys replaced by registering again can't sign in, and neither can a
+        // current one that was retired ("Reset my identity"). An account that doesn't exist, or may not sign in, is
+        // checked against a key nobody holds, so every answer that gets this far costs one verification and the time a
+        // failure takes doesn't tell whether the account exists.
         var valid = KeyLoginProof.Verify(refused == null ? user!.SigningKey : NobodysKey, pending.Challenge, pending.UserId, request.ServerUrl, request.Signature.Span);
         Interlocked.Increment(ref this._keyLoginSignatureChecks);
         if (refused != null) {
@@ -461,6 +586,59 @@ public sealed class RequestHandler(
 
         return valid ? null : "the signature isn't by the account's identity key";
     }
+
+    /// <summary>
+    /// "Reset my identity", sent first while logged in: retires the account's current identity key and revokes every
+    /// login of the account (see <see cref="Database.RetireIdentity"/>), this connection's included, which is logged
+    /// out. The account then has no working login until new keys are registered through the Lodestone, as one whose
+    /// logins were all lost; others see the old key until then, as before any registration.
+    ///
+    /// Signed by the key being retired, over this connection's login and this server's address, checked as for key login
+    /// (see <see cref="RetireIdentityProof"/> and <see cref="NotThisServer"/>): a login
+    /// alone, which a thief may hold without the key, could otherwise wreck the owner's identity. Anyone with both could
+    /// already act as the owner; retiring is then what the owner wants anyway. No rate limit beyond that: it can succeed
+    /// once per key, since the key can't sign in again and a new one only comes from registering through the Lodestone.
+    /// </summary>
+    private Response RetireIdentity(ClientConnection connection, RetireIdentity request) {
+        var me = RequireUser(connection);
+        // The account as it is now: it may have registered new keys since this connection logged in.
+        var user = db.GetUser(me.UserId);
+        if (user == null || connection.DeviceTokenHash is not { } tokenHash) {
+            throw new RequestException(ErrorCode.NotAuthenticated, "Log in first.");
+        }
+
+        // Before the signature, as for key login: one made for another server is what a relay would bring.
+        if (this.NotThisServer(connection, request.ServerUrl) is { } elsewhere) {
+            logger.LogWarning("Retiring the identity key of {User} from {Address} refused: {Reason}", user.UserId, connection.RemoteAddress, elsewhere);
+            throw new RequestException(ErrorCode.Forbidden,
+                this.WrongAddressMessage(connection, request.ServerUrl) + " Nothing was retired: connect through an address this server accepts, then reset again.");
+        }
+
+        if (!RetireIdentityProof.Verify(user.SigningKey, user.UserId, tokenHash, request.ServerUrl, request.Signature.Span)) {
+            throw new RequestException(ErrorCode.Forbidden, "That isn't signed with this account's identity key for this login, so nothing was retired.");
+        }
+
+        if (this.BeforeIdentityRetiredForTests is { } hook) {
+            this.BeforeIdentityRetiredForTests = null;
+            hook();
+        }
+
+        if (!db.RetireIdentity(user.UserId, user.SigningKey, user.KeyVersion)) {
+            throw new RequestException(ErrorCode.Conflict, "This account's keys changed meanwhile, so nothing was retired.");
+        }
+
+        // This connection's login was one of the devices just revoked.
+        connection.User = null;
+        connection.DeviceTokenHash = null;
+        registry.SetOffline(user.UserId, connection);
+        // And any other connection that logged in meanwhile (only one is online per user).
+        registry.Disconnect(user.UserId, "This character's identity was retired");
+        logger.LogInformation("Retired the identity key of {User}", user.UserId);
+        return new Response { Ack = new Ack() };
+    }
+
+    /// <summary>The key failed key logins are counted under for one account from one address.</summary>
+    private static string AccountAndAddress(long userId, string address) => $"{userId} {address}";
 
     // A valid Ed25519 public key whose private key was thrown away when the server started.
     private static readonly byte[] NobodysKey = MakeNobodysKey();
@@ -475,7 +653,10 @@ public sealed class RequestHandler(
     /// <summary>Key login signatures verified so far, for tests that every answer costs the same.</summary>
     internal int KeyLoginSignatureChecks => Volatile.Read(ref this._keyLoginSignatureChecks);
 
-    /// <summary>Which server addresses a key login signature may name.</summary>
+    /// <summary>
+    /// Which server addresses a key login signature may name; registrations through the Lodestone, and retiring a key, go
+    /// by the same (see <see cref="NotThisServer"/>).
+    /// </summary>
     internal enum KeyLoginOrigins {
         /// <summary>The configured <see cref="ServerOptions.PublicUrls"/>: the operator says which addresses are this server's.</summary>
         PublicUrls,
@@ -488,8 +669,52 @@ public sealed class RequestHandler(
         /// </summary>
         HostHeader,
 
-        /// <summary>None configured, outside Development: there is no address to trust, so key login is refused.</summary>
+        /// <summary>
+        /// None configured, outside Development: there is no address to trust. The server refuses to start like this (see
+        /// <see cref="PublicUrlsRequired"/>); a handler made so anyway accepts no signed address, so key login, and
+        /// registering and retiring keys other than debug accounts', are refused.
+        /// </summary>
         Off,
+    }
+
+    /// <summary>
+    /// Checks the server address a client signed (for key login, registration, or retiring its key) against this server's
+    /// (see <see cref="KeyLoginOrigins"/>): a signature made for another server is what a relaying server would bring.
+    /// With no address to check against (<see cref="KeyLoginOrigins.Off"/>), none is this server's.
+    /// </summary>
+    /// <returns>Why the address isn't this server's (for the log), or null if it is.</returns>
+    private string? NotThisServer(ClientConnection connection, string signedUrl) {
+        var signed = ServerOrigin.FromUrl(signedUrl);
+        var ours = this._keyLoginOrigins switch {
+            KeyLoginOrigins.PublicUrls => signed != null && this._publicOrigins.Contains(signed),
+            KeyLoginOrigins.HostHeader => signed != null && signed == connection.RequestOrigin,
+            _ => false,
+        };
+        return ours ? null
+            : $"signed for {signed?.ToString() ?? "an invalid address"}, which isn't this server ("
+              + this._keyLoginOrigins switch {
+                  KeyLoginOrigins.PublicUrls => string.Join(", ", this._publicOrigins),
+                  KeyLoginOrigins.HostHeader => $"Host header: {connection.RequestOrigin?.ToString() ?? "unknown address"}",
+                  _ => "no PublicUrls",
+              } + ")";
+    }
+
+    /// <summary>
+    /// What the client is told when <see cref="NotThisServer"/> refuses the address it signed for: that address, and the
+    /// ones this server accepts (Welcome lists them to anyone anyway), so the user knows what to set.
+    /// </summary>
+    private string WrongAddressMessage(ClientConnection connection, string signedUrl) {
+        // The client's own string, sent back to it; shortened and without control characters, as it is displayed.
+        var used = new string(signedUrl.Trim().Where(c => !char.IsControl(c)).Take(200).ToArray());
+        used = used.Length == 0 ? "(none)" : used;
+        return this._keyLoginOrigins switch {
+            KeyLoginOrigins.PublicUrls => $"This server doesn't accept the address {used}. Use one of: {string.Join(", ", this._advertisedUrls)}.",
+            KeyLoginOrigins.HostHeader =>
+                $"This server doesn't accept the address {used}: it lists no addresses of its own, so it only accepts the one this connection was made to " +
+                $"({connection.RequestOrigin?.ToString() ?? "unknown"}).",
+            _ => $"This server doesn't accept the address {used}: it lists no addresses of its own (its operator hasn't set LookingGlass:PublicUrls), " +
+                 "so it accepts none.",
+        };
     }
 
     internal static KeyLoginOrigins ChooseKeyLoginOrigins(IReadOnlyList<ServerOrigin> publicOrigins, bool development) {

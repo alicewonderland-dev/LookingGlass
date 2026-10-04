@@ -312,6 +312,11 @@ public sealed class MainWindow : Window {
         ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + width);
         ImGui.Spacing();
 
+        // The server doesn't list the address in use, so it would refuse the registration (and key login): say so before anything else.
+        if (snapshot.AddressNotListed is { } addressHint) {
+            this.DrawAddressNotListed(addressHint);
+        }
+
         // A login the server refused: first what may be wrong and what to try, then registering again as the last resort.
         var rejected = snapshot.State == ConnectionState.LoginNotRecognized || snapshot.LoginRejected;
         if (rejected) {
@@ -391,6 +396,23 @@ public sealed class MainWindow : Window {
         EndStep();
         ImGui.PopTextWrapPos();
         ImGui.Unindent(indent);
+    }
+
+    /// <summary>
+    /// Above the registration steps when the server lists its addresses without the one in use: which address to use
+    /// instead, and a button to the setting.
+    /// </summary>
+    private void DrawAddressNotListed(string hint) {
+        Widgets.IconText(FontAwesomeIcon.ExclamationTriangle, "This server doesn't accept the address you use", Widgets.Warning);
+        ImGui.TextUnformatted(hint);
+        if (Widgets.GhostButton("Change the server address", "Opens Settings, where the server address is. Also behind the gear in the title bar.")) {
+            this._openSettings();
+        }
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+        ImGui.Spacing();
     }
 
     private const string LoginNotRecognisedText =

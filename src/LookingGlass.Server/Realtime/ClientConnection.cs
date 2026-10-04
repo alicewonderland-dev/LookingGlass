@@ -8,6 +8,7 @@ using LookingGlass.Server.Data;
 namespace LookingGlass.Server.Realtime;
 
 /// <summary>A registration started on this connection; only this connection can complete it.</summary>
+/// <param name="Nonce">What the client signs, with the identity key it registers, to complete it.</param>
 public sealed record PendingRegistration(
     long UserId,
     string Name,
@@ -16,7 +17,8 @@ public sealed record PendingRegistration(
     IdentityBundle Identity,
     string Code,
     DateTimeOffset Expires,
-    bool IsDebug);
+    bool IsDebug,
+    byte[] Nonce);
 
 /// <summary>A key login challenge issued on this connection; only this connection can answer it, once.</summary>
 public sealed record PendingKeyLogin(long UserId, byte[] Challenge, DateTimeOffset Expires);
@@ -53,6 +55,10 @@ public sealed class ClientConnection {
     public string RemoteAddress { get; }
     public bool HelloDone { get; set; }
     public UserRow? User { get; set; }
+
+    /// <summary>The hash of the device token <see cref="User"/> logged in with (what RetireIdentity's signature covers).</summary>
+    public byte[]? DeviceTokenHash { get; set; }
+
     public PendingRegistration? PendingRegistration { get; set; }
     public int VerifyAttempts { get; set; }
     public DateTimeOffset LastVerifyAttempt { get; set; } = DateTimeOffset.MinValue;

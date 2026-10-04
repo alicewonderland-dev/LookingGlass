@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using LookingGlass.Core.Client;
 using LookingGlass.Core.Crypto;
 using LookingGlass.Core.Membership;
@@ -26,12 +27,17 @@ public sealed class Harness : IAsyncDisposable {
     /// The server's hosting environment. In Development (the default here, as on the test server) key login may go by
     /// the connection's Host header when no PublicUrls are set; anywhere else it needs them.
     /// </param>
+    /// <param name="logs">Also gets everything the server logs.</param>
     /// <param name="settings">Extra server configuration, for example <c>("LookingGlass:Limits:MaxIdentitiesPerRequest", "2")</c>.</param>
     public Harness(string? dataDirectory = null, bool allowDebugAccounts = true, TimeProvider? serverTime = null, string environment = "Development",
-        params (string Key, string Value)[] settings) {
+        CapturingLoggerProvider? logs = null, params (string Key, string Value)[] settings) {
         this.DataDirectory = dataDirectory ?? Path.Combine(Path.GetTempPath(), "lgt-" + Guid.NewGuid().ToString("N"));
         this.Factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder => {
             builder.UseEnvironment(environment);
+            if (logs != null) {
+                builder.ConfigureLogging(logging => logging.AddProvider(logs));
+            }
+
             builder.UseSetting("LookingGlass:DataDirectory", this.DataDirectory);
             builder.UseSetting("LookingGlass:Dev:AllowDebugAccounts", allowDebugAccounts ? "true" : "false");
             builder.UseSetting("LookingGlass:Dev:HostEchoBot", "false");
@@ -427,5 +433,31 @@ public sealed class TestClient {
             ChannelId = channelId, Epoch = epoch, SenderId = this.UserId, MessageId = sent.MessageId,
             TimestampUnixMs = sent.TimestampUnixMs, Ciphertext = sent.Ciphertext, Signature = sent.Signature,
         };
+    }
+}
+
+/// <summary>Keeps everything logged through it, for tests of what the server tells its operator.</summary>
+public sealed class CapturingLoggerProvider : Microsoft.Extensions.Logging.ILoggerProvider {
+    private readonly ConcurrentQueue<(Microsoft.Extensions.Logging.LogLevel Level, string Category, string Message)> _entries = new();
+
+    public IReadOnlyCollection<(Microsoft.Extensions.Logging.LogLevel Level, string Category, string Message)> Entries => this._entries.ToArray();
+
+    /// <summary>The messages logged at <paramref name="level"/> or above.</summary>
+    public IReadOnlyList<string> AtLeast(Microsoft.Extensions.Logging.LogLevel level) => this.Entries.Where(e => e.Level >= level).Select(e => e.Message).ToList();
+
+    public Microsoft.Extensions.Logging.ILogger CreateLogger(string categoryName) => new Logger(this, categoryName);
+
+    public void Dispose() {
+    }
+
+    private sealed class Logger(CapturingLoggerProvider provider, string category) : Microsoft.Extensions.Logging.ILogger {
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+
+        public void Log<TState>(Microsoft.Extensions.Logging.LogLevel logLevel, Microsoft.Extensions.Logging.EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter) {
+            provider._entries.Enqueue((logLevel, category, formatter(state, exception)));
+        }
     }
 }

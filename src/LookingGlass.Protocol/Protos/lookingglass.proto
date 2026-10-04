@@ -45,6 +45,7 @@ message ClientFrame {
     FetchMembershipLog fetch_membership_log = 29;
     StartKeyLogin start_key_login = 30;
     CompleteKeyLogin complete_key_login = 31;
+    RetireIdentity retire_identity = 32;
   }
 }
 
@@ -212,10 +213,25 @@ message RegistrationChallenge {
   int64 lodestone_id = 3;
   // True for debug accounts: CompleteRegistration skips Lodestone.
   bool verification_skipped = 4;
+  // 32 random bytes, fresh for each StartRegistration and only usable on this connection,
+  // for CompleteRegistration to sign. Added in 0.2 without a version change.
+  bytes nonce = 5;
 }
 
-// Completes the registration started on this same connection.
-message CompleteRegistration {}
+// Completes the registration started on this same connection, proving that the client
+// holds the private key of the identity it registers: anyone can fetch another user's
+// public identity bundle, and must not be able to register it as theirs. Without a
+// signature (a plugin from before 0.2 sends none), it is refused, asking to update.
+message CompleteRegistration {
+  // The server's address exactly as the client connected to it, as in CompleteKeyLogin.
+  // For a registration through the Lodestone, checked the way key login checks it, so a
+  // registration made for one server can't be relayed to another.
+  string server_url = 1;
+  // Ed25519 signature by the identity signing key being registered over the challenge's
+  // nonce, the user ID (RegistrationChallenge.lodestone_id) and the server URL (see
+  // LookingGlass.Core.Crypto.RegistrationProof).
+  bytes signature = 2;
+}
 
 message RegistrationComplete {
   string device_token = 1;
@@ -264,6 +280,25 @@ message CompleteKeyLogin {
 message KeyLoginComplete {
   string device_token = 1;
   User user = 2;
+}
+
+// "Reset my identity", sent first while logged in: retires the account's current identity
+// key. The server deletes every device of the account (this connection's login included,
+// which is logged out) and never lets the key sign in or be registered again; the account
+// then has no valid login until new keys are registered through the Lodestone. Others keep
+// seeing the old key until then, as with any registration. Answered with Ack. Added in 0.2
+// without a version change: an older server answers "Unknown request.", and the client
+// resets locally anyway.
+message RetireIdentity {
+  // Ed25519 signature by the account's current identity key over the user ID, the SHA-256
+  // of the device token this connection logged in with and the server URL (see
+  // LookingGlass.Core.Crypto.RetireIdentityProof), so a stolen login alone can't retire
+  // the identity, and a signature made for one login, or for another server (user IDs
+  // are the same on every server), doesn't work here.
+  bytes signature = 1;
+  // The server's address exactly as the client connected to it, as in CompleteKeyLogin,
+  // and checked the same way.
+  string server_url = 2;
 }
 
 message GetIdentities {

@@ -55,8 +55,9 @@ public sealed class SessionManager : IDisposable {
     /// Changes the server address and reconnects. With <paramref name="keepIdentity"/> (a check the current server
     /// vouched for, which the user confirmed), first copies each of <paramref name="characters"/>' identity to the new
     /// address (see <see cref="ServerMove"/>), once the session has closed; any session started meanwhile waits for that.
-    /// The old address's files are left as they are, so switching back works. Call on the framework thread; the returned
-    /// task finishes the copying, and fails (having copied what it could) if any copy was refused.
+    /// If closing took long enough for the check to go stale, the servers are asked again first, and nothing is copied
+    /// unless they still agree. The old address's files are left as they are, so switching back works. Call on the
+    /// framework thread; the returned task finishes the copying, and fails (having copied what it could) if any copy was refused.
     /// </summary>
     public Task ChangeServer(string newUrl, ServerMoveCheck? keepIdentity = null, IReadOnlyList<ulong>? characters = null) {
         var oldUrl = this._config.ServerUrl;
@@ -68,10 +69,11 @@ public sealed class SessionManager : IDisposable {
                 return;
             }
 
+            var check = keepIdentity.IsFresh() ? keepIdentity : await ServerMove.CheckAsync(keepIdentity.CurrentUrl, keepIdentity.NewUrl);
             var refused = new List<string>();
             foreach (var contentId in characters ?? []) {
                 try {
-                    ServerMove.CopyIdentity(keepIdentity, ProtectedSecretStore.For(contentId, oldUrl), ProtectedSecretStore.For(contentId, newUrl));
+                    ServerMove.CopyIdentity(check, ProtectedSecretStore.For(contentId, oldUrl), ProtectedSecretStore.For(contentId, newUrl));
                     Services.Log.Information("Carried a character's LookingGlass identity over to the server's new address");
                 } catch (Exception ex) {
                     refused.Add(ex.Message);
@@ -102,9 +104,16 @@ public sealed class SessionManager : IDisposable {
     public void Disconnect() => this.Stop();
 
     /// <summary>
-    /// "Reset my identity" for the logged-in character on the configured server (see <see cref="ClientSecrets.ResetIdentity"/>):
-    /// stops the session, replaces the keys once it has closed (so nothing else writes the secrets file meanwhile), then
-    /// connects again, which leads to registering. Call on the framework thread; the returned task finishes the work.
+    /// "Reset my identity" for the logged-in character on the configured server:
+    /// <list type="number">
+    /// <item>If the session is logged in, it asks the server to retire the old key (see <see cref="ClientSession.RetireIdentityAsync"/>),
+    /// which ends every login made with it there at once. If it can't (not connected, or the server refuses or is too
+    /// old), the reset goes on, and the user is told the old key and login keep working on the server until they register again.</item>
+    /// <item>Then it stops the session and, once that has closed (so nothing else writes the files meanwhile), gives the
+    /// address new keys and removes the old identity from every other file that holds it (see <see cref="ServerSecretFiles.ResetIdentity"/>).</item>
+    /// <item>Then it connects again, which leads to registering the new keys through the Lodestone.</item>
+    /// </list>
+    /// Call on the framework thread; the returned task finishes the work.
     /// </summary>
     public Task ResetIdentity() {
         if (this._player.Current is not { } player) {
@@ -112,21 +121,97 @@ public sealed class SessionManager : IDisposable {
         }
 
         var serverUrl = this._config.ServerUrl;
+        // This character's session for this address, if any: only it holds a login to sign the request with.
+        var session = this._sessionPlayer?.ContentId == player.ContentId ? this.Session : null;
+        return Task.Run(async () => {
+            var notRetired = await Retire(session);
+            IdentityReset reset;
+            try {
+                reset = await await Services.Framework.RunOnFrameworkThread<Task<IdentityReset>>(() =>
+                    this.ReplaceSecrets(player, () => ProtectedSecretStore.ResetIdentity(player.ContentId, serverUrl)));
+            } catch (Exception ex) when (notRetired == null) {
+                // The old key is already gone on the server, so the files still holding it are of no use there now.
+                this._chat.Notice(NoticeLevel.Warning,
+                    $"The server at {serverUrl} retired your old key, but resetting your keys here failed ({ex.Message}). " +
+                    "Try \"Reset my identity\" again: until you do, you can't register or sign in there.");
+                throw;
+            }
+
+            Services.Log.Information($"Reset the LookingGlass identity of a character ({reset.Scrubbed.Count} other files held the old one)");
+
+            if (notRetired == null) {
+                this._chat.Notice(NoticeLevel.Info,
+                    $"Your identity on {serverUrl} was reset, and the server no longer accepts your old key or any login made with it. " +
+                    "Register again (through the Lodestone) to use your new keys.");
+            } else {
+                this._chat.Notice(NoticeLevel.Warning,
+                    $"Your identity on {serverUrl} was reset here, but the server couldn't be told ({notRetired}), so your old key and login " +
+                    "keep working there until you register again with the new keys. Register as soon as you can.");
+            }
+
+            foreach (var problem in reset.Problems) {
+                this._chat.Notice(NoticeLevel.Warning, $"{problem} It may still hold your old identity.");
+            }
+        });
+    }
+
+    /// <summary>Asks the server to retire the session's identity key, if it is logged in.</summary>
+    /// <returns>Null if it did; otherwise why not, for the user.</returns>
+    private static async Task<string?> Retire(ClientSession? session) {
+        if (session?.Snapshot.State != ConnectionState.Ready) {
+            return "you weren't connected and logged in";
+        }
+
+        try {
+            await session.RetireIdentityAsync();
+            return null;
+        } catch (ServerErrorException ex) when (ex.Code == Protocol.ErrorCode.InvalidRequest) {
+            Services.Log.Warning($"The server refused to retire an identity key: {ex.ServerMessage}");
+            return $"it doesn't know how yet, or refused: \"{ex.ServerMessage}\"";
+        } catch (Exception ex) {
+            Services.Log.Warning(ex, "Couldn't ask the server to retire an identity key");
+            return ex is ServerErrorException refused ? $"it said: \"{refused.ServerMessage}\"" : ex.Message;
+        }
+    }
+
+    /// <summary>
+    /// Restores the backup of the logged-in character's identity for the configured server (see
+    /// <see cref="ProtectedSecretStore.FindBackup"/>), once the session has closed, then connects again. Only when the
+    /// user asked. Call on the framework thread; the returned task finishes the work.
+    /// </summary>
+    public Task RestoreBackup() {
+        if (this._player.Current is not { } player) {
+            return Task.FromException(new InvalidOperationException("Log in to the character whose identity you want to restore."));
+        }
+
+        var serverUrl = this._config.ServerUrl;
+        return this.ReplaceSecrets(player, () => {
+            ProtectedSecretStore.RestoreBackup(player.ContentId, serverUrl);
+            Services.Log.Information("Restored the LookingGlass identity of a character from a backup");
+            return true;
+        });
+    }
+
+    /// <summary>
+    /// Stops the session, runs <paramref name="work"/> on a character's secrets files once it has closed (so nothing
+    /// else writes them meanwhile), then connects again for the character logged in now (normally <paramref name="player"/>).
+    /// Call on the framework thread; the returned task finishes the work.
+    /// </summary>
+    private Task<T> ReplaceSecrets<T>(PlayerInfo player, Func<T> work) {
         this.Stop();
         var closing = this._closing ?? Task.CompletedTask;
-        var reset = Task.Run(async () => {
+        var replacing = Task.Run(async () => {
             await closing;
-            var store = ProtectedSecretStore.For(player.ContentId, serverUrl, warning => this._chat.Notice(NoticeLevel.Warning, warning));
-            var secrets = store.Load();
-            secrets.ResetIdentity();
-            store.Save(secrets);
-            Services.Log.Information("Reset the LookingGlass identity of a character");
+            return work();
         });
 
-        // Any session started meanwhile (this one below, a relog, Connect) waits for the reset, as for a closing session.
-        this._closing = reset.ContinueWith(_ => { }, TaskScheduler.Default);
-        this.StartFor(player);
-        return reset;
+        // Any session started meanwhile (this one below, a relog, Connect) waits for it, as for a closing session.
+        this._closing = replacing.ContinueWith(_ => { }, TaskScheduler.Default);
+        if (this._player.Current is { } current) {
+            this.StartFor(current);
+        }
+
+        return replacing;
     }
 
     /// <summary>The command slot of a channel for the current character. Safe from any thread.</summary>

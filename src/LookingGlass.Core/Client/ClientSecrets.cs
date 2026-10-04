@@ -73,16 +73,28 @@ public sealed class ClientSecrets {
     /// </list>
     /// Registering the new keys (through the Lodestone) revokes the old identity's logins on the server and stops its keys
     /// signing in; its channel memberships stay bound to the old keys until someone removes and invites you again.
+    /// Copies of the old identity in other files are removed with <see cref="ServerSecretFiles.ResetIdentity"/>.
     /// </summary>
     public void ResetIdentity() {
-        if (this.UserId is { } me) {
-            this.PinnedIdentities.Remove(me);
-        }
-
+        this.ForgetIdentity();
         using var keys = Crypto.IdentityKeys.Generate();
         var (signing, agreement) = keys.ExportPrivateKeys();
         this.SigningPrivateKey = signing;
         this.AgreementPrivateKey = agreement;
+    }
+
+    /// <summary>
+    /// Drops the identity and everything that belongs to it, as <see cref="ResetIdentity"/> does, without making new keys:
+    /// for copies of an identity being reset (another address's file, a backup). What is about others and the channels is
+    /// kept, as there. A session started on these secrets has no identity, so it registers (or a move can carry one over).
+    /// </summary>
+    public void ForgetIdentity() {
+        if (this.UserId is { } me) {
+            this.PinnedIdentities.Remove(me);
+        }
+
+        this.SigningPrivateKey = null;
+        this.AgreementPrivateKey = null;
         this.DeviceToken = null;
         this.UserId = null;
         this.EpochKeys.Clear();
@@ -140,6 +152,17 @@ public interface ISecretStore {
     void Save(ClientSecrets secrets);
 }
 
+/// <summary>A <see cref="ISecretStore"/> kept in a file written by <see cref="AtomicFile"/>, whose loads fall back to its backup.</summary>
+public interface IFileSecretStore : ISecretStore {
+    /// <summary>
+    /// The file's own contents, never its backup's (see <see cref="AtomicFile.ReadFileOnly{T}"/>): for deciding things the
+    /// backup, which may be older, mustn't decide.
+    /// </summary>
+    /// <returns>Null if the file doesn't exist.</returns>
+    /// <exception cref="Exception">It can't be read or used (empty, damaged, can't be decrypted).</exception>
+    ClientSecrets? LoadFileOnly();
+}
+
 public sealed class InMemorySecretStore : ISecretStore {
     private byte[]? _data;
 
@@ -158,10 +181,12 @@ public sealed class InMemorySecretStore : ISecretStore {
 /// encrypted store instead.
 /// </summary>
 /// <param name="warn">Told when the file couldn't be used and its backup was loaded instead.</param>
-public sealed class FileSecretStore(string path, Action<string>? warn = null) : ISecretStore {
+public sealed class FileSecretStore(string path, Action<string>? warn = null) : IFileSecretStore {
     public ClientSecrets Load() {
         return AtomicFile.Read(path, ClientSecrets.Deserialize, warn) ?? new ClientSecrets();
     }
+
+    public ClientSecrets? LoadFileOnly() => AtomicFile.ReadFileOnly(path, ClientSecrets.Deserialize);
 
     public void Save(ClientSecrets secrets) {
         AtomicFile.Write(path, secrets.Serialize());
@@ -254,6 +279,19 @@ public static class AtomicFile {
                 ? $"{Path.GetFileName(path)} is missing; loaded the backup {Path.GetFileName(backup)} instead."
                 : $"{Path.GetFileName(path)} couldn't be read ({failure.Message}); loaded the backup {Path.GetFileName(backup)} instead.");
             return result;
+        }
+    }
+
+    /// <summary>
+    /// Reads a file written by <see cref="Write"/>, but never its backup: for deciding something from what the file
+    /// itself holds, which an older backup mustn't decide for it.
+    /// </summary>
+    /// <param name="parse">Turns the bytes into the result; throws if they're unusable.</param>
+    /// <returns>The parsed file, or null if it doesn't exist.</returns>
+    /// <exception cref="InvalidDataException">The file is empty.</exception>
+    public static T? ReadFileOnly<T>(string path, Func<byte[], T> parse) where T : class {
+        lock (LockFor(path)) {
+            return File.Exists(path) ? Parse(File.ReadAllBytes(path), parse) : null;
         }
     }
 

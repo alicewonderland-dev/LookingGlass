@@ -69,6 +69,8 @@ public sealed class ClientSession : IAsyncDisposable {
     private User? _me;
     private Limits? _limits;
     private bool _debugAccountsEnabled;
+    // What to tell the user when the server lists its addresses without the one this client uses (see AddressNotListedText).
+    private string? _addressNotListed;
     private RegistrationChallenge? _challenge;
     // The server refused the saved login on the current connection. The login is kept, and tried again.
     private bool _loginRejected;
@@ -119,6 +121,26 @@ public sealed class ClientSession : IAsyncDisposable {
     private int _disposed;
     // The user has been told the server speaks another protocol version (once, not at every reconnect).
     private int _versionMismatchReported;
+    // The last address hint the user was told about (once, not at every reconnect).
+    private string? _addressNotListedReported;
+
+    /// <summary>
+    /// What to tell the user when the server lists its own addresses (Welcome's public_urls) and <paramref name="serverUri"/>
+    /// isn't one of them (by origin: scheme, host and port, as the server compares them): it refuses registering, key login
+    /// and "Reset my identity" signed for that address. Null if the address is listed, or the server lists none.
+    /// </summary>
+    internal static string? AddressNotListedText(Uri serverUri, IEnumerable<string> publicUrls) {
+        // Only what parses as a server address, and not without end: the list comes from the server.
+        var listed = publicUrls.Select(url => url.Trim()).Where(url => url.Length <= 200 && ServerOrigin.FromUrl(url) != null).Distinct().Take(10).ToList();
+        var origin = ServerOrigin.FromUrl(serverUri.AbsoluteUri);
+        if (listed.Count == 0 || (origin != null && origin.IsListedIn(listed))) {
+            return null;
+        }
+
+        return $"This server's addresses are {string.Join(", ", listed)}, and the one you connect to, {serverUri.AbsoluteUri}, isn't one of them, " +
+               "so registering, signing in with your identity key and \"Reset my identity\" won't work through it. " +
+               "Set the server address in Settings to one of those (ask the server's operator if none works for you).";
+    }
 
     public ClientSession(ClientSessionOptions options, ISecretStore store) {
         this._options = options;
@@ -256,13 +278,30 @@ public sealed class ClientSession : IAsyncDisposable {
         return challenge;
     }
 
-    /// <summary>Finishes registering, replacing any saved login (even one the server didn't recognise), and logs in.</summary>
+    /// <summary>
+    /// Finishes registering, replacing any saved login (even one the server didn't recognise), and logs in. Signed with
+    /// the identity key being registered (see <see cref="RegistrationProof"/>), over the challenge and the address this
+    /// client connected to, so the server knows the key is this client's and not someone else's public one.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">No registration was started.</exception>
     public async Task CompleteRegistrationAsync(CancellationToken ct = default) {
         var connection = this.RequireConnection();
         // Never alongside a try of the old login: its answer could otherwise land after the new login's.
         await this._loginGate.WaitAsync(ct);
         try {
-            var response = await this.RequestAsync(connection, new ClientFrame { CompleteRegistration = new CompleteRegistration() }, ct, RegistrationRequestTimeout);
+            var (identity, challenge) = this.Read(() => (this._identity, this._challenge));
+            if (identity == null || challenge == null) {
+                throw new InvalidOperationException("Start registering first.");
+            }
+
+            // Exactly the address this connection was made to, as for key login.
+            var serverUrl = this._options.ServerUri.AbsoluteUri;
+            var response = await this.RequestAsync(connection, new ClientFrame {
+                CompleteRegistration = new CompleteRegistration {
+                    ServerUrl = serverUrl,
+                    Signature = ByteString.CopyFrom(RegistrationProof.Sign(identity, challenge.Nonce.Span, challenge.LodestoneId, serverUrl)),
+                },
+            }, ct, RegistrationRequestTimeout);
             var complete = response.RegistrationComplete ?? throw Unexpected(response);
 
             lock (this._lock) {
@@ -382,6 +421,56 @@ public sealed class ClientSession : IAsyncDisposable {
         if (refused) {
             throw new InvalidOperationException("The server still doesn't recognise your login.");
         }
+    }
+
+    /// <summary>
+    /// "Reset my identity", first step, while logged in: asks the server to retire this identity key, signed with it over
+    /// this login (see <see cref="RetireIdentityProof"/>). The server revokes every login of the account (this one too)
+    /// and never lets the key sign in or be registered again, so a copy of it left anywhere is useless there from now on.
+    /// The saved login is dropped; the session can do nothing more with the server. Dispose it, and reset the keys next
+    /// (see <see cref="ClientSecrets.ResetIdentity"/>), then register the new ones through the Lodestone.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">Not logged in.</exception>
+    /// <exception cref="ServerErrorException">The server refused, or is too old to know the request ("Unknown request.").</exception>
+    public async Task RetireIdentityAsync(CancellationToken ct = default) {
+        var connection = this.RequireConnection();
+        // Never alongside a login: what this signs is the login the connection uses now.
+        await this._loginGate.WaitAsync(ct);
+        try {
+            var (identity, me, token) = this.Read(() => this._state == ConnectionState.Ready && connection == this._connection
+                ? (this._identity, this._me, this._secrets.DeviceToken)
+                : (null, null, null));
+            if (identity == null || me == null || token == null) {
+                throw new InvalidOperationException("You're not logged in, so the server can't be asked to retire your key.");
+            }
+
+            // Exactly the address this connection was made to, as for key login.
+            var serverUrl = this._options.ServerUri.AbsoluteUri;
+            var response = await this.RequestAsync(connection, new ClientFrame {
+                RetireIdentity = new RetireIdentity {
+                    ServerUrl = serverUrl,
+                    Signature = ByteString.CopyFrom(RetireIdentityProof.Sign(identity, me.UserId, token, serverUrl)),
+                },
+            }, ct);
+            if (response.Ack == null) {
+                throw Unexpected(response);
+            }
+
+            lock (this._lock) {
+                // Revoked with the rest: nothing to try again. The key is kept until the reset replaces it.
+                this._secrets.DeviceToken = null;
+                this._loginRejected = false;
+                this._me = null;
+                this._state = ConnectionState.Unregistered;
+                this._status = "Your identity key was retired on this server. Reset your identity, then register the new keys.";
+                this._secretsVersion++;
+            }
+        } finally {
+            this._loginGate.Release();
+        }
+
+        this.SaveSecrets();
+        this.Publish();
     }
 
     /// <summary>Forgets the device token, for example to register again.</summary>
@@ -999,14 +1088,21 @@ public sealed class ClientSession : IAsyncDisposable {
         }
 
         var welcome = response.Welcome ?? throw Unexpected(response);
+        var addressNotListed = AddressNotListedText(this._options.ServerUri, welcome.PublicUrls);
 
         lock (this._lock) {
             this._limits = welcome.Limits;
             this._debugAccountsEnabled = welcome.DebugAccountsEnabled;
+            this._addressNotListed = addressNotListed;
         }
 
         if (!string.IsNullOrWhiteSpace(welcome.Announcement)) {
             this.RaiseNotice(NoticeLevel.Info, welcome.Announcement);
+        }
+
+        // Before the user tries to register: once per session (and again if what the server lists changes), not on every reconnect.
+        if (addressNotListed != null && Interlocked.Exchange(ref this._addressNotListedReported, addressNotListed) != addressNotListed) {
+            this.RaiseNotice(NoticeLevel.Warning, addressNotListed);
         }
 
         await this._loginGate.WaitAsync(ct);
@@ -3041,7 +3137,9 @@ public sealed class ClientSession : IAsyncDisposable {
                     .OrderBy(user => user.Name, StringComparer.OrdinalIgnoreCase)
                     .ToImmutableArray(),
                 this._channelsLoaded && this._state == ConnectionState.Ready,
-                this._loginRejected && this._state is ConnectionState.LoginNotRecognized or ConnectionState.Registering);
+                this._loginRejected && this._state is ConnectionState.LoginNotRecognized or ConnectionState.Registering,
+                // As the server said on this connection; nothing while there is none.
+                this._state is ConnectionState.Stopped or ConnectionState.Connecting or ConnectionState.Reconnecting ? null : this._addressNotListed);
             this._snapshot = snapshot;
         }
 

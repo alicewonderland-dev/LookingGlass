@@ -23,6 +23,10 @@ public sealed class SettingsWindow : Window {
     private bool _openMoveOffer;
     private string? _moveError;
 
+    // A backup of the identity the user may restore, looked for in the background, and for whom.
+    private Task<SecretsBackup?>? _backupCheck;
+    private (ulong ContentId, string ServerUrl)? _backupFor;
+
     public SettingsWindow(Configuration config, SessionManager sessions, UiActions actions) : base("LookingGlass settings###lookingglass-settings") {
         this._config = config;
         this._sessions = sessions;
@@ -41,6 +45,8 @@ public sealed class SettingsWindow : Window {
         // Start from what is saved, not a half-typed URL from last time.
         this._serverUrl = this._config.ServerUrl;
         this._moveError = null;
+        // Look again: files may have changed since.
+        this._backupCheck = null;
     }
 
     public override void OnClose() {
@@ -65,16 +71,20 @@ public sealed class SettingsWindow : Window {
     /// one, ask the current server (over the current address) whether the new one is its own, and the new one whether it
     /// agrees (see ServerMove), before anything changes.
     /// </summary>
-    private void StartMoveCheck(string oldUrl, string newUrl) {
+    /// <param name="confirmed">
+    /// The user already chose to keep their identity: this asks the servers again, since the dialog may have been open
+    /// for a while, and the identity is only carried over if they still agree (otherwise the dialog says what changed).
+    /// </param>
+    private void StartMoveCheck(string oldUrl, string newUrl, bool confirmed = false) {
         this._moveError = null;
         this._moveOffer = null;
         this._moveCheck = Task.Run(async () => {
             var characters = ProtectedSecretStore.CharactersToMove(oldUrl, newUrl);
             if (characters.Count == 0) {
-                return new MoveOffer(oldUrl, newUrl, null, characters);
+                return new MoveOffer(oldUrl, newUrl, null, characters, confirmed);
             }
 
-            return new MoveOffer(oldUrl, newUrl, await ServerMove.CheckAsync(oldUrl, newUrl), characters);
+            return new MoveOffer(oldUrl, newUrl, await ServerMove.CheckAsync(oldUrl, newUrl), characters, confirmed);
         });
     }
 
@@ -99,6 +109,12 @@ public sealed class SettingsWindow : Window {
         if (offer.Check == null) {
             // No identity there to keep (or the new address has its own): as before, a plain change.
             this.ChangeServer(offer, keepIdentity: false);
+            return;
+        }
+
+        if (offer.Confirmed && offer.Check.Verdict == ServerMoveVerdict.SameServer) {
+            // Asked again after the user chose to keep their identity, and the servers still agree.
+            this.ChangeServer(offer, keepIdentity: true);
             return;
         }
 
@@ -143,7 +159,8 @@ public sealed class SettingsWindow : Window {
                 "and you stay in your channels. The identity for the old address is kept too, so switching back works.");
             ImGui.Spacing();
             if (ImGui.Button("Keep my identity")) {
-                this.ChangeServer(offer, keepIdentity: true);
+                // Never on what the servers said when the dialog opened: ask them again, and keep it only if they still agree.
+                this.StartMoveCheck(offer.OldUrl, offer.NewUrl, confirmed: true);
                 close = true;
             }
 
@@ -158,10 +175,12 @@ public sealed class SettingsWindow : Window {
             ImGui.TextUnformatted("LookingGlass can't confirm this is the same server");
             ImGui.Spacing();
             ImGui.TextColored(Widgets.Muted, check.Message);
+            var remedy = check.Verdict == ServerMoveVerdict.NotSecure
+                ? "If it is the same server, apply its wss:// address instead (ask whoever runs it for one, and to list it in LookingGlass:PublicUrls)."
+                : "If it is the same server, ask whoever runs it to list both addresses in LookingGlass:PublicUrls, then apply it again.";
             ImGui.TextColored(Widgets.Muted,
                 "So the new address counts as a different server: there you'd register through the Lodestone with new keys, and start " +
-                $"without channels. The identity of {who} for {offer.OldUrl} is kept, so switching back restores it. If it is the same " +
-                "server, ask whoever runs it to list both addresses in LookingGlass:PublicUrls, then apply it again.");
+                $"without channels. The identity of {who} for {offer.OldUrl} is kept, so switching back restores it. {remedy}");
             ImGui.Spacing();
             if (ImGui.Button("Use the new address anyway")) {
                 this.ChangeServer(offer, keepIdentity: false);
@@ -184,7 +203,8 @@ public sealed class SettingsWindow : Window {
     }
 
     /// <param name="Check">The current server's answer, or null if no character has an identity to carry over.</param>
-    private sealed record MoveOffer(string OldUrl, string NewUrl, ServerMoveCheck? Check, IReadOnlyList<ulong> Characters);
+    /// <param name="Confirmed">Asked again after the user chose to keep their identity (see <see cref="StartMoveCheck"/>).</param>
+    private sealed record MoveOffer(string OldUrl, string NewUrl, ServerMoveCheck? Check, IReadOnlyList<ulong> Characters, bool Confirmed);
 
     private void DrawServer() {
         Widgets.Heading("Server");
@@ -208,6 +228,12 @@ public sealed class SettingsWindow : Window {
             ImGui.TextColored(Widgets.Muted, "Asking the current server and the new address whether they are the same server...");
         } else if (this._moveError is { } error) {
             ImGui.TextColored(Widgets.Error, error);
+        }
+
+        // What the server said on connecting: it lists its addresses, and not this one.
+        if (this._sessions.Session != null && this._sessions.Snapshot.AddressNotListed is { } addressHint) {
+            Widgets.IconText(FontAwesomeIcon.ExclamationTriangle, "The server doesn't accept this address", Widgets.Warning);
+            ImGui.TextColored(Widgets.Warning, addressHint);
         }
 
         ImGui.TextColored(Widgets.Muted, "For example ws://my-vm:5180/ws over Tailscale, or wss://chat.example.com/ws.");
@@ -296,25 +322,80 @@ public sealed class SettingsWindow : Window {
         var player = this._sessions.Player;
         ImGui.BeginDisabled(this._actions.Busy || player == null);
         if (ImGui.Button("Reset my identity...") && player != null) {
-            this._modals.Confirm("Reset my identity", ResetText(player.Name, this._config.ServerUrl), "Reset my identity", () => {
+            var serverUrl = this._config.ServerUrl;
+            this._modals.Confirm("Reset my identity", ResetText(player.Name, serverUrl), "Reset my identity", () => {
                 // On the framework thread (the dialog's button); the returned task finishes the reset.
                 var reset = this._sessions.ResetIdentity();
                 this._actions.Run("Resetting your identity", () => reset);
+                // The backup, if any, no longer holds the old identity afterwards: look again once done.
+                this._backupFor = (player.ContentId, serverUrl);
+                this._backupCheck = reset.ContinueWith(_ => ProtectedSecretStore.FindBackup(player.ContentId, serverUrl), TaskScheduler.Default);
             });
         }
 
         ImGui.EndDisabled();
         Widgets.Tooltip("New identity keys for this character on this server. Only if your key was lost or may have been stolen.");
+        this.DrawBackup(player);
     }
+
+    /// <summary>
+    /// A backup of the identity (an old-style secrets file kept when it was moved) for an address that has none of its
+    /// own: offered, never restored without asking (see ServerSecretFiles). Looked for in the background, again whenever
+    /// the window opens, the character or address changes, or the identity is reset or restored.
+    /// </summary>
+    private void DrawBackup(PlayerInfo? player) {
+        if (player == null) {
+            return;
+        }
+
+        var serverUrl = this._config.ServerUrl;
+        if (this._backupCheck == null || this._backupFor != (player.ContentId, serverUrl)) {
+            this._backupFor = (player.ContentId, serverUrl);
+            this._backupCheck = Task.Run(() => ProtectedSecretStore.FindBackup(player.ContentId, serverUrl));
+        }
+
+        if (this._backupCheck is not { IsCompletedSuccessfully: true, Result: { } backup }) {
+            return;
+        }
+
+        var saved = backup.SavedAt.ToLocalTime().ToString("g");
+        ImGui.Spacing();
+        ImGui.PushTextWrapPos();
+        ImGui.TextColored(Widgets.Warning, $"A backup of your identity from {saved} exists. Restore it?");
+        ImGui.PopTextWrapPos();
+        ImGui.BeginDisabled(this._actions.Busy);
+        if (ImGui.Button("Restore the backup...")) {
+            this._modals.Confirm("Restore your identity", RestoreText(player.Name, serverUrl, saved), "Restore it", () => {
+                var restore = this._sessions.RestoreBackup();
+                this._actions.Run("Restoring your identity", () => restore);
+                this._backupFor = (player.ContentId, serverUrl);
+                this._backupCheck = restore.ContinueWith(_ => ProtectedSecretStore.FindBackup(player.ContentId, serverUrl), TaskScheduler.Default);
+            });
+        }
+
+        ImGui.EndDisabled();
+        Widgets.Tooltip("Your identity for this server is gone (no keys, no login), but LookingGlass kept a copy when it moved your keys to a new file.");
+    }
+
+    private static string RestoreText(string name, string serverUrl, string saved) =>
+        $"This restores the identity LookingGlass kept for {name} on {serverUrl}, as it was on {saved}: its keys, login and channel keys.\n\n" +
+        "It may be older than you think:\n" +
+        "- Its login may no longer work. If the server still knows its key, it signs you in with that.\n" +
+        "- Channel keys and changes since then are missing; channels you're still in catch up from the server.\n" +
+        "- If you have reset your identity on this server since, its key no longer counts there: you'd have to reset again.\n\n" +
+        "The backup file itself is kept.";
 
     private static string ResetText(string name, string serverUrl) =>
         $"This makes new identity keys for {name} on {serverUrl}. Only do this if your key was lost or may have been stolen. " +
         "If you just can't sign in, you don't need it: registering again keeps your key.\n\n" +
+        "First, if you're connected, LookingGlass tells the server to retire your old key: from then on it can't sign in or be " +
+        "registered again there, and every login made with it stops working. If you're not connected (or the server can't be told), " +
+        "they keep working there until you register again, so connect first if you can.\n\n" +
         "After a reset:\n" +
         "- You register again through the Lodestone.\n" +
         "- You lose your place in every channel on this server. To get back in, someone must remove you and invite you again.\n" +
         "- Everyone who knows you sees a \"key changed\" warning for you.\n" +
-        "- Once you've registered again, your old keys and logins stop working on this server.\n\n" +
+        "- Copies of the old identity kept for this server's other addresses, and in backups, are removed too.\n\n" +
         "Your identity on other servers isn't affected.";
 
     private void DrawBlockedUsers() {
