@@ -71,7 +71,8 @@ public sealed class RequestHandler(
         perSecond: Math.Max(1, options.Value.Limits.KeyLoginFailuresPerHourPerIp) * 3 / 3600.0,
         burst: Math.Max(1, options.Value.Limits.KeyLoginFailuresPerHourPerIp) * 2);
     private readonly IReadOnlyList<ServerOrigin> _publicOrigins = ParsePublicUrls(options.Value.PublicUrls);
-    private readonly KeyLoginOrigins _keyLoginOrigins = ChooseKeyLoginOrigins(ParsePublicUrls(options.Value.PublicUrls), environment?.IsDevelopment() == true);
+    private readonly string[] _advertisedUrls = (options.Value.PublicUrls ?? []).Where(url => !string.IsNullOrWhiteSpace(url)).Select(url => url.Trim()).Distinct().ToArray();
+    private readonly KeyLoginOrigins _keyLoginOrigins =ChooseKeyLoginOrigins(ParsePublicUrls(options.Value.PublicUrls), environment?.IsDevelopment() == true);
     private readonly TimeProvider _time = time ?? TimeProvider.System;
     private readonly UserRateLimits _rekeys = new(perSecond: 0.5, burst: 5);
     private readonly UserRateLimits _lookups = new(perSecond: 0.5, burst: 10);
@@ -170,6 +171,9 @@ public sealed class RequestHandler(
             DebugAccountsEnabled = options.Value.Dev.AllowDebugAccounts,
         };
         welcome.Capabilities.AddRange(hello.Capabilities.Where(capability => capability == ProtocolInfo.Capabilities.Chat));
+        // The operator's own addresses, which clients moving to one of them trust because this server, at the address
+        // they already use, lists it. Never the Host-header fallback: that's whatever the connecting side said.
+        welcome.PublicUrls.AddRange(this._advertisedUrls);
         return new Response { Welcome = welcome };
     }
 

@@ -153,6 +153,12 @@ message Welcome {
   string announcement = 5;
   // True when the server accepts debug accounts (world "Debug").
   bool debug_accounts_enabled = 6;
+  // The addresses the server's operator configured as its own (LookingGlass:PublicUrls),
+  // for example "wss://chat.example.com/ws"; empty if none. A client that has an identity
+  // for this server and is moving to another address asks the server, over the address
+  // it already uses, and only carries its identity over if the new address's origin is
+  // listed here. Added in 0.2 without a version change: older servers send none.
+  repeated string public_urls = 7;
 }
 
 message Ping {}

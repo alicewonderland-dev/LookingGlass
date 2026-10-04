@@ -144,6 +144,31 @@ public sealed class ProtectedSecretStore : ISecretStore {
         }
     }
 
+    /// <summary>
+    /// The characters with an identity for <paramref name="oldUrl"/> and nothing for <paramref name="newUrl"/>: those whose
+    /// identity a move to the new address could carry over. Reads (and decrypts) their files: not on the framework thread.
+    /// A file that can't be read, or belongs to another address, counts as something there, never as free.
+    /// </summary>
+    public static IReadOnlyList<ulong> CharactersToMove(string oldUrl, string newUrl) {
+        MigrateOldFiles(oldUrl);
+        return ServerSecretFiles.Characters(ConfigDirectory, oldUrl)
+            .Where(id => Holds(id, oldUrl, identity: true) && !Holds(id, newUrl, identity: false))
+            .ToList();
+    }
+
+    /// <param name="identity">Identity keys (true), or anything at all: keys or a login (false).</param>
+    private static bool Holds(ulong contentId, string serverUrl, bool identity) {
+        try {
+            var secrets = For(contentId, serverUrl).Load();
+            return identity
+                ? secrets.SigningPrivateKey != null && secrets.AgreementPrivateKey != null
+                : secrets.SigningPrivateKey != null || secrets.DeviceToken != null;
+        } catch (Exception ex) {
+            Services.Log.Warning(ex, "Couldn't read a LookingGlass secrets file");
+            return !identity;
+        }
+    }
+
     private static ProtectedSecretStore At(string path, Action<string>? tellUser) {
         return new ProtectedSecretStore(path, Path.Combine(ConfigDirectory, "local.key"), tellUser);
     }

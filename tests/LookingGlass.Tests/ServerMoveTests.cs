@@ -32,9 +32,9 @@ public sealed class ServerMoveTests : IDisposable {
         await using var listed = Server(OldUrl, NewUrl);
         await using var unlisted = new Harness();
         try {
-            Assert.Equal([OldUrl, NewUrl], (await ServerMove.CheckAsync(new Uri(OldUrl), NewUrl, listed.ConnectAsync, Ct)).ListedUrls);
+            Assert.Equal([OldUrl, NewUrl], (await ServerMove.CheckAsync(OldUrl, NewUrl, listed.ConnectAsync, Ct)).ListedUrls);
             // A Development server without PublicUrls lists nothing (its Host-header fallback isn't an address it vouches for).
-            Assert.Empty((await ServerMove.CheckAsync(new Uri(OldUrl), NewUrl, unlisted.ConnectAsync, Ct)).ListedUrls);
+            Assert.Empty((await ServerMove.CheckAsync(OldUrl, NewUrl, unlisted.ConnectAsync, Ct)).ListedUrls);
         } finally {
             DeleteDirectory(listed.DataDirectory);
             DeleteDirectory(unlisted.DataDirectory);
@@ -57,7 +57,7 @@ public sealed class ServerMoveTests : IDisposable {
             var fingerprint = alice.Session.Snapshot.MyFingerprint;
             await alice.Session.DisposeAsync();
 
-            var check = await ServerMove.CheckAsync(new Uri(OldUrl), NewUrl, server.ConnectAsync, Ct);
+            var check = await ServerMove.CheckAsync(OldUrl, NewUrl, server.ConnectAsync, Ct);
             Assert.Equal(ServerMoveVerdict.SameServer, check.Verdict);
             var newStore = this.Store(NewUrl);
             ServerMove.CopyIdentity(check, oldStore, newStore);
@@ -102,7 +102,7 @@ public sealed class ServerMoveTests : IDisposable {
             await alice.Session.DisposeAsync();
 
             var dialled = new ConcurrentQueue<Uri>();
-            var check = await ServerMove.CheckAsync(new Uri(OldUrl), evilUrl, (uri, ct) => {
+            var check = await ServerMove.CheckAsync(OldUrl, evilUrl, (uri, ct) => {
                 dialled.Enqueue(uri);
                 return honest.ConnectAsync(uri, ct);
             }, Ct);
@@ -135,7 +135,7 @@ public sealed class ServerMoveTests : IDisposable {
             DeleteDirectory(server.DataDirectory);
         }
 
-        var check = await ServerMove.CheckAsync(new Uri(OldUrl), NewUrl,
+        var check = await ServerMove.CheckAsync(OldUrl, NewUrl,
             (_, _) => Task.FromException<WebSocket>(new WebSocketException("Unable to connect to the remote server")), Ct);
         Assert.Equal(ServerMoveVerdict.Unreachable, check.Verdict);
         Assert.Contains(OldUrl, check.Message);
@@ -150,7 +150,7 @@ public sealed class ServerMoveTests : IDisposable {
     public async Task AServerThatListsNoAddressesCannotVouch() {
         await using var server = new Harness();
         try {
-            var check = await ServerMove.CheckAsync(new Uri(OldUrl), NewUrl, server.ConnectAsync, Ct);
+            var check = await ServerMove.CheckAsync(OldUrl, NewUrl, server.ConnectAsync, Ct);
             Assert.Equal(ServerMoveVerdict.NothingListed, check.Verdict);
             Assert.Contains("PublicUrls", check.Message);
         } finally {
@@ -169,7 +169,7 @@ public sealed class ServerMoveTests : IDisposable {
     public async Task AddressesAreComparedByOrigin(string newUrl, ServerMoveVerdict verdict) {
         await using var server = Server(OldUrl, NewUrl);
         try {
-            Assert.Equal(verdict, (await ServerMove.CheckAsync(new Uri(OldUrl), newUrl, server.ConnectAsync, Ct)).Verdict);
+            Assert.Equal(verdict, (await ServerMove.CheckAsync(OldUrl, newUrl, server.ConnectAsync, Ct)).Verdict);
         } finally {
             DeleteDirectory(server.DataDirectory);
         }
@@ -183,7 +183,7 @@ public sealed class ServerMoveTests : IDisposable {
             var oldStore = this.Store(OldUrl);
             var alice = await server.RegisterAsync("Alice Careful", oldStore, server.Options(serverUri: new Uri(OldUrl)));
             await alice.Session.DisposeAsync();
-            var check = await ServerMove.CheckAsync(new Uri(OldUrl), NewUrl, server.ConnectAsync, Ct);
+            var check = await ServerMove.CheckAsync(OldUrl, NewUrl, server.ConnectAsync, Ct);
 
             // Vouched for NewUrl, not for the third address.
             Assert.Throws<InvalidOperationException>(() => ServerMove.CopyIdentity(check, oldStore, this.Store("wss://third.example/ws")));

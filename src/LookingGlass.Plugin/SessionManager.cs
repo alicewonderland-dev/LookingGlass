@@ -51,12 +51,46 @@ public sealed class SessionManager : IDisposable {
         }
     }
 
-    /// <summary>Call on the framework thread after changing the server URL.</summary>
-    public void Restart() {
+    /// <summary>
+    /// Changes the server address and reconnects. With <paramref name="keepIdentity"/> (a check the current server
+    /// vouched for, which the user confirmed), first copies each of <paramref name="characters"/>' identity to the new
+    /// address (see <see cref="ServerMove"/>), once the session has closed; any session started meanwhile waits for that.
+    /// The old address's files are left as they are, so switching back works. Call on the framework thread; the returned
+    /// task finishes the copying, and fails (having copied what it could) if any copy was refused.
+    /// </summary>
+    public Task ChangeServer(string newUrl, ServerMoveCheck? keepIdentity = null, IReadOnlyList<ulong>? characters = null) {
+        var oldUrl = this._config.ServerUrl;
         this.Stop();
+        var closing = this._closing ?? Task.CompletedTask;
+        var copying = Task.Run(async () => {
+            await closing;
+            if (keepIdentity == null) {
+                return;
+            }
+
+            var refused = new List<string>();
+            foreach (var contentId in characters ?? []) {
+                try {
+                    ServerMove.CopyIdentity(keepIdentity, ProtectedSecretStore.For(contentId, oldUrl), ProtectedSecretStore.For(contentId, newUrl));
+                    Services.Log.Information("Carried a character's LookingGlass identity over to the server's new address");
+                } catch (Exception ex) {
+                    refused.Add(ex.Message);
+                }
+            }
+
+            if (refused.Count > 0) {
+                throw new InvalidOperationException(string.Join(" ", refused.Distinct()));
+            }
+        });
+
+        this._closing = copying.ContinueWith(_ => { }, TaskScheduler.Default);
+        this._config.ServerUrl = newUrl;
+        this._config.Save();
         if (this._player.Current is { } player && this._config.AutoConnect) {
             this.StartFor(player);
         }
+
+        return copying;
     }
 
     public void Connect() {
