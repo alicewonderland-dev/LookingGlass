@@ -13,6 +13,7 @@ public sealed class Plugin : IDalamudPlugin {
     private readonly MainWindow _mainWindow;
     private readonly SettingsWindow _settingsWindow;
     private readonly DebugWindow _debugWindow;
+    private readonly UiFonts _fonts;
 
     public Plugin(IDalamudPluginInterface pluginInterface) {
         pluginInterface.Create<Services>();
@@ -24,8 +25,9 @@ public sealed class Plugin : IDalamudPlugin {
 
         // One action runner for both windows, so the main window's status line shows what Settings started too.
         var actions = new UiActions();
+        this._fonts = new UiFonts(pluginInterface.UiBuilder);
         this._settingsWindow = new SettingsWindow(this._config, this._sessions, actions);
-        this._mainWindow = new MainWindow(this._config, this._sessions, actions, this._settingsWindow.Toggle);
+        this._mainWindow = new MainWindow(this._config, this._sessions, actions, this._fonts, this._settingsWindow.Toggle);
         this._debugWindow = new DebugWindow(this._sessions);
         this._windows.AddWindow(this._mainWindow);
         this._windows.AddWindow(this._settingsWindow);
@@ -46,6 +48,7 @@ public sealed class Plugin : IDalamudPlugin {
 
         this._commands.Dispose();
         this._windows.RemoveAllWindows();
+        this._fonts.Dispose();
         this._sessions.Dispose();
         this._player.Dispose();
     }

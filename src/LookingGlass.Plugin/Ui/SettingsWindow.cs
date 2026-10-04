@@ -168,7 +168,7 @@ public sealed class SettingsWindow : Window {
             Widgets.TextEllipsis(name, ImGui.GetContentRegionAvail().X - unblock - ImGui.GetStyle().ItemSpacing.X);
             ImGui.SameLine(ImGui.GetCursorPosX() + ImGui.GetContentRegionAvail().X - unblock);
             ImGui.BeginDisabled(this._actions.Busy);
-            if (ImGui.Button("Unblock")) {
+            if (Widgets.GhostButton("Unblock", "Show their messages and invites again.")) {
                 this._actions.Run($"Unblocking {user.Name}", () => session.UnblockUser(user.UserId));
             }
 

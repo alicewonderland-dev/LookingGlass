@@ -182,7 +182,7 @@ internal sealed class Modals(UiActions actions) {
 
         if (copyId != null) {
             ImGui.SameLine();
-            if (Widgets.IconButton(copyId, FontAwesomeIcon.Copy, "Copy")) {
+            if (Widgets.GhostIconButton(copyId, FontAwesomeIcon.Copy, "Copy")) {
                 ImGui.SetClipboardText(fingerprint);
             }
         }

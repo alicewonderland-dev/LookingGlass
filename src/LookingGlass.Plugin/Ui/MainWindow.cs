@@ -10,17 +10,20 @@ using LookingGlass.Protocol;
 namespace LookingGlass.Plugin.Ui;
 
 /// <summary>
-/// The main window: a top bar (connection, character, invites, settings), the channel list on the
-/// left, the selected channel on the right, and a status line. Before there are channels it shows
-/// what to do instead: log in, connect, register, or create the first channel. Reads only
-/// immutable session snapshots; slow work runs through <see cref="UiActions"/>.
+/// The main window: a line with the connection and your character (and the invites envelope) on
+/// top, the channel list on the left, the selected channel on the right, and a status line. Before
+/// there are channels it shows what to do instead: log in, connect, register, or create the first
+/// channel. Settings are behind the gear in the title bar. Reads only immutable session snapshots;
+/// slow work runs through <see cref="UiActions"/>.
 /// </summary>
 public sealed class MainWindow : Window {
     private const string Title = "LookingGlass";
     private const string Id = "###lookingglass-main";
-    private const float DefaultSidebarWidth = 200;
+    // Unscaled pixels: the window's sizes are scaled by Dalamud, the panes' by Widgets.Scale.
+    private const float DefaultSidebarWidth = 210;
     private const float MinSidebarWidth = 150;
     private const float MinDetailWidth = 380;
+    private const float SplitterWidth = 9;
 
     private readonly Configuration _config;
     private readonly SessionManager _sessions;
@@ -34,7 +37,7 @@ public sealed class MainWindow : Window {
     private string _newChannelName = "";
     private float _sidebarWidth = DefaultSidebarWidth;
 
-    public MainWindow(Configuration config, SessionManager sessions, UiActions actions, Action toggleSettings) : base(Title + Id) {
+    public MainWindow(Configuration config, SessionManager sessions, UiActions actions, UiFonts fonts, Action toggleSettings) : base(Title + Id) {
         this._config = config;
         this._sessions = sessions;
         this._actions = actions;
@@ -45,12 +48,19 @@ public sealed class MainWindow : Window {
 
         // Laid out to fit: the panes scroll, the window doesn't.
         this.Flags |= ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse;
-        this.Size = new Vector2(760, 500);
+        // Dalamud scales these by the global scale itself.
+        this.Size = new Vector2(780, 520);
         this.SizeCondition = ImGuiCond.FirstUseEver;
         this.SizeConstraints = new WindowSizeConstraints {
-            MinimumSize = new Vector2(MinSidebarWidth + MinDetailWidth + 40, 380),
+            MinimumSize = new Vector2(MinSidebarWidth + SplitterWidth + MinDetailWidth + 20, 380),
             MaximumSize = new Vector2(float.MaxValue, float.MaxValue),
         };
+        this.TitleBarButtons.Add(new TitleBarButton {
+            Icon = FontAwesomeIcon.Cog,
+            IconOffset = new Vector2(1.5f, 1),
+            Click = _ => toggleSettings(),
+            ShowTooltip = () => ImGui.SetTooltip("Settings"),
+        });
     }
 
     public override void Update() {
@@ -66,93 +76,88 @@ public sealed class MainWindow : Window {
         var snapshot = this._sessions.Snapshot;
         var session = this._sessions.Session;
 
-        this.DrawTopBar(snapshot, session);
-        ImGui.Separator();
+        this.DrawTopLine(snapshot, session);
+        ImGuiHelpers.ScaledDummy(2);
 
-        // The body takes what the separator and status line below leave (the separator is a pixel high, plus spacing).
-        var footer = ImGui.GetFrameHeight() + ImGui.GetStyle().ItemSpacing.Y * 2 + 2;
+        // The body takes what the status line below leaves.
+        var footer = ImGui.GetFrameHeight() + ImGui.GetStyle().ItemSpacing.Y;
         if (ImGui.BeginChild("##body", new Vector2(0, -footer), false)) {
             this.DrawBody(snapshot, session);
         }
 
         ImGui.EndChild();
-        ImGui.Separator();
         this._actions.DrawStatusBar();
 
         this._modals.Draw(snapshot, session);
     }
 
-    // ================================================================ top bar
+    // ================================================================ top line
 
-    private void DrawTopBar(SessionSnapshot snapshot, ClientSession? session) {
+    /// <summary>
+    /// The connection as a coloured dot and a word (the whole status in its tooltip), the character
+    /// in muted text, and on the right the invites envelope with a count on its corner.
+    /// </summary>
+    private void DrawTopLine(SessionSnapshot snapshot, ClientSession? session) {
         var player = this._sessions.Player;
-        var style = ImGui.GetStyle();
+        var scale = Widgets.Scale;
         var right = ImGui.GetCursorPosX() + ImGui.GetContentRegionAvail().X;
-        var buttons = Widgets.IconButtonWidth(FontAwesomeIcon.Envelope) + Widgets.IconButtonWidth(FontAwesomeIcon.Cog) + style.ItemSpacing.X;
+        var envelope = session != null ? Widgets.GhostIconButtonWidth + 6 * scale : 0;
 
+        var (state, colour, detail) = ConnectionLabel(snapshot, session != null, player != null);
         ImGui.AlignTextToFramePadding();
-        ImGui.TextUnformatted(Title);
-        ImGui.SameLine(0, style.ItemSpacing.X * 2);
-
-        var (state, colour) = ConnectionLabel(snapshot.State, session != null, player != null);
-        Widgets.Pill(state, colour, snapshot.StatusText ?? (session == null && player != null ? "Not connected. Press Connect, or check the server in Settings." : null));
-
-        if (session == null && player != null) {
-            ImGui.SameLine();
-            if (ImGui.Button("Connect")) {
-                this._sessions.Connect();
-            }
-        }
+        ImGui.BeginGroup();
+        Widgets.Dot(colour, ImGui.GetFrameHeight());
+        ImGui.SameLine(0, 6 * scale);
+        ImGui.TextUnformatted(state);
+        ImGui.EndGroup();
+        Widgets.Tooltip(detail, $"Server: {this._config.ServerUrl}");
 
         if (player != null) {
-            ImGui.SameLine(0, style.ItemSpacing.X * 2);
-            ImGui.AlignTextToFramePadding();
-            var width = right - buttons - style.ItemSpacing.X * 2 - ImGui.GetCursorPosX();
-            if (width > 40 * Widgets.Scale) {
-                Widgets.TextEllipsis($"{player.Name} @ {player.HomeWorldName}", width, Widgets.Muted);
+            ImGui.SameLine(0, 12 * scale);
+            var width = right - envelope - ImGui.GetStyle().ItemSpacing.X - ImGui.GetCursorPosX();
+            if (width > 40 * scale) {
+                Widgets.TextEllipsis($"{player.Name} @ {player.HomeWorldName}", width, Widgets.Muted, "The character you're logged in as.");
             }
         }
 
-        ImGui.SameLine(right - buttons);
-        this.DrawInvitesButton(snapshot, session);
-        ImGui.SameLine();
-        if (Widgets.IconButton("##settings", FontAwesomeIcon.Cog, "Settings")) {
-            this._toggleSettings();
+        // Invites only come over a connection.
+        if (session != null) {
+            ImGui.SameLine(right - envelope + 6 * scale);
+            this.DrawInvitesButton(snapshot, session);
         }
     }
 
-    private static (string Text, Vector4 Colour) ConnectionLabel(ConnectionState state, bool hasSession, bool loggedIn) {
+    private static (string Text, Vector4 Colour, string Detail) ConnectionLabel(SessionSnapshot snapshot, bool hasSession, bool loggedIn) {
         if (!loggedIn) {
-            return ("Not logged in", ImGuiColors.DalamudGrey);
+            return ("Not logged in", ImGuiColors.DalamudGrey, "Log in to a character to use LookingGlass.");
         }
 
         if (!hasSession) {
-            return ("Stopped", ImGuiColors.DalamudGrey);
+            return ("Not connected", ImGuiColors.DalamudGrey, snapshot.StatusText ?? "Not connected. Connect below, or check the server in Settings (the gear in the title bar).");
         }
 
-        return state switch {
-            ConnectionState.Ready => ("Connected", ImGuiColors.HealerGreen),
-            ConnectionState.Connecting => ("Connecting", ImGuiColors.DalamudOrange),
-            ConnectionState.Reconnecting => ("Reconnecting", ImGuiColors.DalamudOrange),
-            ConnectionState.Unregistered or ConnectionState.Registering => ("Not registered", ImGuiColors.DalamudRed),
-            _ => ("Stopped", ImGuiColors.DalamudGrey),
+        return snapshot.State switch {
+            ConnectionState.Ready => ("Connected", ImGuiColors.HealerGreen, snapshot.StatusText ?? "Connected to the server."),
+            ConnectionState.Connecting => ("Connecting...", ImGuiColors.DalamudOrange, snapshot.StatusText ?? "Waiting for the server."),
+            ConnectionState.Reconnecting => ("Reconnecting...", ImGuiColors.DalamudOrange, snapshot.StatusText ?? "The connection to the server dropped. Trying again."),
+            ConnectionState.Unregistered or ConnectionState.Registering => ("Not registered", ImGuiColors.DalamudOrange,
+                snapshot.StatusText ?? "Connected, but this character isn't registered yet. Register it below."),
+            _ => ("Stopped", ImGuiColors.DalamudGrey, snapshot.StatusText ?? "Not connected."),
         };
     }
 
-    private void DrawInvitesButton(SessionSnapshot snapshot, ClientSession? session) {
+    private void DrawInvitesButton(SessionSnapshot snapshot, ClientSession session) {
         var count = snapshot.State == ConnectionState.Ready ? snapshot.Invites.Length : 0;
-        if (Widgets.IconButton("##invites", FontAwesomeIcon.Envelope, count switch {
+        if (Widgets.GhostIconButton("##invites", FontAwesomeIcon.Envelope, count switch {
                 0 => "Invites: none waiting",
                 1 => "1 invite waiting",
                 _ => $"{count} invites waiting",
-            })) {
+            }, count > 0 ? Widgets.Text : null)) {
             ImGui.OpenPopup("invites");
         }
 
         if (count > 0) {
-            var max = ImGui.GetItemRectMax();
-            var min = ImGui.GetItemRectMin();
-            Widgets.Badge(new Vector2(max.X + 3 * Widgets.Scale, min.Y + ImGui.GetTextLineHeight() * 0.35f), count > 9 ? "9+" : count.ToString(), ImGuiColors.DalamudRed);
+            Widgets.CornerBadge(count > 9 ? "9+" : count.ToString(), ImGuiColors.DalamudRed);
         }
 
         if (!ImGui.BeginPopup("invites")) {
@@ -160,8 +165,8 @@ public sealed class MainWindow : Window {
         }
 
         ImGui.TextUnformatted("Invites");
-        ImGui.Separator();
-        if (count == 0 || session == null) {
+        ImGuiHelpers.ScaledDummy(2);
+        if (count == 0) {
             ImGui.TextColored(Widgets.Muted, "No invites waiting.");
         } else {
             var first = true;
@@ -224,16 +229,16 @@ public sealed class MainWindow : Window {
         ImGui.EndDisabled();
         ImGui.SameLine();
         ImGui.BeginDisabled(this._actions.Busy);
-        if (ImGui.Button("Decline")) {
+        if (Widgets.GhostButton("Decline")) {
             this._actions.Run("Declining", () => session.RespondToInviteAsync(invite.ChannelId, false));
         }
 
         ImGui.SameLine();
-        if (ImGui.Button("Block")) {
+        if (Widgets.GhostButton("Block")) {
             this._actions.Run($"Blocking {invite.Inviter.Name}", () => session.BlockUser(invite.Inviter.UserId));
         }
 
-        Widgets.Tooltip("Decline, silently decline their future invites, and hide their messages.\nUndo in Settings > Blocked users.");
+        Widgets.Tooltip("Decline, silently decline their future invites, and hide their messages.", "Undo in Settings > Blocked users.");
         ImGui.EndDisabled();
         ImGui.Spacing();
         ImGui.PopID();
@@ -265,7 +270,7 @@ public sealed class MainWindow : Window {
             }
 
             ImGui.SameLine();
-            if (ImGui.Button("Settings")) {
+            if (Widgets.GhostButton("Settings", "Server, chat and identity settings. Also behind the gear in the title bar.")) {
                 this._toggleSettings();
             }
 
@@ -333,7 +338,7 @@ public sealed class MainWindow : Window {
             }
 
             ImGui.SameLine();
-            if (Widgets.IconButton("##copy-code", FontAwesomeIcon.Copy, "Copy the code")) {
+            if (Widgets.GhostIconButton("##copy-code", FontAwesomeIcon.Copy, "Copy the code")) {
                 ImGui.SetClipboardText(challenge.Code);
             }
 
@@ -417,7 +422,7 @@ public sealed class MainWindow : Window {
         this.DrawNewChannelPopup(session);
         if (!snapshot.Invites.IsEmpty) {
             ImGui.Spacing();
-            var hint = snapshot.Invites.Length == 1 ? "Or accept the invite waiting for you (the envelope above)." : "Or accept one of the invites waiting for you (the envelope above).";
+            var hint = snapshot.Invites.Length == 1 ? "Or accept the invite waiting for you (the envelope at the top right)." : "Or accept one of the invites waiting for you (the envelope at the top right).";
             Widgets.CentreNext(ImGui.CalcTextSize(hint).X, width);
             ImGui.TextColored(Widgets.Muted, hint);
         }
@@ -436,25 +441,36 @@ public sealed class MainWindow : Window {
 
         var scale = Widgets.Scale;
         var available = ImGui.GetContentRegionAvail();
-        var splitter = 6 * scale;
+        var splitter = SplitterWidth * scale;
         var maxSidebar = Math.Max(MinSidebarWidth, (available.X - splitter) / scale - MinDetailWidth);
         this._sidebarWidth = Math.Clamp(this._sidebarWidth, MinSidebarWidth, maxSidebar);
 
         this.DrawSidebar(snapshot, session, this._sidebarWidth * scale);
 
-        // A handle between the panes to resize the channel list.
+        // A handle between the panes to resize the channel list, drawn as a thin line.
         ImGui.SameLine(0, 0);
         ImGui.InvisibleButton("##splitter", new Vector2(splitter, available.Y));
-        if (ImGui.IsItemHovered() || ImGui.IsItemActive()) {
+        var hovered = ImGui.IsItemHovered();
+        var active = ImGui.IsItemActive();
+        if (hovered || active) {
             ImGui.SetMouseCursor(ImGuiMouseCursor.ResizeEw);
         }
 
-        if (ImGui.IsItemActive()) {
+        if (active) {
             this._sidebarWidth = Math.Clamp(this._sidebarWidth + ImGui.GetIO().MouseDelta.X / scale, MinSidebarWidth, maxSidebar);
         }
 
+        var line = MathF.Floor((ImGui.GetItemRectMin().X + ImGui.GetItemRectMax().X) / 2);
+        var lineColour = active ? ImGuiCol.SeparatorActive : hovered ? ImGuiCol.SeparatorHovered : ImGuiCol.Separator;
+        ImGui.GetWindowDrawList().AddLine(new Vector2(line, ImGui.GetItemRectMin().Y), new Vector2(line, ImGui.GetItemRectMax().Y),
+            ImGui.GetColorU32(lineColour), Math.Max(1, MathF.Round(scale)));
+
+        // The channel gets the window's padding on its sides, but none on top, to line up with the list.
         ImGui.SameLine(0, 0);
-        if (ImGui.BeginChild("##channel", Vector2.Zero, false)) {
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(8 * scale, 0));
+        var visible = ImGui.BeginChild("##channel", Vector2.Zero, false, ImGuiWindowFlags.AlwaysUseWindowPadding);
+        ImGui.PopStyleVar();
+        if (visible) {
             // Shown in an open (drawn) window: read, and what arrives meanwhile doesn't count.
             this._sessions.Unread.Viewing(selected.Id);
             this._pane.Draw(selected, session, snapshot);
@@ -463,36 +479,38 @@ public sealed class MainWindow : Window {
         ImGui.EndChild();
     }
 
+    /// <summary>The channel list, without a border: a muted heading, the rows, and "New channel" at the bottom.</summary>
     private void DrawSidebar(SessionSnapshot snapshot, ClientSession session, float width) {
-        if (!ImGui.BeginChild("##sidebar", new Vector2(width, 0), true)) {
-            ImGui.EndChild();
-            return;
-        }
+        if (ImGui.BeginChild("##sidebar", new Vector2(width, 0), false)) {
+            ImGui.TextColored(Widgets.Muted, $"Channels · {snapshot.Channels.Length}");
+            ImGuiHelpers.ScaledDummy(2);
 
-        ImGui.TextColored(Widgets.Muted, "Channels");
-        ImGui.SameLine();
-        ImGui.TextColored(Widgets.Muted, $"· {snapshot.Channels.Length}");
-        ImGui.Spacing();
-
-        if (ImGui.BeginChild("##channel-list", new Vector2(0, -ImGui.GetFrameHeightWithSpacing()), false)) {
-            foreach (var channel in snapshot.Channels) {
-                this.DrawChannelRow(channel);
+            if (ImGui.BeginChild("##channel-list", new Vector2(0, -ImGui.GetFrameHeightWithSpacing()), false)) {
+                foreach (var channel in snapshot.Channels) {
+                    this.DrawChannelRow(channel);
+                }
             }
+
+            ImGui.EndChild();
+
+            ImGui.BeginDisabled(this._actions.Busy);
+            if (Widgets.GhostRow("##new-channel", FontAwesomeIcon.Plus, "New channel", "Create a channel. You'll be its admin.")) {
+                this._newChannelName = "";
+                ImGui.OpenPopup("new-channel");
+            }
+
+            ImGui.EndDisabled();
+            this.DrawNewChannelPopup(session);
         }
 
-        ImGui.EndChild();
-
-        ImGui.BeginDisabled(this._actions.Busy);
-        if (ImGui.Button("+ New channel", new Vector2(-1, 0))) {
-            this._newChannelName = "";
-            ImGui.OpenPopup("new-channel");
-        }
-
-        ImGui.EndDisabled();
-        this.DrawNewChannelPopup(session);
         ImGui.EndChild();
     }
 
+    /// <summary>
+    /// One channel: the whole row highlights on hover and when selected; its colour as a bar on the
+    /// left; its number (muted), name, and nickname (muted, on the right); then an attention icon
+    /// and the unread count, right-aligned.
+    /// </summary>
     private void DrawChannelRow(ChannelView channel) {
         var scale = Widgets.Scale;
         var style = ImGui.GetStyle();
@@ -502,7 +520,7 @@ public sealed class MainWindow : Window {
         var unread = this._sessions.Unread.CountOf(channel.Id);
         var attention = ChannelAttention.Of(channel);
 
-        var height = ImGui.GetFrameHeight();
+        var height = MathF.Round(ImGui.GetFrameHeight() + 4 * scale);
         if (ImGui.Selectable($"##row-{channel.Id}", this._selectedChannel == channel.Id, ImGuiSelectableFlags.None, new Vector2(0, height))) {
             this._selectedChannel = channel.Id;
         }
@@ -511,58 +529,56 @@ public sealed class MainWindow : Window {
         var min = ImGui.GetItemRectMin();
         var max = ImGui.GetItemRectMax();
         var drawList = ImGui.GetWindowDrawList();
-        var textY = min.Y + (height - ImGui.GetTextLineHeight()) / 2;
+        var middle = (min.Y + max.Y) / 2;
+        var textY = MathF.Floor(middle - ImGui.GetTextLineHeight() / 2);
         var textColour = ImGui.GetColorU32(ImGuiCol.Text);
         var mutedColour = ImGui.GetColorU32(Widgets.Muted);
 
-        // The channel's colour as an accent along the left edge.
+        // The channel's colour, as a bar along the left edge.
         if (colour is { } accent) {
-            drawList.AddRectFilled(min with { X = min.X + 1 * scale }, new Vector2(min.X + 4 * scale, max.Y), ImGui.GetColorU32(accent), 2 * scale);
+            var inset = 4 * scale;
+            drawList.AddRectFilled(new Vector2(min.X, min.Y + inset), new Vector2(min.X + 3 * scale, max.Y - inset), ImGui.GetColorU32(accent), 1.5f * scale);
         }
 
         // From the right: unread count, attention icon, nickname.
         var x = max.X - style.FramePadding.X;
         if (unread > 0) {
-            x -= Widgets.Badge(new Vector2(x, min.Y + height / 2), UnreadCounter.Format(unread), ImGuiColors.TankBlue) + 4 * scale;
+            x -= Widgets.Badge(new Vector2(x, middle), UnreadCounter.Format(unread), ImGuiColors.TankBlue) + 6 * scale;
         }
 
         if (attention.Level != AttentionLevel.None) {
             var icon = attention.Level == AttentionLevel.Warning ? FontAwesomeIcon.ExclamationTriangle : FontAwesomeIcon.HourglassHalf;
             var iconColour = attention.Level == AttentionLevel.Warning ? Widgets.Warning : Widgets.Muted;
-            using (Services.PluginInterface.UiBuilder.IconFontHandle.Push()) {
-                var text = icon.ToIconString();
-                var size = ImGui.CalcTextSize(text);
-                x -= size.X;
-                drawList.AddText(new Vector2(x, min.Y + (height - size.Y) / 2), ImGui.GetColorU32(iconColour), text);
-                x -= 4 * scale;
-            }
+            var iconWidth = Widgets.FixedIconWidth(icon);
+            Widgets.DrawIcon(drawList, icon, new Vector2(x - iconWidth / 2, middle), ImGui.GetColorU32(iconColour));
+            x -= iconWidth + 6 * scale;
         }
 
-        // The number, then the name, then the nickname (muted) if there's room.
-        var left = min.X + 8 * scale;
+        // The number (right-aligned in its column), then the name, then the nickname if there's room.
+        var left = min.X + 9 * scale;
         var number = slot is { } s ? s.ToString() : "-";
         var numberWidth = ImGui.CalcTextSize("50").X;
-        drawList.AddText(new Vector2(left + numberWidth - ImGui.CalcTextSize(number).X, textY), mutedColour, number);
+        drawList.AddText(new Vector2(MathF.Floor(left + numberWidth - ImGui.CalcTextSize(number).X), textY), mutedColour, number);
         left += numberWidth + 8 * scale;
 
-        var room = x - left - 4 * scale;
+        var room = x - left;
         var nameWidth = ImGui.CalcTextSize(channel.DisplayName).X;
         if (nickname != null && room > 0) {
             var nicknameRoom = Math.Max(0, Math.Min(room * 0.45f, room - nameWidth - 8 * scale));
             var shownNickname = nicknameRoom > ImGui.CalcTextSize("...").X ? Widgets.Ellipsize(nickname, nicknameRoom) : null;
             if (shownNickname != null) {
                 var nicknameWidth = ImGui.CalcTextSize(shownNickname).X;
-                drawList.AddText(new Vector2(x - 4 * scale - nicknameWidth, textY), mutedColour, shownNickname);
+                drawList.AddText(new Vector2(MathF.Floor(x - nicknameWidth), textY), mutedColour, shownNickname);
                 room -= nicknameWidth + 8 * scale;
             }
         }
 
         var name = Widgets.Ellipsize(channel.DisplayName, Math.Max(room, 0));
-        drawList.AddText(new Vector2(left, textY), textColour, name);
+        drawList.AddText(new Vector2(MathF.Floor(left), textY), textColour, name);
 
         if (hovered) {
             ImGui.BeginTooltip();
-            ImGui.PushTextWrapPos(ImGui.GetFontSize() * 28);
+            ImGui.PushTextWrapPos(ImGui.GetFontSize() * 35);
             ImGui.TextUnformatted(channel.DisplayName);
             var commands = slot is { } n ? $"{CommandSlots.Prefix}{n}" : "no number";
             if (nickname != null) {
