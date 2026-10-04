@@ -569,11 +569,17 @@ public sealed class Database {
             case MembershipEntryKind.Leave:
                 Execute(connection, tx, "DELETE FROM members WHERE channel_id = $channel AND user_id = $user;", who);
                 Execute(connection, tx, "DELETE FROM epoch_keys WHERE channel_id = $channel AND recipient_id = $user;", who);
+                // Their invites die with their membership, as the log's rules say.
+                Execute(connection, tx, "DELETE FROM invites WHERE channel_id = $channel AND inviter_id = $user;", who);
                 Execute(connection, tx, "UPDATE channels SET rekey_pending = 1 WHERE channel_id = $channel;", ("$channel", channelId));
                 break;
             case MembershipEntryKind.SetRank:
                 Execute(connection, tx, "UPDATE members SET rank = $rank WHERE channel_id = $channel AND user_id = $user;",
                     ("$rank", (long) entry.Rank), ("$channel", channelId), ("$user", subject.UserId));
+                if (entry.Rank < Rank.Moderator) {
+                    Execute(connection, tx, "DELETE FROM invites WHERE channel_id = $channel AND inviter_id = $user;", who);
+                }
+
                 break;
             case MembershipEntryKind.TransferAdmin:
                 Execute(connection, tx, "UPDATE members SET rank = $rank WHERE channel_id = $channel AND user_id = $user;",

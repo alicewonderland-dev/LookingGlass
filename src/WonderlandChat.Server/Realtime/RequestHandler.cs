@@ -793,11 +793,16 @@ public sealed class RequestHandler(
     }
 
     private void AppendEntry(string channelId, UserRow me, MembershipEntry entry, SealedBox? sealedName = null, byte[]? inviteSignature = null) {
-        this.CheckEntry(channelId, me, entry);
+        var invitedBefore = db.GetInvitees(channelId).Select(invitee => invitee.User.UserId).ToHashSet();
+        var after = this.CheckEntry(channelId, me, entry);
         if (!db.AppendEntry(channelId, entry, sealedName, inviteSignature)) {
             throw new RequestException(ErrorCode.Conflict, "The channel's membership changed meanwhile; refresh and try again.");
         }
 
+        // Invites that went with their inviter's removal or demotion (the subject's own is the caller's to announce).
+        invitedBefore.ExceptWith(after.Invitees.Select(invitee => invitee.UserId));
+        invitedBefore.Remove(entry.Subject.UserId);
+        registry.SendToAll(invitedBefore, new Event { InviteRevoked = new InviteRevoked { ChannelId = channelId } });
         logger.LogDebug("Channel {Channel} log entry {Seq} ({Kind}) by {User}", channelId, entry.Seq, entry.Kind, me.UserId);
     }
 

@@ -279,6 +279,10 @@ public sealed class ServerHardeningTests {
             Assert.Null(db.GetRank(channelId, other));
             Assert.Equal(Rank.Invited, db.GetRank(channelId, invitee));
 
+            // The old admin invited them; demoted to member, that invite goes too.
+            Assert.True(db.AppendEntry(channelId, Next(db, channelId, MembershipEntryKind.SetRank, admin, memberKeys, member, rank: Rank.Member)));
+            Assert.Null(db.GetRank(channelId, invitee));
+
             var replayed = Membership.Empty(channelId);
             foreach (var entry in db.GetLogEntries(channelId, 0, 100)) {
                 replayed = replayed.Apply(entry);

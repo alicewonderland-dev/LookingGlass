@@ -312,6 +312,11 @@ public sealed class SignedLogMembership : IChannelMembership {
                     return Conflict("They're already invited.");
                 }
 
+                // Otherwise a moderator could admit their own keys under a second user ID, and keep a seat after removal.
+                if (members.Values.Any(member => member.Keys == subjectKeys) || invitees.Values.Any(other => other.Keys == subjectKeys)) {
+                    return Conflict("Those keys already belong to someone in this channel.");
+                }
+
                 if (!IdentityKeys.IsUsableAgreementKey(subjectKeys.AgreementPublicKey)) {
                     return Invalid("The invitee's agreement key can't be sealed to.");
                 }
@@ -400,6 +405,12 @@ public sealed class SignedLogMembership : IChannelMembership {
                     members = members
                         .SetItem(subjectId, target with { Rank = Rank.Admin })
                         .SetItem(actor!.UserId, actor with { Rank = Rank.Moderator });
+                }
+
+                // Invites only count while whoever signed them may invite: a removed member's signature
+                // signs nothing that counts after the removal, an invite waiting to be accepted included.
+                if (kind is MembershipEntryKind.Remove or MembershipEntryKind.Leave || (kind == MembershipEntryKind.SetRank && entry.Rank < Rank.Moderator)) {
+                    invitees = invitees.RemoveRange(invitees.Values.Where(invitee => invitee.InviterId == subjectId).Select(invitee => invitee.UserId).ToList());
                 }
 
                 break;
