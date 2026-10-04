@@ -41,6 +41,16 @@ public static class Policy {
         return Can(actor, ChannelAction.Kick) && target < actor;
     }
 
+    /// <summary>
+    /// The requests a connection may make before logging in: the handshake, and the ways to log in (a device token,
+    /// registering through the Lodestone, or a key login). Every other request needs a logged-in user.
+    /// </summary>
+    public static bool AllowedBeforeLogin(ClientFrame.BodyOneofCase request) => request is
+        ClientFrame.BodyOneofCase.Hello or ClientFrame.BodyOneofCase.Ping
+        or ClientFrame.BodyOneofCase.StartRegistration or ClientFrame.BodyOneofCase.CompleteRegistration
+        or ClientFrame.BodyOneofCase.Authenticate
+        or ClientFrame.BodyOneofCase.StartKeyLogin or ClientFrame.BodyOneofCase.CompleteKeyLogin;
+
     /// <summary>Ranks an admin may assign. Assigning Admin transfers the role.</summary>
     public static bool IsAssignableRank(Rank rank) => rank is Rank.Member or Rank.Moderator or Rank.Admin;
 }

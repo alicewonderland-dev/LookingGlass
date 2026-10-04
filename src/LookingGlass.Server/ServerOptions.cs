@@ -10,6 +10,14 @@ public sealed class ServerOptions {
     /// <summary>Shown to every client when it connects.</summary>
     public string Announcement { get; set; } = "";
 
+    /// <summary>
+    /// The addresses clients connect to, such as "wss://chat.example.com/ws". Key login only accepts signatures made
+    /// for one of these (scheme, host and port; not the path). Empty: the address each connection was made to, from
+    /// its Host header and scheme, which a client connecting directly can choose, so list them on a server reachable
+    /// from the internet without a proxy that checks the Host header.
+    /// </summary>
+    public string[] PublicUrls { get; set; } = [];
+
     public LodestoneOptions Lodestone { get; set; } = new();
     public DevOptions Dev { get; set; } = new();
     public LimitOptions Limits { get; set; } = new();
@@ -42,6 +50,12 @@ public sealed class DevOptions {
 
 public sealed class LimitOptions {
     public int RegistrationsPerHourPerIp { get; set; } = 5;
+
+    /// <summary>Key login challenges one IP address may ask for in an hour.</summary>
+    public int KeyLoginsPerHourPerIp { get; set; } = 30;
+
+    /// <summary>Failed key logins after which an IP address gets no more challenges, for an hour.</summary>
+    public int KeyLoginFailuresPerHourPerIp { get; set; } = 10;
 
     /// <summary>Concurrent WebSocket connections allowed from one IP address.</summary>
     public int ConnectionsPerIp { get; set; } = 20;

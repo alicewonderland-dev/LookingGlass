@@ -59,6 +59,15 @@ try {
     return;
 }
 
+// Likewise for the key login addresses: a typo would otherwise only show as every key login failing.
+try {
+    RequestHandler.ParsePublicUrls(options.PublicUrls);
+} catch (InvalidOperationException ex) {
+    app.Logger.LogCritical("{Problem}", ex.Message);
+    Environment.ExitCode = 1;
+    return;
+}
+
 if (options.Dev.AllowDebugAccounts) {
     app.Logger.LogWarning("Debug accounts are ENABLED. Anyone can register a fake character on world \"{World}\". Never do this on a public server.", ProtocolInfo.DebugWorldName);
 }
@@ -87,7 +96,10 @@ app.Map(ProtocolInfo.WebSocketPath, async (HttpContext context, RequestHandler h
     try {
         using var socket = await context.WebSockets.AcceptWebSocketAsync();
         var connection = new ClientConnection(socket, address, (int) handler.Limits.MaxFrameBytes, options.Limits.SendQueueLength,
-            loggers.CreateLogger<ClientConnection>());
+            loggers.CreateLogger<ClientConnection>()) {
+            // As the client addressed it: the Host header, and the scheme (https behind a trusted TLS proxy, from X-Forwarded-Proto).
+            RequestOrigin = ServerOrigin.FromRequest(context.Request.Scheme, context.Request.Host.Value),
+        };
 
         try {
             await connection.RunAsync(handler.HandleAsync, registry.Respond);

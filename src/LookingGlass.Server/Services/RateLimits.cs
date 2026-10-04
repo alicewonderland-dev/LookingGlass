@@ -71,4 +71,20 @@ public sealed class WindowCounter(int limit, TimeSpan window) {
             return true;
         }
     }
+
+    /// <summary>Whether the key has reached the limit within the window, without counting anything.</summary>
+    public bool IsFull(string key) {
+        if (!this._events.TryGetValue(key, out var queue)) {
+            return limit <= 0;
+        }
+
+        lock (queue) {
+            var now = DateTimeOffset.UtcNow;
+            while (queue.Count > 0 && now - queue.Peek() > window) {
+                queue.Dequeue();
+            }
+
+            return queue.Count >= limit;
+        }
+    }
 }

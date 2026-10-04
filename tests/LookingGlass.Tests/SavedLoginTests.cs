@@ -224,20 +224,30 @@ public sealed class SavedLoginTests : IAsyncLifetime {
     private static int AuthenticateCount(TestClient client) =>
         client.Session.GetTrace().Count(entry => entry.Outgoing && entry.Summary.EndsWith(" Authenticate"));
 
-    /// <summary>The server forgets a user's logins (as on the wrong database), keeping a copy for <see cref="RestoreDevices"/>.</summary>
+    /// <summary>
+    /// The server forgets a user's logins, and doesn't know their identity key either, so signing in with the key
+    /// fails too (as on the wrong database), keeping a copy for <see cref="RestoreDevices"/>. A server that only lost
+    /// the logins is signed back into with the key; see <see cref="KeyLoginTests"/>.
+    /// </summary>
     private void HideDevices(long userId) {
         this._server.ExecuteSql("""
             CREATE TABLE IF NOT EXISTS hidden_devices AS SELECT * FROM devices WHERE 0;
             INSERT INTO hidden_devices SELECT * FROM devices WHERE user_id = $id;
             DELETE FROM devices WHERE user_id = $id;
+            CREATE TABLE IF NOT EXISTS hidden_keys AS SELECT user_id, signing_key FROM users WHERE 0;
+            INSERT INTO hidden_keys SELECT user_id, signing_key FROM users WHERE user_id = $id;
+            UPDATE users SET signing_key = randomblob(32) WHERE user_id = $id;
             """, ("$id", userId));
     }
 
-    /// <summary>The server knows the hidden logins again (as when the right database is back).</summary>
+    /// <summary>The server knows the hidden logins and keys again (as when the right database is back).</summary>
     private void RestoreDevices() {
         this._server.ExecuteSql("""
             INSERT INTO devices SELECT * FROM hidden_devices;
             DELETE FROM hidden_devices;
+            UPDATE users SET signing_key = (SELECT signing_key FROM hidden_keys WHERE hidden_keys.user_id = users.user_id)
+            WHERE user_id IN (SELECT user_id FROM hidden_keys);
+            DELETE FROM hidden_keys;
             """);
     }
 }

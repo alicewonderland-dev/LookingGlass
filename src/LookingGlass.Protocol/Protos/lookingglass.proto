@@ -43,6 +43,8 @@ message ClientFrame {
     FetchEpochKeys fetch_epoch_keys = 27;
     SendMessage send_message = 28;
     FetchMembershipLog fetch_membership_log = 29;
+    StartKeyLogin start_key_login = 30;
+    CompleteKeyLogin complete_key_login = 31;
   }
 }
 
@@ -69,6 +71,8 @@ message Response {
     Ack ack = 18;
     EpochKeys epoch_keys = 19;
     MembershipLog membership_log = 20;
+    KeyLoginChallenge key_login_challenge = 21;
+    KeyLoginComplete key_login_complete = 22;
   }
 }
 
@@ -218,6 +222,39 @@ message Authenticate {
 message AuthenticateOk {
   User user = 1;
   uint32 key_version = 2;
+}
+
+// Key login: a user the server knows gets a new device token by signing a challenge with
+// their current identity key, instead of registering again through the Lodestone (say,
+// after the server lost their device token). Allowed before logging in, like registration.
+// Other devices' tokens are kept.
+message StartKeyLogin {
+  int64 user_id = 1;
+}
+
+// Issued on, and only usable on, the connection that asked for it, once, until it expires.
+message KeyLoginChallenge {
+  // 32 random bytes.
+  bytes challenge = 1;
+  int64 expires_unix = 2;
+}
+
+message CompleteKeyLogin {
+  // The challenge being answered, as received.
+  bytes challenge = 1;
+  // The server's address exactly as the client connected to it (for example
+  // "wss://chat.example.com/ws"). Signed, and checked by the server against its own
+  // address, so a signature made for one server can't be replayed to another.
+  string server_url = 2;
+  // Ed25519 signature by the user's identity key over the challenge, user ID and
+  // server URL (see LookingGlass.Core.Crypto.KeyLoginProof).
+  bytes signature = 3;
+}
+
+// As RegistrationComplete: the client then sends Authenticate with the token.
+message KeyLoginComplete {
+  string device_token = 1;
+  User user = 2;
 }
 
 message GetIdentities {
