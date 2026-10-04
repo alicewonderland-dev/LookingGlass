@@ -158,7 +158,7 @@ public sealed class ClientSessionOptions {
     public required Uri ServerUri { get; init; }
     public string ClientVersion { get; init; } = "0.1.0";
 
-    /// <summary>Opens the WebSocket. Defaults to <see cref="ClientWebSocket"/>; tests replace it.</summary>
+    /// <summary>Opens the WebSocket. Defaults to <see cref="WebSocketConnector.ConnectAsync"/>, which never follows redirects; tests replace it.</summary>
     public Func<Uri, CancellationToken, Task<WebSocket>>? Connect { get; init; }
 
     public TimeSpan RequestTimeout { get; init; } = TimeSpan.FromSeconds(15);
