@@ -229,6 +229,51 @@ public sealed class EndToEndTests : IAsyncLifetime {
         Assert.Empty(bob.Session.Snapshot.Invites);
     }
 
+    [Fact]
+    public async Task InviteeAloneOnlineMakesTheChannelKeyWhenJoining() {
+        var alice = await this._server.RegisterAsync("Alice Away");
+        var bob = await this._server.RegisterAsync("Bob Alone");
+        var channelId = await this.InviteAsync(alice, bob, "Empty Room");
+        await this.TakeOfflineAsync(alice);
+
+        // Nobody else is online, so the server asks Bob to rekey, before he even knows the channel.
+        await bob.Session.RespondToInviteAsync(channelId, true, Ct);
+        var channel = await WaitFor(() => bob.Session.Snapshot.FindChannel(channelId) is { HasKey: true, RekeyPending: false } c ? c : null);
+        Assert.Equal("Empty Room", channel.Name);
+        Assert.DoesNotContain(bob.Notices, n => n.Text.Contains("Waiting for a member"));
+        await bob.Session.SendTextAsync(channelId, "anyone here?", Ct);
+
+        // Alice picks up the new key when she's back.
+        var aliceAgain = await this._server.RestartAsync(alice);
+        await WaitFor(() => aliceAgain.Session.Snapshot.FindChannel(channelId) is { HasKey: true, RekeyPending: false, Name: "Empty Room" } c ? c : null);
+        await aliceAgain.Session.SendTextAsync(channelId, "welcome", Ct);
+        await WaitFor(() => bob.Messages.FirstOrDefault(m => m.Text == "welcome"));
+    }
+
+    [Fact]
+    public async Task MemberComingBackOnlineRekeysAChannelLeftWaiting() {
+        var alice = await this._server.RegisterAsync("Alice Returns");
+        // Bob doesn't rekey when asked, so the channel is still waiting when Alice comes back.
+        var bob = await this._server.RegisterAsync("Bob Waits", options: this._server.Options(autoRekey: false));
+        var channelId = await this.InviteAsync(alice, bob, "Waiting Room");
+        await this.TakeOfflineAsync(alice);
+        await bob.Session.RespondToInviteAsync(channelId, true, Ct);
+        Assert.True(bob.Session.Snapshot.FindChannel(channelId)!.RekeyPending);
+
+        // Alice is asked to rekey as she reconnects, without anyone sending anything.
+        var aliceAgain = await this._server.RestartAsync(alice);
+        await WaitFor(() => bob.Session.Snapshot.FindChannel(channelId) is { HasKey: true, RekeyPending: false, Name: "Waiting Room" } c ? c : null);
+        await WaitFor(() => aliceAgain.Session.Snapshot.FindChannel(channelId) is { HasKey: true, RekeyPending: false } c ? c : null);
+        Assert.Equal(1UL, this._server.Database.GetChannel(channelId)!.Epoch);
+    }
+
+    /// <summary>Stops a client and waits until the server has noticed.</summary>
+    private async Task TakeOfflineAsync(TestClient client) {
+        var userId = client.UserId;
+        await client.Session.DisposeAsync();
+        await WaitFor(() => this._server.Registry.IsOnline(userId) ? null : new object());
+    }
+
     /// <summary>Creates a channel and invites <paramref name="invitee"/>, waiting until they can read the invite.</summary>
     private async Task<string> InviteAsync(TestClient admin, TestClient invitee, string channelName) {
         var channelId = await admin.Session.CreateChannelAsync(channelName, Ct);
