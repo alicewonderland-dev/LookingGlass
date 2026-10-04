@@ -256,13 +256,30 @@ public sealed class ClientSession : IAsyncDisposable {
         return challenge;
     }
 
-    /// <summary>Finishes registering, replacing any saved login (even one the server didn't recognise), and logs in.</summary>
+    /// <summary>
+    /// Finishes registering, replacing any saved login (even one the server didn't recognise), and logs in. Signed with
+    /// the identity key being registered (see <see cref="RegistrationProof"/>), over the challenge and the address this
+    /// client connected to, so the server knows the key is this client's and not someone else's public one.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">No registration was started.</exception>
     public async Task CompleteRegistrationAsync(CancellationToken ct = default) {
         var connection = this.RequireConnection();
         // Never alongside a try of the old login: its answer could otherwise land after the new login's.
         await this._loginGate.WaitAsync(ct);
         try {
-            var response = await this.RequestAsync(connection, new ClientFrame { CompleteRegistration = new CompleteRegistration() }, ct, RegistrationRequestTimeout);
+            var (identity, challenge) = this.Read(() => (this._identity, this._challenge));
+            if (identity == null || challenge == null) {
+                throw new InvalidOperationException("Start registering first.");
+            }
+
+            // Exactly the address this connection was made to, as for key login.
+            var serverUrl = this._options.ServerUri.AbsoluteUri;
+            var response = await this.RequestAsync(connection, new ClientFrame {
+                CompleteRegistration = new CompleteRegistration {
+                    ServerUrl = serverUrl,
+                    Signature = ByteString.CopyFrom(RegistrationProof.Sign(identity, challenge.Nonce.Span, challenge.LodestoneId, serverUrl)),
+                },
+            }, ct, RegistrationRequestTimeout);
             var complete = response.RegistrationComplete ?? throw Unexpected(response);
 
             lock (this._lock) {

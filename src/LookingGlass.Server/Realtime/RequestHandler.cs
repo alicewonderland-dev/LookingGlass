@@ -123,7 +123,7 @@ public sealed class RequestHandler(
                 ClientFrame.BodyOneofCase.Hello => this.Hello(connection, frame.Hello),
                 ClientFrame.BodyOneofCase.Ping => new Response { Pong = new Pong { ServerTimeUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() } },
                 ClientFrame.BodyOneofCase.StartRegistration => await this.StartRegistration(connection, frame.StartRegistration, ct),
-                ClientFrame.BodyOneofCase.CompleteRegistration => await this.CompleteRegistration(connection, ct),
+                ClientFrame.BodyOneofCase.CompleteRegistration => await this.CompleteRegistration(connection, frame.CompleteRegistration, ct),
                 ClientFrame.BodyOneofCase.Authenticate => this.Authenticate(connection, frame.Authenticate),
                 ClientFrame.BodyOneofCase.StartKeyLogin => this.StartKeyLogin(connection, frame.StartKeyLogin),
                 ClientFrame.BodyOneofCase.CompleteKeyLogin => this.CompleteKeyLogin(connection, frame.CompleteKeyLogin),
@@ -208,13 +208,14 @@ public sealed class RequestHandler(
             }
 
             connection.PendingRegistration = new PendingRegistration(
-                DebugUserId(name), name, 0, ProtocolInfo.DebugWorldName, request.Identity, "", DateTimeOffset.UtcNow.AddMinutes(minutes), true);
+                DebugUserId(name), name, 0, ProtocolInfo.DebugWorldName, request.Identity, "", DateTimeOffset.UtcNow.AddMinutes(minutes), true, NewRegistrationNonce());
             return new Response {
                 RegistrationChallenge = new RegistrationChallenge {
                     Code = "",
                     ExpiresUnix = connection.PendingRegistration.Expires.ToUnixTimeSeconds(),
                     LodestoneId = connection.PendingRegistration.UserId,
                     VerificationSkipped = true,
+                    Nonce = ByteString.CopyFrom(connection.PendingRegistration.Nonce),
                 },
             };
         }
@@ -238,7 +239,7 @@ public sealed class RequestHandler(
 
         var code = "LGC-" + RandomCode(8);
         connection.PendingRegistration = new PendingRegistration(
-            found.Id, found.Name, character.WorldId, found.WorldName, request.Identity, code, DateTimeOffset.UtcNow.AddMinutes(minutes), false);
+            found.Id, found.Name, character.WorldId, found.WorldName, request.Identity, code, DateTimeOffset.UtcNow.AddMinutes(minutes), false, NewRegistrationNonce());
         connection.VerifyAttempts = 0;
 
         return new Response {
@@ -246,11 +247,14 @@ public sealed class RequestHandler(
                 Code = code,
                 ExpiresUnix = connection.PendingRegistration.Expires.ToUnixTimeSeconds(),
                 LodestoneId = found.Id,
+                Nonce = ByteString.CopyFrom(connection.PendingRegistration.Nonce),
             },
         };
     }
 
-    private async Task<Response> CompleteRegistration(ClientConnection connection, CancellationToken ct) {
+    private static byte[] NewRegistrationNonce() => RandomNumberGenerator.GetBytes(RegistrationProof.NonceSize);
+
+    private async Task<Response> CompleteRegistration(ClientConnection connection, CompleteRegistration request, CancellationToken ct) {
         var pending = connection.PendingRegistration
             ?? throw new RequestException(ErrorCode.RegistrationFailed, "Start registration on this connection first.");
 
@@ -258,6 +262,9 @@ public sealed class RequestHandler(
             connection.PendingRegistration = null;
             throw new RequestException(ErrorCode.RegistrationFailed, "The challenge expired; start again.");
         }
+
+        // Before asking the Lodestone, and before anything is stored: the client holds the key it registers.
+        this.CheckRegistrationProof(connection, pending, request);
 
         if (!pending.IsDebug) {
             // Each attempt costs a Lodestone request, which is shared by the whole server.
@@ -311,6 +318,37 @@ public sealed class RequestHandler(
         registry.Disconnect(user.UserId, "This character registered again");
         logger.LogInformation("Registered {User} ({Kind})", user.UserId, pending.IsDebug ? "debug" : "verified");
         return new Response { RegistrationComplete = new RegistrationComplete { DeviceToken = token, User = user.ToProto() } };
+    }
+
+    /// <summary>
+    /// Checks that a registration is signed by the identity key it registers, over this connection's nonce, the account
+    /// and this server's address (see <see cref="RegistrationProof"/>). Anyone can fetch a user's public identity bundle,
+    /// binding signature and all; without this, someone could register another user's key for their own character, then
+    /// register again with new keys and so have it retired. The address is checked for registrations through the Lodestone,
+    /// as for key login, so a malicious server can't relay this server's challenge to its users and register their keys
+    /// here; a debug account proves nothing about who registers it anyway (anyone may register any name), and the echo bot
+    /// connects to a local address that PublicUrls don't list.
+    /// </summary>
+    /// <exception cref="RequestException">Not signed, or not like that. The registration can still be completed.</exception>
+    private void CheckRegistrationProof(ClientConnection connection, PendingRegistration pending, CompleteRegistration request) {
+        if (request.Signature.IsEmpty) {
+            // A plugin from before registrations were signed.
+            throw new RequestException(ErrorCode.RegistrationFailed,
+                "This server needs a newer version of LookingGlass to register: please update the plugin, then register again.");
+        }
+
+        if (!pending.IsDebug && this.NotThisServerIfCheckable(connection, request.ServerUrl) is { } elsewhere) {
+            logger.LogInformation("Registration of {User} from {Address} refused: {Reason}", pending.UserId, connection.RemoteAddress, elsewhere);
+            throw new RequestException(ErrorCode.RegistrationFailed,
+                "That registration was made for another server address than this server's, so it can't be completed here. " +
+                "Check the server address in Settings, then register again.");
+        }
+
+        if (!RegistrationProof.Verify(pending.Identity.SigningPublicKey.Span, pending.Nonce, pending.UserId, request.ServerUrl, request.Signature.Span)) {
+            logger.LogInformation("Registration of {User} from {Address} refused: not signed by the key being registered", pending.UserId, connection.RemoteAddress);
+            throw new RequestException(ErrorCode.RegistrationFailed,
+                "That registration isn't signed with the identity key being registered on this connection, so nothing was registered.");
+        }
     }
 
     private Response Authenticate(ClientConnection connection, Authenticate request) {
@@ -455,19 +493,8 @@ public sealed class RequestHandler(
         }
 
         // Before the signature: a signature made for another server is what a relay would bring.
-        var signed = ServerOrigin.FromUrl(request.ServerUrl);
-        var ours = this._keyLoginOrigins switch {
-            KeyLoginOrigins.PublicUrls => signed != null && this._publicOrigins.Contains(signed),
-            KeyLoginOrigins.HostHeader => signed != null && signed == connection.RequestOrigin,
-            _ => false,
-        };
-        if (!ours) {
-            return $"signed for {signed?.ToString() ?? "an invalid address"}, which isn't this server ("
-                   + this._keyLoginOrigins switch {
-                       KeyLoginOrigins.PublicUrls => string.Join(", ", this._publicOrigins),
-                       KeyLoginOrigins.HostHeader => $"Host header: {connection.RequestOrigin?.ToString() ?? "unknown address"}",
-                       _ => "key login is off: no PublicUrls",
-                   } + ")";
+        if (this.NotThisServer(connection, request.ServerUrl) is { } elsewhere) {
+            return elsewhere;
         }
 
         user = db.GetUser(pending.UserId);
@@ -545,7 +572,10 @@ public sealed class RequestHandler(
     /// <summary>Key login signatures verified so far, for tests that every answer costs the same.</summary>
     internal int KeyLoginSignatureChecks => Volatile.Read(ref this._keyLoginSignatureChecks);
 
-    /// <summary>Which server addresses a key login signature may name.</summary>
+    /// <summary>
+    /// Which server addresses a key login signature may name; registrations through the Lodestone, and retiring a key, go
+    /// by the same (see <see cref="NotThisServerIfCheckable"/>).
+    /// </summary>
     internal enum KeyLoginOrigins {
         /// <summary>The configured <see cref="ServerOptions.PublicUrls"/>: the operator says which addresses are this server's.</summary>
         PublicUrls,
@@ -560,6 +590,38 @@ public sealed class RequestHandler(
 
         /// <summary>None configured, outside Development: there is no address to trust, so key login is refused.</summary>
         Off,
+    }
+
+    /// <summary>
+    /// Checks the server address a client signed (for key login, registration, or retiring its key) against this server's
+    /// (see <see cref="KeyLoginOrigins"/>): a signature made for another server is what a relaying server would bring.
+    /// </summary>
+    /// <returns>Why the address isn't this server's (for the log), or null if it is.</returns>
+    private string? NotThisServer(ClientConnection connection, string signedUrl) {
+        var signed = ServerOrigin.FromUrl(signedUrl);
+        var ours = this._keyLoginOrigins switch {
+            KeyLoginOrigins.PublicUrls => signed != null && this._publicOrigins.Contains(signed),
+            KeyLoginOrigins.HostHeader => signed != null && signed == connection.RequestOrigin,
+            _ => false,
+        };
+        return ours ? null
+            : $"signed for {signed?.ToString() ?? "an invalid address"}, which isn't this server ("
+              + this._keyLoginOrigins switch {
+                  KeyLoginOrigins.PublicUrls => string.Join(", ", this._publicOrigins),
+                  KeyLoginOrigins.HostHeader => $"Host header: {connection.RequestOrigin?.ToString() ?? "unknown address"}",
+                  _ => "no PublicUrls",
+              } + ")";
+    }
+
+    /// <summary>
+    /// For requests that are signed for an address but, unlike key login, can't be turned off (registering, and retiring
+    /// a key): the address is checked as for key login where there is an address to check it against, and not at all on
+    /// a server outside Development without PublicUrls. There, as before signatures named the address, only the plugin's
+    /// separate keys per server address keep a relaying server from using what the user signs for it.
+    /// </summary>
+    /// <returns>Why the address isn't this server's (for the log), or null if it is, or can't be checked.</returns>
+    private string? NotThisServerIfCheckable(ClientConnection connection, string signedUrl) {
+        return this._keyLoginOrigins == KeyLoginOrigins.Off ? null : this.NotThisServer(connection, signedUrl);
     }
 
     internal static KeyLoginOrigins ChooseKeyLoginOrigins(IReadOnlyList<ServerOrigin> publicOrigins, bool development) {

@@ -8,6 +8,7 @@ using LookingGlass.Server.Data;
 namespace LookingGlass.Server.Realtime;
 
 /// <summary>A registration started on this connection; only this connection can complete it.</summary>
+/// <param name="Nonce">What the client signs, with the identity key it registers, to complete it.</param>
 public sealed record PendingRegistration(
     long UserId,
     string Name,
@@ -16,7 +17,8 @@ public sealed record PendingRegistration(
     IdentityBundle Identity,
     string Code,
     DateTimeOffset Expires,
-    bool IsDebug);
+    bool IsDebug,
+    byte[] Nonce);
 
 /// <summary>A key login challenge issued on this connection; only this connection can answer it, once.</summary>
 public sealed record PendingKeyLogin(long UserId, byte[] Challenge, DateTimeOffset Expires);

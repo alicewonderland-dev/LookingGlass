@@ -85,7 +85,8 @@ switch (RequestHandler.ChooseKeyLoginOrigins(publicOrigins, app.Environment.IsDe
     default:
         app.Logger.LogWarning(
             "LookingGlass:PublicUrls is not set, so signing in with the identity key (key login) is OFF: a client whose login this server " +
-            "doesn't recognise must register again through the Lodestone. List every address clients connect to, for example " +
+            "doesn't recognise must register again through the Lodestone, and the address registrations are signed for isn't checked. " +
+            "List every address clients connect to, for example " +
             "LookingGlass__PublicUrls__0=wss://chat.example.com/ws.");
         break;
 }
