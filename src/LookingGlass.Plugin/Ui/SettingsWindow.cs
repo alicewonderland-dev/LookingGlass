@@ -316,10 +316,14 @@ public sealed class SettingsWindow : Window {
         var player = this._sessions.Player;
         ImGui.BeginDisabled(this._actions.Busy || player == null);
         if (ImGui.Button("Reset my identity...") && player != null) {
-            this._modals.Confirm("Reset my identity", ResetText(player.Name, this._config.ServerUrl), "Reset my identity", () => {
+            var serverUrl = this._config.ServerUrl;
+            this._modals.Confirm("Reset my identity", ResetText(player.Name, serverUrl), "Reset my identity", () => {
                 // On the framework thread (the dialog's button); the returned task finishes the reset.
                 var reset = this._sessions.ResetIdentity();
                 this._actions.Run("Resetting your identity", () => reset);
+                // The backup, if any, no longer holds the old identity afterwards: look again once done.
+                this._backupFor = (player.ContentId, serverUrl);
+                this._backupCheck = reset.ContinueWith(_ => ProtectedSecretStore.FindBackup(player.ContentId, serverUrl), TaskScheduler.Default);
             });
         }
 
@@ -358,6 +362,7 @@ public sealed class SettingsWindow : Window {
             this._modals.Confirm("Restore your identity", RestoreText(player.Name, serverUrl, saved), "Restore it", () => {
                 var restore = this._sessions.RestoreBackup();
                 this._actions.Run("Restoring your identity", () => restore);
+                this._backupFor = (player.ContentId, serverUrl);
                 this._backupCheck = restore.ContinueWith(_ => ProtectedSecretStore.FindBackup(player.ContentId, serverUrl), TaskScheduler.Default);
             });
         }
@@ -377,11 +382,14 @@ public sealed class SettingsWindow : Window {
     private static string ResetText(string name, string serverUrl) =>
         $"This makes new identity keys for {name} on {serverUrl}. Only do this if your key was lost or may have been stolen. " +
         "If you just can't sign in, you don't need it: registering again keeps your key.\n\n" +
+        "First, if you're connected, LookingGlass tells the server to retire your old key: from then on it can't sign in or be " +
+        "registered again there, and every login made with it stops working. If you're not connected (or the server can't be told), " +
+        "they keep working there until you register again, so connect first if you can.\n\n" +
         "After a reset:\n" +
         "- You register again through the Lodestone.\n" +
         "- You lose your place in every channel on this server. To get back in, someone must remove you and invite you again.\n" +
         "- Everyone who knows you sees a \"key changed\" warning for you.\n" +
-        "- Once you've registered again, your old keys and logins stop working on this server.\n\n" +
+        "- Copies of the old identity kept for this server's other addresses, and in backups, are removed too.\n\n" +
         "Your identity on other servers isn't affected.";
 
     private void DrawBlockedUsers() {

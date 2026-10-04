@@ -157,6 +157,15 @@ public sealed class ProtectedSecretStore : ISecretStore {
     }
 
     /// <summary>
+    /// "Reset my identity" for a character at an address, in every file that holds the old identity (see
+    /// <see cref="ServerSecretFiles.ResetIdentity"/>). Only while no session uses the files. Warnings about the files
+    /// read (a backup loaded, say) go to the log only: they'd be about files the user didn't pick.
+    /// </summary>
+    public static IdentityReset ResetIdentity(ulong contentId, string serverUrl) {
+        return ServerSecretFiles.ResetIdentity(ConfigDirectory, contentId, serverUrl, path => At(path, null), message => Services.Log.Information(message));
+    }
+
+    /// <summary>
     /// The backup of a character's identity for an address that the user may restore (see <see cref="ServerSecretFiles.FindBackup"/>),
     /// or null. Reads (and decrypts) files: not on the framework thread. A file that can't be read counts as no backup.
     /// </summary>

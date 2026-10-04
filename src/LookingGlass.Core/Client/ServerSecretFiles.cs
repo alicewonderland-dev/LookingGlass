@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 
 namespace LookingGlass.Core.Client;
@@ -114,6 +115,107 @@ public static partial class ServerSecretFiles {
         store.Save(backup);
     }
 
+    /// <summary>
+    /// "Reset my identity" for a character at an address (see <see cref="ClientSecrets.ResetIdentity"/>), everywhere the
+    /// old identity is kept. First every other file of the character whose signing key is the one being reset (another
+    /// address it was carried to by a move, the old-style file, any of their .bak files) has the identity dropped
+    /// (<see cref="ClientSecrets.ForgetIdentity"/>): kept as files, with what they hold about others and the channels,
+    /// so nothing the user needs is lost, but never loadable as the old identity again. Then the address's own file gets
+    /// new keys. Each file changed is written twice, so its .bak (which a write fills with the previous version) holds
+    /// the new contents too. Only while no session uses these files.
+    ///
+    /// Without this, switching to another address, or a backup, would bring the old key and login back, and "Register
+    /// again" (which keeps the key) would hand the account back to it. The server refuses to register a replaced key
+    /// anyway; this keeps the client from trying, and from using a login the reset should have ended.
+    /// </summary>
+    /// <param name="log">Told about each file changed, and each that couldn't be read or written.</param>
+    /// <returns>The other files the old identity was removed from, and the problems met (files that couldn't be checked).</returns>
+    /// <exception cref="SecretsServerMismatchException">The address's own file belongs to another address. Nothing was changed.</exception>
+    public static IdentityReset ResetIdentity(string directory, ulong contentId, string serverUrl, Func<string, ISecretStore> storeAt, Action<string>? log = null) {
+        var store = Open(directory, contentId, serverUrl, storeAt, log);
+        var secrets = store.Load();
+        var scrubbed = new List<string>();
+        var problems = new List<string>();
+        // Copies first: if this stops half way, the address's own file still has the key, and a reset tried again finds them.
+        if (secrets.SigningPrivateKey is { } oldKey) {
+            foreach (var path in CharacterFiles(directory, contentId).Where(path => !SamePath(path, store.FilePath))) {
+                try {
+                    if (ForgetIdentityIn(path, oldKey, storeAt)) {
+                        scrubbed.Add(path);
+                        log?.Invoke($"Removed the reset identity from {Path.GetFileName(path)}.");
+                    }
+                } catch (Exception ex) {
+                    // Reported, never skipped silently; the other files and the reset itself go on.
+                    problems.Add($"Couldn't check {Path.GetFileName(path)} for the old identity: {ex.Message}");
+                    log?.Invoke(problems[^1]);
+                }
+            }
+        }
+
+        secrets.ResetIdentity();
+        store.Save(secrets);
+        // Again, so the .bak doesn't keep the old identity either.
+        store.Save(secrets);
+        return new IdentityReset(scrubbed, problems);
+    }
+
+    /// <summary>
+    /// Drops the identity whose signing key is <paramref name="oldKey"/> from a secrets file and its .bak: the file's
+    /// contents (with the identity dropped, if it was there) are written twice, file then backup.
+    /// </summary>
+    /// <returns>Whether the file or its backup held it.</returns>
+    private static bool ForgetIdentityIn(string path, byte[] oldKey, Func<string, ISecretStore> storeAt) {
+        // Not bound to an address: other addresses' files name their own, and are written back naming it.
+        var store = storeAt(path);
+        lock (AtomicFile.LockFor(path)) {
+            // The file (or, if it is missing or damaged, its backup, as a load would use)...
+            var current = store.Load();
+            // ...and the backup on its own (one written after it would be a .bak.bak, which nothing reads).
+            var backupPath = AtomicFile.BackupPath(path);
+            ClientSecrets? backup = null;
+            if (File.Exists(backupPath)) {
+                try {
+                    backup = storeAt(backupPath).Load();
+                } catch (Exception ex) when (ex is InvalidDataException or JsonException or CryptographicException) {
+                    // Unreadable, so never loaded either; overwritten below if the file is rewritten.
+                }
+            }
+
+            var inFile = Holds(current, oldKey);
+            if (!inFile && !Holds(backup, oldKey)) {
+                return false;
+            }
+
+            if (inFile) {
+                current.ForgetIdentity();
+            }
+
+            store.Save(current);
+            store.Save(current);
+            return true;
+        }
+    }
+
+    private static bool Holds(ClientSecrets? secrets, byte[] signingKey) {
+        return secrets?.SigningPrivateKey is { } key && CryptographicOperations.FixedTimeEquals(key, signingKey);
+    }
+
+    /// <summary>Every secrets file of a character, new-style or old, by the path a store opens (a .bak counts as its file's).</summary>
+    private static IEnumerable<string> CharacterFiles(string directory, ulong contentId) {
+        if (!Directory.Exists(directory)) {
+            return [];
+        }
+
+        var prefix = $"secrets-{contentId:X16}-";
+        return Directory.EnumerateFiles(directory, prefix + "*")
+            .Where(file => AnyName().IsMatch(Path.GetFileName(file)) && Path.GetFileName(file).StartsWith(prefix, StringComparison.Ordinal))
+            .Select(file => file.EndsWith(".bak", StringComparison.Ordinal) ? file[..^".bak".Length] : file)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static bool SamePath(string a, string b) => string.Equals(Path.GetFullPath(a), Path.GetFullPath(b), StringComparison.OrdinalIgnoreCase);
+
     /// <summary>Saved through a <see cref="ServerBoundSecretStore"/>, which names the address: true of every file moved, or made, since.</summary>
     private static bool IsStamped(ClientSecrets secrets) => secrets.ServerUrl != null || secrets.ServerOrigin != null;
 
@@ -183,7 +285,16 @@ public static partial class ServerSecretFiles {
 
     [GeneratedRegex("^secrets-([0-9A-F]{16})-[0-9A-F]{32}\\.bin$")]
     private static partial Regex NewName();
+
+    /// <summary>A secrets file, new-style or old, or its .bak.</summary>
+    [GeneratedRegex("^secrets-[0-9A-F]{16}-(?:[0-9A-F]{12}|[0-9A-F]{32})\\.bin(?:\\.bak)?$")]
+    private static partial Regex AnyName();
 }
+
+/// <summary>What <see cref="ServerSecretFiles.ResetIdentity"/> did besides giving the address new keys.</summary>
+/// <param name="Scrubbed">The other files (or their backups) the old identity was removed from.</param>
+/// <param name="Problems">Files that couldn't be checked or changed, for the user: they may still hold the old identity.</param>
+public sealed record IdentityReset(IReadOnlyList<string> Scrubbed, IReadOnlyList<string> Problems);
 
 /// <summary>
 /// A secret store bound to one server address: it refuses secrets that name another address (rather than use one

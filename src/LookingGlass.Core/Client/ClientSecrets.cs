@@ -73,16 +73,28 @@ public sealed class ClientSecrets {
     /// </list>
     /// Registering the new keys (through the Lodestone) revokes the old identity's logins on the server and stops its keys
     /// signing in; its channel memberships stay bound to the old keys until someone removes and invites you again.
+    /// Copies of the old identity in other files are removed with <see cref="ServerSecretFiles.ResetIdentity"/>.
     /// </summary>
     public void ResetIdentity() {
-        if (this.UserId is { } me) {
-            this.PinnedIdentities.Remove(me);
-        }
-
+        this.ForgetIdentity();
         using var keys = Crypto.IdentityKeys.Generate();
         var (signing, agreement) = keys.ExportPrivateKeys();
         this.SigningPrivateKey = signing;
         this.AgreementPrivateKey = agreement;
+    }
+
+    /// <summary>
+    /// Drops the identity and everything that belongs to it, as <see cref="ResetIdentity"/> does, without making new keys:
+    /// for copies of an identity being reset (another address's file, a backup). What is about others and the channels is
+    /// kept, as there. A session started on these secrets has no identity, so it registers (or a move can carry one over).
+    /// </summary>
+    public void ForgetIdentity() {
+        if (this.UserId is { } me) {
+            this.PinnedIdentities.Remove(me);
+        }
+
+        this.SigningPrivateKey = null;
+        this.AgreementPrivateKey = null;
         this.DeviceToken = null;
         this.UserId = null;
         this.EpochKeys.Clear();
