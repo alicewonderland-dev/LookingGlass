@@ -99,12 +99,15 @@ public sealed class UnreadCounterTests {
         unread.Viewing(null);
         Assert.True(unread.Add(From(Bob, "aaa")));
 
-        // Showing another channel ends it too.
+        Assert.Equal(1, unread.CountOf("aaa"));
+
+        // Showing another channel ends it too. (Showing "aaa" again read it.)
         unread.Viewing("aaa");
         unread.Viewing("bbb");
         Assert.True(unread.Add(From(Bob, "aaa")));
         Assert.False(unread.Add(From(Bob, "bbb")));
-        Assert.Equal(2, unread.CountOf("aaa"));
+        Assert.Equal(1, unread.CountOf("aaa"));
+        Assert.Equal(0, unread.CountOf("bbb"));
     }
 
     [Fact]

@@ -86,18 +86,5 @@ public static class ChannelNicknames {
     /// been listed yet.
     /// </summary>
     /// <returns>True if anything changed.</returns>
-    public static bool Sync(Dictionary<string, string> nicknames, SessionSnapshot snapshot) {
-        if (snapshot.State != ConnectionState.Ready || !snapshot.ChannelsLoaded) {
-            return false;
-        }
-
-        var listed = snapshot.Channels.Select(channel => channel.Id).ToHashSet();
-        var changed = false;
-        foreach (var gone in nicknames.Keys.Where(id => !listed.Contains(id)).ToList()) {
-            nicknames.Remove(gone);
-            changed = true;
-        }
-
-        return changed;
-    }
+    public static bool Sync(Dictionary<string, string> nicknames, SessionSnapshot snapshot) => ChannelMaps.DropGone(nicknames, snapshot);
 }
