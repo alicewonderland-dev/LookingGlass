@@ -36,6 +36,10 @@ public enum ConnectionState {
 /// The server refused this device's saved login on this connection, and a key login. The login is kept and tried again now and then;
 /// registering again replaces it. True in <see cref="ConnectionState.LoginNotRecognized"/>, and while registering again from it.
 /// </param>
+/// <param name="AddressNotListed">
+/// Set while connected to a server that lists its own addresses (Welcome's public_urls) without the one this client uses:
+/// what to tell the user, naming both. Such a server refuses registering, key login and "Reset my identity" through it.
+/// </param>
 public sealed record SessionSnapshot(
     ConnectionState State,
     string? StatusText,
@@ -48,7 +52,8 @@ public sealed record SessionSnapshot(
     RegistrationChallenge? PendingChallenge,
     ImmutableArray<User> BlockedUsers,
     bool ChannelsLoaded,
-    bool LoginRejected = false) {
+    bool LoginRejected = false,
+    string? AddressNotListed = null) {
     public static readonly SessionSnapshot Empty = new(
         ConnectionState.Stopped, null, null, null,
         ImmutableArray<ChannelView>.Empty, ImmutableArray<InviteView>.Empty,

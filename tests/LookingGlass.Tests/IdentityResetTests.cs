@@ -312,6 +312,9 @@ public sealed class IdentityResetTests : IAsyncLifetime {
             foreach (var url in new[] { "wss://evil.example/ws", publicUrls ? server.ServerUri.AbsoluteUri : "wss://chat.example.com/ws" }) {
                 var refused = await raw.SendAsync(Retire(url, RetireIdentityProof.Sign(keys, alice.UserId, token, url)));
                 Assert.Equal(ErrorCode.Forbidden, refused.Error?.Code);
+                // The address used, and the one(s) to use instead.
+                Assert.Contains($"doesn't accept the address {url}", refused.Error!.Message);
+                Assert.Contains(publicUrls ? "Use one of: wss://chat.example.com/ws" : "ws://localhost:80", refused.Error.Message);
             }
 
             Assert.False(server.Database.IsKeyRetired(alice.UserId, keys.SigningPublicKey));

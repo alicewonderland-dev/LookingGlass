@@ -71,6 +71,8 @@ server can register (or take over) any debug account, including the echo bot.
 2. In game, open `/lookingglass`, click the gear in its title bar (or the
    plugin's settings button in Dalamud's plugin list), and set the server URL
    to `ws://<machine-name>:5180/ws` (the Tailscale MagicDNS name or 100.x IP).
+   If the server lists its addresses (below), use exactly one of those: the
+   plugin warns as soon as it connects through any other.
 3. Register your character. The main window walks you through it: get a
    code, paste it into your Lodestone profile, then press **Verify**.
 
@@ -80,21 +82,31 @@ end-to-end encrypted regardless. For TLS anyway, `tailscale serve` (or
 front of port 5180 (see `tailscale serve --help` for your version); the
 plugin URL then becomes `wss://<machine>.<tailnet>.ts.net/ws`.
 
-**List the server's addresses.** Tell the server every address clients use,
-so signing in with the identity key works on each of them and plugins can
-keep their identity when you switch between them (see "Moving the server" and
-"The server's addresses" below). For the tailnet plus Funnel case:
+**List the server's addresses.** Registering, signing in with the identity
+key (key login) and "Reset my identity" all depend on this list: once it is
+set, the server refuses each of them through any address that isn't on it
+(see "The server's addresses" below), and plugins can only keep their
+identity when moving between addresses on it (see "Moving the server"). So
+list **every** address a tester's plugin uses, exactly as typed into the
+plugin: the MagicDNS name, the 100.x IP if anyone connects by it, the Funnel
+or `tailscale serve` `wss://` name, and `ws://127.0.0.1:5180/ws` for a plugin
+on the server machine itself. Scheme, host and port must match; the path
+doesn't. For example:
 
 ```powershell
 $env:LookingGlass__PublicUrls__0 = 'ws://<machine-name>:5180/ws'
-$env:LookingGlass__PublicUrls__1 = 'wss://<machine-name>.<tailnet>.ts.net/ws'
+$env:LookingGlass__PublicUrls__1 = 'ws://100.x.y.z:5180/ws'
+$env:LookingGlass__PublicUrls__2 = 'wss://<machine-name>.<tailnet>.ts.net/ws'
+$env:LookingGlass__PublicUrls__3 = 'ws://127.0.0.1:5180/ws'
 ```
 
 (`export LookingGlass__PublicUrls__0=...` on Linux; or a `PublicUrls` list in
-`appsettings.json`.) List an address such as `ws://127.0.0.1:5180/ws` too if
-a plugin uses it. Without any, a Development server goes by the address each
-connection names (weaker, see below) and says so when it starts; a server not
-in Development refuses to start.
+`appsettings.json`.) A plugin connected through an address that isn't listed
+says so as soon as it connects, naming the listed ones, and the server's
+refusal names both too; the server logs each refusal as a warning. Without
+any list, a Development server goes by the address each connection names
+(weaker, see below) and says so when it starts; a server not in Development
+refuses to start.
 
 Check a server from any machine:
 
@@ -146,12 +158,13 @@ was given, and if the server doesn't recognise that (say, it was restored
 from a backup), with your identity key: the server checks a signature made
 with it and gives this device a new login, with no Lodestone step. Only if
 the server doesn't accept the key either (it has never known your account,
-you reset your identity elsewhere, the key is gone, or the server has key
-login off) does the main window say "Login not recognised". The plugin keeps
+you reset your identity elsewhere, the key is gone, or you connect through an
+address the server doesn't list, which the plugin warns about) does the main
+window say "Login not recognised". The plugin keeps
 your login and tries it again every minute or so, so it works again by itself
 once the right server is back; "Retry now" tries the login and the key at
 once. Register again through the Lodestone only if your key was lost, or the
-server has never known your account (or can't sign you in with your key).
+server has never known your account.
 Registering again keeps the identity key the plugin has, so your channels
 keep working.
 

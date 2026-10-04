@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.WebSockets;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using LookingGlass.Core.Crypto;
@@ -29,6 +30,7 @@ public sealed class RequestHandlerTests : IDisposable {
     private readonly Database _db;
     private readonly ConnectionRegistry _registry;
     private readonly StubLodestone _lodestone = new();
+    private readonly CapturingLoggerProvider _logs = new();
     private RequestHandler _handler;
 
     public RequestHandlerTests() {
@@ -47,7 +49,8 @@ public sealed class RequestHandlerTests : IDisposable {
             PublicUrls = publicUrls,
         });
         var lodestone = new LodestoneClient(new HttpClient(this._lodestone), options, NullLogger<LodestoneClient>.Instance);
-        return new RequestHandler(this._db, this._registry, lodestone, options, NullLogger<RequestHandler>.Instance,
+        var logger = Microsoft.Extensions.Logging.LoggerFactory.Create(logging => logging.AddProvider(this._logs)).CreateLogger<RequestHandler>();
+        return new RequestHandler(this._db, this._registry, lodestone, options, logger,
             SignedLogMembershipProvider.Instance, SealedEpochKeyProvider.Instance);
     }
 
@@ -104,7 +107,17 @@ public sealed class RequestHandlerTests : IDisposable {
         foreach (var url in new[] { "wss://evil.example/ws", "ws://localhost/ws", "wss://chat.example.com.evil.example/ws" }) {
             var refused = await this.CompleteRegistrationAsync(connection, keys, challenge, url);
             Assert.Equal(ErrorCode.RegistrationFailed, refused.Error?.Code);
+            // What the user can act on: the address they used, and the ones to use instead (Welcome lists those anyway).
+            Assert.Contains($"doesn't accept the address {url}", refused.Error!.Message);
+            Assert.Contains("Use one of: wss://chat.example.com/ws", refused.Error.Message);
         }
+
+        // And the operator sees each, by origin, and nothing secret.
+        var warnings = this._logs.AtLeast(Microsoft.Extensions.Logging.LogLevel.Warning);
+        Assert.Equal(3, warnings.Count);
+        Assert.Contains(warnings, w => w.Contains("wss://evil.example:443") && w.Contains(LodestoneId.ToString()));
+        Assert.Contains(warnings, w => w.Contains("ws://localhost:80"));
+        Assert.All(warnings, w => Assert.DoesNotContain(Convert.ToBase64String(RegistrationProof.Sign(keys, challenge.Nonce.Span, challenge.LodestoneId, "ws://localhost/ws")), w));
 
         Assert.Equal(0, connection.VerifyAttempts);
         Assert.Null(this._db.GetUser(LodestoneId));
@@ -131,6 +144,8 @@ public sealed class RequestHandlerTests : IDisposable {
         foreach (var url in new[] { Url, "wss://chat.example.com/ws" }) {
             var refused = await this.CompleteRegistrationAsync(connection, keys, challenge, url);
             Assert.Equal(ErrorCode.RegistrationFailed, refused.Error?.Code);
+            Assert.Contains($"doesn't accept the address {url}", refused.Error!.Message);
+            Assert.Contains("LookingGlass:PublicUrls", refused.Error.Message);
         }
 
         Assert.Equal(0, connection.VerifyAttempts);

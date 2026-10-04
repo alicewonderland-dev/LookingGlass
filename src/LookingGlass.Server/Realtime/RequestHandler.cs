@@ -384,10 +384,10 @@ public sealed class RequestHandler(
         }
 
         if (!pending.IsDebug && this.NotThisServer(connection, request.ServerUrl) is { } elsewhere) {
-            logger.LogInformation("Registration of {User} from {Address} refused: {Reason}", pending.UserId, connection.RemoteAddress, elsewhere);
+            logger.LogWarning("Registration of {User} from {Address} refused: {Reason}", pending.UserId, connection.RemoteAddress, elsewhere);
             throw new RequestException(ErrorCode.RegistrationFailed,
-                "That registration was made for another server address than this server's, so it can't be completed here. " +
-                "Check the server address in Settings, then register again.");
+                this.WrongAddressMessage(connection, request.ServerUrl) +
+                " Nothing was registered: set the server address in Settings to one this server accepts, then register again.");
         }
 
         if (!RegistrationProof.Verify(pending.Identity.SigningPublicKey.Span, pending.Nonce, pending.UserId, request.ServerUrl, request.Signature.Span)) {
@@ -505,7 +505,7 @@ public sealed class RequestHandler(
         var pending = connection.PendingKeyLogin;
         connection.PendingKeyLogin = null;
 
-        var refusal = this.CheckKeyLogin(connection, pending, request, out var user);
+        var refusal = this.CheckKeyLogin(connection, pending, request, out var user, out var wrongAddress);
         string? token = null;
         if (refusal == null) {
             token = NewDeviceToken();
@@ -530,7 +530,9 @@ public sealed class RequestHandler(
                 this._keyLoginFailuresPerAccountAndIp.TryAdd(AccountAndAddress(pending.UserId, connection.RemoteAddress));
             }
 
-            logger.LogInformation("Key login for {User} from {Address} refused: {Reason}", pending?.UserId, connection.RemoteAddress, refusal);
+            // Signed for an address that isn't listed: most likely a client set up with an address the operator should list.
+            logger.Log(wrongAddress ? LogLevel.Warning : LogLevel.Information,
+                "Key login for {User} from {Address} refused: {Reason}", pending?.UserId, connection.RemoteAddress, refusal);
             throw new RequestException(ErrorCode.NotAuthenticated, KeyLoginFailed);
         }
 
@@ -541,8 +543,10 @@ public sealed class RequestHandler(
     }
 
     /// <returns>Why the key login is refused (for the log only, never the client), or null if it may go ahead.</returns>
-    private string? CheckKeyLogin(ClientConnection connection, PendingKeyLogin? pending, CompleteKeyLogin request, out UserRow? user) {
+    /// <param name="wrongAddress">Refused because it was signed for an address that isn't this server's.</param>
+    private string? CheckKeyLogin(ClientConnection connection, PendingKeyLogin? pending, CompleteKeyLogin request, out UserRow? user, out bool wrongAddress) {
         user = null;
+        wrongAddress = false;
         if (pending == null) {
             return "no challenge on this connection";
         }
@@ -557,6 +561,7 @@ public sealed class RequestHandler(
 
         // Before the signature: a signature made for another server is what a relay would bring.
         if (this.NotThisServer(connection, request.ServerUrl) is { } elsewhere) {
+            wrongAddress = true;
             return elsewhere;
         }
 
@@ -604,8 +609,9 @@ public sealed class RequestHandler(
 
         // Before the signature, as for key login: one made for another server is what a relay would bring.
         if (this.NotThisServer(connection, request.ServerUrl) is { } elsewhere) {
-            logger.LogInformation("Retiring the identity key of {User} refused: {Reason}", user.UserId, elsewhere);
-            throw new RequestException(ErrorCode.Forbidden, "That was signed for another server address than this server's, so nothing was retired.");
+            logger.LogWarning("Retiring the identity key of {User} from {Address} refused: {Reason}", user.UserId, connection.RemoteAddress, elsewhere);
+            throw new RequestException(ErrorCode.Forbidden,
+                this.WrongAddressMessage(connection, request.ServerUrl) + " Nothing was retired: connect through an address this server accepts, then reset again.");
         }
 
         if (!RetireIdentityProof.Verify(user.SigningKey, user.UserId, tokenHash, request.ServerUrl, request.Signature.Span)) {
@@ -691,6 +697,24 @@ public sealed class RequestHandler(
                   KeyLoginOrigins.HostHeader => $"Host header: {connection.RequestOrigin?.ToString() ?? "unknown address"}",
                   _ => "no PublicUrls",
               } + ")";
+    }
+
+    /// <summary>
+    /// What the client is told when <see cref="NotThisServer"/> refuses the address it signed for: that address, and the
+    /// ones this server accepts (Welcome lists them to anyone anyway), so the user knows what to set.
+    /// </summary>
+    private string WrongAddressMessage(ClientConnection connection, string signedUrl) {
+        // The client's own string, sent back to it; shortened and without control characters, as it is displayed.
+        var used = new string(signedUrl.Trim().Where(c => !char.IsControl(c)).Take(200).ToArray());
+        used = used.Length == 0 ? "(none)" : used;
+        return this._keyLoginOrigins switch {
+            KeyLoginOrigins.PublicUrls => $"This server doesn't accept the address {used}. Use one of: {string.Join(", ", this._advertisedUrls)}.",
+            KeyLoginOrigins.HostHeader =>
+                $"This server doesn't accept the address {used}: it lists no addresses of its own, so it only accepts the one this connection was made to " +
+                $"({connection.RequestOrigin?.ToString() ?? "unknown"}).",
+            _ => $"This server doesn't accept the address {used}: it lists no addresses of its own (its operator hasn't set LookingGlass:PublicUrls), " +
+                 "so it accepts none.",
+        };
     }
 
     internal static KeyLoginOrigins ChooseKeyLoginOrigins(IReadOnlyList<ServerOrigin> publicOrigins, bool development) {

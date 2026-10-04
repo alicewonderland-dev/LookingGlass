@@ -142,7 +142,7 @@ public static class ServerMove {
                 $"so it can't confirm that {newUrl} is the same server.", started);
         }
 
-        if (!Lists(listed, newOrigin)) {
+        if (!newOrigin.IsListedIn(listed)) {
             return new ServerMoveCheck(current, newUrl, ServerMoveVerdict.NotListed, listed,
                 $"The server at {current} doesn't list {newUrl} as one of its addresses (it lists {string.Join(", ", listed)}), so it may be a different server.",
                 started);
@@ -158,7 +158,7 @@ public static class ServerMove {
         }
 
         var currentOrigin = ServerOrigin.FromUrl(current);
-        if (currentOrigin == null || !Lists(confirming.PublicUrls, currentOrigin)) {
+        if (currentOrigin == null || !currentOrigin.IsListedIn(confirming.PublicUrls)) {
             var theirs = confirming.PublicUrls.Count == 0 ? "no addresses" : string.Join(", ", confirming.PublicUrls);
             return new ServerMoveCheck(current, newUrl, ServerMoveVerdict.NotConfirmed, listed,
                 $"The server at {current} lists {newUrl} as one of its addresses, but the server at {newUrl} doesn't list {current} " +
@@ -213,8 +213,6 @@ public static class ServerMove {
         secrets.ServerOrigin = null;
         to.Save(secrets);
     }
-
-    private static bool Lists(IEnumerable<string> urls, ServerOrigin origin) => urls.Any(url => ServerOrigin.FromUrl(url.Trim()) == origin);
 
     private static async Task<Welcome> HelloAsync(Uri uri, Func<Uri, CancellationToken, Task<WebSocket>> connect, CancellationToken ct) {
         var socket = await connect(uri, ct);

@@ -230,6 +230,12 @@ public sealed class SettingsWindow : Window {
             ImGui.TextColored(Widgets.Error, error);
         }
 
+        // What the server said on connecting: it lists its addresses, and not this one.
+        if (this._sessions.Session != null && this._sessions.Snapshot.AddressNotListed is { } addressHint) {
+            Widgets.IconText(FontAwesomeIcon.ExclamationTriangle, "The server doesn't accept this address", Widgets.Warning);
+            ImGui.TextColored(Widgets.Warning, addressHint);
+        }
+
         ImGui.TextColored(Widgets.Muted, "For example ws://my-vm:5180/ws over Tailscale, or wss://chat.example.com/ws.");
         ImGui.PopTextWrapPos();
         this.FinishMoveCheck();

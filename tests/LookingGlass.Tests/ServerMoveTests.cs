@@ -27,6 +27,32 @@ public sealed class ServerMoveTests : IDisposable {
         return new Harness(settings: publicUrls.Select((url, i) => ($"LookingGlass:PublicUrls:{i}", url)).ToArray());
     }
 
+    /// <summary>
+    /// A server that lists its addresses only accepts registrations, key logins and identity resets signed for one of
+    /// them, so a client connected through another (say the tailnet IP, when the operator listed the machine name) is told
+    /// as soon as it connects, before it tries to register: which address it uses, and which to use instead. Not when its
+    /// address is listed (by origin: scheme, host and port), nor when the server lists none.
+    /// </summary>
+    [Fact]
+    public async Task TheClientSaysWhenTheServerDoesntListItsAddress() {
+        await using var listed = Server("wss://chat.example.com/ws", "ws://lgchat:5180/ws");
+        await using var unlisted = Server();
+
+        var elsewhere = listed.StartClient("Address Elsewhere", options: listed.Options(serverUri: new Uri("ws://100.64.0.7:5180/ws")));
+        var snapshot = await WaitFor(() => elsewhere.Session.Snapshot is { State: ConnectionState.Unregistered } s ? s : null);
+        var hint = Assert.IsType<string>(snapshot.AddressNotListed);
+        Assert.Contains("ws://100.64.0.7:5180/ws", hint);
+        Assert.Contains("wss://chat.example.com/ws, ws://lgchat:5180/ws", hint);
+        Assert.Contains(elsewhere.Notices, notice => notice.Level == NoticeLevel.Warning && notice.Text == hint);
+
+        foreach (var (server, url) in new[] { (listed, "wss://CHAT.example.com:443/ws"), (listed, "ws://lgchat:5180/ws"), (unlisted, OldUrl) }) {
+            var fine = server.StartClient("Address Fine " + Guid.NewGuid().ToString("N")[..6], options: server.Options(serverUri: new Uri(url)));
+            var ready = await WaitFor(() => fine.Session.Snapshot is { State: ConnectionState.Unregistered } s ? s : null);
+            Assert.Null(ready.AddressNotListed);
+            Assert.DoesNotContain(fine.Notices, notice => notice.Level == NoticeLevel.Warning);
+        }
+    }
+
     [Fact]
     public async Task TheServerListsItsPublicUrlsInWelcome() {
         await using var listed = Server(OldUrl, NewUrl);

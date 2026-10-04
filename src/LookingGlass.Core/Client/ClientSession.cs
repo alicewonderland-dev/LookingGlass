@@ -69,6 +69,8 @@ public sealed class ClientSession : IAsyncDisposable {
     private User? _me;
     private Limits? _limits;
     private bool _debugAccountsEnabled;
+    // What to tell the user when the server lists its addresses without the one this client uses (see AddressNotListedText).
+    private string? _addressNotListed;
     private RegistrationChallenge? _challenge;
     // The server refused the saved login on the current connection. The login is kept, and tried again.
     private bool _loginRejected;
@@ -119,6 +121,26 @@ public sealed class ClientSession : IAsyncDisposable {
     private int _disposed;
     // The user has been told the server speaks another protocol version (once, not at every reconnect).
     private int _versionMismatchReported;
+    // The last address hint the user was told about (once, not at every reconnect).
+    private string? _addressNotListedReported;
+
+    /// <summary>
+    /// What to tell the user when the server lists its own addresses (Welcome's public_urls) and <paramref name="serverUri"/>
+    /// isn't one of them (by origin: scheme, host and port, as the server compares them): it refuses registering, key login
+    /// and "Reset my identity" signed for that address. Null if the address is listed, or the server lists none.
+    /// </summary>
+    internal static string? AddressNotListedText(Uri serverUri, IEnumerable<string> publicUrls) {
+        // Only what parses as a server address, and not without end: the list comes from the server.
+        var listed = publicUrls.Select(url => url.Trim()).Where(url => url.Length <= 200 && ServerOrigin.FromUrl(url) != null).Distinct().Take(10).ToList();
+        var origin = ServerOrigin.FromUrl(serverUri.AbsoluteUri);
+        if (listed.Count == 0 || (origin != null && origin.IsListedIn(listed))) {
+            return null;
+        }
+
+        return $"This server's addresses are {string.Join(", ", listed)}, and the one you connect to, {serverUri.AbsoluteUri}, isn't one of them, " +
+               "so registering, signing in with your identity key and \"Reset my identity\" won't work through it. " +
+               "Set the server address in Settings to one of those (ask the server's operator if none works for you).";
+    }
 
     public ClientSession(ClientSessionOptions options, ISecretStore store) {
         this._options = options;
@@ -1066,14 +1088,21 @@ public sealed class ClientSession : IAsyncDisposable {
         }
 
         var welcome = response.Welcome ?? throw Unexpected(response);
+        var addressNotListed = AddressNotListedText(this._options.ServerUri, welcome.PublicUrls);
 
         lock (this._lock) {
             this._limits = welcome.Limits;
             this._debugAccountsEnabled = welcome.DebugAccountsEnabled;
+            this._addressNotListed = addressNotListed;
         }
 
         if (!string.IsNullOrWhiteSpace(welcome.Announcement)) {
             this.RaiseNotice(NoticeLevel.Info, welcome.Announcement);
+        }
+
+        // Before the user tries to register: once per session (and again if what the server lists changes), not on every reconnect.
+        if (addressNotListed != null && Interlocked.Exchange(ref this._addressNotListedReported, addressNotListed) != addressNotListed) {
+            this.RaiseNotice(NoticeLevel.Warning, addressNotListed);
         }
 
         await this._loginGate.WaitAsync(ct);
@@ -3108,7 +3137,9 @@ public sealed class ClientSession : IAsyncDisposable {
                     .OrderBy(user => user.Name, StringComparer.OrdinalIgnoreCase)
                     .ToImmutableArray(),
                 this._channelsLoaded && this._state == ConnectionState.Ready,
-                this._loginRejected && this._state is ConnectionState.LoginNotRecognized or ConnectionState.Registering);
+                this._loginRejected && this._state is ConnectionState.LoginNotRecognized or ConnectionState.Registering,
+                // As the server said on this connection; nothing while there is none.
+                this._state is ConnectionState.Stopped or ConnectionState.Connecting or ConnectionState.Reconnecting ? null : this._addressNotListed);
             this._snapshot = snapshot;
         }
 
