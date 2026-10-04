@@ -327,6 +327,23 @@ public sealed class Database {
             ("$hash", tokenHash), ("$id", userId), ("$now", now));
     }
 
+    /// <summary>
+    /// Adds a device for a key login, but only while the user is still registered with the key that signed it. In one
+    /// statement, so a registration with new keys (which revokes every device) can't land between the signature check
+    /// and the insert and leave the old key with a working login.
+    /// </summary>
+    /// <returns>False if the user's keys changed (or they're gone) since <paramref name="signingKey"/> was checked.</returns>
+    public bool AddDeviceForKey(long userId, byte[] signingKey, uint keyVersion, byte[] tokenHash) {
+        using var connection = this.Open();
+        var now = Now();
+        return Execute(connection, null, """
+            INSERT INTO devices (token_hash, user_id, created_at, last_used_at)
+            SELECT $hash, user_id, $now, $now FROM users
+            WHERE user_id = $id AND signing_key = $key AND key_version = $version;
+            """,
+            ("$hash", tokenHash), ("$id", userId), ("$key", signingKey), ("$version", (long) keyVersion), ("$now", now)) == 1;
+    }
+
     public long? FindDevice(byte[] tokenHash) {
         using var connection = this.Open();
         var result = Scalar(connection, null, "SELECT user_id FROM devices WHERE token_hash = $hash;", ("$hash", tokenHash));

@@ -17,6 +17,9 @@ public sealed record PendingRegistration(
     DateTimeOffset Expires,
     bool IsDebug);
 
+/// <summary>A key login challenge issued on this connection; only this connection can answer it, once.</summary>
+public sealed record PendingKeyLogin(long UserId, byte[] Challenge, DateTimeOffset Expires);
+
 /// <summary>
 /// One client's WebSocket. Requests are handled one at a time, in order.
 /// Outgoing frames go through a bounded queue drained by a single send loop;
@@ -52,6 +55,17 @@ public sealed class ClientConnection {
     public PendingRegistration? PendingRegistration { get; set; }
     public int VerifyAttempts { get; set; }
     public DateTimeOffset LastVerifyAttempt { get; set; } = DateTimeOffset.MinValue;
+
+    /// <summary>
+    /// Where the client connected to (scheme and Host header), for checking the address a key login names.
+    /// Null if unknown, which no address matches.
+    /// </summary>
+    public ServerOrigin? RequestOrigin { get; init; }
+
+    public PendingKeyLogin? PendingKeyLogin { get; set; }
+
+    /// <summary>Key login challenges issued on this connection.</summary>
+    public int KeyLoginChallenges { get; set; }
     public CancellationToken Aborted => this._cts.Token;
 
     /// <param name="respond">Queues each response; by default <see cref="SendResponse"/>. The server's goes through the
