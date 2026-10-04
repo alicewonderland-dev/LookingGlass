@@ -1,7 +1,9 @@
 using System.Collections.Concurrent;
 using System.Net.WebSockets;
+using Google.Protobuf;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using LookingGlass.Core.Client;
@@ -19,8 +21,9 @@ public sealed class Harness : IAsyncDisposable {
 
     private readonly List<IAsyncDisposable> _disposables = [];
 
+    /// <param name="serverTime">The server's clock, for tests that move it forward (key login challenges expire by it).</param>
     /// <param name="settings">Extra server configuration, for example <c>("LookingGlass:Limits:MaxIdentitiesPerRequest", "2")</c>.</param>
-    public Harness(string? dataDirectory = null, bool allowDebugAccounts = true, params (string Key, string Value)[] settings) {
+    public Harness(string? dataDirectory = null, bool allowDebugAccounts = true, TimeProvider? serverTime = null, params (string Key, string Value)[] settings) {
         this.DataDirectory = dataDirectory ?? Path.Combine(Path.GetTempPath(), "lgt-" + Guid.NewGuid().ToString("N"));
         this.Factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder => {
             builder.UseSetting("LookingGlass:DataDirectory", this.DataDirectory);
@@ -29,8 +32,50 @@ public sealed class Harness : IAsyncDisposable {
             foreach (var (key, value) in settings) {
                 builder.UseSetting(key, value);
             }
+
+            if (serverTime != null) {
+                builder.ConfigureTestServices(services => services.AddSingleton(serverTime));
+            }
         });
         _ = this.Factory.Server;
+    }
+
+    /// <summary>The address clients connect to, as <see cref="Options"/> gives it (what they sign for key login).</summary>
+    public Uri ServerUri => new(this.Factory.Server.BaseAddress, ProtocolInfo.WebSocketPath);
+
+    /// <summary>
+    /// Opens a WebSocket that sends exactly the requests a test gives it, as a misbehaving (or relaying) client would.
+    /// </summary>
+    /// <param name="host">The Host header to send, instead of the server's own.</param>
+    /// <param name="remoteAddress">The address the connection comes from (by default none, which per-IP limits count as one address).</param>
+    /// <param name="forwardedFor">X-Forwarded-For and X-Forwarded-Proto, as a proxy in front of the server would add them.</param>
+    /// <param name="hello">Send Hello first.</param>
+    public async Task<RawConnection> ConnectRawAsync(string? host = null, string? remoteAddress = null, (string For, string Proto)? forwardedFor = null, bool hello = true) {
+        var client = this.Factory.Server.CreateWebSocketClient();
+        client.ConfigureRequest = request => {
+            if (host != null) {
+                request.Host = new Microsoft.AspNetCore.Http.HostString(host);
+            }
+
+            if (remoteAddress != null) {
+                request.HttpContext.Connection.RemoteIpAddress = System.Net.IPAddress.Parse(remoteAddress);
+            }
+
+            if (forwardedFor is { } forwarded) {
+                request.Headers["X-Forwarded-For"] = forwarded.For;
+                request.Headers["X-Forwarded-Proto"] = forwarded.Proto;
+            }
+        };
+
+        var raw = new RawConnection(await client.ConnectAsync(this.ServerUri, Ct));
+        if (hello) {
+            var hi = new Hello();
+            hi.ProtocolVersions.Add(ProtocolInfo.CurrentVersion);
+            Assert.NotNull((await raw.SendAsync(new ClientFrame { Hello = hi })).Welcome);
+        }
+
+        this._disposables.Add(raw);
+        return raw;
     }
 
     public string DataDirectory { get; }
@@ -276,6 +321,43 @@ public sealed class HoldingWebSocket(WebSocket inner) : WebSocket {
     public override void Dispose() {
         this._release.TrySetResult();
         inner.Dispose();
+    }
+}
+
+/// <summary>A WebSocket to the server driven request by request, with no client logic in between. Events are skipped.</summary>
+public sealed class RawConnection(WebSocket socket) : IAsyncDisposable {
+    private uint _nextRequestId;
+
+    public async Task<Response> SendAsync(ClientFrame frame) {
+        frame.RequestId = ++this._nextRequestId;
+        await socket.SendAsync(frame.ToByteArray(), WebSocketMessageType.Binary, true, Harness.Ct);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(Harness.Ct);
+        timeout.CancelAfter(Harness.Timeout);
+        var buffer = new byte[64 * 1024];
+        using var message = new MemoryStream();
+        while (true) {
+            var result = await socket.ReceiveAsync(buffer, timeout.Token);
+            if (result.MessageType == WebSocketMessageType.Close) {
+                throw new InvalidOperationException($"The server closed the connection: {result.CloseStatusDescription}");
+            }
+
+            message.Write(buffer, 0, result.Count);
+            if (!result.EndOfMessage) {
+                continue;
+            }
+
+            var received = ServerFrame.Parser.ParseFrom(message.ToArray());
+            message.SetLength(0);
+            if (received.Response is { } response && response.RequestId == frame.RequestId) {
+                return response;
+            }
+        }
+    }
+
+    public ValueTask DisposeAsync() {
+        socket.Abort();
+        socket.Dispose();
+        return ValueTask.CompletedTask;
     }
 }
 
