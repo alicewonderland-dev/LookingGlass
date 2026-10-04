@@ -53,6 +53,9 @@ public sealed class ClientSession : IAsyncDisposable {
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _channelLocks = new();
     // One log sync per channel at a time, so entries are checked in order against one state.
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _logLocks = new();
+    // Logging in and registering, one request at a time: a try of a saved login the server didn't recognise
+    // never runs alongside registering again, so neither's answer can undo the other's.
+    private readonly SemaphoreSlim _loginGate = new(1, 1);
     private readonly Channel<Event> _inbox = Channel.CreateUnbounded<Event>(new UnboundedChannelOptions { SingleReader = true });
     private readonly ConcurrentQueue<TraceEntry> _trace = new();
     private readonly ConcurrentDictionary<Task, byte> _background = new();
@@ -67,6 +70,8 @@ public sealed class ClientSession : IAsyncDisposable {
     private Limits? _limits;
     private bool _debugAccountsEnabled;
     private RegistrationChallenge? _challenge;
+    // The server refused the saved login on the current connection. The login is kept, and tried again.
+    private bool _loginRejected;
     private readonly Dictionary<string, ChannelState> _channels = new();
     // _channels holds the server's complete list, fetched on the current connection.
     private bool _channelsLoaded;
@@ -221,38 +226,57 @@ public sealed class ClientSession : IAsyncDisposable {
 
     public async Task<RegistrationChallenge> StartRegistrationAsync(Character character, CancellationToken ct = default) {
         var identity = this.EnsureIdentity();
-        // Lodestone lookups are queued server-side, so allow more time than usual.
-        var response = await this.RequestAsync(this.RequireConnection(), new ClientFrame {
-            StartRegistration = new StartRegistration { Character = character, Identity = identity.ToBundle() },
-        }, ct, RegistrationRequestTimeout);
+        var connection = this.RequireConnection();
+        RegistrationChallenge challenge;
+        // After any try of the saved login already under way, which may have logged in meanwhile.
+        await this._loginGate.WaitAsync(ct);
+        try {
+            if (this.Read(() => this._state == ConnectionState.Ready)) {
+                throw new InvalidOperationException("You're already logged in, so there's nothing to register.");
+            }
 
-        var challenge = response.RegistrationChallenge ?? throw Unexpected(response);
-        lock (this._lock) {
-            this._challenge = challenge;
-            this._state = ConnectionState.Registering;
-            this._status = challenge.VerificationSkipped
-                ? "Debug account: no Lodestone verification needed."
-                : $"Put {challenge.Code} in your Lodestone profile, then verify.";
+            // Lodestone lookups are queued server-side, so allow more time than usual.
+            var response = await this.RequestAsync(connection, new ClientFrame {
+                StartRegistration = new StartRegistration { Character = character, Identity = identity.ToBundle() },
+            }, ct, RegistrationRequestTimeout);
+
+            challenge = response.RegistrationChallenge ?? throw Unexpected(response);
+            lock (this._lock) {
+                this._challenge = challenge;
+                this._state = ConnectionState.Registering;
+                this._status = challenge.VerificationSkipped
+                    ? "Debug account: no Lodestone verification needed."
+                    : $"Put {challenge.Code} in your Lodestone profile, then verify.";
+            }
+        } finally {
+            this._loginGate.Release();
         }
 
         this.Publish();
         return challenge;
     }
 
+    /// <summary>Finishes registering, replacing any saved login (even one the server didn't recognise), and logs in.</summary>
     public async Task CompleteRegistrationAsync(CancellationToken ct = default) {
         var connection = this.RequireConnection();
-        var response = await this.RequestAsync(connection, new ClientFrame { CompleteRegistration = new CompleteRegistration() }, ct, RegistrationRequestTimeout);
-        var complete = response.RegistrationComplete ?? throw Unexpected(response);
+        // Never alongside a try of the old login: its answer could otherwise land after the new login's.
+        await this._loginGate.WaitAsync(ct);
+        try {
+            var response = await this.RequestAsync(connection, new ClientFrame { CompleteRegistration = new CompleteRegistration() }, ct, RegistrationRequestTimeout);
+            var complete = response.RegistrationComplete ?? throw Unexpected(response);
 
-        lock (this._lock) {
-            this._secrets.DeviceToken = complete.DeviceToken;
-            this._secrets.UserId = complete.User.UserId;
-            this._challenge = null;
-            this._secretsVersion++;
+            lock (this._lock) {
+                this._secrets.DeviceToken = complete.DeviceToken;
+                this._secrets.UserId = complete.User.UserId;
+                this._challenge = null;
+                this._secretsVersion++;
+            }
+
+            this.SaveSecrets();
+            await this.AuthenticateAsync(connection, ct);
+        } finally {
+            this._loginGate.Release();
         }
-
-        this.SaveSecrets();
-        await this.AuthenticateAsync(connection, ct);
     }
 
     /// <summary>
@@ -334,10 +358,29 @@ public sealed class ClientSession : IAsyncDisposable {
 
     private bool IsBlocked(long userId) => this._secrets.BlockedUsers.Contains(userId);
 
-    /// <summary>Tries the saved login again now.</summary>
-    public Task RetryLoginAsync(CancellationToken ct = default) {
-        this.Reconnect();
-        return Task.CompletedTask;
+    /// <summary>
+    /// Tries the saved login again now, after the server didn't recognise it (it is tried again by itself too, now
+    /// and then). While disconnected, reconnects instead, which tries it.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The server still doesn't recognise the login.</exception>
+    public async Task RetryLoginAsync(CancellationToken ct = default) {
+        if (this._connection is not { } connection) {
+            this.Reconnect();
+            return;
+        }
+
+        bool refused;
+        try {
+            refused = await this.TryRejectedLoginAsync(connection, userAsked: true, ct);
+        } catch (Exception ex) when (ex is not OperationCanceledException) {
+            // As when logging in on connecting fails: start afresh.
+            connection.Abort($"Logging in failed: {ex.Message}");
+            throw;
+        }
+
+        if (refused) {
+            throw new InvalidOperationException("The server still doesn't recognise your login.");
+        }
     }
 
     /// <summary>Forgets the device token, for example to register again.</summary>
@@ -345,6 +388,7 @@ public sealed class ClientSession : IAsyncDisposable {
         lock (this._lock) {
             this._secrets.DeviceToken = null;
             this._secrets.UserId = null;
+            this._loginRejected = false;
             this._secretsVersion++;
         }
 
@@ -882,6 +926,7 @@ public sealed class ClientSession : IAsyncDisposable {
 
                 await this.HandshakeAsync(connection, ct);
                 delay = this._options.ReconnectMinDelay;
+                await this.RetryRejectedLoginAsync(connection, ct);
                 await connection.Closed.WaitAsync(ct);
                 this.Log(NoticeLevel.Info, connection.CloseReason);
             } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
@@ -974,23 +1019,117 @@ public sealed class ClientSession : IAsyncDisposable {
             this.RaiseNotice(NoticeLevel.Info, welcome.Announcement);
         }
 
-        var hasToken = this.Read(() => this._secrets.DeviceToken != null);
-        if (!hasToken) {
-            this.SetState(ConnectionState.Unregistered, "Not registered on this server.");
-            return;
-        }
-
+        await this._loginGate.WaitAsync(ct);
         try {
-            await this.AuthenticateAsync(connection, ct);
-        } catch (ServerErrorException ex) when (ex.Code == ErrorCode.NotAuthenticated) {
+            bool hasToken;
             lock (this._lock) {
-                this._secrets.DeviceToken = null;
-                this._secretsVersion++;
+                // Decided afresh on every connection.
+                this._loginRejected = false;
+                hasToken = this._secrets.DeviceToken != null;
             }
 
-            this.SaveSecrets();
-            this.SetState(ConnectionState.Unregistered, "This device's login was revoked or expired; register again.");
+            if (!hasToken) {
+                this.SetState(ConnectionState.Unregistered, "Not registered on this server.");
+                return;
+            }
+
+            try {
+                await this.AuthenticateAsync(connection, ct);
+            } catch (ServerErrorException ex) when (ex.Code == ErrorCode.NotAuthenticated) {
+                this.RejectLogin(connection, ex);
+            }
+        } finally {
+            this._loginGate.Release();
         }
+    }
+
+    private const string LoginNotRecognizedStatus =
+        "This server doesn't recognise your login. If you changed the server address or the server was reset, check the address in Settings; otherwise register again.";
+
+    /// <summary>
+    /// The server refused the saved login. It is kept, never discarded: this may be the wrong server, or one reset or
+    /// restored from a backup, and the right one may be back soon. Only registering again (or "Forget account") replaces it.
+    /// </summary>
+    private void RejectLogin(Connection connection, ServerErrorException ex) {
+        this.Log(NoticeLevel.Info, $"The server doesn't recognise the saved login: {ex.ServerMessage}");
+        lock (this._lock) {
+            if (connection != this._connection) {
+                return;
+            }
+
+            this._loginRejected = true;
+            // Registering again goes on (its challenge stays) whatever a try of the old login says.
+            if (this._state != ConnectionState.Registering) {
+                this._state = ConnectionState.LoginNotRecognized;
+                this._status = LoginNotRecognizedStatus;
+            }
+        }
+
+        this.Publish();
+    }
+
+    /// <summary>
+    /// While the server doesn't recognise the saved login, tries it again on this connection now and then, waiting
+    /// longer each time (<see cref="ClientSessionOptions.LoginRetryMinDelay"/> doubling up to <see cref="ClientSessionOptions.LoginRetryMaxDelay"/>):
+    /// the right server, or its database, may be back. Staying connected keeps registering again possible meanwhile.
+    /// Returns once logged in, once there's nothing to try (registered again, or the login was forgotten), or once
+    /// the connection closes; a reconnect tries the login again itself.
+    /// </summary>
+    private async Task RetryRejectedLoginAsync(Connection connection, CancellationToken ct) {
+        var delay = this._options.LoginRetryMinDelay;
+        while (this.Read(() => this._loginRejected && this._secrets.DeviceToken != null)) {
+            using (var wait = CancellationTokenSource.CreateLinkedTokenSource(ct)) {
+                await Task.WhenAny(Task.Delay(delay, wait.Token), connection.Closed);
+                await wait.CancelAsync();
+            }
+
+            ct.ThrowIfCancellationRequested();
+            if (connection.Closed.IsCompleted) {
+                return;
+            }
+
+            delay = TimeSpan.FromTicks(Math.Min(delay.Ticks * 2, this._options.LoginRetryMaxDelay.Ticks));
+            try {
+                await this.TryRejectedLoginAsync(connection, userAsked: false, ct);
+            } catch (Exception) when (connection.Closed.IsCompleted && !ct.IsCancellationRequested) {
+                // Dropped meanwhile: the reconnect tries again.
+                return;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Tries a saved login the server refused on this connection once more, unless something else has happened
+    /// meanwhile: logged in, registered again, the login forgotten, or (unless the user asked) registering again under way.
+    /// </summary>
+    /// <returns>Whether it was tried and refused again.</returns>
+    private async Task<bool> TryRejectedLoginAsync(Connection connection, bool userAsked, CancellationToken ct) {
+        await this._loginGate.WaitAsync(ct);
+        try {
+            // Decided inside the gate, after any registration request: CompleteRegistration replaces the login, and logs in.
+            var due = this.Read(() => connection == this._connection && this._loginRejected && this._secrets.DeviceToken != null
+                                      && (this._state == ConnectionState.LoginNotRecognized
+                                          || (this._state == ConnectionState.Registering && (userAsked || this.ChallengeExpired()))));
+            if (!due) {
+                return false;
+            }
+
+            try {
+                await this.AuthenticateAsync(connection, ct);
+                this.Log(NoticeLevel.Info, "The server recognises the saved login again");
+                return false;
+            } catch (ServerErrorException ex) when (ex.Code == ErrorCode.NotAuthenticated) {
+                this.RejectLogin(connection, ex);
+                return true;
+            }
+        } finally {
+            this._loginGate.Release();
+        }
+    }
+
+    /// <summary>The registration challenge can't be completed any more (or there is none). Call inside the lock.</summary>
+    private bool ChallengeExpired() {
+        return this._challenge == null || this._options.TimeProvider.GetUtcNow().ToUnixTimeSeconds() >= this._challenge.ExpiresUnix;
     }
 
     private async Task AuthenticateAsync(Connection connection, CancellationToken ct) {
@@ -1002,6 +1141,9 @@ public sealed class ClientSession : IAsyncDisposable {
             this._me = ok.User;
             this._users[ok.User.UserId] = ok.User;
             this._secrets.UserId = ok.User.UserId;
+            this._loginRejected = false;
+            // Logged in: a registration under way (from before a saved login worked again) is moot.
+            this._challenge = null;
             this._state = ConnectionState.Ready;
             // Ready, but the channel list is only complete once RefreshAsync has fetched it.
             this._channelsLoaded = false;
@@ -2834,7 +2976,8 @@ public sealed class ClientSession : IAsyncDisposable {
                         : new User { UserId = id, Name = $"user {id}" })
                     .OrderBy(user => user.Name, StringComparer.OrdinalIgnoreCase)
                     .ToImmutableArray(),
-                this._channelsLoaded && this._state == ConnectionState.Ready);
+                this._channelsLoaded && this._state == ConnectionState.Ready,
+                this._loginRejected && this._state is ConnectionState.LoginNotRecognized or ConnectionState.Registering);
             this._snapshot = snapshot;
         }
 
