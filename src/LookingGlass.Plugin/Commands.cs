@@ -77,6 +77,8 @@ public sealed class Commands : IDisposable {
                 this._chat.Notice(NoticeLevel.Warning, notFound.Text);
                 break;
             case ChannelCommand.Send send:
+                // Talking in a channel means you've caught up with it.
+                this._sessions.Unread.MarkRead(send.ChannelId);
                 _ = Task.Run(async () => {
                     try {
                         await session.SendTextAsync(send.ChannelId, send.Text);
