@@ -498,8 +498,8 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
     }
 
     /// <summary>
-    /// One member: their verification icon (click it to compare fingerprints), name, rank on the
-    /// right, and a menu. The whole row lights up on hover.
+    /// One member: their verification icon (click it to compare fingerprints), green while they're
+    /// online, name, rank on the right, and a menu. The whole row lights up on hover.
     /// </summary>
     private void DrawMember(ChannelView channel, MemberView member, ClientSession session, SessionSnapshot snapshot) {
         var scale = Widgets.Scale;
@@ -521,15 +521,17 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
             drawList.AddRectFilled(rowMin, rowMax, ImGui.GetColorU32(hover with { W = hover.W * 0.6f }), 4 * scale);
         }
 
-        // Verification, as an icon: click it to compare fingerprints.
-        var (icon, iconColour, title, explanation) = Verification(member, isMe);
+        // Verification, as the icon's shape: click it to compare fingerprints. Presence, as its colour,
+        // unless there's a warning to show, which matters more.
+        var (icon, warningColour, title, explanation) = Verification(member, isMe);
+        var iconColour = warningColour ?? (member.Online ? Widgets.Success : Widgets.Muted);
         ImGui.SetCursorScreenPos(pos with { X = pos.X + 2 * scale });
         if (ImGui.InvisibleButton("##verification", new Vector2(button, height)) && !isMe) {
             modals.CompareFingerprints(channel.Id, member.User.UserId);
         }
 
         Widgets.DrawIcon(drawList, icon, (ImGui.GetItemRectMin() + ImGui.GetItemRectMax()) / 2, ImGui.GetColorU32(iconColour));
-        Widgets.Tooltip($"{title}\n{explanation}", isMe ? "Your fingerprint is in Settings." : "Click to compare fingerprints.");
+        Widgets.Tooltip($"{Presence(member)}\n{title}\n{explanation}", isMe ? "Your fingerprint is in Settings." : "Click to compare fingerprints.");
 
         // On the right: the menu (none for yourself, but its space kept so ranks line up), then the rank.
         var right = pos.X + width - 2 * scale;
@@ -585,9 +587,14 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
         ImGui.PopID();
     }
 
-    private static (FontAwesomeIcon Icon, Vector4 Colour, string Title, string Explanation) Verification(MemberView member, bool isMe) {
+    /// <summary>The first line of the verification icon's tooltip. Invitees' presence isn't shared.</summary>
+    private static string Presence(MemberView member) =>
+        member.Rank == Rank.Invited ? "Online status shows once they join" : member.Online ? "Online" : "Offline";
+
+    /// <returns>The icon, and a colour only for warnings: otherwise the icon's colour shows whether they're online.</returns>
+    private static (FontAwesomeIcon Icon, Vector4? WarningColour, string Title, string Explanation) Verification(MemberView member, bool isMe) {
         if (isMe) {
-            return (FontAwesomeIcon.User, Widgets.Muted, "You", "Others compare your fingerprint with you to verify you.");
+            return (FontAwesomeIcon.User, null, "You", "Others compare your fingerprint with you to verify you.");
         }
 
         if (member.KeyReplaced) {
@@ -601,10 +608,10 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
         }
 
         if (member.FingerprintCompared) {
-            return (FontAwesomeIcon.CheckCircle, Widgets.Success, "Verified", "You compared fingerprints with them and marked them verified.");
+            return (FontAwesomeIcon.CheckCircle, null, "Verified", "You compared fingerprints with them and marked them verified.");
         }
 
-        return (FontAwesomeIcon.QuestionCircle, Widgets.Muted, "Not compared",
+        return (FontAwesomeIcon.QuestionCircle, null, "Not compared",
             "Their keys are trusted on first use: whoever invited them got them from the server. Compare fingerprints with them over /tell, then mark them verified.");
     }
 
