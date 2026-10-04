@@ -199,6 +199,132 @@ public sealed class MembershipLogTests : IAsyncLifetime {
         Assert.NotNull(alice.Session.Snapshot.FindChannel(channelId)!.MembershipWarning);
     }
 
+    /// <summary>
+    /// Acceptance test 4, against a server that shows different members different logs (it equivocates) rather
+    /// than rolling its log back for everyone. Alice removes Carol and rekeys to e+1 for the membership after it.
+    /// The server shows Bob the log without the removal, and takes his rekey to e+2 for the membership before it;
+    /// to Alice it keeps showing her own log, so asking it to show what she verified proves nothing. But an honest
+    /// server only takes a rekey at its log's head and at the next epoch, so a key with a newer epoch than hers,
+    /// made for an older membership, shows that the server is showing someone another log: she is warned.
+    /// </summary>
+    /// <param name="asEvent">Bob's key reaches Alice as it is made (EpochAdvanced), or when she fetches keys.</param>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task HiddenRemovalIsDetectedWhenTheServerShowsOthersAnotherLog(bool asEvent) {
+        var alice = await this._server.RegisterAsync("Alice Equivocated " + asEvent);
+        var bob = await this._server.RegisterAsync("Bob Shown Another " + asEvent);
+        var carol = await this._server.RegisterAsync("Carol Removed " + asEvent);
+        var channelId = await alice.Session.CreateChannelAsync("Two Logs", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        await AddMemberAsync(alice, channelId, carol);
+        var epoch = alice.Session.Snapshot.FindChannel(channelId)!.Epoch;
+        await WaitFor(() => bob.Session.Snapshot.FindChannel(channelId) is { HasKey: true, RekeyPending: false } c && c.Epoch == epoch
+                            && c.Members.Any(m => m.User.UserId == carol.UserId && m.Rank == Rank.Member) ? c : null);
+        var withCarol = this._server.Database.GetChannel(channelId)!;
+        var carolKeys = carol.Keys();
+
+        // Bob is offline while Alice removes Carol and rekeys, honestly so far.
+        await bob.Session.DisposeAsync();
+        await alice.Session.KickAsync(channelId, carol.UserId, Ct);
+        var afterRemoval = this._server.Database.GetChannel(channelId)!;
+        Assert.Equal(epoch + 1, afterRemoval.Epoch);
+        var removal = this._server.Database.GetLogEntries(channelId, afterRemoval.LogHead.Seq, 1).Single();
+        await alice.Session.DisposeAsync();
+
+        // To Bob, the server shows the log as it was before the removal (keeping the epoch, but not his copy of Alice's key)...
+        this._server.ExecuteSql("""
+            DELETE FROM membership_log WHERE channel_id = $channel AND seq > $seq;
+            UPDATE channels SET log_seq = $seq, log_hash = $hash, rekey_pending = 0,
+                name_epoch = $nameEpoch, name_revision = $nameRevision, name_author = $nameAuthor, name_ciphertext = $nameCiphertext,
+                name_signature = $nameSignature, name_source_epoch = $sourceEpoch, name_source_revision = $sourceRevision, name_log_seq = $nameSeq, name_log_hash = $nameHash
+            WHERE channel_id = $channel;
+            INSERT INTO members (channel_id, user_id, rank, joined_at, signing_key, agreement_key) VALUES ($channel, $carol, 2, 0, $signing, $agreement);
+            DELETE FROM epoch_keys WHERE channel_id = $channel AND epoch > $epoch AND recipient_id = $bob;
+            """,
+            ("$channel", channelId), ("$seq", (long) withCarol.LogHead.Seq), ("$hash", withCarol.LogHead.Hash.ToByteArray()),
+            ("$nameEpoch", (long) withCarol.Name!.Epoch), ("$nameRevision", (long) withCarol.Name.Revision), ("$nameAuthor", withCarol.Name.AuthorId),
+            ("$nameCiphertext", withCarol.Name.Ciphertext.ToByteArray()), ("$nameSignature", withCarol.Name.Signature.ToByteArray()),
+            ("$nameSeq", (long) withCarol.Name.LogPosition!.Seq), ("$nameHash", withCarol.Name.LogPosition.Hash.ToByteArray()),
+            ("$sourceEpoch", withCarol.Name.CarriedFrom == null ? DBNull.Value : (object) (long) withCarol.Name.CarriedFrom.Epoch),
+            ("$sourceRevision", withCarol.Name.CarriedFrom == null ? DBNull.Value : (object) (long) withCarol.Name.CarriedFrom.Revision),
+            ("$carol", carol.UserId), ("$signing", carolKeys.SigningKeyArray()), ("$agreement", carolKeys.AgreementKeyArray()),
+            ("$epoch", (long) epoch), ("$bob", bob.UserId));
+
+        // ...so Bob, who never saw the removal, rekeys to e+2 for the members he knows, Carol included, and the server takes it.
+        var bobAgain = await this._server.RestartAsync(bob, this._server.Options(autoRekey: false));
+        await bobAgain.Session.RekeyAsync(channelId, Ct, force: true);
+        Assert.Equal(epoch + 2, this._server.Database.GetChannel(channelId)!.Epoch);
+        Assert.Single(this._server.Database.GetEpochKeys(channelId, carol.UserId, epoch + 2));
+
+        // To Alice, it shows her own log again, removal and all.
+        this._server.ExecuteSql("""
+            INSERT INTO membership_log (channel_id, seq, hash, entry) VALUES ($channel, $seq, $hash, $entry);
+            UPDATE channels SET log_seq = $seq, log_hash = $hash WHERE channel_id = $channel;
+            DELETE FROM members WHERE channel_id = $channel AND user_id = $carol;
+            """,
+            ("$channel", channelId), ("$seq", (long) removal.Seq), ("$hash", MembershipEntries.Hash(removal)), ("$entry", removal.ToByteArray()),
+            ("$carol", carol.UserId));
+        EpochKeyForMe? bobsKey = null;
+        if (asEvent) {
+            // (Held back from her key fetch when she connects, to arrive as the event instead.)
+            bobsKey = this._server.Database.GetEpochKeys(channelId, alice.UserId, epoch + 2).Single();
+            this._server.ExecuteSql("""
+                DELETE FROM epoch_keys WHERE channel_id = $channel AND epoch = $newer AND recipient_id = $alice;
+                UPDATE channels SET epoch = $epoch WHERE channel_id = $channel;
+                """, ("$channel", channelId), ("$newer", (long) epoch + 2), ("$alice", alice.UserId), ("$epoch", (long) epoch + 1));
+        }
+
+        var aliceAgain = await this._server.RestartAsync(alice, this._server.Options(autoRekey: false));
+        if (bobsKey != null) {
+            await this._server.SendAndSettleAsync(aliceAgain, new Event {
+                EpochAdvanced = new EpochAdvanced { ChannelId = channelId, Epoch = epoch + 2, AuthorId = bobAgain.UserId, MyKey = bobsKey.Key },
+            });
+        }
+
+        // The server can show Alice everything she verified, and still she is warned, and doesn't take the key.
+        var view = aliceAgain.Session.Snapshot.FindChannel(channelId)!;
+        Assert.Contains("hiding", view.MembershipWarning);
+        Assert.Contains(aliceAgain.Notices, n => n.Level == NoticeLevel.Warning && n.Text == view.MembershipWarning);
+        Assert.Equal(epoch + 1, view.Epoch);
+        Assert.False(aliceAgain.Store.Load().EpochKeys[channelId].ContainsKey(epoch + 2));
+    }
+
+    /// <summary>
+    /// The quiet side of the above: a key for an older membership, but with no key made for the current one
+    /// held, is what an honest server sends now and then (made just before a change this client already
+    /// applied). It is refused, but nobody is blamed while the server can show what was verified.
+    /// </summary>
+    [Fact]
+    public async Task AKeyMadeJustBeforeARemovalIsRefusedQuietly() {
+        var alice = await this._server.RegisterAsync("Alice Raced");
+        var bob = await this._server.RegisterAsync("Bob Raced");
+        var carol = await this._server.RegisterAsync("Carol Raced");
+        var channelId = await alice.Session.CreateChannelAsync("Raced", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        await AddMemberAsync(alice, channelId, carol);
+        var epoch = bob.Session.Snapshot.FindChannel(channelId)!.Epoch;
+        var withCarol = PositionOf(bob, channelId);
+        // From now on Alice doesn't rekey in the background when the server asks.
+        await alice.Session.DisposeAsync();
+        alice = await this._server.RestartAsync(alice, this._server.Options(autoRekey: false));
+
+        // Alice removes Carol, and drops offline before she can rekey. Bob applies the removal; his key was made before it.
+        alice.Session.AfterKickRequestForTests = () => Task.FromException(new InvalidOperationException("Gone offline."));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => alice.Session.KickAsync(channelId, carol.UserId, Ct));
+        await WaitFor(() => bob.Session.Snapshot.FindChannel(channelId) is { } c && c.Members.All(m => m.User.UserId != carol.UserId) ? c : null);
+        Assert.Equal(epoch, bob.Session.Snapshot.FindChannel(channelId)!.Epoch);
+
+        // A rekey Alice made just before the removal (for the membership with Carol) reaches him now.
+        using var aliceKeys = alice.LoadIdentity();
+        var key = ChannelCrypto.SealEpochKey(ChannelCrypto.NewEpochKey(), channelId, epoch + 1, withCarol, aliceKeys, alice.UserId, bob.UserId, bob.Keys().AgreementPublicKey);
+        await this._server.SendAndSettleAsync(bob, new Event { EpochAdvanced = new EpochAdvanced { ChannelId = channelId, Epoch = epoch + 1, AuthorId = alice.UserId, MyKey = key } });
+
+        Assert.False(bob.Store.Load().EpochKeys[channelId].ContainsKey(epoch + 1));
+        Assert.Null(bob.Session.Snapshot.FindChannel(channelId)!.MembershipWarning);
+        Assert.DoesNotContain(bob.Notices, n => n.Level == NoticeLevel.Warning);
+    }
+
     /// <summary>Acceptance test 5.</summary>
     [Fact]
     public async Task ForkedLogIsReported() {
@@ -336,12 +462,14 @@ public sealed class MembershipLogTests : IAsyncLifetime {
         using var aliceKeys = alice.LoadIdentity();
         var bobAgreement = bob.LoadIdentity().AgreementPublicKey;
         var stale = ChannelCrypto.SealEpochKey(ChannelCrypto.NewEpochKey(), channelId, current.Epoch + 1, withCarol, aliceKeys, alice.UserId, bob.UserId, bobAgreement);
-        // (The server here is honest otherwise, and can show the log Bob verified, so he isn't told it's hiding anything:
-        // an honest server sends such a key now and then, made just before a change.)
+        // Changed for M1: this used to pass quietly ("an honest server sends such a key now and then"). But Bob holds
+        // a key made for the current membership, and this one has a newer epoch: an honest server can't have taken
+        // it, as it only takes a rekey at its log's head, which never goes back. So Bob is warned, though the
+        // server can show the log he verified. (AKeyMadeJustBeforeARemovalIsRefusedQuietly is the honest case.)
         await this._server.SendAndSettleAsync(bob, new Event { EpochAdvanced = new EpochAdvanced { ChannelId = channelId, Epoch = current.Epoch + 1, AuthorId = alice.UserId, MyKey = stale } });
         Assert.Equal(current.Epoch, bob.Session.Snapshot.FindChannel(channelId)!.Epoch);
         Assert.False(bob.Store.Load().EpochKeys[channelId].ContainsKey(current.Epoch + 1));
-        Assert.Null(bob.Session.Snapshot.FindChannel(channelId)!.MembershipWarning);
+        Assert.Contains("hiding", bob.Session.Snapshot.FindChannel(channelId)!.MembershipWarning);
 
         var oldName = ChannelCrypto.EncryptName("Carol Was Here", bob.LoadEpochKey(channelId, current.Epoch), channelId, current.Epoch, withCarol, aliceKeys, alice.UserId, revision: 5);
         await this._server.SendAndSettleAsync(bob, new Event { ChannelRenamed = new ChannelRenamed { ChannelId = channelId, Name = oldName } });
