@@ -83,7 +83,7 @@ plugin URL then becomes `wss://<machine>.<tailnet>.ts.net/ws`.
 **List the server's addresses.** Tell the server every address clients use,
 so signing in with the identity key works on each of them and plugins can
 keep their identity when you switch between them (see "Moving the server" and
-"Key login and the server's address" below). For the tailnet plus Funnel case:
+"The server's addresses" below). For the tailnet plus Funnel case:
 
 ```powershell
 $env:LookingGlass__PublicUrls__0 = 'ws://<machine-name>:5180/ws'
@@ -92,9 +92,9 @@ $env:LookingGlass__PublicUrls__1 = 'wss://<machine-name>.<tailnet>.ts.net/ws'
 
 (`export LookingGlass__PublicUrls__0=...` on Linux; or a `PublicUrls` list in
 `appsettings.json`.) List an address such as `ws://127.0.0.1:5180/ws` too if
-a plugin uses it. Without any, a Development server still signs plugins in
-with their key by the address each connection names (weaker, see below) and
-says so when it starts; a server not in Development turns key login off.
+a plugin uses it. Without any, a Development server goes by the address each
+connection names (weaker, see below) and says so when it starts; a server not
+in Development refuses to start.
 
 Check a server from any machine:
 
@@ -279,7 +279,11 @@ against the install folder.
 
 Production deployment: `deploy/lookingglass.service` (systemd) or the
 `Dockerfile`. By default the server only listens on `127.0.0.1:5180`; put a
-TLS reverse proxy (for example Caddy) in front and use `wss://` URLs.
+TLS reverse proxy (for example Caddy) in front and use `wss://` URLs. Outside
+Development the server **won't start until `LookingGlass:PublicUrls` lists
+its addresses** (see "The server's addresses" below), for example
+`LookingGlass__PublicUrls__0=wss://chat.example.com/ws`; it says so, and
+exits, if they're missing.
 
 **Upgrading from 0.1:** 0.1's channels have no membership log, and nobody can
 sign one for them now, so 0.2 refuses to start on a database that has any. It
@@ -296,10 +300,13 @@ single addresses (`"10.0.0.5"`) and networks in CIDR form
 (`"172.17.0.0/16"`). Otherwise every client appears to be the proxy, and the
 limits apply to everyone together. IPv6 clients are counted per /64.
 
-**Key login and the server's address.** When a plugin signs in with its
-identity key, the signature names the address it connected to, and the
-server only accepts one of its own addresses (scheme, host and port; not the
-path), so another server you use can't pass your signature on to this one.
+**The server's addresses.** Registering, signing in with the identity key
+(key login) and "Reset my identity" are each signed with the plugin's
+identity key for the address it connected to, and the server only accepts
+one of its own addresses (scheme, host and port; not the path), so another
+server you use can't pass them on to this one. That matters most for
+registering: a malicious server you register with could otherwise forward
+your registration here and receive a login to your character's account.
 "Its own addresses" are the ones listed in `LookingGlass:PublicUrls`; list
 every address clients use, for example:
 
@@ -316,18 +323,17 @@ only to a `wss://` one. Listing short or plain `ws://` names (a tailnet
 machine name, `127.0.0.1`) is still fine for key login on a private network;
 plugins just can't move their identity to them.
 
-**Without `PublicUrls`, key login is off** (the server says so when it
-starts): plugins whose login it doesn't recognise must register again
-through the Lodestone. The exception is a server in Development, which then
-accepts the address each connection names in its `Host` header (and scheme,
-from `X-Forwarded-Proto` behind a trusted proxy), and warns that this is
-weaker: whoever opens a connection chooses its Host header, so a malicious
-server relaying your signature simply sends the address you signed for. On
-such a server, what protects you is that the plugin keeps separate identity
-keys per server address, so the key you sign with for another server isn't
-registered on this one (and a key is only carried to another, `wss://`,
-address when both addresses' servers list each other). Fine for a private test server;
-list the addresses anywhere else.
+**Without `PublicUrls`, a server outside Development refuses to start**,
+saying what to set. A server in Development starts without them, accepts
+the address each connection names in its `Host` header (and scheme, from
+`X-Forwarded-Proto` behind a trusted proxy), and warns that this is weaker:
+whoever opens a connection chooses its Host header, so a malicious server
+relaying your registration or signature simply sends the address you signed
+for. The plugin's separate identity keys per server address still stop a
+relayed key login there (the key you sign with for another server isn't
+registered on this one), but not a relayed registration, which registers
+whatever key signed it. Fine for a private test server; list the addresses
+anywhere else.
 
 Key logins are limited per connection (3 challenges), per address
 (`KeyLoginsPerHourPerIp` challenges, and `KeyLoginFailuresPerHourPerIp`
@@ -426,10 +432,9 @@ What the encryption does today:
   identity" can't, and can't be registered for the account again either).
   The signature, like a registration's and a retirement's, names the server's
   address, and the server only accepts its configured `PublicUrls`, so a
-  server can't replay it to another (a Development server without them goes
-  by the Host header, which doesn't stop this; a server outside Development
-  without them has key login off, and can't check the address a registration
-  or retirement names). The plugin
+  server can't replay it to another (a server outside Development won't start
+  without them; a Development server without them goes by the Host header,
+  which doesn't stop this). The plugin
   also keeps separate keys per server address, bound to the address inside
   the file; never follows redirects, so a server can't hand your connection
   and login to another; and only carries an identity to a new address when
@@ -464,6 +469,11 @@ What it does not do yet (0.2):
   changes are no longer possible in that channel.
 - The log only grows. Clients fetch just the new entries, but someone new to a
   channel (or invited to it) replays it from the start.
+- **A registration code isn't tied to a server.** A malicious server you
+  register with could ask another server for a code for your character (with
+  its own keys) and show you that code as its own; if you put it in your
+  Lodestone profile, it holds your account on the other server. Listed
+  addresses don't stop this: the plugin never signs anything for it.
 - The server sees metadata (who is in which channel, when messages are sent)
   and can drop or delay anything.
 - Members who share a channel see when each other are online: the server

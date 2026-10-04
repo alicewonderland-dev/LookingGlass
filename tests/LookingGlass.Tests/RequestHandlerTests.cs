@@ -22,7 +22,7 @@ public sealed class RequestHandlerTests : IDisposable {
     private const string World = "Gilgamesh";
     private const long LodestoneId = 31337;
 
-    // The address the clients here sign for: any will do on a server with no PublicUrls outside Development.
+    // The address the clients here sign for, which the handler lists as its own unless a test says otherwise.
     private const string Url = "ws://localhost/ws";
 
     private readonly string _directory = Path.Combine(Path.GetTempPath(), "lgt-handler-" + Guid.NewGuid().ToString("N"));
@@ -35,9 +35,10 @@ public sealed class RequestHandlerTests : IDisposable {
         Directory.CreateDirectory(this._directory);
         this._db = new Database(Path.Combine(this._directory, "test.db"));
         this._registry = new ConnectionRegistry(this._db, NullLogger<ConnectionRegistry>.Instance);
-        this._handler = this.NewHandler();
+        this._handler = this.NewHandler(Url);
     }
 
+    /// <param name="publicUrls">The server's addresses. The handler isn't in Development, so with none it trusts no address.</param>
     private RequestHandler NewHandler(params string[] publicUrls) {
         var options = Options.Create(new ServerOptions {
             Dev = { AllowDebugAccounts = true },
@@ -111,6 +112,31 @@ public sealed class RequestHandlerTests : IDisposable {
         var registered = await this.CompleteRegistrationAsync(connection, keys, challenge, "wss://chat.example.com/ws");
         Assert.NotNull(registered.RegistrationComplete);
         Assert.Equal(keys.SigningPublicKey, this._db.GetUser(LodestoneId)!.SigningKey);
+    }
+
+    /// <summary>
+    /// Outside Development without PublicUrls the server doesn't start (see <c>KeyLoginTests.OutsideDevelopmentTheServerNeedsPublicUrls</c>).
+    /// A handler made that way anyway has no address to check a signed one against, so it accepts none: a registration
+    /// through the Lodestone is refused whatever address it was signed for, before the Lodestone is asked, as is key
+    /// login. Debug accounts, whose registrations don't name an address, still work.
+    /// </summary>
+    [Fact]
+    public async Task WithoutAddressesNoSignedAddressIsAccepted() {
+        this._handler = this.NewHandler();
+        var connection = await this.HelloAsync("203.0.113.62");
+        using var keys = IdentityKeys.Generate();
+        var challenge = (await this.StartRegistrationAsync(connection, keys: keys)).RegistrationChallenge!;
+        this._lodestone.Profile = $"My code: {challenge.Code}";
+
+        foreach (var url in new[] { Url, "wss://chat.example.com/ws" }) {
+            var refused = await this.CompleteRegistrationAsync(connection, keys, challenge, url);
+            Assert.Equal(ErrorCode.RegistrationFailed, refused.Error?.Code);
+        }
+
+        Assert.Equal(0, connection.VerifyAttempts);
+        Assert.Null(this._db.GetUser(LodestoneId));
+        Assert.Equal(ErrorCode.NotAuthenticated, (await this.SendAsync(connection, new ClientFrame { StartKeyLogin = new StartKeyLogin { UserId = LodestoneId } })).Error?.Code);
+        Assert.NotNull(await this.RegisterDebugAsync("No Addresses"));
     }
 
     /// <summary>A registration through the Lodestone is signed by the key being registered, like a debug one.</summary>

@@ -279,40 +279,35 @@ public sealed class KeyLoginTests : IAsyncLifetime {
 
     /// <summary>
     /// Outside Development the Host header proves nothing (a relay sets it to whatever the user signed for), so without
-    /// configured PublicUrls the server has no address it can trust, and refuses key login outright. The client falls
-    /// back as it does for any refused key login: it keeps its login and says the server doesn't recognise it.
+    /// configured PublicUrls the server has no address to check the signed ones against: a malicious server could pass on
+    /// a registration made on it and get a login to the character's account here. Such a server refuses to start, and
+    /// says what to set; it starts once they are set (see <see cref="OutsideDevelopmentKeyLoginWorksForThePublicUrls"/>).
     /// </summary>
     [Fact]
-    public async Task OutsideDevelopmentKeyLoginNeedsPublicUrls() {
-        await using var server = new Harness(environment: "Production");
+    public async Task OutsideDevelopmentTheServerNeedsPublicUrls() {
+        var logs = new CapturingLoggerProvider();
+        var exitCode = Environment.ExitCode;
+        var directory = Path.Combine(Path.GetTempPath(), "lgt-" + Guid.NewGuid().ToString("N"));
         try {
-            var alice = await server.RegisterAsync("Alice Production");
-            using var keys = alice.LoadIdentity();
+            Exception? failed = null;
+            try {
+                await using var server = new Harness(directory, environment: "Production", logs: logs);
+                await using var raw = await server.ConnectRawAsync();
+            } catch (Exception ex) {
+                failed = ex;
+            }
 
-            // Refused before any challenge is issued, with the same error whoever asks.
-            await using var raw = await server.ConnectRawAsync();
-            var refused = await raw.SendAsync(new ClientFrame { StartKeyLogin = new StartKeyLogin { UserId = alice.UserId } });
-            Assert.Equal(ErrorCode.NotAuthenticated, refused.Error?.Code);
-            Assert.Null(refused.KeyLoginChallenge);
-            var unknown = await raw.SendAsync(new ClientFrame { StartKeyLogin = new StartKeyLogin { UserId = 4242424242 } });
-            Assert.Equal(refused.Error!.Message, unknown.Error?.Message);
-            // Not even a signature made for the address this connection names in its Host header gets anywhere.
-            var url = server.ServerUri.AbsoluteUri;
-            var forged = await this.CompleteAsync(raw, new byte[KeyLoginProof.ChallengeSize], url, KeyLoginProof.Sign(keys, new byte[KeyLoginProof.ChallengeSize], alice.UserId, url));
-            Assert.Equal(ErrorCode.NotAuthenticated, forged.Error?.Code);
-
-            // The client tries, is refused, and keeps its (lost) login, as with any refused key login.
-            var token = alice.Store.Load().DeviceToken;
-            await alice.Session.DisposeAsync();
-            server.ExecuteSql("DELETE FROM devices WHERE user_id = $id;", ("$id", alice.UserId));
-            var restarted = server.StartClient(alice.Name, alice.Store, server.Options(loginRetryDelay: TimeSpan.FromHours(1)));
-            var snapshot = await WaitFor(() => restarted.Session.Snapshot is { State: ConnectionState.LoginNotRecognized } s ? s : null);
-            Assert.True(snapshot.LoginRejected);
-            Assert.Contains(restarted.Session.GetTrace(), entry => entry.Outgoing && entry.Summary.EndsWith(" StartKeyLogin"));
-            Assert.DoesNotContain(restarted.Session.GetTrace(), entry => entry.Outgoing && entry.Summary.EndsWith(" CompleteKeyLogin"));
-            Assert.Equal(token, alice.Store.Load().DeviceToken);
+            // Nothing answers: the server stopped before it began listening...
+            Assert.NotNull(failed);
+            // ...and said why, and what to set.
+            var critical = Assert.Single(logs.AtLeast(Microsoft.Extensions.Logging.LogLevel.Critical));
+            Assert.Equal(RequestHandler.PublicUrlsRequired, critical);
+            Assert.Contains("LookingGlass__PublicUrls__0=wss://", critical);
+            Assert.Equal(1, Environment.ExitCode);
         } finally {
-            DeleteDirectory(server.DataDirectory);
+            // The server's exit code, which the test process doesn't share.
+            Environment.ExitCode = exitCode;
+            DeleteDirectory(directory);
         }
     }
 

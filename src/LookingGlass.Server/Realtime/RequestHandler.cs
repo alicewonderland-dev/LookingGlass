@@ -59,6 +59,15 @@ public sealed class RequestHandler(
         "This identity key is already registered to another character on this server, and each character needs its own. " +
         "Use \"Reset my identity\" in Settings to make new keys for this character, then register.";
 
+    /// <summary>Why a server outside Development without <see cref="ServerOptions.PublicUrls"/> doesn't start, and what to set.</summary>
+    internal const string PublicUrlsRequired =
+        "LookingGlass:PublicUrls is not set, so the server won't start. Outside Development it must know every address clients connect to: " +
+        "registrations, key logins and \"Reset my identity\" are signed for the address the plugin connected to, and only a listed address shows " +
+        "that a signature was made for this server rather than passed on by another (a malicious server could otherwise relay a registration " +
+        "made on it, and get a login to that character's account here). List each address, for example " +
+        "LookingGlass__PublicUrls__0=wss://chat.example.com/ws (LookingGlass__PublicUrls__1=... for the next one), or a \"PublicUrls\" list " +
+        "under \"LookingGlass\" in appsettings.json. For a private test server, run in Development instead (ASPNETCORE_ENVIRONMENT=Development).";
+
     /// <summary>Pending invites one user can have at once, across all channels.</summary>
     public const int MaxPendingInvitesPerUser = 20;
 
@@ -362,7 +371,8 @@ public sealed class RequestHandler(
     /// binding signature and all; without this, someone could register another user's key for their own character, then
     /// register again with new keys and so have it retired. The address is checked for registrations through the Lodestone,
     /// as for key login, so a malicious server can't relay this server's challenge to its users and register their keys
-    /// here; a debug account proves nothing about who registers it anyway (anyone may register any name), and the echo bot
+    /// here, receiving the login this hands out (the plugin's separate keys per address don't stop that: registering
+    /// registers whatever key was signed with); a debug account proves nothing about who registers it anyway (anyone may register any name), and the echo bot
     /// connects to a local address that PublicUrls don't list.
     /// </summary>
     /// <exception cref="RequestException">Not signed, or not like that. The registration can still be completed.</exception>
@@ -373,7 +383,7 @@ public sealed class RequestHandler(
                 "This server needs a newer version of LookingGlass to register: please update the plugin, then register again.");
         }
 
-        if (!pending.IsDebug && this.NotThisServerIfCheckable(connection, request.ServerUrl) is { } elsewhere) {
+        if (!pending.IsDebug && this.NotThisServer(connection, request.ServerUrl) is { } elsewhere) {
             logger.LogInformation("Registration of {User} from {Address} refused: {Reason}", pending.UserId, connection.RemoteAddress, elsewhere);
             throw new RequestException(ErrorCode.RegistrationFailed,
                 "That registration was made for another server address than this server's, so it can't be completed here. " +
@@ -579,7 +589,7 @@ public sealed class RequestHandler(
     /// logins were all lost; others see the old key until then, as before any registration.
     ///
     /// Signed by the key being retired, over this connection's login and this server's address, checked as for key login
-    /// (see <see cref="RetireIdentityProof"/> and <see cref="NotThisServerIfCheckable"/>): a login
+    /// (see <see cref="RetireIdentityProof"/> and <see cref="NotThisServer"/>): a login
     /// alone, which a thief may hold without the key, could otherwise wreck the owner's identity. Anyone with both could
     /// already act as the owner; retiring is then what the owner wants anyway. No rate limit beyond that: it can succeed
     /// once per key, since the key can't sign in again and a new one only comes from registering through the Lodestone.
@@ -593,7 +603,7 @@ public sealed class RequestHandler(
         }
 
         // Before the signature, as for key login: one made for another server is what a relay would bring.
-        if (this.NotThisServerIfCheckable(connection, request.ServerUrl) is { } elsewhere) {
+        if (this.NotThisServer(connection, request.ServerUrl) is { } elsewhere) {
             logger.LogInformation("Retiring the identity key of {User} refused: {Reason}", user.UserId, elsewhere);
             throw new RequestException(ErrorCode.Forbidden, "That was signed for another server address than this server's, so nothing was retired.");
         }
@@ -639,7 +649,7 @@ public sealed class RequestHandler(
 
     /// <summary>
     /// Which server addresses a key login signature may name; registrations through the Lodestone, and retiring a key, go
-    /// by the same (see <see cref="NotThisServerIfCheckable"/>).
+    /// by the same (see <see cref="NotThisServer"/>).
     /// </summary>
     internal enum KeyLoginOrigins {
         /// <summary>The configured <see cref="ServerOptions.PublicUrls"/>: the operator says which addresses are this server's.</summary>
@@ -653,13 +663,18 @@ public sealed class RequestHandler(
         /// </summary>
         HostHeader,
 
-        /// <summary>None configured, outside Development: there is no address to trust, so key login is refused.</summary>
+        /// <summary>
+        /// None configured, outside Development: there is no address to trust. The server refuses to start like this (see
+        /// <see cref="PublicUrlsRequired"/>); a handler made so anyway accepts no signed address, so key login, and
+        /// registering and retiring keys other than debug accounts', are refused.
+        /// </summary>
         Off,
     }
 
     /// <summary>
     /// Checks the server address a client signed (for key login, registration, or retiring its key) against this server's
     /// (see <see cref="KeyLoginOrigins"/>): a signature made for another server is what a relaying server would bring.
+    /// With no address to check against (<see cref="KeyLoginOrigins.Off"/>), none is this server's.
     /// </summary>
     /// <returns>Why the address isn't this server's (for the log), or null if it is.</returns>
     private string? NotThisServer(ClientConnection connection, string signedUrl) {
@@ -676,17 +691,6 @@ public sealed class RequestHandler(
                   KeyLoginOrigins.HostHeader => $"Host header: {connection.RequestOrigin?.ToString() ?? "unknown address"}",
                   _ => "no PublicUrls",
               } + ")";
-    }
-
-    /// <summary>
-    /// For requests that are signed for an address but, unlike key login, can't be turned off (registering, and retiring
-    /// a key): the address is checked as for key login where there is an address to check it against, and not at all on
-    /// a server outside Development without PublicUrls. There, as before signatures named the address, only the plugin's
-    /// separate keys per server address keep a relaying server from using what the user signs for it.
-    /// </summary>
-    /// <returns>Why the address isn't this server's (for the log), or null if it is, or can't be checked.</returns>
-    private string? NotThisServerIfCheckable(ClientConnection connection, string signedUrl) {
-        return this._keyLoginOrigins == KeyLoginOrigins.Off ? null : this.NotThisServer(connection, signedUrl);
     }
 
     internal static KeyLoginOrigins ChooseKeyLoginOrigins(IReadOnlyList<ServerOrigin> publicOrigins, bool development) {

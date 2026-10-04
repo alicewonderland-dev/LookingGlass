@@ -1,6 +1,9 @@
 # Server image. Build:  docker build -t lookingglass .
-# Run:                  docker run -p 127.0.0.1:5180:5180 -v lookingglass-data:/app/data lookingglass
-# Put a TLS reverse proxy in front for anything beyond local testing.
+# Run:                  docker run -p 127.0.0.1:5180:5180 -v lookingglass-data:/app/data \
+#                           -e LookingGlass__PublicUrls__0=wss://chat.example.com/ws lookingglass
+# Put a TLS reverse proxy in front for anything beyond local testing. PublicUrls must list
+# every address clients connect to (LookingGlass__PublicUrls__1, ... for more): the image
+# runs in Production, where the server refuses to start without them.
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 COPY Directory.Build.props ./

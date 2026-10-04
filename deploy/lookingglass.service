@@ -11,6 +11,11 @@
 # The server listens on localhost only. Put a TLS reverse proxy (for example Caddy)
 # in front and give clients a wss:// URL. For a private Tailscale test server instead,
 # change --urls to http://0.0.0.0:5180 and enable Development mode below.
+#
+# LookingGlass__PublicUrls__0 below must be the address clients connect to (add
+# LookingGlass__PublicUrls__1, __2, ... for any others): registrations, key logins and
+# identity resets are only accepted when signed for one of them, and outside Development
+# the server refuses to start without any (see "The server's addresses" in README.md).
 
 [Unit]
 Description=LookingGlass server
@@ -22,6 +27,7 @@ User=lookingglass
 WorkingDirectory=/opt/lookingglass
 ExecStart=/opt/lookingglass/LookingGlass.Server --urls http://127.0.0.1:5180
 Environment=LookingGlass__DataDirectory=/var/lib/lookingglass
+Environment=LookingGlass__PublicUrls__0=wss://chat.example.com/ws
 StateDirectory=lookingglass
 StateDirectoryMode=0700
 UMask=0077

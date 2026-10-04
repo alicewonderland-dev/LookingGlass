@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using LookingGlass.Core.Client;
 using LookingGlass.Core.Crypto;
 using LookingGlass.Core.Membership;
@@ -26,12 +27,17 @@ public sealed class Harness : IAsyncDisposable {
     /// The server's hosting environment. In Development (the default here, as on the test server) key login may go by
     /// the connection's Host header when no PublicUrls are set; anywhere else it needs them.
     /// </param>
+    /// <param name="logs">Also gets everything the server logs.</param>
     /// <param name="settings">Extra server configuration, for example <c>("LookingGlass:Limits:MaxIdentitiesPerRequest", "2")</c>.</param>
     public Harness(string? dataDirectory = null, bool allowDebugAccounts = true, TimeProvider? serverTime = null, string environment = "Development",
-        params (string Key, string Value)[] settings) {
+        CapturingLoggerProvider? logs = null, params (string Key, string Value)[] settings) {
         this.DataDirectory = dataDirectory ?? Path.Combine(Path.GetTempPath(), "lgt-" + Guid.NewGuid().ToString("N"));
         this.Factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder => {
             builder.UseEnvironment(environment);
+            if (logs != null) {
+                builder.ConfigureLogging(logging => logging.AddProvider(logs));
+            }
+
             builder.UseSetting("LookingGlass:DataDirectory", this.DataDirectory);
             builder.UseSetting("LookingGlass:Dev:AllowDebugAccounts", allowDebugAccounts ? "true" : "false");
             builder.UseSetting("LookingGlass:Dev:HostEchoBot", "false");

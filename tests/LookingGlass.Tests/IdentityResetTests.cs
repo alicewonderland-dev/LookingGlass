@@ -25,12 +25,12 @@ public sealed class IdentityResetTests : IAsyncLifetime {
     }
 
     /// <summary>
-    /// Registering again (here on a server whose key login is off, so it's the only way back in) keeps the key, so the
-    /// character's channels, and the keys it holds for them, still work.
+    /// Registering again (here on a server that doesn't list the address the client signs for, so key login fails and
+    /// it's the only way back in) keeps the key, so the character's channels, and the keys it holds for them, still work.
     /// </summary>
     [Fact]
     public async Task RegisteringAgainKeepsTheKeyAndTheChannels() {
-        await using var server = new Harness(environment: "Production");
+        await using var server = new Harness(environment: "Production", settings: ("LookingGlass:PublicUrls:0", "wss://chat.example.com/ws"));
         try {
             var store = new InMemorySecretStore();
             var alice = await server.RegisterAsync("Alice Again", store);
