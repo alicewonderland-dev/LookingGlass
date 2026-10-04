@@ -486,7 +486,10 @@ public sealed class MainWindow : Window {
             ImGuiHelpers.ScaledDummy(2);
 
             if (ImGui.BeginChild("##channel-list", new Vector2(0, -ImGui.GetFrameHeightWithSpacing()), false)) {
-                foreach (var channel in snapshot.Channels) {
+                // In command order, as you type them; channels without a number last, by name.
+                foreach (var channel in snapshot.Channels
+                             .OrderBy(channel => this._sessions.SlotOf(channel.Id) ?? int.MaxValue)
+                             .ThenBy(channel => channel.DisplayName, StringComparer.CurrentCultureIgnoreCase)) {
                     this.DrawChannelRow(channel);
                 }
             }
@@ -526,8 +529,14 @@ public sealed class MainWindow : Window {
         }
 
         var hovered = ImGui.IsItemHovered();
+        // A selectable's rectangle reaches half the item spacing past the list's edges, where it's
+        // clipped, so anything drawn at its very edge (the colour bar, the right-hand items) would be
+        // cut off or touch the divider. Keep the drawing inside the list's visible area.
+        var windowPos = ImGui.GetWindowPos();
         var min = ImGui.GetItemRectMin();
         var max = ImGui.GetItemRectMax();
+        min.X = Math.Max(min.X, windowPos.X + ImGui.GetWindowContentRegionMin().X);
+        max.X = Math.Min(max.X, windowPos.X + ImGui.GetWindowContentRegionMax().X);
         var drawList = ImGui.GetWindowDrawList();
         var middle = (min.Y + max.Y) / 2;
         var textY = MathF.Floor(middle - ImGui.GetTextLineHeight() / 2);
@@ -540,8 +549,8 @@ public sealed class MainWindow : Window {
             drawList.AddRectFilled(new Vector2(min.X, min.Y + inset), new Vector2(min.X + 3 * scale, max.Y - inset), ImGui.GetColorU32(accent), 1.5f * scale);
         }
 
-        // From the right: unread count, attention icon, nickname.
-        var x = max.X - style.FramePadding.X;
+        // From the right: unread count, attention icon, nickname, clear of the divider.
+        var x = max.X - style.FramePadding.X - 4 * scale;
         if (unread > 0) {
             x -= Widgets.Badge(new Vector2(x, middle), UnreadCounter.Format(unread), ImGuiColors.TankBlue) + 6 * scale;
         }

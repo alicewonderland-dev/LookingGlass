@@ -537,7 +537,10 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
         var (rankIcon, rankColour) = RankIcon(member.Rank);
         var rank = RankLabel(member.Rank);
         var gap = 4 * scale;
-        var rankWidth = ImGui.CalcTextSize(rank).X + (rankIcon != null ? Widgets.FixedIconWidth(rankIcon.Value) + gap : 0);
+        // A fixed column, wide enough for the widest rank, with the icon's slot always kept, so
+        // every rank starts at the same place whether or not it has an icon.
+        var iconSlot = Widgets.FixedIconWidth(FontAwesomeIcon.Crown);
+        var rankWidth = iconSlot + gap + ImGui.CalcTextSize(RankLabel(Rank.Moderator)).X;
         var rankX = menuX - style.ItemSpacing.X - rankWidth;
 
         // The name, cut to what's left.
@@ -559,14 +562,13 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
         // The rank, quietly, with a coloured crown or shield for admins and moderators.
         ImGui.SameLine(rankX - ImGui.GetWindowPos().X + ImGui.GetScrollX());
         ImGui.BeginGroup();
+        var at = ImGui.GetCursorScreenPos();
+        ImGui.Dummy(new Vector2(iconSlot, height));
         if (rankIcon is { } shownIcon) {
-            var iconWidth = Widgets.FixedIconWidth(shownIcon);
-            var at = ImGui.GetCursorScreenPos();
-            ImGui.Dummy(new Vector2(iconWidth, height));
-            Widgets.DrawIcon(drawList, shownIcon, new Vector2(at.X + iconWidth / 2, at.Y + height / 2), ImGui.GetColorU32(rankColour));
-            ImGui.SameLine(0, gap);
+            Widgets.DrawIcon(drawList, shownIcon, new Vector2(at.X + iconSlot / 2, at.Y + height / 2), ImGui.GetColorU32(rankColour));
         }
 
+        ImGui.SameLine(0, gap);
         ImGui.TextColored(Widgets.Muted, rank);
         ImGui.EndGroup();
         Widgets.Tooltip(RankDescription(member.Rank));
