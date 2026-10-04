@@ -115,7 +115,12 @@ public sealed class MembershipLogTests : IAsyncLifetime {
         Assert.Equal(Rank.Member, alice.Session.Snapshot.FindChannel(channelId)!.Members.Single(m => m.User.UserId == bob.UserId).Rank);
     }
 
-    /// <summary>Acceptance test 4.</summary>
+    /// <summary>
+    /// Acceptance test 4, against a server that rolls its log back for everyone. The rest of its coverage:
+    /// <see cref="HiddenRemovalIsDetectedWhateverHeadTheServerClaims"/> (a server that won't admit to an older log),
+    /// <see cref="RemoverIsWarnedWhileTheServerRefusesHerRekey"/> (one that keeps the removal but refuses the rekey), and
+    /// <see cref="HiddenRemovalIsDetectedWhenTheServerShowsOthersAnotherLog"/> (one that shows other members another log).
+    /// </summary>
     [Fact]
     public async Task HiddenRemovalIsDetectedByTheRemover() {
         var alice = await this._server.RegisterAsync("Alice Remover");
@@ -386,7 +391,10 @@ public sealed class MembershipLogTests : IAsyncLifetime {
         Assert.DoesNotContain(bob.Notices, n => n.Level == NoticeLevel.Warning);
     }
 
-    /// <summary>Acceptance test 5.</summary>
+    /// <summary>
+    /// Acceptance test 5. See also <see cref="ForkedEntryIsReportedRightAfterAJunkClaim"/> and
+    /// <see cref="AForkClaimMadeTooSoonAfterTheLastCheckIsCheckedLater"/> (a server that games the fork check's rate limit).
+    /// </summary>
     [Fact]
     public async Task ForkedLogIsReported() {
         var alice = await this._server.RegisterAsync("Alice Forked");

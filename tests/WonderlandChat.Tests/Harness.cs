@@ -108,8 +108,8 @@ public sealed class Harness : IAsyncDisposable {
     /// <summary>
     /// Sends events to a client as the server would, followed by an announcement,
     /// and waits for that announcement: once it arrives, the events have been handled.
-    /// Only for events handled as they arrive; EpochAdvanced and ChatMessage are
-    /// queued, so wait for their outcome instead.
+    /// (A client handles every event, announcements included, in one queue, in order.
+    /// Work an event starts in the background, such as a rekey, may still be running.)
     /// </summary>
     public async Task SendAndSettleAsync(TestClient client, params Event[] events) {
         foreach (var ev in events) {
