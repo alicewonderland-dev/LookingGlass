@@ -16,6 +16,7 @@ internal sealed class Connection : IAsyncDisposable {
     private readonly int _maxReceiveBytes;
     private readonly TimeSpan _requestTimeout;
     private readonly Action<Event> _onEvent;
+    private readonly Action<Response> _onResponse;
     private readonly Action<bool, string> _trace;
     private readonly Channel<byte[]> _outbound = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(256) {
         SingleReader = true,
@@ -28,11 +29,14 @@ internal sealed class Connection : IAsyncDisposable {
     private int _closing;
     private string _closeReason = "Connection closed";
 
-    public Connection(WebSocket socket, int maxReceiveBytes, TimeSpan requestTimeout, Action<Event> onEvent, Action<bool, string> trace) {
+    /// <param name="onEvent">Called on the receive loop for every event, in the order they arrive.</param>
+    /// <param name="onResponse">Called on the receive loop for every answer to a request, in order with the events, before the request completes.</param>
+    public Connection(WebSocket socket, int maxReceiveBytes, TimeSpan requestTimeout, Action<Event> onEvent, Action<Response> onResponse, Action<bool, string> trace) {
         this._socket = socket;
         this._maxReceiveBytes = maxReceiveBytes;
         this._requestTimeout = requestTimeout;
         this._onEvent = onEvent;
+        this._onResponse = onResponse;
         this._trace = trace;
     }
 
@@ -140,6 +144,7 @@ internal sealed class Connection : IAsyncDisposable {
                 var response = frame.Response;
                 this._trace(false, $"#{response.RequestId} {response.ResultCase}{(response.Error != null ? $" {response.Error.Code}" : "")}");
                 if (this._pending.TryRemove(response.RequestId, out var tcs)) {
+                    this._onResponse(response);
                     tcs.TrySetResult(response);
                 }
 

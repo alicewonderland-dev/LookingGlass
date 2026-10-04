@@ -1,4 +1,4 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.Net.WebSockets;
 using System.Text;
@@ -91,6 +91,10 @@ public sealed class ClientSession : IAsyncDisposable {
     private readonly Dictionary<string, ForkClaim> _forkClaims = new();
     private readonly HashSet<string> _forkRechecksScheduled = new();
     private readonly HashSet<string> _seenMessages = new();
+    // Who is online, as the server said on the current connection: the online flags of members in channel info,
+    // and PresenceChanged events. Both are applied on the receive loop as they arrive, because the server queues
+    // them in the order they happened (see OnResponse). Forgotten when the connection drops; never saved.
+    private readonly Dictionary<long, bool> _presence = new();
     private readonly Queue<string> _seenOrder = new();
     private long _secretsVersion;
     // NewestMessageTimes changed but hasn't been saved; the next save includes it.
@@ -865,7 +869,8 @@ public sealed class ClientSession : IAsyncDisposable {
             Connection? connection = null;
             try {
                 var socket = await this.ConnectSocketAsync(ct);
-                connection = new Connection(socket, this._options.MaxReceiveBytes, this._options.RequestTimeout, this.OnEvent, this.AddTrace);
+                connection = new Connection(socket, this._options.MaxReceiveBytes, this._options.RequestTimeout,
+                    ev => this.OnEvent(connection, ev), response => this.OnResponse(connection, response), this.AddTrace);
                 this._connection = connection;
                 connection.Start();
 
@@ -882,6 +887,11 @@ public sealed class ClientSession : IAsyncDisposable {
                 }
             } finally {
                 this._connection = null;
+                lock (this._lock) {
+                    // What one connection was told about presence says nothing about the next one.
+                    this._presence.Clear();
+                }
+
                 if (connection != null) {
                     await connection.DisposeAsync();
                 }
@@ -1612,7 +1622,20 @@ public sealed class ClientSession : IAsyncDisposable {
 
     // ================================================================ events
 
-    private void OnEvent(Event ev) {
+    private void OnEvent(Connection? source, Event ev) {
+        if (ev.KindCase == Event.KindOneofCase.PresenceChanged) {
+            // Applied as it arrives, in order with the online flags in responses (which don't go through the
+            // inbox); the inbox publishes it in turn with the other events.
+            lock (this._lock) {
+                if (source != null && source == this._connection) {
+                    this._presence[ev.PresenceChanged.UserId] = ev.PresenceChanged.Online;
+                }
+            }
+
+            this._inbox.Writer.TryWrite(ev);
+            return;
+        }
+
         if (ev.KindCase != Event.KindOneofCase.Announcement && !IsValidChannelId(ChannelIdOf(ev))) {
             this.Log(NoticeLevel.Debug, $"Ignored {ev.KindCase} with an invalid channel ID");
             return;
@@ -1621,6 +1644,32 @@ public sealed class ClientSession : IAsyncDisposable {
         // Everything in order: an entry must be checked before a key made for it, and a key
         // before messages encrypted under it.
         this._inbox.Writer.TryWrite(ev);
+    }
+
+    /// <summary>
+    /// Takes the online flags from channel info in a response. The server fills them in as it queues the
+    /// response, in order with its PresenceChanged events, so applying both as they arrive keeps the newest.
+    /// </summary>
+    private void OnResponse(Connection? source, Response response) {
+        IEnumerable<ChannelInfo> channels = response.ResultCase switch {
+            Response.ResultOneofCase.Channel => [response.Channel],
+            Response.ResultOneofCase.ChannelList => response.ChannelList.Channels,
+            _ => [],
+        };
+
+        lock (this._lock) {
+            if (source == null || source != this._connection) {
+                return;
+            }
+
+            // Every channel listed is one this user is in, so its members are theirs to see. Invitees' flags
+            // are always false (their presence isn't shared), so they would only hide what another channel says.
+            foreach (var member in channels.SelectMany(channel => channel.Members)) {
+                if (member.User != null && member.Rank >= Rank.Member) {
+                    this._presence[member.User.UserId] = member.Online;
+                }
+            }
+        }
     }
 
     private static string? ChannelIdOf(Event ev) => ev.KindCase switch {
@@ -1710,6 +1759,10 @@ public sealed class ClientSession : IAsyncDisposable {
                 break;
             case Event.KindOneofCase.ChatMessage:
                 await this.ProcessChatMessageAsync(ev.ChatMessage, ct);
+                break;
+            case Event.KindOneofCase.PresenceChanged:
+                // Already applied as it arrived (see OnEvent).
+                this.Publish();
                 break;
         }
     }
@@ -2801,8 +2854,12 @@ public sealed class ClientSession : IAsyncDisposable {
                                                                      && pinned.AgreementPublicKey.AsSpan().SequenceEqual(member.Keys.AgreementPublicKey));
                 var current = this._identities.TryGetValue(member.UserId, out var identity) ? MemberKeys.Of(identity.Identity) : null;
                 var replaced = current != null && current != member.Keys;
+                // Invitees' presence isn't shared. You are online while logged in.
+                var online = member.Rank >= Rank.Member && (member.UserId == this._me?.UserId
+                    ? this._state == ConnectionState.Ready
+                    : this._presence.GetValueOrDefault(member.UserId));
                 return new MemberView(user, member.Rank, member.Keys.Fingerprint, pinned is { KeyChangeUnacknowledged: true }, compared, replaced,
-                    replaced ? current!.Fingerprint : null);
+                    replaced ? current!.Fingerprint : null, online);
             })
             .OrderByDescending(member => member.Rank)
             .ThenBy(member => member.User.Name, StringComparer.OrdinalIgnoreCase)
