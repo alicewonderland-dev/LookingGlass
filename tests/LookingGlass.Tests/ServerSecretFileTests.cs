@@ -169,6 +169,79 @@ public sealed class ServerSecretFileTests : IDisposable {
     }
 
     /// <summary>
+    /// Whether an old file was moved is decided by the file itself, never its backup: when the file is damaged, a load
+    /// falls back to the .bak, which a move left holding the original bytes, naming no address. So a moved file that is
+    /// damaged later is never moved again by itself; it is offered, and restored when asked.
+    /// </summary>
+    [Fact]
+    public void ADamagedMovedOldFileIsOfferedNotMoved() {
+        var legacy = this.LegacyPathFor(Url);
+        new FileSecretStore(legacy).Save(Registered("old token"));
+        Assert.Equal("old token", this.Open(Url).Load().DeviceToken);
+        // Moved: the old file names its address, its .bak holds the bytes from before, which don't.
+        Assert.NotNull(new FileSecretStore(legacy).Load().ServerUrl);
+        Assert.Null(new FileSecretStore(legacy + ".bak").Load().ServerUrl);
+
+        // The new file is lost, and the old one damaged.
+        File.Delete(this.PathFor(Url));
+        File.Delete(this.PathFor(Url) + ".bak");
+        File.WriteAllText(legacy, "damaged");
+
+        Assert.Null(this.Open(Url).Load().DeviceToken);
+        Assert.False(File.Exists(this.PathFor(Url)));
+        Assert.Equal(0, ServerSecretFiles.MigrateAll(this._directory, Url, path => new FileSecretStore(path)));
+        Assert.False(File.Exists(this.PathFor(Url)));
+
+        var backup = ServerSecretFiles.FindBackup(this._directory, ContentId, Url, path => new FileSecretStore(path));
+        Assert.Equal(legacy + ".bak", backup?.Path);
+        ServerSecretFiles.RestoreBackup(this._directory, ContentId, Url, path => new FileSecretStore(path));
+        Assert.Equal("old token", this.Open(Url).Load().DeviceToken);
+    }
+
+    /// <summary>The same for an old file that was never moved: damaged, it can't say so, and its .bak is offered instead.</summary>
+    [Fact]
+    public void ADamagedOldFileIsOfferedNotMoved() {
+        var legacy = this.LegacyPathFor(Url);
+        new FileSecretStore(legacy).Save(Registered("older"));
+        new FileSecretStore(legacy).Save(Registered("old"));
+        File.WriteAllBytes(legacy, []);
+
+        Assert.Null(this.Open(Url).Load().DeviceToken);
+        Assert.False(File.Exists(this.PathFor(Url)));
+        Assert.Equal(legacy + ".bak", ServerSecretFiles.FindBackup(this._directory, ContentId, Url, path => new FileSecretStore(path))?.Path);
+    }
+
+    /// <summary>
+    /// A write that never finished (a crash between writing the temporary file and replacing the file) leaves a .tmp
+    /// file, which is never loaded but may hold the old identity. Resetting deletes this character's.
+    /// </summary>
+    [Fact]
+    public void ResettingDeletesLeftoverTemporaryFiles() {
+        var old = Registered("old token");
+        this.Open(Url).Save(old.Clone());
+        var leftovers = new[] {
+            $"{this.PathFor(Url)}.{Guid.NewGuid():N}.tmp",
+            $"{this.LegacyPathFor(Url)}.bak.{Guid.NewGuid():N}.tmp",
+            $"{this.PathFor(OtherUrl)}.{Guid.NewGuid():N}.tmp",
+        };
+        foreach (var file in leftovers) {
+            File.WriteAllBytes(file, old.Serialize());
+        }
+
+        var otherCharacter = Path.Combine(this._directory, ServerSecretFiles.FileName(0x0040_0000_0000_0099, Url)) + $".{Guid.NewGuid():N}.tmp";
+        File.WriteAllBytes(otherCharacter, old.Serialize());
+        var unrelated = Path.Combine(this._directory, "notes.tmp");
+        File.WriteAllText(unrelated, "kept");
+
+        var reset = ServerSecretFiles.ResetIdentity(this._directory, ContentId, Url, path => new FileSecretStore(path));
+        Assert.Empty(reset.Problems);
+        Assert.All(leftovers, file => Assert.False(File.Exists(file), $"{Path.GetFileName(file)} is still there"));
+        Assert.True(File.Exists(otherCharacter));
+        Assert.True(File.Exists(unrelated));
+        Assert.Null(this.Open(Url).Load().DeviceToken);
+    }
+
+    /// <summary>
     /// Looking for a backup only reads, since Settings does it alongside a running session: an old file never moved
     /// isn't offered, and isn't moved either (a session using the address moves it).
     /// </summary>
