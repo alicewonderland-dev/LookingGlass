@@ -12,6 +12,11 @@ namespace LookingGlass.Core.Client;
 /// short hash collides (which can be found offline) would have been given another server's keys and login. Names now
 /// use 128 bits, and an old file is moved to its new name the first time its address is used, stamped with that
 /// address. The old file is kept as a backup, and stamped too, so it can't be taken over by a colliding address later.
+///
+/// Only an old file that was never moved (it names no address) is moved by itself. A stamped one is a backup of how
+/// things were when it was moved: moving it again whenever the new file went missing would silently bring back an old
+/// login, old channel keys, or a key replaced since. Instead it is offered (<see cref="FindBackup"/>) and restored only
+/// when the user asks (<see cref="RestoreBackup"/>). Files are never deleted.
 /// </summary>
 public static partial class ServerSecretFiles {
     private const int HashHexDigits = 32;
@@ -27,8 +32,8 @@ public static partial class ServerSecretFiles {
     public static string LegacyFileName(ulong contentId, string serverUrl) => $"secrets-{contentId:X16}-{Hash(serverUrl, LegacyHashHexDigits)}.bin";
 
     /// <summary>
-    /// The store for a character's secrets for a server address. If only an old-style file exists for it, that is moved
-    /// to the new name first (and kept): see the class summary.
+    /// The store for a character's secrets for a server address. If only an old-style file that was never moved exists
+    /// for it, that is moved to the new name first (and kept); one moved before is left as a backup: see the class summary.
     /// </summary>
     /// <param name="storeAt">The store for a file path (the plugin's encrypts; tests use plain files).</param>
     /// <param name="log">Told when an old file is moved.</param>
@@ -36,29 +41,92 @@ public static partial class ServerSecretFiles {
     public static ServerBoundSecretStore Open(string directory, ulong contentId, string serverUrl, Func<string, ISecretStore> storeAt, Action<string>? log = null) {
         var path = Path.Combine(directory, FileName(contentId, serverUrl));
         var store = new ServerBoundSecretStore(storeAt(path), serverUrl, path);
-        if (Exists(path)) {
-            return store;
+        if (!Exists(path)) {
+            TryMigrate(directory, contentId, serverUrl, storeAt, store, log);
         }
 
+        return store;
+    }
+
+    /// <summary>Moves the old-style file for an address to <paramref name="store"/>, if there is one that was never moved.</summary>
+    /// <returns>Whether it moved one.</returns>
+    /// <exception cref="SecretsServerMismatchException">The old file belongs to another address.</exception>
+    private static bool TryMigrate(string directory, ulong contentId, string serverUrl, Func<string, ISecretStore> storeAt, ServerBoundSecretStore store,
+        Action<string>? log) {
         var legacyPath = Path.Combine(directory, LegacyFileName(contentId, serverUrl));
-        if (!Exists(legacyPath)) {
-            return store;
+        // The file itself, not just its backup: when only the backup is left, that may be the original bytes a move kept
+        // (see below), which name no address but were moved all the same. Offered as a backup instead.
+        if (!File.Exists(legacyPath)) {
+            return false;
         }
 
         // Refused if it names another address: it was moved for that one, and this address's short hash collides with it.
         var legacy = new ServerBoundSecretStore(storeAt(legacyPath), serverUrl, legacyPath);
         var secrets = legacy.Load();
+        if (IsStamped(secrets)) {
+            // Moved before, for this address: a backup now, never restored without asking.
+            return false;
+        }
+
         store.Save(secrets.Clone());
-        // The original bytes stay in the old file's .bak; this copy names its address from now on.
+        // The original bytes stay in the old file's .bak; this copy names its address from now on, which marks it moved.
         legacy.Save(secrets);
-        log?.Invoke($"Moved your LookingGlass keys for {serverUrl.Trim()} to {Path.GetFileName(path)}; the old file {Path.GetFileName(legacyPath)} is kept as a backup.");
-        return store;
+        log?.Invoke($"Moved your LookingGlass keys for {serverUrl.Trim()} to {Path.GetFileName(store.FilePath)}; the old file {Path.GetFileName(legacyPath)} is kept as a backup.");
+        return true;
     }
 
     /// <summary>
-    /// Moves every character's old-style file for <paramref name="serverUrl"/> to its new name (see <see cref="Open"/>).
-    /// Run for the configured address when the plugin starts, so its old files name their address before the user
-    /// could switch to an address whose short hash collides with them. A file that can't be moved is left as it is.
+    /// The old-style file kept for a character and address, if it holds an identity and the address has none of its own
+    /// (no identity keys, no login; say, the new file was lost): what the user may choose to restore. Reads and decrypts
+    /// files. An old file that was never moved is moved first (as <see cref="Open"/> does), and then isn't a backup.
+    /// </summary>
+    /// <exception cref="SecretsServerMismatchException">The old file belongs to another address.</exception>
+    public static SecretsBackup? FindBackup(string directory, ulong contentId, string serverUrl, Func<string, ISecretStore> storeAt) {
+        var legacyPath = Path.Combine(directory, LegacyFileName(contentId, serverUrl));
+        var file = File.Exists(legacyPath) ? legacyPath : File.Exists(AtomicFile.BackupPath(legacyPath)) ? AtomicFile.BackupPath(legacyPath) : null;
+        if (file == null || HoldsAnything(Open(directory, contentId, serverUrl, storeAt).Load())) {
+            return null;
+        }
+
+        var backup = new ServerBoundSecretStore(storeAt(legacyPath), serverUrl, legacyPath).Load();
+        return HoldsIdentity(backup) ? new SecretsBackup(file, new DateTimeOffset(File.GetLastWriteTimeUtc(file), TimeSpan.Zero)) : null;
+    }
+
+    /// <summary>
+    /// Restores the backup <see cref="FindBackup"/> offers to the address's own file, stamped with the address. The old
+    /// file is kept. Only when the user asked: it may be older than they think (an old login, old channel keys, or a key
+    /// they have replaced since, which the server then refuses).
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The address has an identity or login of its own, or there is no backup with an identity. Nothing was restored.</exception>
+    /// <exception cref="SecretsServerMismatchException">The old file belongs to another address.</exception>
+    public static void RestoreBackup(string directory, ulong contentId, string serverUrl, Func<string, ISecretStore> storeAt) {
+        var store = Open(directory, contentId, serverUrl, storeAt);
+        if (HoldsAnything(store.Load())) {
+            throw new InvalidOperationException($"Nothing was restored: there already is an identity for {serverUrl.Trim()}.");
+        }
+
+        var legacyPath = Path.Combine(directory, LegacyFileName(contentId, serverUrl));
+        var backup = Exists(legacyPath) ? new ServerBoundSecretStore(storeAt(legacyPath), serverUrl, legacyPath).Load() : null;
+        if (backup == null || !HoldsIdentity(backup)) {
+            throw new InvalidOperationException($"Nothing was restored: there is no backup of an identity for {serverUrl.Trim()}.");
+        }
+
+        store.Save(backup);
+    }
+
+    /// <summary>Saved through a <see cref="ServerBoundSecretStore"/>, which names the address: true of every file moved, or made, since.</summary>
+    private static bool IsStamped(ClientSecrets secrets) => secrets.ServerUrl != null || secrets.ServerOrigin != null;
+
+    private static bool HoldsIdentity(ClientSecrets secrets) => secrets.SigningPrivateKey != null && secrets.AgreementPrivateKey != null;
+
+    /// <summary>Identity keys or a login: something a backup must never replace.</summary>
+    private static bool HoldsAnything(ClientSecrets secrets) => secrets.SigningPrivateKey != null || secrets.DeviceToken != null;
+
+    /// <summary>
+    /// Moves every character's old-style file for <paramref name="serverUrl"/> that was never moved to its new name (see
+    /// <see cref="Open"/>). Run for the configured address when the plugin starts, so its old files name their address
+    /// before the user could switch to an address whose short hash collides with them. A file that can't be moved is
+    /// left as it is.
     /// </summary>
     /// <returns>How many were moved.</returns>
     public static int MigrateAll(string directory, string serverUrl, Func<string, ISecretStore> storeAt, Action<string>? log = null) {
@@ -76,8 +144,10 @@ public static partial class ServerSecretFiles {
             }
 
             try {
-                Open(directory, contentId, serverUrl, storeAt, log);
-                moved++;
+                var path = Path.Combine(directory, FileName(contentId, serverUrl));
+                if (TryMigrate(directory, contentId, serverUrl, storeAt, new ServerBoundSecretStore(storeAt(path), serverUrl, path), log)) {
+                    moved++;
+                }
             } catch (Exception ex) {
                 log?.Invoke($"Couldn't move {Path.GetFileName(file)}: {ex.Message}");
             }
@@ -138,6 +208,9 @@ public sealed class ServerBoundSecretStore : ISecretStore {
     /// <summary>The normalised address this store is for.</summary>
     public string ServerUrl => this._url;
 
+    /// <summary>The file it keeps the secrets in.</summary>
+    public string FilePath => this._path;
+
     /// <exception cref="SecretsServerMismatchException">The secrets belong to another address.</exception>
     public ClientSecrets Load() {
         var secrets = this._inner.Load();
@@ -170,6 +243,11 @@ public sealed class ServerBoundSecretStore : ISecretStore {
         }
     }
 }
+
+/// <summary>An old-style secrets file kept as a backup (see <see cref="ServerSecretFiles.FindBackup"/>).</summary>
+/// <param name="Path">The file (or, if only that is left, its own backup).</param>
+/// <param name="SavedAt">When it was last written.</param>
+public sealed record SecretsBackup(string Path, DateTimeOffset SavedAt);
 
 /// <summary>A secrets file belongs to another server address than the one it was opened for.</summary>
 public sealed class SecretsServerMismatchException(string path, string belongsTo, string openedFor) : IOException(

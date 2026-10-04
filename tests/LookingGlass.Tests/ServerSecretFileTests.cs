@@ -163,7 +163,7 @@ public sealed class ServerSecretFileTests : IDisposable {
         Assert.Null(this.Open(Url).Load().DeviceToken);
         Assert.False(File.Exists(this.PathFor(Url)));
         var backup = ServerSecretFiles.FindBackup(this._directory, ContentId, Url, path => new FileSecretStore(path));
-        Assert.Equal(legacy, backup?.Path);
+        Assert.Equal(legacy + ".bak", backup?.Path);
         ServerSecretFiles.RestoreBackup(this._directory, ContentId, Url, path => new FileSecretStore(path));
         Assert.Equal("older", this.Open(Url).Load().DeviceToken);
     }

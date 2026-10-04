@@ -156,6 +156,25 @@ public sealed class ProtectedSecretStore : ISecretStore {
             .ToList();
     }
 
+    /// <summary>
+    /// The backup of a character's identity for an address that the user may restore (see <see cref="ServerSecretFiles.FindBackup"/>),
+    /// or null. Reads (and decrypts) files: not on the framework thread. A file that can't be read counts as no backup.
+    /// </summary>
+    public static SecretsBackup? FindBackup(ulong contentId, string serverUrl) {
+        try {
+            return ServerSecretFiles.FindBackup(ConfigDirectory, contentId, serverUrl, path => At(path, null));
+        } catch (Exception ex) {
+            Services.Log.Warning(ex, "Couldn't look for a backup of a LookingGlass identity");
+            return null;
+        }
+    }
+
+    /// <summary>Restores the backup <see cref="FindBackup"/> offers. Only while no session uses the address's file.</summary>
+    /// <exception cref="InvalidOperationException">The address has an identity of its own, or there is no backup.</exception>
+    public static void RestoreBackup(ulong contentId, string serverUrl) {
+        ServerSecretFiles.RestoreBackup(ConfigDirectory, contentId, serverUrl, path => At(path, null));
+    }
+
     /// <param name="identity">Identity keys (true), or anything at all: keys or a login (false).</param>
     private static bool Holds(ulong contentId, string serverUrl, bool identity) {
         try {

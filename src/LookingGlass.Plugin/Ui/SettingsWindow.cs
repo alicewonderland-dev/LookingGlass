@@ -23,6 +23,10 @@ public sealed class SettingsWindow : Window {
     private bool _openMoveOffer;
     private string? _moveError;
 
+    // A backup of the identity the user may restore, looked for in the background, and for whom.
+    private Task<SecretsBackup?>? _backupCheck;
+    private (ulong ContentId, string ServerUrl)? _backupFor;
+
     public SettingsWindow(Configuration config, SessionManager sessions, UiActions actions) : base("LookingGlass settings###lookingglass-settings") {
         this._config = config;
         this._sessions = sessions;
@@ -41,6 +45,8 @@ public sealed class SettingsWindow : Window {
         // Start from what is saved, not a half-typed URL from last time.
         this._serverUrl = this._config.ServerUrl;
         this._moveError = null;
+        // Look again: files may have changed since.
+        this._backupCheck = null;
     }
 
     public override void OnClose() {
@@ -319,7 +325,54 @@ public sealed class SettingsWindow : Window {
 
         ImGui.EndDisabled();
         Widgets.Tooltip("New identity keys for this character on this server. Only if your key was lost or may have been stolen.");
+        this.DrawBackup(player);
     }
+
+    /// <summary>
+    /// A backup of the identity (an old-style secrets file kept when it was moved) for an address that has none of its
+    /// own: offered, never restored without asking (see ServerSecretFiles). Looked for in the background, again whenever
+    /// the window opens, the character or address changes, or the identity is reset or restored.
+    /// </summary>
+    private void DrawBackup(PlayerInfo? player) {
+        if (player == null) {
+            return;
+        }
+
+        var serverUrl = this._config.ServerUrl;
+        if (this._backupCheck == null || this._backupFor != (player.ContentId, serverUrl)) {
+            this._backupFor = (player.ContentId, serverUrl);
+            this._backupCheck = Task.Run(() => ProtectedSecretStore.FindBackup(player.ContentId, serverUrl));
+        }
+
+        if (this._backupCheck is not { IsCompletedSuccessfully: true, Result: { } backup }) {
+            return;
+        }
+
+        var saved = backup.SavedAt.ToLocalTime().ToString("g");
+        ImGui.Spacing();
+        ImGui.PushTextWrapPos();
+        ImGui.TextColored(Widgets.Warning, $"A backup of your identity from {saved} exists. Restore it?");
+        ImGui.PopTextWrapPos();
+        ImGui.BeginDisabled(this._actions.Busy);
+        if (ImGui.Button("Restore the backup...")) {
+            this._modals.Confirm("Restore your identity", RestoreText(player.Name, serverUrl, saved), "Restore it", () => {
+                var restore = this._sessions.RestoreBackup();
+                this._actions.Run("Restoring your identity", () => restore);
+                this._backupCheck = restore.ContinueWith(_ => ProtectedSecretStore.FindBackup(player.ContentId, serverUrl), TaskScheduler.Default);
+            });
+        }
+
+        ImGui.EndDisabled();
+        Widgets.Tooltip("Your identity for this server is gone (no keys, no login), but LookingGlass kept a copy when it moved your keys to a new file.");
+    }
+
+    private static string RestoreText(string name, string serverUrl, string saved) =>
+        $"This restores the identity LookingGlass kept for {name} on {serverUrl}, as it was on {saved}: its keys, login and channel keys.\n\n" +
+        "It may be older than you think:\n" +
+        "- Its login may no longer work. If the server still knows its key, it signs you in with that.\n" +
+        "- Channel keys and changes since then are missing; channels you're still in catch up from the server.\n" +
+        "- If you have reset your identity on this server since, its key no longer counts there: you'd have to reset again.\n\n" +
+        "The backup file itself is kept.";
 
     private static string ResetText(string name, string serverUrl) =>
         $"This makes new identity keys for {name} on {serverUrl}. Only do this if your key was lost or may have been stolen. " +

@@ -133,7 +133,12 @@ keeps the previous version next to it as `secrets-….bin.bak`, and if the file
 is missing or damaged the plugin loads the backup and says so in chat.
 Earlier versions named these files after a shorter hash (12 hex digits); the
 plugin moves each one to its new name the first time its address is used (at
-startup for the configured address), and keeps the old file as a backup.
+startup for the configured address), and keeps the old file as a backup. It
+moves a file only once: if the new file (and its `.bak`) are lost later, the
+plugin doesn't go back to the old one by itself, since it may hold an older
+login, older channel keys, or a key you have reset since. Instead Settings
+says "A backup of your identity from <date> exists. Restore it?", and restores
+it only if you confirm. No file is ever deleted.
 
 **Signing in.** The Lodestone proves the character is yours once, when you
 register. After that the plugin signs in with the login (a device token) it

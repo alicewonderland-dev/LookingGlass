@@ -114,21 +114,48 @@ public sealed class SessionManager : IDisposable {
         }
 
         var serverUrl = this._config.ServerUrl;
-        this.Stop();
-        var closing = this._closing ?? Task.CompletedTask;
-        var reset = Task.Run(async () => {
-            await closing;
+        return this.ReplaceSecrets(player, () => {
             var store = ProtectedSecretStore.For(player.ContentId, serverUrl, warning => this._chat.Notice(NoticeLevel.Warning, warning));
             var secrets = store.Load();
             secrets.ResetIdentity();
             store.Save(secrets);
             Services.Log.Information("Reset the LookingGlass identity of a character");
         });
+    }
 
-        // Any session started meanwhile (this one below, a relog, Connect) waits for the reset, as for a closing session.
-        this._closing = reset.ContinueWith(_ => { }, TaskScheduler.Default);
+    /// <summary>
+    /// Restores the backup of the logged-in character's identity for the configured server (see
+    /// <see cref="ProtectedSecretStore.FindBackup"/>), once the session has closed, then connects again. Only when the
+    /// user asked. Call on the framework thread; the returned task finishes the work.
+    /// </summary>
+    public Task RestoreBackup() {
+        if (this._player.Current is not { } player) {
+            return Task.FromException(new InvalidOperationException("Log in to the character whose identity you want to restore."));
+        }
+
+        var serverUrl = this._config.ServerUrl;
+        return this.ReplaceSecrets(player, () => {
+            ProtectedSecretStore.RestoreBackup(player.ContentId, serverUrl);
+            Services.Log.Information("Restored the LookingGlass identity of a character from a backup");
+        });
+    }
+
+    /// <summary>
+    /// Stops the session, runs <paramref name="work"/> on a character's secrets files once it has closed (so nothing
+    /// else writes them meanwhile), then connects again. Call on the framework thread; the returned task finishes the work.
+    /// </summary>
+    private Task ReplaceSecrets(PlayerInfo player, Action work) {
+        this.Stop();
+        var closing = this._closing ?? Task.CompletedTask;
+        var replacing = Task.Run(async () => {
+            await closing;
+            work();
+        });
+
+        // Any session started meanwhile (this one below, a relog, Connect) waits for it, as for a closing session.
+        this._closing = replacing.ContinueWith(_ => { }, TaskScheduler.Default);
         this.StartFor(player);
-        return reset;
+        return replacing;
     }
 
     /// <summary>The command slot of a channel for the current character. Safe from any thread.</summary>
