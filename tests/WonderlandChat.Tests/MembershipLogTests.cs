@@ -200,6 +200,65 @@ public sealed class MembershipLogTests : IAsyncLifetime {
     }
 
     /// <summary>
+    /// Acceptance test 4, against a server that keeps the removal in its log (so it can show the remover everything she
+    /// verified) but keeps refusing her rekey: with CONFLICT (it still counts Carol as a member), or with another error
+    /// (here FORBIDDEN). Either way the removal hasn't taken effect for the others, who still share the old key with
+    /// Carol, and the remover is warned until a rekey after the removal goes through.
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task RemoverIsWarnedWhileTheServerRefusesHerRekey(bool asConflict) {
+        var alice = await this._server.RegisterAsync("Alice Refused " + asConflict);
+        var bob = await this._server.RegisterAsync("Bob Still Sharing " + asConflict);
+        var carol = await this._server.RegisterAsync("Carol Not Gone " + asConflict);
+        var channelId = await alice.Session.CreateChannelAsync("Refused", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        await AddMemberAsync(alice, channelId, carol);
+        var epoch = alice.Session.Snapshot.FindChannel(channelId)!.Epoch;
+        // Alice doesn't rekey in the background when the server asks, so the only rekey is the one her kick makes.
+        await alice.Session.DisposeAsync();
+        alice = await this._server.RestartAsync(alice, this._server.Options(autoRekey: false));
+        var aliceKeys = alice.Keys();
+        var carolKeys = carol.Keys();
+
+        // The server stores the removal, then refuses every rekey.
+        void Refuse() {
+            if (asConflict) {
+                this._server.ExecuteSql("""
+                    INSERT INTO members (channel_id, user_id, rank, joined_at, signing_key, agreement_key) VALUES ($channel, $carol, 2, 0, $signing, $agreement);
+                    """, ("$channel", channelId), ("$carol", carol.UserId), ("$signing", carolKeys.SigningKeyArray()), ("$agreement", carolKeys.AgreementKeyArray()));
+            } else {
+                this._server.ExecuteSql("UPDATE members SET signing_key = $junk WHERE channel_id = $channel AND user_id = $alice;",
+                    ("$channel", channelId), ("$alice", alice.UserId), ("$junk", new byte[32]));
+            }
+        }
+
+        alice.Session.AfterKickRequestForTests = () => {
+            Refuse();
+            return Task.CompletedTask;
+        };
+        await Assert.ThrowsAnyAsync<Exception>(() => alice.Session.KickAsync(channelId, carol.UserId, Ct));
+        Assert.Equal(epoch, this._server.Database.GetChannel(channelId)!.Epoch);
+
+        var warning = alice.Session.Snapshot.FindChannel(channelId)!.MembershipWarning;
+        Assert.Contains("hasn't taken effect", warning);
+        Assert.Contains(alice.Notices, n => n.Level == NoticeLevel.Warning && n.Text == warning);
+
+        // Once the server takes a rekey made after the removal, the warning goes.
+        if (asConflict) {
+            this._server.ExecuteSql("DELETE FROM members WHERE channel_id = $channel AND user_id = $carol;", ("$channel", channelId), ("$carol", carol.UserId));
+        } else {
+            this._server.ExecuteSql("UPDATE members SET signing_key = $signing WHERE channel_id = $channel AND user_id = $alice;",
+                ("$channel", channelId), ("$alice", alice.UserId), ("$signing", aliceKeys.SigningKeyArray()));
+        }
+
+        await alice.Session.RekeyAsync(channelId, Ct);
+        Assert.Equal(epoch + 1, this._server.Database.GetChannel(channelId)!.Epoch);
+        Assert.Null(alice.Session.Snapshot.FindChannel(channelId)!.MembershipWarning);
+    }
+
+    /// <summary>
     /// Acceptance test 4, against a server that shows different members different logs (it equivocates) rather
     /// than rolling its log back for everyone. Alice removes Carol and rekeys to e+1 for the membership after it.
     /// The server shows Bob the log without the removal, and takes his rekey to e+2 for the membership before it;
