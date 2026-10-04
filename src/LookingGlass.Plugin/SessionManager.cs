@@ -55,8 +55,9 @@ public sealed class SessionManager : IDisposable {
     /// Changes the server address and reconnects. With <paramref name="keepIdentity"/> (a check the current server
     /// vouched for, which the user confirmed), first copies each of <paramref name="characters"/>' identity to the new
     /// address (see <see cref="ServerMove"/>), once the session has closed; any session started meanwhile waits for that.
-    /// The old address's files are left as they are, so switching back works. Call on the framework thread; the returned
-    /// task finishes the copying, and fails (having copied what it could) if any copy was refused.
+    /// If closing took long enough for the check to go stale, the servers are asked again first, and nothing is copied
+    /// unless they still agree. The old address's files are left as they are, so switching back works. Call on the
+    /// framework thread; the returned task finishes the copying, and fails (having copied what it could) if any copy was refused.
     /// </summary>
     public Task ChangeServer(string newUrl, ServerMoveCheck? keepIdentity = null, IReadOnlyList<ulong>? characters = null) {
         var oldUrl = this._config.ServerUrl;
@@ -68,10 +69,11 @@ public sealed class SessionManager : IDisposable {
                 return;
             }
 
+            var check = keepIdentity.IsFresh() ? keepIdentity : await ServerMove.CheckAsync(keepIdentity.CurrentUrl, keepIdentity.NewUrl);
             var refused = new List<string>();
             foreach (var contentId in characters ?? []) {
                 try {
-                    ServerMove.CopyIdentity(keepIdentity, ProtectedSecretStore.For(contentId, oldUrl), ProtectedSecretStore.For(contentId, newUrl));
+                    ServerMove.CopyIdentity(check, ProtectedSecretStore.For(contentId, oldUrl), ProtectedSecretStore.For(contentId, newUrl));
                     Services.Log.Information("Carried a character's LookingGlass identity over to the server's new address");
                 } catch (Exception ex) {
                     refused.Add(ex.Message);

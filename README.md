@@ -166,15 +166,21 @@ you change the address in Settings and a character has an identity for the
 old address but none for the new one, the plugin first asks the server at the
 old address (which you already trust with your login) whether the new address
 is one of its own, and then the server at the new address whether the old one
-is one of its own. Only if both list the other (in `LookingGlass:PublicUrls`)
-does it offer "This is the same server. Keep your identity?": yes copies the
-character's keys, login and channels to the new address, so you don't register
-again and stay in your channels. Otherwise it says why (the old server doesn't
-list the new address, the new one doesn't list the old, one of them can't be
-reached, or the server lists no addresses), and the new address counts as a
-different server: you'd register there with new keys. A server at a new
-address can never get your identity by claiming to be the old one: the old
-server has to say so. Either way the identity for the old address is kept, so
+is one of its own. Only if the new address is `wss://` and both list the other
+(in `LookingGlass:PublicUrls`) does it offer "This is the same server. Keep
+your identity?": yes asks both servers once more (the dialog may have been
+open a while) and, if they still agree, copies the character's keys, login and
+channels to the new address, so you don't register again and stay in your
+channels. Otherwise it says why (the new address isn't `wss://`, the old
+server doesn't list the new address, the new one doesn't list the old, one of
+them can't be reached, or the server lists no addresses), and the new address
+counts as a different server: you'd register there with new keys. A server at
+a new address can never get your identity by claiming to be the old one: the
+old server has to say so. Only `wss://` counts because the servers vouch for
+names, not for whoever answers at them: over plain `ws://`, or a short name the
+local network resolves, someone else could answer at the new name, repeat the
+real server's addresses, and receive your login in the clear; TLS proves which
+server answers. Either way the identity for the old address is kept, so
 switching back works. Numbers, nicknames and colours belong to the character
 and the channels, so they follow along.
 
@@ -275,7 +281,10 @@ LookingGlass__PublicUrls__1=wss://<machine-name>.<tailnet>.ts.net/ws
 ```
 
 The server also tells plugins these addresses, which is how a plugin moving
-between two of them keeps its identity (see "Moving the server" above).
+between two of them keeps its identity (see "Moving the server" above), but
+only to a `wss://` one. Listing short or plain `ws://` names (a tailnet
+machine name, `127.0.0.1`) is still fine for key login on a private network;
+plugins just can't move their identity to them.
 
 **Without `PublicUrls`, key login is off** (the server says so when it
 starts): plugins whose login it doesn't recognise must register again
@@ -286,8 +295,8 @@ weaker: whoever opens a connection chooses its Host header, so a malicious
 server relaying your signature simply sends the address you signed for. On
 such a server, what protects you is that the plugin keeps separate identity
 keys per server address, so the key you sign with for another server isn't
-registered on this one (and a key is only carried to another address when
-both addresses' servers list each other). Fine for a private test server;
+registered on this one (and a key is only carried to another, `wss://`,
+address when both addresses' servers list each other). Fine for a private test server;
 list the addresses anywhere else.
 
 Key logins are limited per connection (3 challenges), per address
@@ -386,7 +395,7 @@ What the encryption does today:
   also keeps separate keys per server address, bound to the address inside
   the file; never follows redirects, so a server can't hand your connection
   and login to another; and only carries an identity to a new address when
-  the servers at both addresses list each other.
+  it is `wss://` and the servers at both addresses list each other.
 - Clients can block users: their invites are declined unseen and their
   messages hidden. An invite is only shown as verified once the client has
   checked it against the channel's log, and one from someone whose identity

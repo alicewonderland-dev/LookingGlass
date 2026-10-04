@@ -65,16 +65,20 @@ public sealed class SettingsWindow : Window {
     /// one, ask the current server (over the current address) whether the new one is its own, and the new one whether it
     /// agrees (see ServerMove), before anything changes.
     /// </summary>
-    private void StartMoveCheck(string oldUrl, string newUrl) {
+    /// <param name="confirmed">
+    /// The user already chose to keep their identity: this asks the servers again, since the dialog may have been open
+    /// for a while, and the identity is only carried over if they still agree (otherwise the dialog says what changed).
+    /// </param>
+    private void StartMoveCheck(string oldUrl, string newUrl, bool confirmed = false) {
         this._moveError = null;
         this._moveOffer = null;
         this._moveCheck = Task.Run(async () => {
             var characters = ProtectedSecretStore.CharactersToMove(oldUrl, newUrl);
             if (characters.Count == 0) {
-                return new MoveOffer(oldUrl, newUrl, null, characters);
+                return new MoveOffer(oldUrl, newUrl, null, characters, confirmed);
             }
 
-            return new MoveOffer(oldUrl, newUrl, await ServerMove.CheckAsync(oldUrl, newUrl), characters);
+            return new MoveOffer(oldUrl, newUrl, await ServerMove.CheckAsync(oldUrl, newUrl), characters, confirmed);
         });
     }
 
@@ -99,6 +103,12 @@ public sealed class SettingsWindow : Window {
         if (offer.Check == null) {
             // No identity there to keep (or the new address has its own): as before, a plain change.
             this.ChangeServer(offer, keepIdentity: false);
+            return;
+        }
+
+        if (offer.Confirmed && offer.Check.Verdict == ServerMoveVerdict.SameServer) {
+            // Asked again after the user chose to keep their identity, and the servers still agree.
+            this.ChangeServer(offer, keepIdentity: true);
             return;
         }
 
@@ -143,7 +153,8 @@ public sealed class SettingsWindow : Window {
                 "and you stay in your channels. The identity for the old address is kept too, so switching back works.");
             ImGui.Spacing();
             if (ImGui.Button("Keep my identity")) {
-                this.ChangeServer(offer, keepIdentity: true);
+                // Never on what the servers said when the dialog opened: ask them again, and keep it only if they still agree.
+                this.StartMoveCheck(offer.OldUrl, offer.NewUrl, confirmed: true);
                 close = true;
             }
 
@@ -158,10 +169,12 @@ public sealed class SettingsWindow : Window {
             ImGui.TextUnformatted("LookingGlass can't confirm this is the same server");
             ImGui.Spacing();
             ImGui.TextColored(Widgets.Muted, check.Message);
+            var remedy = check.Verdict == ServerMoveVerdict.NotSecure
+                ? "If it is the same server, apply its wss:// address instead (ask whoever runs it for one, and to list it in LookingGlass:PublicUrls)."
+                : "If it is the same server, ask whoever runs it to list both addresses in LookingGlass:PublicUrls, then apply it again.";
             ImGui.TextColored(Widgets.Muted,
                 "So the new address counts as a different server: there you'd register through the Lodestone with new keys, and start " +
-                $"without channels. The identity of {who} for {offer.OldUrl} is kept, so switching back restores it. If it is the same " +
-                "server, ask whoever runs it to list both addresses in LookingGlass:PublicUrls, then apply it again.");
+                $"without channels. The identity of {who} for {offer.OldUrl} is kept, so switching back restores it. {remedy}");
             ImGui.Spacing();
             if (ImGui.Button("Use the new address anyway")) {
                 this.ChangeServer(offer, keepIdentity: false);
@@ -184,7 +197,8 @@ public sealed class SettingsWindow : Window {
     }
 
     /// <param name="Check">The current server's answer, or null if no character has an identity to carry over.</param>
-    private sealed record MoveOffer(string OldUrl, string NewUrl, ServerMoveCheck? Check, IReadOnlyList<ulong> Characters);
+    /// <param name="Confirmed">Asked again after the user chose to keep their identity (see <see cref="StartMoveCheck"/>).</param>
+    private sealed record MoveOffer(string OldUrl, string NewUrl, ServerMoveCheck? Check, IReadOnlyList<ulong> Characters, bool Confirmed);
 
     private void DrawServer() {
         Widgets.Heading("Server");
