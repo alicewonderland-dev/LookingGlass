@@ -12,7 +12,7 @@ namespace LookingGlass.Plugin;
 /// against accidentally sharing the secrets file, not against someone who can
 /// read your files.
 /// </summary>
-public sealed class ProtectedSecretStore : ISecretStore {
+public sealed class ProtectedSecretStore : IFileSecretStore {
     private static readonly byte[] DpapiMagic = "LGD1"u8.ToArray();
     private static readonly byte[] KeyFileMagic = "LGK1"u8.ToArray();
     private static readonly byte[] Entropy = Encoding.UTF8.GetBytes("LookingGlass secrets v1");
@@ -42,6 +42,8 @@ public sealed class ProtectedSecretStore : ISecretStore {
                    this.Warn($"{message} To replace your LookingGlass identity instead, use \"Reset my identity\" in Settings."))
                ?? new ClientSecrets();
     }
+
+    public ClientSecrets? LoadFileOnly() => AtomicFile.ReadFileOnly(this._path, this.Decode);
 
     private ClientSecrets Decode(byte[] data) {
         var magic = data.AsSpan(0, Math.Min(4, data.Length));

@@ -17,7 +17,9 @@ namespace LookingGlass.Core.Client;
 /// Only an old file that was never moved (it names no address) is moved by itself. A stamped one is a backup of how
 /// things were when it was moved: moving it again whenever the new file went missing would silently bring back an old
 /// login, old channel keys, or a key replaced since. Instead it is offered (<see cref="FindBackup"/>) and restored only
-/// when the user asks (<see cref="RestoreBackup"/>). Files are never deleted.
+/// when the user asks (<see cref="RestoreBackup"/>). Whether an old file was moved is decided by the file itself, never
+/// its backup (which may be the bytes from before the move), and a damaged one is only offered. Files are never deleted,
+/// except temporary files left by writes that never finished, which a reset deletes.
 /// </summary>
 public static partial class ServerSecretFiles {
     private const int HashHexDigits = 32;
@@ -55,20 +57,15 @@ public static partial class ServerSecretFiles {
     private static bool TryMigrate(string directory, ulong contentId, string serverUrl, Func<string, ISecretStore> storeAt, ServerBoundSecretStore store,
         Action<string>? log) {
         var legacyPath = Path.Combine(directory, LegacyFileName(contentId, serverUrl));
-        // The file itself, not just its backup: when only the backup is left, that may be the original bytes a move kept
-        // (see below), which name no address but were moved all the same. Offered as a backup instead.
-        if (!File.Exists(legacyPath)) {
+        // The file itself, never its backup: when the file is missing or damaged, the backup may be the original bytes a
+        // move kept (see below), which name no address but were moved all the same. Offered as a backup instead.
+        var secrets = ReadFileOnly(legacyPath, serverUrl, storeAt, log);
+        if (secrets == null || IsStamped(secrets)) {
+            // Missing or unreadable as it is, or moved before (for this address): a backup now, never restored without asking.
             return false;
         }
 
-        // Refused if it names another address: it was moved for that one, and this address's short hash collides with it.
         var legacy = new ServerBoundSecretStore(storeAt(legacyPath), serverUrl, legacyPath);
-        var secrets = legacy.Load();
-        if (IsStamped(secrets)) {
-            // Moved before, for this address: a backup now, never restored without asking.
-            return false;
-        }
-
         store.Save(secrets.Clone());
         // The original bytes stay in the old file's .bak; this copy names its address from now on, which marks it moved.
         legacy.Save(secrets);
@@ -77,26 +74,60 @@ public static partial class ServerSecretFiles {
     }
 
     /// <summary>
+    /// An old-style file as the file itself holds it, never its backup: what decides whether it was moved. Null if the file
+    /// is missing or can't be read as it is (damaged, or kept by a store that can't read a file without its backup): then
+    /// it is never moved by itself, only offered (see <see cref="FindBackup"/>).
+    /// </summary>
+    /// <param name="log">Told when the file can't be read.</param>
+    /// <exception cref="SecretsServerMismatchException">The file names another address.</exception>
+    private static ClientSecrets? ReadFileOnly(string legacyPath, string serverUrl, Func<string, ISecretStore> storeAt, Action<string>? log) {
+        if (!File.Exists(legacyPath) || storeAt(legacyPath) is not IFileSecretStore file) {
+            return null;
+        }
+
+        ClientSecrets? secrets;
+        try {
+            secrets = file.LoadFileOnly();
+        } catch (Exception ex) when (ex is not IOException and not UnauthorizedAccessException) {
+            log?.Invoke($"{Path.GetFileName(legacyPath)} couldn't be read ({ex.Message}), so it isn't moved; if its backup holds an identity, Settings offers it.");
+            return null;
+        }
+
+        if (secrets != null) {
+            // Refused if it names another address: it was moved for that one, and this address's short hash collides with it.
+            new ServerBoundSecretStore(file, serverUrl, legacyPath).Check(secrets);
+        }
+
+        return secrets;
+    }
+
+    /// <summary>
     /// The old-style file kept for a character and address, if it holds an identity and the address has none of its own
     /// (no identity keys, no login; say, the new file was lost): what the user may choose to restore. Only reads (and
-    /// decrypts) files, so it may run alongside a session. An old file that was never moved isn't a backup: <see cref="Open"/>
-    /// moves it when the address is used.
+    /// decrypts) files, so it may run alongside a session. An old file that was never moved (and is readable as it is)
+    /// isn't a backup: <see cref="Open"/> moves it when the address is used. One that is damaged is offered as its backup.
     /// </summary>
     /// <exception cref="SecretsServerMismatchException">The old file belongs to another address.</exception>
     public static SecretsBackup? FindBackup(string directory, ulong contentId, string serverUrl, Func<string, ISecretStore> storeAt) {
         var legacyPath = Path.Combine(directory, LegacyFileName(contentId, serverUrl));
-        var file = File.Exists(legacyPath) ? legacyPath : File.Exists(AtomicFile.BackupPath(legacyPath)) ? AtomicFile.BackupPath(legacyPath) : null;
         var path = Path.Combine(directory, FileName(contentId, serverUrl));
-        if (file == null || HoldsAnything(new ServerBoundSecretStore(storeAt(path), serverUrl, path).Load())) {
+        if (!Exists(legacyPath) || HoldsAnything(new ServerBoundSecretStore(storeAt(path), serverUrl, path).Load())) {
             return null;
         }
 
-        var backup = new ServerBoundSecretStore(storeAt(legacyPath), serverUrl, legacyPath).Load();
-        if (!IsStamped(backup) && File.Exists(legacyPath)) {
+        var own = ReadFileOnly(legacyPath, serverUrl, storeAt, null);
+        if (own != null && !IsStamped(own)) {
             // Never moved: moved by itself when the address is used (see TryMigrate), not offered.
             return null;
         }
 
+        // The file, or if it is missing or damaged its backup: what a load (and RestoreBackup) uses.
+        var file = own != null ? legacyPath : AtomicFile.BackupPath(legacyPath);
+        if (!File.Exists(file)) {
+            return null;
+        }
+
+        var backup = new ServerBoundSecretStore(storeAt(legacyPath), serverUrl, legacyPath).Load();
         return HoldsIdentity(backup) ? new SecretsBackup(file, new DateTimeOffset(File.GetLastWriteTimeUtc(file), TimeSpan.Zero)) : null;
     }
 
@@ -127,7 +158,8 @@ public static partial class ServerSecretFiles {
     /// old identity is kept. First every other file of the character whose signing key is the one being reset (another
     /// address it was carried to by a move, the old-style file, any of their .bak files) has the identity dropped
     /// (<see cref="ClientSecrets.ForgetIdentity"/>): kept as files, with what they hold about others and the channels,
-    /// so nothing the user needs is lost, but never loadable as the old identity again. Then the address's own file gets
+    /// so nothing the user needs is lost, but never loadable as the old identity again. Temporary files left by writes that
+    /// never finished (never loaded, but they may hold the old identity) are deleted. Then the address's own file gets
     /// new keys. Each file changed is written twice, so its .bak (which a write fills with the previous version) holds
     /// the new contents too. Only while no session uses these files.
     ///
@@ -156,6 +188,21 @@ public static partial class ServerSecretFiles {
                     problems.Add($"Couldn't check {Path.GetFileName(path)} for the old identity: {ex.Message}");
                     log?.Invoke(problems[^1]);
                 }
+            }
+        }
+
+        // Writes that never finished (a crash before the temporary file replaced its file) left a copy that is never
+        // loaded, but may hold the old identity.
+        foreach (var (leftover, target) in LeftoverTemporaryFiles(directory, contentId)) {
+            try {
+                lock (AtomicFile.LockFor(target)) {
+                    File.Delete(leftover);
+                }
+
+                log?.Invoke($"Deleted {Path.GetFileName(leftover)}, left over from a write that never finished.");
+            } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) {
+                problems.Add($"Couldn't delete {Path.GetFileName(leftover)}, left over from a write that never finished: {ex.Message}");
+                log?.Invoke(problems[^1]);
             }
         }
 
@@ -218,6 +265,23 @@ public static partial class ServerSecretFiles {
             .Where(file => AnyName().IsMatch(Path.GetFileName(file)) && Path.GetFileName(file).StartsWith(prefix, StringComparison.Ordinal))
             .Select(file => file.EndsWith(".bak", StringComparison.Ordinal) ? file[..^".bak".Length] : file)
             .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    /// <summary>
+    /// The temporary files <see cref="AtomicFile.Write"/> left beside a character's secrets files (and their .bak) when
+    /// it never finished, each with the file whose lock its write held.
+    /// </summary>
+    private static List<(string Leftover, string Target)> LeftoverTemporaryFiles(string directory, ulong contentId) {
+        if (!Directory.Exists(directory)) {
+            return [];
+        }
+
+        var prefix = $"secrets-{contentId:X16}-";
+        return Directory.EnumerateFiles(directory, prefix + "*.tmp")
+            .Select(file => (File: file, Match: TemporaryName().Match(Path.GetFileName(file))))
+            .Where(found => found.Match.Success && found.Match.Groups[1].Value.StartsWith(prefix, StringComparison.Ordinal))
+            .Select(found => (found.File, Path.Combine(directory, found.Match.Groups[1].Value)))
             .ToList();
     }
 
@@ -296,6 +360,10 @@ public static partial class ServerSecretFiles {
     /// <summary>A secrets file, new-style or old, or its .bak.</summary>
     [GeneratedRegex("^secrets-[0-9A-F]{16}-(?:[0-9A-F]{12}|[0-9A-F]{32})\\.bin(?:\\.bak)?$")]
     private static partial Regex AnyName();
+
+    /// <summary>A temporary file <see cref="AtomicFile.Write"/> writes for a secrets file or its .bak; the first group is the secrets file.</summary>
+    [GeneratedRegex("^(secrets-[0-9A-F]{16}-(?:[0-9A-F]{12}|[0-9A-F]{32})\\.bin)(?:\\.bak)?\\.[0-9a-f]{32}\\.tmp$")]
+    private static partial Regex TemporaryName();
 }
 
 /// <summary>What <see cref="ServerSecretFiles.ResetIdentity"/> did besides giving the address new keys.</summary>
@@ -351,7 +419,8 @@ public sealed class ServerBoundSecretStore : ISecretStore {
         this._inner.Save(secrets);
     }
 
-    private void Check(ClientSecrets secrets) {
+    /// <exception cref="SecretsServerMismatchException">The secrets belong to another address.</exception>
+    internal void Check(ClientSecrets secrets) {
         if (secrets.ServerUrl != null && secrets.ServerUrl != this._url) {
             throw new SecretsServerMismatchException(this._path, secrets.ServerUrl, this._url);
         }
@@ -363,7 +432,7 @@ public sealed class ServerBoundSecretStore : ISecretStore {
 }
 
 /// <summary>An old-style secrets file kept as a backup (see <see cref="ServerSecretFiles.FindBackup"/>).</summary>
-/// <param name="Path">The file (or, if only that is left, its own backup).</param>
+/// <param name="Path">The file (or, if it is missing or damaged, its own backup).</param>
 /// <param name="SavedAt">When it was last written.</param>
 public sealed record SecretsBackup(string Path, DateTimeOffset SavedAt);
 
