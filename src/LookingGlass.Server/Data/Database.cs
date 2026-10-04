@@ -45,6 +45,9 @@ public enum RekeyResult {
     MembershipChanged,
 }
 
+/// <summary>A registration names a signing key that was replaced or retired, which is never registered again.</summary>
+public sealed class KeyRetiredException() : Exception("That identity key was replaced or retired, so it can't be registered again.");
+
 /// <summary>The database file can't be used by this version of the server. It is left as it was.</summary>
 public sealed class UnsupportedDatabaseException(string message) : Exception(message);
 
@@ -53,7 +56,7 @@ public sealed class UnsupportedDatabaseException(string message) : Exception(mes
 /// Methods are synchronous (SQLite is in-process) and short.
 /// </summary>
 public sealed class Database {
-    private const int SchemaVersion = 4;
+    private const int SchemaVersion = 5;
     private const int KeptEpochs = 4;
 
     private readonly string _path;
@@ -163,6 +166,19 @@ public sealed class Database {
                 """);
         }
 
+        if (current < 5) {
+            // Identity signing keys that may never sign in or be registered again: replaced by registering again with
+            // new keys, or retired by "Reset my identity". Keys replaced before this table existed aren't known.
+            Execute(connection, tx, """
+                CREATE TABLE retired_keys (
+                    signing_key BLOB    PRIMARY KEY,
+                    user_id     INTEGER NOT NULL,
+                    retired_at  INTEGER NOT NULL
+                );
+                INSERT INTO schema_version (version) VALUES (5);
+                """);
+        }
+
         tx.Commit();
     }
 
@@ -267,8 +283,12 @@ public sealed class Database {
         return QueryUsers(connection, null, sql, parameters);
     }
 
-    /// <summary>Creates or replaces a user's registration. Revokes all their devices.</summary>
+    /// <summary>
+    /// Creates or replaces a user's registration. Revokes all their devices. A signing key it replaces is retired (see
+    /// <see cref="IsKeyRetired"/>), and a retired one is never registered again.
+    /// </summary>
     /// <returns>The stored user, and whether their identity keys changed.</returns>
+    /// <exception cref="KeyRetiredException">The signing key is retired. Nothing was changed.</exception>
     public (UserRow User, bool KeysChanged) RegisterUser(long userId, string name, uint worldId, string worldName, IdentityBundle identity, bool isDebug) {
         using var connection = this.Open();
         using var tx = connection.BeginTransaction();
@@ -277,9 +297,19 @@ public sealed class Database {
 
         var signing = identity.SigningPublicKey.ToByteArray();
         var agreement = identity.AgreementPublicKey.ToByteArray();
+        // In the transaction that registers it, so a key retired after the registration started still can't come back.
+        if (IsKeyRetired(connection, tx, signing)) {
+            throw new KeyRetiredException();
+        }
+
         var keysChanged = existing != null
                           && (!existing.SigningKey.AsSpan().SequenceEqual(signing) || !existing.AgreementKey.AsSpan().SequenceEqual(agreement));
         var keyVersion = existing == null ? 1u : keysChanged ? existing.KeyVersion + 1 : existing.KeyVersion;
+        if (existing != null && !existing.SigningKey.AsSpan().SequenceEqual(signing)) {
+            // Replaced: a copy of the old identity left anywhere must not take the account back by registering it again.
+            Execute(connection, tx, "INSERT OR IGNORE INTO retired_keys (signing_key, user_id, retired_at) VALUES ($key, $id, $now);",
+                ("$key", existing.SigningKey), ("$id", userId), ("$now", now));
+        }
 
         // Another character may previously have held this name on this world (renames). Free the
         // name without deleting that account, which would silently cascade away its memberships,
@@ -326,7 +356,11 @@ public sealed class Database {
     /// </summary>
     public const int MaxDevicesPerUser = 20;
 
-    public void AddDevice(long userId, byte[] tokenHash) {
+    /// <summary>
+    /// Adds a device whatever the user's keys, for tests of how devices are kept. The server only adds them with
+    /// <see cref="AddDeviceForKey"/>, so none outlives a registration or a retirement that lands meanwhile.
+    /// </summary>
+    internal void AddDevice(long userId, byte[] tokenHash) {
         using var connection = this.Open();
         using var tx = connection.BeginTransaction();
         var now = Now();
@@ -337,11 +371,12 @@ public sealed class Database {
     }
 
     /// <summary>
-    /// Adds a device for a key login, but only while the user is still registered with the key that signed it. In one
-    /// statement, so a registration with new keys (which revokes every device) can't land between the signature check
-    /// and the insert and leave the old key with a working login.
+    /// Adds a device for a key login (or a registration), but only while the user is still registered with the key that
+    /// signed it (or was registered), and that key isn't retired. In one statement, so a registration with new keys or a
+    /// retirement (each of which revokes every device) can't land between the check and the insert and leave the old
+    /// key with a working login.
     /// </summary>
-    /// <returns>False if the user's keys changed (or they're gone) since <paramref name="signingKey"/> was checked.</returns>
+    /// <returns>False if the user's keys changed or were retired (or they're gone) since <paramref name="signingKey"/> was checked.</returns>
     public bool AddDeviceForKey(long userId, byte[] signingKey, uint keyVersion, byte[] tokenHash) {
         using var connection = this.Open();
         using var tx = connection.BeginTransaction();
@@ -349,7 +384,8 @@ public sealed class Database {
         var added = Execute(connection, tx, """
             INSERT INTO devices (token_hash, user_id, created_at, last_used_at)
             SELECT $hash, user_id, $now, $now FROM users
-            WHERE user_id = $id AND signing_key = $key AND key_version = $version;
+            WHERE user_id = $id AND signing_key = $key AND key_version = $version
+              AND NOT EXISTS (SELECT 1 FROM retired_keys WHERE retired_keys.signing_key = users.signing_key);
             """,
             ("$hash", tokenHash), ("$id", userId), ("$key", signingKey), ("$version", (long) keyVersion), ("$now", now)) == 1;
         if (added) {
@@ -358,6 +394,39 @@ public sealed class Database {
 
         tx.Commit();
         return added;
+    }
+
+    /// <summary>
+    /// "Reset my identity": retires the user's current signing key, while it still is that (and of that version), and
+    /// revokes every device of theirs, in one transaction. The key then can't sign in (see <see cref="AddDeviceForKey"/>)
+    /// or be registered again (see <see cref="RegisterUser"/>), so the account has no working login until new keys are
+    /// registered. Its row, and the keys others see, stay as they are until then.
+    /// </summary>
+    /// <returns>False if the user's keys changed (or they're gone) since <paramref name="signingKey"/> was checked; nothing changed then.</returns>
+    public bool RetireIdentity(long userId, byte[] signingKey, uint keyVersion) {
+        using var connection = this.Open();
+        using var tx = connection.BeginTransaction();
+        var current = Convert.ToInt64(Scalar(connection, tx, "SELECT COUNT(*) FROM users WHERE user_id = $id AND signing_key = $key AND key_version = $version;",
+            ("$id", userId), ("$key", signingKey), ("$version", (long) keyVersion))) == 1;
+        if (!current) {
+            return false;
+        }
+
+        Execute(connection, tx, "INSERT OR IGNORE INTO retired_keys (signing_key, user_id, retired_at) VALUES ($key, $id, $now);",
+            ("$key", signingKey), ("$id", userId), ("$now", Now()));
+        Execute(connection, tx, "DELETE FROM devices WHERE user_id = $id;", ("$id", userId));
+        tx.Commit();
+        return true;
+    }
+
+    /// <summary>Whether a signing key was replaced or retired: it may never sign in or be registered again.</summary>
+    public bool IsKeyRetired(byte[] signingKey) {
+        using var connection = this.Open();
+        return IsKeyRetired(connection, null, signingKey);
+    }
+
+    private static bool IsKeyRetired(SqliteConnection connection, SqliteTransaction? tx, byte[] signingKey) {
+        return Scalar(connection, tx, "SELECT 1 FROM retired_keys WHERE signing_key = $key;", ("$key", signingKey)) != null;
     }
 
     /// <summary>

@@ -53,6 +53,10 @@ public sealed class ClientConnection {
     public string RemoteAddress { get; }
     public bool HelloDone { get; set; }
     public UserRow? User { get; set; }
+
+    /// <summary>The hash of the device token <see cref="User"/> logged in with (what RetireIdentity's signature covers).</summary>
+    public byte[]? DeviceTokenHash { get; set; }
+
     public PendingRegistration? PendingRegistration { get; set; }
     public int VerifyAttempts { get; set; }
     public DateTimeOffset LastVerifyAttempt { get; set; } = DateTimeOffset.MinValue;

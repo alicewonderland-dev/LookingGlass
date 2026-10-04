@@ -45,6 +45,7 @@ message ClientFrame {
     FetchMembershipLog fetch_membership_log = 29;
     StartKeyLogin start_key_login = 30;
     CompleteKeyLogin complete_key_login = 31;
+    RetireIdentity retire_identity = 32;
   }
 }
 
@@ -264,6 +265,21 @@ message CompleteKeyLogin {
 message KeyLoginComplete {
   string device_token = 1;
   User user = 2;
+}
+
+// "Reset my identity", sent first while logged in: retires the account's current identity
+// key. The server deletes every device of the account (this connection's login included,
+// which is logged out) and never lets the key sign in or be registered again; the account
+// then has no valid login until new keys are registered through the Lodestone. Others keep
+// seeing the old key until then, as with any registration. Answered with Ack. Added in 0.2
+// without a version change: an older server answers "Unknown request.", and the client
+// resets locally anyway.
+message RetireIdentity {
+  // Ed25519 signature by the account's current identity key over the user ID and the
+  // SHA-256 of the device token this connection logged in with (see
+  // LookingGlass.Core.Crypto.RetireIdentityProof), so a stolen login alone can't retire
+  // the identity, and a signature made for one login doesn't work with another.
+  bytes signature = 1;
 }
 
 message GetIdentities {

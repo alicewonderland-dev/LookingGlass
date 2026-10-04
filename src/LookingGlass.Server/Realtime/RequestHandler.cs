@@ -48,6 +48,11 @@ public sealed class RequestHandler(
     // Said to anyone asking, before looking at the account, on a server with key login off.
     private const string KeyLoginUnavailable = "Signing in with the identity key isn't available on this server.";
 
+    // Registering a key the account replaced, or retired with "Reset my identity": what the plugin says to do.
+    private const string KeyRetired =
+        "This identity key was replaced (by registering again with new keys, or \"Reset my identity\"), so it can't be registered again. " +
+        "Use \"Reset my identity\" in Settings to make new keys, then register.";
+
     /// <summary>Pending invites one user can have at once, across all channels.</summary>
     public const int MaxPendingInvitesPerUser = 20;
 
@@ -122,6 +127,7 @@ public sealed class RequestHandler(
                 ClientFrame.BodyOneofCase.Authenticate => this.Authenticate(connection, frame.Authenticate),
                 ClientFrame.BodyOneofCase.StartKeyLogin => this.StartKeyLogin(connection, frame.StartKeyLogin),
                 ClientFrame.BodyOneofCase.CompleteKeyLogin => this.CompleteKeyLogin(connection, frame.CompleteKeyLogin),
+                ClientFrame.BodyOneofCase.RetireIdentity => this.RetireIdentity(connection, frame.RetireIdentity),
                 ClientFrame.BodyOneofCase.GetIdentities => this.GetIdentities(connection, frame.GetIdentities),
                 ClientFrame.BodyOneofCase.LookupUser => this.LookupUser(connection, frame.LookupUser),
                 ClientFrame.BodyOneofCase.ListChannels => this.ListChannels(connection, frame.ListChannels),
@@ -188,6 +194,11 @@ public sealed class RequestHandler(
 
         if (!IdentityKeys.IsValidBundle(request.Identity)) {
             throw new RequestException(ErrorCode.InvalidRequest, "Invalid identity keys.");
+        }
+
+        // Before any Lodestone work; checked again when it completes (see RegisterUser).
+        if (db.IsKeyRetired(request.Identity.SigningPublicKey.ToByteArray())) {
+            throw new RequestException(ErrorCode.RegistrationFailed, KeyRetired);
         }
 
         var minutes = options.Value.Lodestone.ChallengeMinutes;
@@ -281,10 +292,20 @@ public sealed class RequestHandler(
 
         connection.PendingRegistration = null;
         // New keys don't change any channel's members (the log binds them to the old ones), so nothing needs a rekey.
-        var (user, _) = db.RegisterUser(pending.UserId, pending.Name, pending.WorldId, pending.WorldName, pending.Identity, pending.IsDebug);
+        UserRow user;
+        try {
+            (user, _) = db.RegisterUser(pending.UserId, pending.Name, pending.WorldId, pending.WorldName, pending.Identity, pending.IsDebug);
+        } catch (KeyRetiredException) {
+            // Replaced or retired since this registration started.
+            throw new RequestException(ErrorCode.RegistrationFailed, KeyRetired);
+        }
 
+        // Only while the key just registered is still the account's, and not retired: a retirement or another
+        // registration landing in between revokes every device, and this one mustn't outlive that.
         var token = NewDeviceToken();
-        db.AddDevice(user.UserId, HashToken(token));
+        if (!db.AddDeviceForKey(user.UserId, user.SigningKey, user.KeyVersion, HashToken(token))) {
+            throw new RequestException(ErrorCode.RegistrationFailed, "This character's keys changed while registering; start again.");
+        }
 
         // Old devices were revoked; drop any session still using one.
         registry.Disconnect(user.UserId, "This character registered again");
@@ -298,9 +319,12 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.InvalidRequest, "Already logged in on this connection.");
         }
 
-        var userId = string.IsNullOrEmpty(request.DeviceToken) ? null : db.FindDevice(HashToken(request.DeviceToken));
+        var tokenHash = string.IsNullOrEmpty(request.DeviceToken) ? null : HashToken(request.DeviceToken);
+        var userId = tokenHash == null ? null : db.FindDevice(tokenHash);
         var user = userId == null ? null : db.GetUser(userId.Value);
-        if (user == null) {
+        // A retired key has no devices (retiring deletes them, and none are added for it); checked here too, so that holds
+        // whatever adds a device.
+        if (user == null || db.IsKeyRetired(user.SigningKey)) {
             throw new RequestException(ErrorCode.NotAuthenticated, "Unknown or revoked device token.");
         }
 
@@ -309,6 +333,7 @@ public sealed class RequestHandler(
         }
 
         connection.User = user;
+        connection.DeviceTokenHash = tokenHash;
         registry.SetOnline(user.UserId, connection);
         return new Response { AuthenticateOk = new AuthenticateOk { User = user.ToProto(), KeyVersion = user.KeyVersion } };
     }
@@ -446,13 +471,17 @@ public sealed class RequestHandler(
         }
 
         user = db.GetUser(pending.UserId);
+        // Looked up for unknown accounts too (a key nobody holds is never retired), so the work doesn't tell them apart.
+        var retired = db.IsKeyRetired(user?.SigningKey ?? NobodysKey);
         var refused = user == null ? "no such account"
             : user.IsDebug && !options.Value.Dev.AllowDebugAccounts ? "debug accounts are disabled"
+            : retired ? "the account's key was retired"
             : null;
 
-        // Against the account's current key only: keys replaced by registering again can't sign in. An account that
-        // doesn't exist, or may not sign in, is checked against a key nobody holds, so every answer that gets this far
-        // costs one verification and the time a failure takes doesn't tell whether the account exists.
+        // Against the account's current key only: keys replaced by registering again can't sign in, and neither can a
+        // current one that was retired ("Reset my identity"). An account that doesn't exist, or may not sign in, is
+        // checked against a key nobody holds, so every answer that gets this far costs one verification and the time a
+        // failure takes doesn't tell whether the account exists.
         var valid = KeyLoginProof.Verify(refused == null ? user!.SigningKey : NobodysKey, pending.Challenge, pending.UserId, request.ServerUrl, request.Signature.Span);
         Interlocked.Increment(ref this._keyLoginSignatureChecks);
         if (refused != null) {
@@ -461,6 +490,43 @@ public sealed class RequestHandler(
         }
 
         return valid ? null : "the signature isn't by the account's identity key";
+    }
+
+    /// <summary>
+    /// "Reset my identity", sent first while logged in: retires the account's current identity key and revokes every
+    /// login of the account (see <see cref="Database.RetireIdentity"/>), this connection's included, which is logged
+    /// out. The account then has no working login until new keys are registered through the Lodestone, as one whose
+    /// logins were all lost; others see the old key until then, as before any registration.
+    ///
+    /// Signed by the key being retired, over this connection's login (see <see cref="RetireIdentityProof"/>): a login
+    /// alone, which a thief may hold without the key, could otherwise wreck the owner's identity. Anyone with both could
+    /// already act as the owner; retiring is then what the owner wants anyway. No rate limit beyond that: it can succeed
+    /// once per key, since the key can't sign in again and a new one only comes from registering through the Lodestone.
+    /// </summary>
+    private Response RetireIdentity(ClientConnection connection, RetireIdentity request) {
+        var me = RequireUser(connection);
+        // The account as it is now: it may have registered new keys since this connection logged in.
+        var user = db.GetUser(me.UserId);
+        if (user == null || connection.DeviceTokenHash is not { } tokenHash) {
+            throw new RequestException(ErrorCode.NotAuthenticated, "Log in first.");
+        }
+
+        if (!RetireIdentityProof.Verify(user.SigningKey, user.UserId, tokenHash, request.Signature.Span)) {
+            throw new RequestException(ErrorCode.Forbidden, "That isn't signed with this account's identity key for this login, so nothing was retired.");
+        }
+
+        if (!db.RetireIdentity(user.UserId, user.SigningKey, user.KeyVersion)) {
+            throw new RequestException(ErrorCode.Conflict, "This account's keys changed meanwhile, so nothing was retired.");
+        }
+
+        // This connection's login was one of the devices just revoked.
+        connection.User = null;
+        connection.DeviceTokenHash = null;
+        registry.SetOffline(user.UserId, connection);
+        // And any other connection that logged in meanwhile (only one is online per user).
+        registry.Disconnect(user.UserId, "This character's identity was retired");
+        logger.LogInformation("Retired the identity key of {User}", user.UserId);
+        return new Response { Ack = new Ack() };
     }
 
     /// <summary>The key failed key logins are counted under for one account from one address.</summary>

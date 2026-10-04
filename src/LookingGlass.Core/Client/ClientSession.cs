@@ -384,6 +384,51 @@ public sealed class ClientSession : IAsyncDisposable {
         }
     }
 
+    /// <summary>
+    /// "Reset my identity", first step, while logged in: asks the server to retire this identity key, signed with it over
+    /// this login (see <see cref="RetireIdentityProof"/>). The server revokes every login of the account (this one too)
+    /// and never lets the key sign in or be registered again, so a copy of it left anywhere is useless there from now on.
+    /// The saved login is dropped; the session can do nothing more with the server. Dispose it, and reset the keys next
+    /// (see <see cref="ClientSecrets.ResetIdentity"/>), then register the new ones through the Lodestone.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">Not logged in.</exception>
+    /// <exception cref="ServerErrorException">The server refused, or is too old to know the request ("Unknown request.").</exception>
+    public async Task RetireIdentityAsync(CancellationToken ct = default) {
+        var connection = this.RequireConnection();
+        // Never alongside a login: what this signs is the login the connection uses now.
+        await this._loginGate.WaitAsync(ct);
+        try {
+            var (identity, me, token) = this.Read(() => this._state == ConnectionState.Ready && connection == this._connection
+                ? (this._identity, this._me, this._secrets.DeviceToken)
+                : (null, null, null));
+            if (identity == null || me == null || token == null) {
+                throw new InvalidOperationException("You're not logged in, so the server can't be asked to retire your key.");
+            }
+
+            var response = await this.RequestAsync(connection, new ClientFrame {
+                RetireIdentity = new RetireIdentity { Signature = ByteString.CopyFrom(RetireIdentityProof.Sign(identity, me.UserId, token)) },
+            }, ct);
+            if (response.Ack == null) {
+                throw Unexpected(response);
+            }
+
+            lock (this._lock) {
+                // Revoked with the rest: nothing to try again. The key is kept until the reset replaces it.
+                this._secrets.DeviceToken = null;
+                this._loginRejected = false;
+                this._me = null;
+                this._state = ConnectionState.Unregistered;
+                this._status = "Your identity key was retired on this server. Reset your identity, then register the new keys.";
+                this._secretsVersion++;
+            }
+        } finally {
+            this._loginGate.Release();
+        }
+
+        this.SaveSecrets();
+        this.Publish();
+    }
+
     /// <summary>Forgets the device token, for example to register again.</summary>
     public void ForgetAccount() {
         lock (this._lock) {

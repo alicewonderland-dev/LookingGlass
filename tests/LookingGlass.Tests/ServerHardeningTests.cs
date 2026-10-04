@@ -104,6 +104,7 @@ public sealed class ServerHardeningTests {
 
             // As if made by schema 2, before name sources and the membership log, and holding no channels.
             QueryLong(path, """
+                DROP TABLE retired_keys;
                 DROP TABLE membership_log;
                 ALTER TABLE channels DROP COLUMN name_source_epoch;
                 ALTER TABLE channels DROP COLUMN name_source_revision;
@@ -127,11 +128,39 @@ public sealed class ServerHardeningTests {
             Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
 
             var migrated = new Database(path);
-            Assert.Equal(4L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
+            Assert.Equal(5L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
             Assert.NotNull(migrated.GetUser(user));
             var (channelId, _, _) = CreateChannel(migrated);
             Assert.Null(migrated.GetChannel(channelId)!.Name!.CarriedFrom);
             Assert.Single(migrated.GetLogEntries(channelId, 0, 10));
+        } finally {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            DeleteDirectory(directory);
+        }
+    }
+
+    /// <summary>
+    /// A 0.2 database from before retired keys were kept (schema 4) is upgraded in place, channels and all: from then on
+    /// a key the account replaces is retired. Keys replaced before the upgrade aren't known.
+    /// </summary>
+    [Fact]
+    public void Schema4DatabaseGainsRetiredKeys() {
+        var (db, directory) = NewDatabase();
+        try {
+            var path = Path.Combine(directory, "test.db");
+            var (channelId, admin, keys) = CreateChannel(db);
+            QueryLong(path, "DROP TABLE retired_keys; DELETE FROM schema_version WHERE version >= 5; SELECT 0;");
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+
+            var migrated = new Database(path);
+            Assert.Equal(5L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
+            Assert.NotNull(migrated.GetChannel(channelId));
+            Assert.False(migrated.IsKeyRetired(keys.SigningPublicKey));
+
+            using var newKeys = IdentityKeys.Generate();
+            migrated.RegisterUser(admin, "Channel Admin", 0, ProtocolInfo.DebugWorldName, newKeys.ToBundle(), true);
+            Assert.True(migrated.IsKeyRetired(keys.SigningPublicKey));
+            Assert.Throws<KeyRetiredException>(() => migrated.RegisterUser(admin, "Channel Admin", 0, ProtocolInfo.DebugWorldName, keys.ToBundle(), true));
         } finally {
             Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
             DeleteDirectory(directory);
@@ -144,7 +173,7 @@ public sealed class ServerHardeningTests {
         try {
             var path = Path.Combine(directory, "test.db");
             var (channelId, _, _) = CreateChannel(db);
-            Assert.Equal(4L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
+            Assert.Equal(5L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
 
             // As if the file were left over from the unreleased schema 1.
             QueryLong(path, "DELETE FROM schema_version WHERE version >= 2; SELECT 0;");

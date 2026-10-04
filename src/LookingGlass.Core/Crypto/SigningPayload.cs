@@ -65,4 +65,5 @@ public static class Domains {
     public const string MembershipEntry = "lookingglass/membership-entry/v1";
     public const string MembershipEntryHash = "lookingglass/membership-entry-hash/v1";
     public const string KeyLogin = "lookingglass/key-login/v1";
+    public const string RetireIdentity = "lookingglass/retire-identity/v1";
 }

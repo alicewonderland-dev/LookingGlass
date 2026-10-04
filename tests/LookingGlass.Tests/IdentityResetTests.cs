@@ -202,19 +202,20 @@ public sealed class IdentityResetTests : IAsyncLifetime {
         var token = store.Load().DeviceToken!;
         using var oldKeys = alice.LoadIdentity();
         var url = this._server.ServerUri.AbsoluteUri;
+        var userId = alice.UserId;
 
         // A second device, signed in with the key.
         await using var second = await this._server.ConnectRawAsync();
-        var otherToken = (await KeyLoginAsync(second, oldKeys, alice.UserId, url)).KeyLoginComplete.DeviceToken;
+        var otherToken = (await KeyLoginAsync(second, oldKeys, userId, url)).KeyLoginComplete.DeviceToken;
 
         await alice.Session.RetireIdentityAsync(Ct);
-        Assert.Equal(0, this._server.Database.CountDevices(alice.UserId));
+        Assert.Equal(0, this._server.Database.CountDevices(userId));
 
         // Both logins are gone, the key can't sign in or register, and this connection is logged out.
         await using var raw = await this._server.ConnectRawAsync();
         Assert.Equal(ErrorCode.NotAuthenticated, (await raw.SendAsync(new ClientFrame { Authenticate = new Authenticate { DeviceToken = token } })).Error?.Code);
         Assert.Equal(ErrorCode.NotAuthenticated, (await raw.SendAsync(new ClientFrame { Authenticate = new Authenticate { DeviceToken = otherToken } })).Error?.Code);
-        Assert.Equal(ErrorCode.NotAuthenticated, (await KeyLoginAsync(raw, oldKeys, alice.UserId, url)).Error?.Code);
+        Assert.Equal(ErrorCode.NotAuthenticated, (await KeyLoginAsync(raw, oldKeys, userId, url)).Error?.Code);
         var register = await raw.SendAsync(new ClientFrame {
             StartRegistration = new StartRegistration { Character = new Character { Name = alice.Name, WorldName = ProtocolInfo.DebugWorldName }, Identity = oldKeys.ToBundle() },
         });
@@ -223,8 +224,8 @@ public sealed class IdentityResetTests : IAsyncLifetime {
 
         // Bob still sees the key the channel's log admitted Alice with: nothing changes for others until she registers again.
         await bob.Session.RefreshAsync(Ct);
-        Assert.False(bob.Session.Snapshot.FindChannel(channelId)!.Members.Single(m => m.User.UserId == alice.UserId).KeyReplaced);
-        Assert.Equal(oldKeys.SigningPublicKey, this._server.Database.GetUser(alice.UserId)!.SigningKey);
+        Assert.False(bob.Session.Snapshot.FindChannel(channelId)!.Members.Single(m => m.User.UserId == userId).KeyReplaced);
+        Assert.Equal(oldKeys.SigningPublicKey, this._server.Database.GetUser(userId)!.SigningKey);
         await alice.Session.DisposeAsync();
 
         // New keys register through the Lodestone as usual, and sign in.
@@ -238,7 +239,7 @@ public sealed class IdentityResetTests : IAsyncLifetime {
         await WaitFor(() => reset.Session.Snapshot.State == ConnectionState.Ready ? new object() : null);
         using var newKeys = reset.LoadIdentity();
         await using var after = await this._server.ConnectRawAsync();
-        Assert.NotNull((await KeyLoginAsync(after, newKeys, alice.UserId, url)).KeyLoginComplete);
+        Assert.NotNull((await KeyLoginAsync(after, newKeys, userId, url)).KeyLoginComplete);
     }
 
     /// <summary>
@@ -304,6 +305,25 @@ public sealed class IdentityResetTests : IAsyncLifetime {
 
         Assert.Equal(ErrorCode.NotAuthenticated, response.Error?.Code);
         Assert.Equal(0, this._server.Database.CountDevices(alice.UserId));
+    }
+
+    [Fact]
+    public void TheRetireSignatureCoversTheUserAndTheLogin() {
+        using var keys = IdentityKeys.Generate();
+        const string token = "lgt_example";
+        var hash = RetireIdentityProof.TokenHash(token);
+        // The hash the server stores for a device token.
+        Assert.Equal(LookingGlass.Server.Realtime.RequestHandler.HashToken(token), hash);
+
+        var signature = RetireIdentityProof.Sign(keys, 1234, token);
+        Assert.True(RetireIdentityProof.Verify(keys.SigningPublicKey, 1234, hash, signature));
+        Assert.False(RetireIdentityProof.Verify(keys.SigningPublicKey, 1235, hash, signature));
+        Assert.False(RetireIdentityProof.Verify(keys.SigningPublicKey, 1234, RetireIdentityProof.TokenHash("lgt_other"), signature));
+        using var other = IdentityKeys.Generate();
+        Assert.False(RetireIdentityProof.Verify(other.SigningPublicKey, 1234, hash, signature));
+        // Its own domain: the same fields signed for anything else (a key login, say) don't count.
+        Assert.False(RetireIdentityProof.Verify(keys.SigningPublicKey, 1234, hash,
+            keys.Sign(new SigningPayload(Domains.KeyLogin).Add(1234L).Add(hash).ToArray())));
     }
 
     private static async Task<Response> KeyLoginAsync(RawConnection raw, IdentityKeys keys, long userId, string url) {
