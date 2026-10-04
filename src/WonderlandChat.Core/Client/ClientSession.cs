@@ -1303,6 +1303,14 @@ public sealed class ClientSession : IAsyncDisposable {
                 channel.EncryptedName = keys.Name;
             }
 
+            // A key newer than the epoch the server last reported means a rekey happened since,
+            // and it settled any membership change the server had flagged. (Its EpochAdvanced
+            // can be missed, for example when it arrives while an invite is being accepted.)
+            if (this.KeyEpochOf(channelId) is { } newest && newest > channel.ServerEpoch) {
+                channel.ServerEpoch = newest;
+                channel.RekeyPending = false;
+            }
+
             this.TryDecryptName(channelId);
 
             // The server is ahead and has no newer key for us (never sent, or sealed so we
