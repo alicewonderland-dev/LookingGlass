@@ -669,6 +669,25 @@ public sealed class Database {
         return ids;
     }
 
+    /// <summary>
+    /// Users who are a member (not just invited) of at least one channel the user is also a member of,
+    /// not counting the user: who is told when the user comes online or goes offline.
+    /// </summary>
+    public HashSet<long> GetCoMemberIds(long userId) {
+        using var connection = this.Open();
+        using var command = Command(connection, null, """
+            SELECT DISTINCT m.user_id FROM members m
+            WHERE m.channel_id IN (SELECT channel_id FROM members WHERE user_id = $me) AND m.user_id != $me;
+            """, ("$me", userId));
+        using var reader = command.ExecuteReader();
+        var ids = new HashSet<long>();
+        while (reader.Read()) {
+            ids.Add(reader.GetInt64(0));
+        }
+
+        return ids;
+    }
+
     // ================================================================ epochs
 
     /// <summary>

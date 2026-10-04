@@ -24,12 +24,13 @@ public sealed class RequestHandlerTests : IDisposable {
 
     private readonly string _directory = Path.Combine(Path.GetTempPath(), "lgt-handler-" + Guid.NewGuid().ToString("N"));
     private readonly Database _db;
-    private readonly ConnectionRegistry _registry = new();
+    private readonly ConnectionRegistry _registry;
     private readonly RequestHandler _handler;
 
     public RequestHandlerTests() {
         Directory.CreateDirectory(this._directory);
         this._db = new Database(Path.Combine(this._directory, "test.db"));
+        this._registry = new ConnectionRegistry(this._db, NullLogger<ConnectionRegistry>.Instance);
         var options = Options.Create(new ServerOptions {
             Dev = { AllowDebugAccounts = true },
             Lodestone = { BaseUrl = "https://lodestone.test", MinDelaySeconds = 0 },
