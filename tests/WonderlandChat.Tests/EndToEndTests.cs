@@ -410,6 +410,129 @@ public sealed class EndToEndTests : IAsyncLifetime {
     }
 
     [Fact]
+    public async Task MessageIsDeliveredWhenANameAlreadyFetchedItsAuthorsNewIdentity() {
+        using var clock = new StallingClock();
+        var (carol, aliceAgain, channelId, epoch) = await this.MessageHeldWithAStaleIdentityAsync("Name First", clock);
+
+        // Meanwhile a name signed with Alice's new keys arrives, and following it up fetches her identity again.
+        await this._server.SendAndSettleAsync(carol, RenameSignedBy(aliceAgain, carol, channelId, epoch, "Renamed First"));
+        await WaitFor(() => carol.Session.Snapshot.FindChannel(channelId)?.Name == "Renamed First" ? new object() : null);
+
+        // The message's check then fails against the identity it looked up before. It must use the
+        // one just fetched, not be refused another fetch for a minute and dropped.
+        clock.Resume();
+        await AssertDeliveredAsync(carol, HeldMessageText);
+    }
+
+    [Fact]
+    public async Task MessageIsDeliveredWhileANameIsStillFetchingItsAuthorsNewIdentity() {
+        using var clock = new StallingClock();
+        var (carol, aliceAgain, channelId, epoch) = await this.MessageHeldWithAStaleIdentityAsync("Name Fetching", clock);
+        var lastRequest = LastRequestId(carol);
+
+        // A name signed with Alice's new keys arrives and starts a fetch of her identity, whose answer
+        // can't arrive yet: Carol stops reading from the server just after the name.
+        var hold = "hold " + Guid.NewGuid().ToString("N");
+        var readerHeld = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseReader = new ManualResetEventSlim();
+        carol.Session.Notice += notice => {
+            if (notice.Text == hold && readerHeld.TrySetResult()) {
+                releaseReader.Wait(Harness.Timeout);
+            }
+        };
+
+        try {
+            this._server.Registry.Send(carol.UserId, RenameSignedBy(aliceAgain, carol, channelId, epoch, "Renamed Later"));
+            this._server.Registry.Send(carol.UserId, new Event { Announcement = new Announcement { Text = hold } });
+            await readerHeld.Task.WaitAsync(Harness.Timeout, Ct);
+            await WaitFor(() => carol.Session.GetTrace().Any(entry => entry.Outgoing && entry.Summary.EndsWith(" GetIdentities") && RequestIdOf(entry) > lastRequest) ? new object() : null);
+
+            // The message's check fails while that fetch is under way: it must wait for it. Unfixed,
+            // the message is dropped at once; give that a moment to show before letting the fetch finish.
+            clock.Resume();
+            try {
+                await WaitFor(() => carol.Notices.FirstOrDefault(n => n.Text.Contains("failed signature or decryption checks")), TimeSpan.FromMilliseconds(500));
+            } catch (TimeoutException) {
+                // Still waiting, as it should be.
+            }
+        } finally {
+            releaseReader.Set();
+        }
+
+        await AssertDeliveredAsync(carol, HeldMessageText);
+        Assert.Equal("Renamed Later", carol.Session.Snapshot.FindChannel(channelId)!.Name);
+    }
+
+    private const string HeldMessageText = "signed with my new keys";
+
+    /// <summary>
+    /// Alice (admin) and Carol share a channel; Alice registers again with new keys, which Carol hasn't
+    /// fetched. A message signed with Alice's new keys reaches Carol, whose inbox is then held by
+    /// <paramref name="clock"/> just after it has looked up Alice's (old) identity for it, before the
+    /// message's signature is checked. <see cref="StallingClock.Resume"/> lets it carry on.
+    /// </summary>
+    private async Task<(TestClient Carol, TestClient AliceAgain, string ChannelId, ulong Epoch)> MessageHeldWithAStaleIdentityAsync(string suffix, StallingClock clock) {
+        var alice = await this._server.RegisterAsync("Alice " + suffix);
+        // Carol doesn't rekey when asked, which would also fetch Alice's new identity.
+        var carol = await this._server.RegisterAsync("Carol " + suffix, options: this._server.Options(autoRekey: false, time: clock));
+        var channelId = await alice.Session.CreateChannelAsync("Before " + suffix, Ct);
+        await AddMemberAsync(alice, channelId, carol);
+        var epoch = carol.Session.Snapshot.FindChannel(channelId)!.Epoch;
+        await alice.Session.DisposeAsync();
+        var aliceAgain = await this._server.RegisterAsync(alice.Name);
+
+        // Hold Carol's inbox on a harmless event (a stale key it rejects), to learn its thread...
+        var inboxThread = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseInbox = new ManualResetEventSlim();
+        carol.Session.Notice += notice => {
+            if (notice.Text.StartsWith("Rejected a new key for a channel: it's for epoch 0,") && inboxThread.TrySetResult(Environment.CurrentManagedThreadId)) {
+                releaseInbox.Wait(Harness.Timeout);
+            }
+        };
+
+        try {
+            this._server.Registry.Send(carol.UserId, new Event { EpochAdvanced = new EpochAdvanced { ChannelId = channelId, Epoch = 0, AuthorId = aliceAgain.UserId } });
+            var thread = await inboxThread.Task.WaitAsync(Harness.Timeout, Ct);
+
+            // ...queue the message behind it...
+            using var newKeys = aliceAgain.LoadIdentity();
+            var sent = ChannelCrypto.EncryptMessage(new Content { Text = new TextContent { Text = HeldMessageText } }, carol.LoadEpochKey(channelId, epoch),
+                channelId, epoch, newKeys, aliceAgain.UserId, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            await this._server.SendAndSettleAsync(carol, new Event {
+                ChatMessage = new ChatMessage {
+                    ChannelId = channelId, Epoch = epoch, SenderId = aliceAgain.UserId, MessageId = sent.MessageId,
+                    TimestampUnixMs = sent.TimestampUnixMs, Ciphertext = sent.Ciphertext, Signature = sent.Signature,
+                },
+            });
+
+            // ...and let the inbox go on to the message, until it next reads the time.
+            clock.StallNextReadOn(thread);
+        } finally {
+            releaseInbox.Set();
+        }
+
+        await clock.Stalled.WaitAsync(Harness.Timeout, Ct);
+        return (carol, aliceAgain, channelId, epoch);
+    }
+
+    private static Event RenameSignedBy(TestClient author, TestClient holder, string channelId, ulong epoch, string name) {
+        using var keys = author.LoadIdentity();
+        var encrypted = ChannelCrypto.EncryptName(name, holder.LoadEpochKey(channelId, epoch), channelId, epoch, keys, author.UserId, revision: 1);
+        return new Event { ChannelRenamed = new ChannelRenamed { ChannelId = channelId, Name = encrypted } };
+    }
+
+    private static uint LastRequestId(TestClient client) => client.Session.GetTrace().Where(entry => entry.Outgoing).Select(RequestIdOf).DefaultIfEmpty(0u).Max();
+
+    /// <summary>Outgoing trace entries read "#id Kind".</summary>
+    private static uint RequestIdOf(TraceEntry entry) => uint.Parse(entry.Summary.AsSpan(1, entry.Summary.IndexOf(' ') - 1));
+
+    private static async Task AssertDeliveredAsync(TestClient client, string text) {
+        var outcome = await WaitFor(() => (object?) client.Messages.FirstOrDefault(m => m.Text == text)
+                                          ?? client.Notices.FirstOrDefault(n => n.Text.Contains("failed signature or decryption checks")));
+        Assert.True(outcome is IncomingMessage, $"The message was dropped: {(outcome as SessionNotice)?.Text}");
+    }
+
+    [Fact]
     public async Task RenameMissedWhileOfflineIsNotBlamedOnTheNextRekey() {
         var online = Task.CompletedTask;
         var alice = await this._server.RegisterAsync("Alice Offline");

@@ -168,6 +168,36 @@ public sealed class ManualClock : TimeProvider {
     public override DateTimeOffset GetUtcNow() => base.GetUtcNow() + this.Offset;
 }
 
+/// <summary>
+/// The real clock, but able to hold one thread the next time it reads the time: a way to stop a
+/// client part-way through handling something, at a point the test knows, and change what happens meanwhile.
+/// </summary>
+public sealed class StallingClock : TimeProvider, IDisposable {
+    private readonly ManualResetEventSlim _resume = new();
+    private readonly TaskCompletionSource _stalled = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private int _threadId = -1;
+
+    /// <summary>Completes once the thread is held.</summary>
+    public Task Stalled => this._stalled.Task;
+
+    /// <summary>Holds the given managed thread the next time it reads the time, until <see cref="Resume"/>.</summary>
+    public void StallNextReadOn(int threadId) => Volatile.Write(ref this._threadId, threadId);
+
+    public void Resume() => this._resume.Set();
+
+    public override DateTimeOffset GetUtcNow() {
+        var thread = Environment.CurrentManagedThreadId;
+        if (Interlocked.CompareExchange(ref this._threadId, -1, thread) == thread) {
+            this._stalled.TrySetResult();
+            this._resume.Wait(Harness.Timeout);
+        }
+
+        return base.GetUtcNow();
+    }
+
+    public void Dispose() => this._resume.Set();
+}
+
 /// <summary>Counts saves, to check what is written per message.</summary>
 public sealed class CountingSecretStore : ISecretStore {
     private readonly InMemorySecretStore _inner = new();
