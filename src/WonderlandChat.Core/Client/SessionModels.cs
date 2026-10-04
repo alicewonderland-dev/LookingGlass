@@ -19,6 +19,11 @@ public enum ConnectionState {
 /// An immutable view of the session. The UI only ever reads these; a new one
 /// is published after every change.
 /// </summary>
+/// <param name="ChannelsLoaded">
+/// <see cref="Channels"/> is the server's complete list, fetched on this connection.
+/// Until then it may be empty or left over from an earlier connection, so a channel
+/// missing from it may still exist.
+/// </param>
 public sealed record SessionSnapshot(
     ConnectionState State,
     string? StatusText,
@@ -29,11 +34,12 @@ public sealed record SessionSnapshot(
     Limits? Limits,
     bool DebugAccountsEnabled,
     RegistrationChallenge? PendingChallenge,
-    ImmutableArray<User> BlockedUsers) {
+    ImmutableArray<User> BlockedUsers,
+    bool ChannelsLoaded) {
     public static readonly SessionSnapshot Empty = new(
         ConnectionState.Stopped, null, null, null,
         ImmutableArray<ChannelView>.Empty, ImmutableArray<InviteView>.Empty,
-        null, false, null, ImmutableArray<User>.Empty);
+        null, false, null, ImmutableArray<User>.Empty, false);
 
     public ChannelView? FindChannel(string channelId) {
         foreach (var channel in this.Channels) {

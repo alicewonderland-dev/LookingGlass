@@ -67,7 +67,10 @@ public sealed class IdentityKeys : IDisposable {
         return new SigningPayload(Domains.IdentityBinding).Add(agreementPublicKey).ToArray();
     }
 
-    /// <summary>Checks key sizes and that the signing key vouches for the agreement key.</summary>
+    /// <summary>
+    /// Checks key sizes, that the signing key vouches for the agreement key, and
+    /// that keys can actually be sealed to the agreement key.
+    /// </summary>
     public static bool IsValidBundle(IdentityBundle? bundle) {
         if (bundle == null
             || bundle.SigningPublicKey.Length != 32
@@ -76,7 +79,25 @@ public sealed class IdentityKeys : IDisposable {
             return false;
         }
 
-        return Verify(bundle.SigningPublicKey.Span, BindingPayload(bundle.AgreementPublicKey.Span), bundle.BindingSignature.Span);
+        return IsUsableAgreementKey(bundle.AgreementPublicKey.Span)
+               && Verify(bundle.SigningPublicKey.Span, BindingPayload(bundle.AgreementPublicKey.Span), bundle.BindingSignature.Span);
+    }
+
+    /// <summary>
+    /// False for a low-order X25519 key (all-zero, for example): every agreement with
+    /// it yields no secret, so nothing could be sealed to its owner and every rekey
+    /// of their channels would fail.
+    /// </summary>
+    private static bool IsUsableAgreementKey(ReadOnlySpan<byte> agreementPublicKey) {
+        if (!PublicKey.TryImport(KeyAgreementAlgorithm.X25519, agreementPublicKey, KeyBlobFormat.RawPublicKey, out var publicKey)) {
+            return false;
+        }
+
+        // libsodium refuses an agreement whose result is all zeros, which a low-order key
+        // always gives, whatever the private key. Any private key will do to find out.
+        using var probe = Key.Create(KeyAgreementAlgorithm.X25519);
+        using var shared = KeyAgreementAlgorithm.X25519.Agree(probe, publicKey!);
+        return shared != null;
     }
 
     public static bool Verify(ReadOnlySpan<byte> signingPublicKey, ReadOnlySpan<byte> payload, ReadOnlySpan<byte> signature) {

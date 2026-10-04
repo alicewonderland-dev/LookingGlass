@@ -49,6 +49,8 @@ public sealed class ClientSession : IAsyncDisposable {
     private bool _debugAccountsEnabled;
     private RegistrationChallenge? _challenge;
     private readonly Dictionary<string, ChannelState> _channels = new();
+    // _channels holds the server's complete list, fetched on the current connection.
+    private bool _channelsLoaded;
     private readonly Dictionary<string, InviteState> _invites = new();
     private readonly Dictionary<long, UserIdentity> _identities = new();
     private readonly HashSet<string> _seenMessages = new();
@@ -57,6 +59,8 @@ public sealed class ClientSession : IAsyncDisposable {
     // NewestMessageTimes changed but hasn't been saved; the next save includes it.
     private bool _replayStateDirty;
     private DateTimeOffset _replayStateSavedAt = DateTimeOffset.MinValue;
+    // Notices found while holding the lock; Publish raises them.
+    private readonly List<SessionNotice> _pendingNotices = new();
     // ----
 
     private long _savedSecretsVersion;
@@ -419,6 +423,11 @@ public sealed class ClientSession : IAsyncDisposable {
                 current = Math.Max(current, offered.Revision);
             }
 
+            // Only reachable if someone set a huge revision on purpose. It resets with the next epoch.
+            if (current >= ProtocolInfo.MaxNameRevision) {
+                throw new InvalidOperationException("This channel can't be renamed again until its key changes. Rekey it, then rename it.");
+            }
+
             return (keyEpoch, this.GetEpochKey(channelId, keyEpoch)!, current + 1);
         });
 
@@ -453,11 +462,12 @@ public sealed class ClientSession : IAsyncDisposable {
         try {
             for (var attempt = 0; attempt < 3; attempt++) {
                 var (identity, me) = this.RequireIdentityAndUser();
-                var (serverEpoch, name, memberIds, pending) = this.Read(() => {
+                var (serverEpoch, name, members, pending) = this.Read(() => {
                     var channel = this._channels.GetValueOrDefault(channelId) ?? throw new InvalidOperationException("Unknown channel.");
-                    var ids = channel.Members.Where(member => member.Rank >= Rank.Member).Select(member => member.User.UserId).ToList();
-                    return (channel.ServerEpoch, channel.Name, ids, channel.RekeyPending);
+                    var current = channel.Members.Where(member => member.Rank >= Rank.Member).Select(member => member.User).ToList();
+                    return (channel.ServerEpoch, channel.Name, current, channel.RekeyPending);
                 });
+                var memberIds = members.Select(member => member.UserId).ToList();
 
                 // Someone else (or an earlier call) may have rekeyed while we waited for the gate.
                 if (!pending && !force) {
@@ -480,12 +490,18 @@ public sealed class ClientSession : IAsyncDisposable {
                     KeyCommitment = ByteString.CopyFrom(ChannelCrypto.KeyCommitment(channelId, newEpoch, key)),
                 };
 
-                foreach (var memberId in memberIds) {
-                    if (!identities.TryGetValue(memberId, out var memberIdentity)) {
-                        throw new InvalidOperationException($"No identity key for member {memberId}.");
+                foreach (var member in members) {
+                    // Name the member at fault: otherwise one bad key leaves everyone guessing why the channel is stuck.
+                    var who = $"{member.Name}@{member.WorldName}";
+                    if (!identities.TryGetValue(member.UserId, out var memberIdentity)) {
+                        throw new InvalidOperationException($"Can't rekey: {who} has no valid identity key on the server. They need to register again, or be removed.");
                     }
 
-                    request.Keys.Add(ChannelCrypto.SealEpochKey(key, channelId, newEpoch, identity, me.UserId, memberId, memberIdentity.Identity.AgreementPublicKey.Span));
+                    try {
+                        request.Keys.Add(ChannelCrypto.SealEpochKey(key, channelId, newEpoch, identity, me.UserId, member.UserId, memberIdentity.Identity.AgreementPublicKey.Span));
+                    } catch (Exception ex) {
+                        throw new InvalidOperationException($"Can't rekey: the key couldn't be sealed to {who}'s identity key ({ex.Message}). They need to register again, or be removed.", ex);
+                    }
                 }
 
                 try {
@@ -719,6 +735,8 @@ public sealed class ClientSession : IAsyncDisposable {
             this._me = ok.User;
             this._secrets.UserId = ok.User.UserId;
             this._state = ConnectionState.Ready;
+            // Ready, but the channel list is only complete once RefreshAsync has fetched it.
+            this._channelsLoaded = false;
             this._status = $"Connected as {ok.User.Name}@{ok.User.WorldName}";
         }
 
@@ -740,6 +758,8 @@ public sealed class ClientSession : IAsyncDisposable {
 
         var userIds = new HashSet<long>();
         lock (this._lock) {
+            // A list fetched on a connection that has since dropped says nothing about the next one.
+            this._channelsLoaded = connection == this._connection && this._state == ConnectionState.Ready;
             var listed = channels.Select(channel => channel.ChannelId).ToHashSet();
             foreach (var stale in this._channels.Keys.Where(id => !listed.Contains(id)).ToList()) {
                 this._channels.Remove(stale);
@@ -1495,10 +1515,19 @@ public sealed class ClientSession : IAsyncDisposable {
         }
 
         var name = ChannelCrypto.DecryptName(offered, channelId, key, author.Identity.SigningPublicKey.Span);
-        if (name != null) {
-            channel.Name = name;
-            this.SetNameVersion(channelId, version);
+        if (name == null) {
+            return;
         }
+
+        // A rekey carries the current name into the new epoch as revision 0; only the admin
+        // renames, as later revisions. But any member can rekey, so say who changed it.
+        if (offered.Revision == 0 && held != null && offered.Epoch == held.Epoch + 1 && channel.Name is { } previous && previous != name) {
+            this._pendingNotices.Add(new SessionNotice(NoticeLevel.Warning,
+                $"{author.User.Name}@{author.User.WorldName} changed the channel name from \"{previous}\" to \"{name}\" while rekeying.", channelId));
+        }
+
+        channel.Name = name;
+        this.SetNameVersion(channelId, version);
     }
 
     private void SetNameVersion(string channelId, NameVersion version) {
@@ -1550,8 +1579,8 @@ public sealed class ClientSession : IAsyncDisposable {
         lock (this._lock) {
             this._channels.Remove(channelId);
             this._secrets.EpochKeys.Remove(channelId);
-            this._secrets.ChannelNameVersions.Remove(channelId);
-            this._secrets.NewestMessageTimes.Remove(channelId);
+            // The name version and message times stay (they aren't secret): otherwise a server
+            // could fake a removal, list the channel again and replay older names or messages.
             this._secretsVersion++;
         }
 
@@ -1612,6 +1641,10 @@ public sealed class ClientSession : IAsyncDisposable {
         lock (this._lock) {
             this._state = state;
             this._status = status;
+            if (state != ConnectionState.Ready) {
+                this._channelsLoaded = false;
+            }
+
             if (state is ConnectionState.Connecting or ConnectionState.Reconnecting or ConnectionState.Stopped) {
                 this._challenge = null;
             }
@@ -1622,7 +1655,10 @@ public sealed class ClientSession : IAsyncDisposable {
 
     private void Publish() {
         SessionSnapshot snapshot;
+        List<SessionNotice> notices;
         lock (this._lock) {
+            notices = [.. this._pendingNotices];
+            this._pendingNotices.Clear();
             snapshot = new SessionSnapshot(
                 this._state,
                 this._status,
@@ -1641,11 +1677,15 @@ public sealed class ClientSession : IAsyncDisposable {
                         ? new User { UserId = id, Name = pinned.Name, WorldName = pinned.WorldName }
                         : new User { UserId = id, Name = $"user {id}" })
                     .OrderBy(user => user.Name, StringComparer.OrdinalIgnoreCase)
-                    .ToImmutableArray());
+                    .ToImmutableArray(),
+                this._channelsLoaded && this._state == ConnectionState.Ready);
             this._snapshot = snapshot;
         }
 
         this.InvokeSafely(this.SnapshotChanged, snapshot);
+        foreach (var notice in notices) {
+            this.InvokeSafely(this.Notice, notice);
+        }
     }
 
     private ChannelView ToView(ChannelState channel) {

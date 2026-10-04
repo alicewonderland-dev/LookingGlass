@@ -198,11 +198,12 @@ public sealed class SessionManager : IDisposable {
     }
 
     private void SyncSlots(SessionSnapshot snapshot) {
-        if (this._sessionPlayer is not { } player || snapshot.State != ConnectionState.Ready) {
+        // Only against the complete channel list; a partial one would free (and then hand out) slots in use.
+        if (this._sessionPlayer is not { } player || snapshot is not { State: ConnectionState.Ready, ChannelsLoaded: true }) {
             return;
         }
 
-        if (this._config.ForCharacter(player.ContentId).SyncSlots(snapshot.Channels.Select(channel => channel.Id))) {
+        if (this._config.ForCharacter(player.ContentId).SyncSlots(snapshot)) {
             this._config.Save();
             this.RefreshSlotCache();
         }

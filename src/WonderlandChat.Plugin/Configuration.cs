@@ -1,5 +1,6 @@
 using Dalamud.Configuration;
 using Dalamud.Game.Text;
+using WonderlandChat.Core.Client;
 
 namespace WonderlandChat.Plugin;
 
@@ -39,52 +40,12 @@ public sealed class CharacterSettings {
 
     public int? SlotOf(string channelId) => this.ChannelSlots.TryGetValue(channelId, out var slot) ? slot : null;
 
-    public string? ChannelInSlot(int slot) {
-        foreach (var (channelId, assigned) in this.ChannelSlots) {
-            if (assigned == slot) {
-                return channelId;
-            }
-        }
+    public string? ChannelInSlot(int slot) => CommandSlots.ChannelIn(this.ChannelSlots, slot);
 
-        return null;
-    }
-
-    /// <summary>Gives every listed channel a slot if one is free, and forgets channels no longer listed.</summary>
+    /// <summary>See <see cref="CommandSlots.Sync"/>: nothing changes until the snapshot holds the complete channel list.</summary>
     /// <returns>True if anything changed.</returns>
-    public bool SyncSlots(IEnumerable<string> channelIds) {
-        var ids = channelIds.ToList();
-        var changed = false;
-
-        foreach (var stale in this.ChannelSlots.Keys.Where(id => !ids.Contains(id)).ToList()) {
-            this.ChannelSlots.Remove(stale);
-            changed = true;
-        }
-
-        foreach (var id in ids.Where(id => !this.ChannelSlots.ContainsKey(id))) {
-            var free = Enumerable.Range(1, Configuration.SlotCount).FirstOrDefault(slot => this.ChannelInSlot(slot) == null);
-            if (free == 0) {
-                break;
-            }
-
-            this.ChannelSlots[id] = free;
-            changed = true;
-        }
-
-        return changed;
-    }
+    public bool SyncSlots(SessionSnapshot snapshot) => CommandSlots.Sync(this.ChannelSlots, snapshot, Configuration.SlotCount);
 
     /// <summary>Moves a channel to a slot, swapping with whatever was there.</summary>
-    public void AssignSlot(string channelId, int slot) {
-        var previous = this.ChannelInSlot(slot);
-        var oldSlot = this.SlotOf(channelId);
-        if (previous != null && previous != channelId) {
-            if (oldSlot != null) {
-                this.ChannelSlots[previous] = oldSlot.Value;
-            } else {
-                this.ChannelSlots.Remove(previous);
-            }
-        }
-
-        this.ChannelSlots[channelId] = slot;
-    }
+    public void AssignSlot(string channelId, int slot) => CommandSlots.Assign(this.ChannelSlots, channelId, slot);
 }

@@ -128,9 +128,12 @@ What the encryption does today:
 - Each channel has an epoch key. Any membership change (join, leave, kick,
   re-registration) makes a member generate a new one, seal it to every
   member's X25519 key, and sign it together with a commitment to the key.
-  Every copy carries the same commitment, so a member who hands someone a
-  different or unreadable key is named in a warning, and that client rekeys.
-  The server stores and forwards the sealed copies but can't open them.
+  The server refuses a rekey unless every copy carries the same commitment,
+  so a member who hands someone a different or unreadable key is named in a
+  warning, and that client rekeys. This relies on the server checking: one
+  that colludes with the member can give each recipient a different
+  commitment, and nobody notices (the v0.2 design fixes this). The server
+  stores and forwards the sealed copies but can't open them.
 - Messages are XChaCha20-Poly1305 encrypted under the epoch key and signed by
   the sender. The server can't read them, alter them, or attribute them to
   someone else.
@@ -138,8 +141,13 @@ What the encryption does today:
   drop messages dated more than 10 minutes from their own clock, and save,
   per channel and sender, the timestamp of the newest message accepted.
   Messages more than 2 minutes older than that are dropped, even after a
-  restart. A message is only accepted from a current member, and under an
-  older epoch only within 2 minutes of the client getting the newer key.
+  restart. Those timestamps are saved with other changes, on shutdown, and
+  while messages arrive at least every 5 minutes, so a crash can lose up to
+  about 5 minutes of them. Your own messages aren't recorded this way, so
+  after a restart the server could replay one you sent in the last 10
+  minutes back to you. A message is only
+  accepted from a current member, and under an older epoch only within
+  2 minutes of the client getting the newer key.
 - Clients only accept a new epoch key from a member according to the
   server's member list (verifiable membership is planned for v0.2), and only
   for a newer epoch than they hold. They send with the newest key they hold,
@@ -148,6 +156,8 @@ What the encryption does today:
   name encrypted under the key they use, and never one older than the newest
   they have accepted (remembered across restarts), so a server can't roll a
   name back, whether to a name from an older epoch or an earlier rename.
+  Only the admin renames; a rekey carries the name into the new epoch, and
+  clients warn if a member's rekey changed it.
 - Clients can block users: their invites are declined unseen and their
   messages hidden. An invite from someone whose identity key changed can't
   be accepted until it is marked verified.
@@ -157,6 +167,13 @@ What it does not do yet (0.1):
 - **The member list is trusted.** A malicious server can list an extra,
   hidden member; honest clients will then seal new keys to it. Fixing this is
   the v0.2 "authenticated membership" design in [docs/design.md](docs/design.md).
+- **Ranks and removals aren't signed.** Clients take the server's word for
+  who is admin or moderator and who was removed.
+- **Invitees' keys are trusted on first use.** An invite is sealed to
+  whatever identity key the server returns for that name the first time you
+  look them up; compare fingerprints over /tell to be sure.
+- Rekeys still seal the new key to a member whose identity key changed,
+  even while the "key changed" warning is showing.
 - The server sees metadata (who is in which channel, when messages are sent)
   and can drop or delay anything.
 - Debug accounts on a Development server can be taken over by anyone who can
