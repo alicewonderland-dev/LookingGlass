@@ -53,6 +53,13 @@ public interface IChannelMembership {
     /// <summary>Whether <paramref name="entry"/> is a valid next entry.</summary>
     MembershipVerdict Check(MembershipEntry entry);
 
+    /// <summary>
+    /// Whether <paramref name="entry"/> is signed by the keys this state knows its actor by (as a member or
+    /// invitee), wherever it is in the log and whatever the rules say of it. Two such entries at one position
+    /// show that whoever holds those keys signed two versions of the log there.
+    /// </summary>
+    bool IsSignedByKnownKeys(MembershipEntry entry);
+
     /// <exception cref="MembershipException">The entry isn't a valid next entry.</exception>
     IChannelMembership Apply(MembershipEntry entry);
 

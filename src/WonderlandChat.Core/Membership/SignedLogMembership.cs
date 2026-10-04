@@ -121,6 +121,13 @@ public sealed class SignedLogMembership : IChannelMembership {
 
     public MembershipVerdict Check(MembershipEntry entry) => this.Evaluate(entry, out _);
 
+    public bool IsSignedByKnownKeys(MembershipEntry entry) {
+        var keys = this.FindMember(entry.ActorId)?.Keys ?? this.FindInvitee(entry.ActorId)?.Keys;
+        return keys != null && entry.ChannelId == this.ChannelId && entry.Signature.Length == 64
+               && entry.ActorKeyHash.Span.SequenceEqual(keys.Hash)
+               && IdentityKeys.Verify(keys.SigningPublicKey, MembershipEntries.SigningPayload(entry), entry.Signature.Span);
+    }
+
     public IChannelMembership Apply(MembershipEntry entry) {
         var verdict = this.Evaluate(entry, out var next);
         return verdict.IsValid ? next! : throw new MembershipException(verdict);

@@ -84,7 +84,12 @@ public sealed class ClientSession : IAsyncDisposable {
     private readonly Dictionary<long, MemberKeys> _staleNameAuthors = new();
     // Channels with a name made at a log position this client hasn't reached; Publish has their logs fetched.
     private readonly Dictionary<string, ulong> _namePositionsAhead = new();
+    // When each channel's whole log was last fetched to look into a fork, the checks under way, the claims
+    // still to look into (made too soon after a check, or whose check failed), and the re-checks scheduled.
     private readonly Dictionary<string, DateTimeOffset> _forkCheckedAt = new();
+    private readonly HashSet<string> _forkChecksRunning = new();
+    private readonly Dictionary<string, ForkClaim> _forkClaims = new();
+    private readonly HashSet<string> _forkRechecksScheduled = new();
     private readonly HashSet<string> _seenMessages = new();
     private readonly Queue<string> _seenOrder = new();
     private long _secretsVersion;
@@ -1194,27 +1199,160 @@ public sealed class ClientSession : IAsyncDisposable {
 
         if (conflicting != null || headDiffers) {
             await this.CheckForkAsync(channelId, conflicting, ct, connection);
+        } else if (this.Read(() => this._forkClaims.ContainsKey(channelId) && this.ForkCheckDelay(channelId) == TimeSpan.Zero)) {
+            // A claim kept earlier (the last check was too recent, or failed) that can be looked into now.
+            try {
+                await this.RecheckForkClaimAsync(channelId, ct, connection);
+            } catch (Exception ex) when (ex is ServerErrorException or SessionDisconnectedException or TimeoutException) {
+                // Kept for the next sync; this one stands.
+                this.Log(NoticeLevel.Warning, $"Couldn't look into a possible fork of {channelId}: {ex.Message}");
+            }
         }
 
         return this.Read(() => this.MembershipOf(channelId));
     }
 
     /// <summary>
-    /// The server showed an entry, or a head, that differs from the log this client verified at
-    /// the same position. Fetches the server's whole log and replays it: if it is valid, and it
-    /// (or the offered entry) differs from what was verified here, two validly signed versions
-    /// of the log exist, and the user is told. At most once a minute per channel.
+    /// The server showed an entry, or a head, that differs from the log this client verified at the same
+    /// position. An entry validly signed by keys the log knows, after the same entry as the one verified
+    /// at its position but not that one, is a fork in itself, and the user is told straight away. Anything
+    /// else needs the server's whole log: it is fetched and replayed, and if it is valid and it (or the
+    /// offered entry) differs from what was verified here, two validly signed versions of the log exist, and
+    /// the user is told. That fetch happens at most once per <see cref="ClientSessionOptions.ForkCheckInterval"/>
+    /// per channel; a claim made sooner, or whose fetch failed, is kept and looked into later.
     /// </summary>
     private async Task CheckForkAsync(string channelId, MembershipEntry? candidate, CancellationToken ct, Connection? connection) {
-        lock (this._lock) {
-            var now = this._options.TimeProvider.GetUtcNow();
-            if (this._forkCheckedAt.TryGetValue(channelId, out var last) && now - last < this._options.ForkCheckInterval) {
-                return;
-            }
-
-            this._forkCheckedAt[channelId] = now;
+        if (candidate != null && this.Read(() => this.ProvesFork(channelId, candidate))) {
+            this.ReportFork(channelId, candidate.Seq);
+            return;
         }
 
+        TimeSpan wait;
+        lock (this._lock) {
+            wait = this.ForkCheckDelay(channelId);
+            if (wait > TimeSpan.Zero) {
+                // Too soon: keep the claim (an entry rather than none), and look into it once the interval has passed.
+                if (candidate != null || !this._forkClaims.ContainsKey(channelId)) {
+                    this._forkClaims[channelId] = new ForkClaim(candidate);
+                }
+            } else {
+                this._forkChecksRunning.Add(channelId);
+                // This check covers a head claim kept earlier; an entry kept earlier too, unless this one has its own.
+                this._forkClaims.Remove(channelId, out var kept);
+                if (kept?.Candidate != null && candidate == null) {
+                    candidate = kept.Candidate;
+                } else if (kept?.Candidate != null) {
+                    this._forkClaims[channelId] = kept;
+                }
+            }
+        }
+
+        if (wait > TimeSpan.Zero) {
+            this.ScheduleForkRecheck(channelId, wait);
+            return;
+        }
+
+        var completed = false;
+        try {
+            await this.CheckForkWithLogAsync(channelId, candidate, ct, connection);
+            completed = true;
+        } finally {
+            lock (this._lock) {
+                this._forkChecksRunning.Remove(channelId);
+                if (completed) {
+                    // Only a check that got the log counts against the interval.
+                    this._forkCheckedAt[channelId] = this._options.TimeProvider.GetUtcNow();
+                } else if (candidate != null || !this._forkClaims.ContainsKey(channelId)) {
+                    // Looked into again at the next sync of this channel's log.
+                    this._forkClaims[channelId] = new ForkClaim(candidate);
+                }
+            }
+        }
+
+        if (this.Read(() => this._forkClaims.ContainsKey(channelId))) {
+            // Claims kept while this check ran.
+            this.ScheduleForkRecheck(channelId, this.Read(() => this.ForkCheckDelay(channelId)));
+        }
+    }
+
+    /// <summary>A claim of a fork that couldn't be looked into yet: an entry that differs from the one verified at its position, or (null) a head that does.</summary>
+    private sealed record ForkClaim(MembershipEntry? Candidate);
+
+    /// <summary>How long until the channel's whole log may be fetched to look into a fork; zero if now. Call inside the lock.</summary>
+    private TimeSpan ForkCheckDelay(string channelId) {
+        if (this._forkChecksRunning.Contains(channelId)) {
+            return this._options.ForkCheckInterval;
+        }
+
+        if (!this._forkCheckedAt.TryGetValue(channelId, out var last)) {
+            return TimeSpan.Zero;
+        }
+
+        var left = last + this._options.ForkCheckInterval - this._options.TimeProvider.GetUtcNow();
+        return left > TimeSpan.Zero ? left : TimeSpan.Zero;
+    }
+
+    /// <summary>Looks into the channel's kept fork claim, if any, after <paramref name="wait"/>; once at a time per channel.</summary>
+    private void ScheduleForkRecheck(string channelId, TimeSpan wait) {
+        if (!this.Read(() => this._forkRechecksScheduled.Add(channelId))) {
+            return;
+        }
+
+        this.RunBackground("Checking a channel's membership", async ct => {
+            try {
+                await Task.Delay(wait, this._options.TimeProvider, ct);
+            } finally {
+                lock (this._lock) {
+                    this._forkRechecksScheduled.Remove(channelId);
+                }
+            }
+
+            try {
+                await this.RecheckForkClaimAsync(channelId, ct, null);
+            } catch (Exception ex) when (ex is ServerErrorException or SessionDisconnectedException or TimeoutException) {
+                // Kept, and looked into at the next sync of this channel's log.
+                this.Log(NoticeLevel.Warning, $"Couldn't look into a possible fork of {channelId}: {ex.Message}");
+            }
+        });
+    }
+
+    /// <summary>Looks into the channel's kept fork claim, if any.</summary>
+    private async Task RecheckForkClaimAsync(string channelId, CancellationToken ct, Connection? connection) {
+        var claim = this.Read(() => this._forkClaims.GetValueOrDefault(channelId));
+        if (claim != null) {
+            await this.CheckForkAsync(channelId, claim.Candidate, ct, connection);
+        }
+    }
+
+    /// <summary>
+    /// True if <paramref name="candidate"/> proves on its own that the log forked: it is at a position this client
+    /// verified, chained to the same entry as the one verified there, but differs from it, and it is validly signed
+    /// by keys the verified log knows. Call inside the lock.
+    /// </summary>
+    private bool ProvesFork(string channelId, MembershipEntry candidate) {
+        var ours = this.MembershipOf(channelId);
+        if (ours.Head == null || candidate.Seq == 0 || candidate.Seq > ours.Head.Seq
+            || ours.HashAt(candidate.Seq) is not { } mine || ours.HashAt(candidate.Seq - 1) is not { } parent) {
+            return false;
+        }
+
+        return !mine.AsSpan().SequenceEqual(MembershipEntries.Hash(candidate))
+               && candidate.PreviousHash.Span.SequenceEqual(parent)
+               && ours.IsSignedByKnownKeys(candidate);
+    }
+
+    private void ReportFork(string channelId, ulong forkAt) {
+        this.Log(NoticeLevel.Warning, $"Membership log of {channelId} forked at or before entry {forkAt}");
+        this.WarnAboutMembership(channelId,
+            $"the server has shown you two different versions of the membership of {{0}}, both validly signed, that differ at or before entry #{forkAt}. " +
+            "Someone may be seeing a different member list from you: compare it with other members over /tell before trusting it");
+    }
+
+    /// <summary>
+    /// Fetches the server's whole log and replays it: if it is valid, and it (or <paramref name="candidate"/>) differs
+    /// from what was verified here, two validly signed versions of the log exist, and the user is told.
+    /// </summary>
+    private async Task CheckForkWithLogAsync(string channelId, MembershipEntry? candidate, CancellationToken ct, Connection? connection) {
         var chain = this._membership.Empty(channelId);
         var hashes = new List<byte[]>();
         IChannelMembership? beforeCandidate = candidate is { Seq: 0 } ? chain : null;
@@ -1267,10 +1405,7 @@ public sealed class ClientSession : IAsyncDisposable {
         }
 
         if (forkAt != null) {
-            this.Log(NoticeLevel.Warning, $"Membership log of {channelId} forked at or before entry {forkAt}");
-            this.WarnAboutMembership(channelId,
-                $"the server has shown you two different versions of the membership of {{0}}, both validly signed, that differ at or before entry #{forkAt}. " +
-                "Someone may be seeing a different member list from you: compare it with other members over /tell before trusting it");
+            this.ReportFork(channelId, forkAt.Value);
         } else if (shortOrInvalid) {
             this.Log(NoticeLevel.Warning, $"Membership log of {channelId} from the server is invalid or shorter than the one verified");
             this.WarnAboutMembership(channelId, HidingWarning);
