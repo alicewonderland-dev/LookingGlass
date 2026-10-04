@@ -50,8 +50,9 @@ public sealed class Harness : IAsyncDisposable {
     /// <param name="beforeConnect">Awaited before every connection attempt, so a test can keep a client offline.</param>
     /// <param name="protocolVersion">The protocol version offered in Hello, to play an older plugin.</param>
     /// <param name="wrap">Wraps every connection's WebSocket, for example in a <see cref="HoldingWebSocket"/>.</param>
+    /// <param name="forkCheckInterval">How often the client may fetch a channel's whole log to look into a possible fork.</param>
     public ClientSessionOptions Options(bool autoRekey = true, Action<NoticeLevel, string>? log = null, TimeProvider? time = null, Func<CancellationToken, Task>? beforeConnect = null,
-        uint protocolVersion = ProtocolInfo.CurrentVersion, Func<WebSocket, WebSocket>? wrap = null) => new() {
+        uint protocolVersion = ProtocolInfo.CurrentVersion, Func<WebSocket, WebSocket>? wrap = null, TimeSpan? forkCheckInterval = null) => new() {
         ServerUri = new Uri(this.Factory.Server.BaseAddress, ProtocolInfo.WebSocketPath),
         Connect = async (uri, ct) => {
             if (beforeConnect != null) {
@@ -66,6 +67,7 @@ public sealed class Harness : IAsyncDisposable {
         Log = log,
         TimeProvider = time ?? TimeProvider.System,
         ProtocolVersion = protocolVersion,
+        ForkCheckInterval = forkCheckInterval ?? TimeSpan.FromMinutes(1),
     };
 
     public void Track(IAsyncDisposable disposable) => this._disposables.Add(disposable);

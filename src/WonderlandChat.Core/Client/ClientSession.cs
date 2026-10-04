@@ -43,8 +43,6 @@ public sealed class ClientSession : IAsyncDisposable {
     private static readonly TimeSpan RegistrationRequestTimeout = TimeSpan.FromSeconds(60);
     // How often one user's identity may be fetched again because something they signed didn't verify.
     private static readonly TimeSpan IdentityRefetchInterval = TimeSpan.FromMinutes(1);
-    // How often a channel's whole log may be fetched again to look into a possible fork.
-    private static readonly TimeSpan ForkCheckInterval = TimeSpan.FromMinutes(1);
 
     private readonly ClientSessionOptions _options;
     private readonly ISecretStore _store;
@@ -1210,7 +1208,7 @@ public sealed class ClientSession : IAsyncDisposable {
     private async Task CheckForkAsync(string channelId, MembershipEntry? candidate, CancellationToken ct, Connection? connection) {
         lock (this._lock) {
             var now = this._options.TimeProvider.GetUtcNow();
-            if (this._forkCheckedAt.TryGetValue(channelId, out var last) && now - last < ForkCheckInterval) {
+            if (this._forkCheckedAt.TryGetValue(channelId, out var last) && now - last < this._options.ForkCheckInterval) {
                 return;
             }
 

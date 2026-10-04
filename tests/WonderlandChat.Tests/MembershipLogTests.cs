@@ -241,6 +241,81 @@ public sealed class MembershipLogTests : IAsyncLifetime {
         Assert.Contains(bob.Session.Snapshot.FindChannel(channelId)!.Members, m => m.User.UserId == dave.UserId);
     }
 
+    /// <summary>
+    /// Acceptance test 5, against a server that first spends the client's fork check on a junk claim (another hash
+    /// at her head, which checks out fine), then within the minute shows her a genuinely forked, validly signed entry.
+    /// </summary>
+    [Fact]
+    public async Task ForkedEntryIsReportedRightAfterAJunkClaim() {
+        var (carol, channelId, forkPoint, other) = await this.ForkableChannelAsync("Junk");
+        int LogFetches() => carol.Session.GetTrace().Count(entry => entry.Outgoing && entry.Summary.EndsWith(" FetchMembershipLog"));
+
+        // The server claims another hash at Carol's head. She fetches its whole log to look into it: nothing wrong.
+        var fetches = LogFetches();
+        this.ClaimJunkHead(channelId);
+        await carol.Session.RefreshAsync(Ct);
+        Assert.True(LogFetches() > fetches);
+        Assert.Null(carol.Session.Snapshot.FindChannel(channelId)!.MembershipWarning);
+
+        // Moments later it shows her an entry at a position she verified (the one after the fork point), after the
+        // same entry as hers there, but a different one: validly signed by Alice, so a fork in itself.
+        await this._server.SendAndSettleAsync(carol, new Event { LogEntryAdded = new LogEntryAdded { ChannelId = channelId, Entry = other } });
+        Assert.Contains(carol.Notices, n => n.Level == NoticeLevel.Warning && n.Text.Contains("two different versions"));
+        Assert.Contains("two different versions", carol.Session.Snapshot.FindChannel(channelId)!.MembershipWarning);
+    }
+
+    /// <summary>
+    /// Acceptance test 5: a claim that can only be looked into by fetching the log, made too soon after the last
+    /// check, isn't dropped but checked once the interval has passed.
+    /// </summary>
+    [Fact]
+    public async Task AForkClaimMadeTooSoonAfterTheLastCheckIsCheckedLater() {
+        var interval = TimeSpan.FromSeconds(3);
+        var (carol, channelId, forkPoint, other) = await this.ForkableChannelAsync("Later", this._server.Options(forkCheckInterval: interval));
+
+        // A junk claim uses up the check...
+        this.ClaimJunkHead(channelId);
+        await carol.Session.RefreshAsync(Ct);
+        Assert.Null(carol.Session.Snapshot.FindChannel(channelId)!.MembershipWarning);
+
+        // ...then the server swaps its log for the other version, and Carol sees its head differ from hers.
+        this._server.ExecuteSql("""
+            DELETE FROM membership_log WHERE channel_id = $channel AND seq > $seq;
+            DELETE FROM invites WHERE channel_id = $channel;
+            UPDATE channels SET log_seq = $seq, log_hash = $hash WHERE channel_id = $channel;
+            """, ("$channel", channelId), ("$seq", (long) forkPoint.Seq), ("$hash", forkPoint.Hash.ToByteArray()));
+        Assert.True(this._server.Database.AppendEntry(channelId, other, SomeBox(), new byte[64]));
+        await carol.Session.RefreshAsync(Ct);
+        // Too soon to fetch the whole log again...
+        Assert.Null(carol.Session.Snapshot.FindChannel(channelId)!.MembershipWarning);
+
+        // ...but it is looked into once the interval has passed.
+        await WaitFor(() => carol.Notices.FirstOrDefault(n => n.Level == NoticeLevel.Warning && n.Text.Contains("two different versions")));
+    }
+
+    /// <summary>
+    /// Alice, with Carol, invites Dave at the entry after <c>ForkPoint</c>; Carol has verified it. <c>Other</c> is a
+    /// different entry at that position, validly signed by Alice (inviting Erin), for a server to show.
+    /// </summary>
+    private async Task<(TestClient Carol, string ChannelId, LogPosition ForkPoint, MembershipEntry Other)> ForkableChannelAsync(string suffix, ClientSessionOptions? carolOptions = null) {
+        var alice = await this._server.RegisterAsync("Alice " + suffix);
+        var carol = await this._server.RegisterAsync("Carol " + suffix, options: carolOptions);
+        var dave = await this._server.RegisterAsync("Dave " + suffix);
+        var erin = await this._server.RegisterAsync("Erin " + suffix);
+        var channelId = await alice.Session.CreateChannelAsync(suffix, Ct);
+        await AddMemberAsync(alice, channelId, carol);
+        var forkPoint = this._server.Database.GetChannel(channelId)!.LogHead;
+        await alice.Session.InviteAsync(channelId, dave.Name, ProtocolInfo.DebugWorldName, Ct);
+        await WaitFor(() => carol.Session.Snapshot.FindChannel(channelId)?.Members.FirstOrDefault(m => m.User.UserId == dave.UserId));
+        var other = this._server.ForgeEntry(channelId, alice, MembershipEntryKind.Invite, erin.UserId, erin.Keys(), after: forkPoint);
+        return (carol, channelId, forkPoint, other);
+    }
+
+    /// <summary>The server reports its log's head with a hash that belongs to no entry.</summary>
+    private void ClaimJunkHead(string channelId) {
+        this._server.ExecuteSql("UPDATE channels SET log_hash = $junk WHERE channel_id = $channel;", ("$channel", channelId), ("$junk", new byte[32]));
+    }
+
     // ---------------------------------------------------------------- further cases
 
     [Fact]
