@@ -158,9 +158,10 @@ keep working.
 **Reset my identity** (Settings, under "Your identity") is for a key that was
 lost or may have been stolen. If you're connected, the plugin first asks the
 server to retire the old key (a request signed with that key, for your current
-login, so a stolen login alone can't do it): every login made with it stops
-working at once, and the key can never sign in or be registered on that server
-again. Then it makes new identity keys for the character on this server, and
+login and that server's address, so a stolen login alone can't do it, and nor
+can a signature made for another server): every login made with it stops
+working at once, and the key can never sign in to your account or be
+registered for it on that server again. Then it makes new identity keys for the character on this server, and
 keeps nothing of the old identity there (its login and channel keys): not in
 this address's file, not in the copies a move made for the server's other
 addresses, and not in backups (`.bak` files and the old-style file), though
@@ -175,8 +176,18 @@ and everyone who knows you sees a "key changed" warning. Your identity on
 other servers isn't affected.
 
 A key replaced on the server, by "Reset my identity" or by registering again
-with new keys, is never accepted there again: registering it says to reset
-your identity instead, and it can't sign in.
+with new keys, is never accepted for your account there again: registering it
+says to reset your identity instead, and it can't sign in. This is per
+account: nothing another account does can retire your key.
+
+**Your key is yours.** Registering proves that the plugin holds the identity
+key it registers: it signs the server's registration challenge, your
+character's ID and the server's address with it. Anyone who shares a channel
+with you can see your public key, but can't register it as theirs. A key is
+registered to one character at most on a server (the plugin makes separate
+keys for each character), so registering a second character with one
+character's keys is refused. A plugin from before registrations were signed is
+asked to update.
 
 **Moving the server.** Identities are kept per address, so
 `ws://lookingglasschat:5180/ws`, `ws://127.0.0.1:5180/ws` and
@@ -404,14 +415,21 @@ What the encryption does today:
   whether to a name from an older epoch, an earlier rename, or an older
   membership. Only the admin renames; a rekey carries the name into the new
   epoch, and clients warn if a member's rekey changed it.
-- Signing in: the Lodestone check happens once, at registration. After
-  that a client signs in with its device token or, if the server no longer
-  knows the token, by signing a single-use challenge with its current
-  identity key (a key replaced or retired by "Reset my identity" can't, and
-  can't be registered again either). The signature
-  names the server's address, and the server only accepts its configured
-  `PublicUrls`, so a server can't replay it to another (a Development server
-  without them goes by the Host header, which doesn't stop this). The plugin
+- Registering: the Lodestone check happens once, at registration, and the
+  client signs the server's challenge with the identity key it registers, so
+  nobody can register someone else's public key as theirs. A key belongs to
+  one account at most, and a key an account replaced or retired is refused
+  for that account only.
+- Signing in: after registering, a client signs in with its device token or,
+  if the server no longer knows the token, by signing a single-use challenge
+  with its current identity key (a key replaced or retired by "Reset my
+  identity" can't, and can't be registered for the account again either).
+  The signature, like a registration's and a retirement's, names the server's
+  address, and the server only accepts its configured `PublicUrls`, so a
+  server can't replay it to another (a Development server without them goes
+  by the Host header, which doesn't stop this; a server outside Development
+  without them has key login off, and can't check the address a registration
+  or retirement names). The plugin
   also keeps separate keys per server address, bound to the address inside
   the file; never follows redirects, so a server can't hand your connection
   and login to another; and only carries an identity to a new address when
