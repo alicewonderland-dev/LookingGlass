@@ -229,10 +229,15 @@ public sealed class ClientSession : IAsyncDisposable {
         }, ct);
 
         var info = response.Channel ?? throw Unexpected(response);
+        if (info.ChannelId != channelId) {
+            throw Unexpected(response);
+        }
+
         lock (this._lock) {
             this.StoreEpochKey(channelId, 0, key);
             var channel = this.ApplyChannelInfo(info);
             channel.Name = name;
+            this.SetNameVersion(channelId, new NameVersion(0, 0));
         }
 
         this.SaveSecrets();
@@ -271,7 +276,7 @@ public sealed class ClientSession : IAsyncDisposable {
 
         lock (this._lock) {
             this._invites.Remove(channelId, out var invite);
-            if (accept && response.Channel != null) {
+            if (accept && response.Channel != null && response.Channel.ChannelId == channelId) {
                 var channel = this.ApplyChannelInfo(response.Channel);
                 channel.Name ??= invite?.Name;
             }
@@ -318,25 +323,38 @@ public sealed class ClientSession : IAsyncDisposable {
     public async Task RenameAsync(string channelId, string newName, CancellationToken ct = default) {
         newName = ValidateChannelName(newName);
         var (identity, me) = this.RequireIdentityAndUser();
-        var (epoch, key) = this.Read(() => {
+        var (epoch, key, revision) = this.Read(() => {
             var channel = this._channels.GetValueOrDefault(channelId) ?? throw new InvalidOperationException("Unknown channel.");
-            return (channel.Epoch, this.GetEpochKey(channelId, channel.Epoch));
+            var keyEpoch = this.KeyEpochOf(channelId) ?? throw new InvalidOperationException("This channel's key isn't available yet.");
+
+            // The server and other members refuse a name that isn't newer than the
+            // current one, so beat both the name accepted here and the one offered.
+            ulong current = 0;
+            if (this._secrets.ChannelNameVersions.TryGetValue(channelId, out var held) && held.Epoch == keyEpoch) {
+                current = held.Revision;
+            }
+
+            if (channel.EncryptedName is { } offered && offered.Epoch == keyEpoch
+                && this._identities.TryGetValue(offered.AuthorId, out var author)
+                && ChannelCrypto.VerifyName(offered, channelId, author.Identity.SigningPublicKey.Span)) {
+                current = Math.Max(current, offered.Revision);
+            }
+
+            return (keyEpoch, this.GetEpochKey(channelId, keyEpoch)!, current + 1);
         });
 
-        if (key == null) {
-            throw new InvalidOperationException("This channel's key isn't available yet.");
-        }
-
-        var name = ChannelCrypto.EncryptName(newName, key, channelId, epoch, identity, me.UserId);
+        var name = ChannelCrypto.EncryptName(newName, key, channelId, epoch, identity, me.UserId, revision);
         await this.RequestAsync(new ClientFrame { RenameChannel = new RenameChannel { ChannelId = channelId, Name = name } }, ct);
 
         lock (this._lock) {
             if (this._channels.TryGetValue(channelId, out var channel)) {
                 channel.EncryptedName = name;
                 channel.Name = newName;
+                this.SetNameVersion(channelId, new NameVersion(epoch, revision));
             }
         }
 
+        this.SaveSecrets();
         this.Publish();
     }
 
@@ -356,10 +374,10 @@ public sealed class ClientSession : IAsyncDisposable {
         try {
             for (var attempt = 0; attempt < 3; attempt++) {
                 var (identity, me) = this.RequireIdentityAndUser();
-                var (epoch, name, memberIds, pending) = this.Read(() => {
+                var (serverEpoch, name, memberIds, pending) = this.Read(() => {
                     var channel = this._channels.GetValueOrDefault(channelId) ?? throw new InvalidOperationException("Unknown channel.");
                     var ids = channel.Members.Where(member => member.Rank >= Rank.Member).Select(member => member.User.UserId).ToList();
-                    return (channel.Epoch, channel.Name, ids, channel.RekeyPending);
+                    return (channel.ServerEpoch, channel.Name, ids, channel.RekeyPending);
                 });
 
                 // Someone else (or an earlier call) may have rekeyed while we waited for the gate.
@@ -373,7 +391,8 @@ public sealed class ClientSession : IAsyncDisposable {
 
                 // Always seal to fresh identities: a member may have re-registered with new keys.
                 var identities = await this.EnsureIdentitiesAsync(memberIds, ct, refresh: true);
-                var newEpoch = epoch + 1;
+                // The server only accepts its current epoch + 1. If its hint is wrong, it answers EPOCH_STALE.
+                var newEpoch = serverEpoch + 1;
                 var key = ChannelCrypto.NewEpochKey();
                 var request = new SubmitRekey {
                     ChannelId = channelId,
@@ -400,10 +419,14 @@ public sealed class ClientSession : IAsyncDisposable {
 
                 lock (this._lock) {
                     this.StoreEpochKey(channelId, newEpoch, key);
-                    if (this._channels.TryGetValue(channelId, out var channel) && channel.Epoch < newEpoch) {
-                        channel.Epoch = newEpoch;
+                    if (this._channels.TryGetValue(channelId, out var channel)) {
+                        channel.ServerEpoch = Math.Max(channel.ServerEpoch, newEpoch);
                         channel.RekeyPending = false;
-                        channel.EncryptedName = request.Name;
+                        if (this.KeyEpochOf(channelId) == newEpoch) {
+                            channel.EncryptedName = request.Name;
+                            channel.Name = name;
+                            this.SetNameVersion(channelId, new NameVersion(newEpoch, 0));
+                        }
                     }
                 }
 
@@ -427,11 +450,11 @@ public sealed class ClientSession : IAsyncDisposable {
         }
 
         var content = new Content { Text = new TextContent { Text = text } };
-        for (var attempt = 0; attempt < 3; attempt++) {
+        for (var attempt = 0; attempt < 4; attempt++) {
             var (identity, me) = this.RequireIdentityAndUser();
-            var (epoch, pending, rank) = this.Read(() => {
+            var (pending, rank) = this.Read(() => {
                 var channel = this._channels.GetValueOrDefault(channelId) ?? throw new InvalidOperationException("You're not in that channel.");
-                return (channel.Epoch, channel.RekeyPending, channel.MyRank);
+                return (channel.RekeyPending, channel.MyRank);
             });
 
             if (rank < Rank.Member) {
@@ -443,12 +466,24 @@ public sealed class ClientSession : IAsyncDisposable {
                 continue;
             }
 
-            var key = this.Read(() => this.GetEpochKey(channelId, epoch));
-            if (key == null) {
+            if (!this.Read(() => this.HasCurrentKey(channelId))) {
+                // Behind the server: fetch the newer key. If there is none for us, the fetch marks
+                // the channel for a rekey, and the next attempt moves it to a key we hold.
                 await this.FetchEpochKeysAsync(channelId, ct);
-                key = this.Read(() => this.GetEpochKey(channelId, epoch))
-                    ?? throw new InvalidOperationException("You don't have this channel's key yet. A member who is online will share it.");
+                if (this.Read(() => this.KeyEpochOf(channelId)) == null) {
+                    throw new InvalidOperationException("You don't have this channel's key yet. A member who is online will share it.");
+                }
+
+                if (this.Read(() => this._channels.GetValueOrDefault(channelId)?.RekeyPending == true)) {
+                    continue;
+                }
             }
+
+            // Always the newest key accepted, never an epoch the server merely claims.
+            var (epoch, key) = this.Read(() => {
+                var held = this.KeyEpochOf(channelId) ?? throw new InvalidOperationException("You don't have this channel's key yet.");
+                return (held, this.GetEpochKey(channelId, held)!);
+            });
 
             var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             var message = ChannelCrypto.EncryptMessage(content, key, channelId, epoch, identity, me.UserId, timestamp);
@@ -611,15 +646,18 @@ public sealed class ClientSession : IAsyncDisposable {
     private async Task RefreshAsync(Connection connection, CancellationToken ct) {
         var response = await this.RequestAsync(connection, new ClientFrame { ListChannels = new ListChannels() }, ct);
         var list = response.ChannelList ?? throw Unexpected(response);
+        // Channel IDs are bound into signatures and shown in the UI, so only canonical ones are accepted.
+        var channels = list.Channels.Where(channel => IsValidChannelId(channel.ChannelId)).ToList();
+        var invites = list.Invites.Where(invite => IsValidChannelId(invite.ChannelId) && invite.Inviter != null).ToList();
 
         var userIds = new HashSet<long>();
         lock (this._lock) {
-            var listed = list.Channels.Select(channel => channel.ChannelId).ToHashSet();
+            var listed = channels.Select(channel => channel.ChannelId).ToHashSet();
             foreach (var stale in this._channels.Keys.Where(id => !listed.Contains(id)).ToList()) {
                 this._channels.Remove(stale);
             }
 
-            foreach (var info in list.Channels) {
+            foreach (var info in channels) {
                 this.ApplyChannelInfo(info);
                 foreach (var member in info.Members) {
                     userIds.Add(member.User.UserId);
@@ -631,7 +669,7 @@ public sealed class ClientSession : IAsyncDisposable {
             }
 
             this._invites.Clear();
-            foreach (var invite in list.Invites) {
+            foreach (var invite in invites) {
                 this._invites[invite.ChannelId] = new InviteState(invite);
                 userIds.Add(invite.Inviter.UserId);
             }
@@ -640,7 +678,7 @@ public sealed class ClientSession : IAsyncDisposable {
         this.Publish();
         await this.EnsureIdentitiesAsync(userIds, ct, connection);
 
-        foreach (var channelId in list.Channels.Select(channel => channel.ChannelId)) {
+        foreach (var channelId in channels.Select(channel => channel.ChannelId)) {
             if (!this.Read(() => this.HasCurrentKey(channelId))) {
                 await this.FetchEpochKeysAsync(channelId, ct, connection);
             }
@@ -650,10 +688,11 @@ public sealed class ClientSession : IAsyncDisposable {
             }
         }
 
-        foreach (var invite in list.Invites) {
+        foreach (var invite in invites) {
             this.OpenInvite(invite.ChannelId);
         }
 
+        this.SaveSecrets();
         this.Publish();
     }
 
@@ -661,6 +700,11 @@ public sealed class ClientSession : IAsyncDisposable {
 
     private void OnEvent(Event ev) {
         try {
+            if (ev.KindCase != Event.KindOneofCase.Announcement && !IsValidChannelId(ChannelIdOf(ev))) {
+                this.Log(NoticeLevel.Debug, $"Ignored {ev.KindCase} with an invalid channel ID");
+                return;
+            }
+
             switch (ev.KindCase) {
                 case Event.KindOneofCase.Announcement:
                     this.RaiseNotice(NoticeLevel.Info, ev.Announcement.Text);
@@ -683,15 +727,15 @@ public sealed class ClientSession : IAsyncDisposable {
                     break;
                 case Event.KindOneofCase.ChannelRenamed:
                     lock (this._lock) {
-                        // Only a name under the current epoch: an old, validly signed name can't be replayed.
+                        // TryDecryptName refuses older names, so a replayed one is ignored.
                         if (this._channels.TryGetValue(ev.ChannelRenamed.ChannelId, out var channel)
-                            && ev.ChannelRenamed.Name is { } renamed
-                            && renamed.Epoch == channel.Epoch) {
+                            && ev.ChannelRenamed.Name is { } renamed) {
                             channel.EncryptedName = renamed;
                             this.TryDecryptName(channel.Id);
                         }
                     }
 
+                    this.SaveSecrets();
                     this.Publish();
                     break;
                 case Event.KindOneofCase.ChannelRemoved: {
@@ -716,7 +760,26 @@ public sealed class ClientSession : IAsyncDisposable {
         }
     }
 
+    private static string? ChannelIdOf(Event ev) => ev.KindCase switch {
+        Event.KindOneofCase.InviteReceived => ev.InviteReceived.Invite?.ChannelId,
+        Event.KindOneofCase.InviteRevoked => ev.InviteRevoked.ChannelId,
+        Event.KindOneofCase.MemberChanged => ev.MemberChanged.ChannelId,
+        Event.KindOneofCase.RekeyNeeded => ev.RekeyNeeded.ChannelId,
+        Event.KindOneofCase.EpochAdvanced => ev.EpochAdvanced.ChannelId,
+        Event.KindOneofCase.ChatMessage => ev.ChatMessage.ChannelId,
+        Event.KindOneofCase.ChannelRenamed => ev.ChannelRenamed.ChannelId,
+        Event.KindOneofCase.ChannelRemoved => ev.ChannelRemoved.ChannelId,
+        _ => null,
+    };
+
+    /// <summary>Channel IDs from the server must already be in canonical form (32 lowercase hex digits).</summary>
+    private static bool IsValidChannelId(string? id) => id != null && ProtocolInfo.NormaliseChannelId(id) == id;
+
     private void OnInviteReceived(InviteInfo invite) {
+        if (invite.Inviter == null) {
+            return;
+        }
+
         lock (this._lock) {
             this._invites[invite.ChannelId] = new InviteState(invite);
         }
@@ -800,11 +863,13 @@ public sealed class ClientSession : IAsyncDisposable {
     private void OnRekeyNeeded(RekeyNeeded rekey) {
         bool designated;
         lock (this._lock) {
-            if (!this._channels.TryGetValue(rekey.ChannelId, out var channel) || rekey.CurrentEpoch < channel.Epoch) {
+            if (!this._channels.TryGetValue(rekey.ChannelId, out var channel)
+                || rekey.CurrentEpoch < Math.Max(channel.ServerEpoch, this.KeyEpochOf(channel.Id) ?? 0)) {
                 // Unknown channel, or a request that a newer epoch has already answered.
                 return;
             }
 
+            channel.ServerEpoch = Math.Max(channel.ServerEpoch, rekey.CurrentEpoch);
             channel.RekeyPending = true;
             designated = rekey.DesignatedUserId == this._me?.UserId;
         }
@@ -857,10 +922,10 @@ public sealed class ClientSession : IAsyncDisposable {
                 rejected ??= "it failed signature or decryption checks";
             } else {
                 this.StoreEpochKey(advanced.ChannelId, advanced.Epoch, key);
-                channel.Epoch = Math.Max(channel.Epoch, advanced.Epoch);
+                channel.ServerEpoch = Math.Max(channel.ServerEpoch, advanced.Epoch);
                 channel.RekeyPending = false;
-                if (advanced.Name is { } name && name.Epoch == advanced.Epoch) {
-                    channel.EncryptedName = name;
+                if (advanced.Name != null) {
+                    channel.EncryptedName = advanced.Name;
                 }
 
                 this.TryDecryptName(channel.Id);
@@ -878,7 +943,8 @@ public sealed class ClientSession : IAsyncDisposable {
 
     /// <summary>
     /// An epoch key is only acceptable from a current member, and only for an
-    /// epoch newer than any key already held. Call inside the lock.
+    /// epoch newer than any key already held. With no key held, it may be at
+    /// most one epoch behind the server's. Call inside the lock.
     /// </summary>
     /// <returns>Null if acceptable, otherwise the reason it isn't.</returns>
     private string? CheckEpochKeyAuthor(ChannelState channel, ulong epoch, long authorId) {
@@ -886,9 +952,15 @@ public sealed class ClientSession : IAsyncDisposable {
             return "its author isn't a member of the channel";
         }
 
-        var newest = this._secrets.EpochKeys.TryGetValue(channel.Id, out var keys) && keys.Count > 0 ? keys.Keys.Max() : (ulong?) null;
+        var newest = this.KeyEpochOf(channel.Id);
         if (newest is { } held && epoch <= held) {
             return $"it's for epoch {epoch}, but you already have epoch {held}";
+        }
+
+        // Otherwise a server could hand someone (re)joining a long-superseded key, perhaps
+        // one an earlier member still has, and they would start sending under it.
+        if (newest == null && epoch + 1 < channel.ServerEpoch) {
+            return $"it's for epoch {epoch}, but the channel is already at epoch {channel.ServerEpoch}";
         }
 
         return null;
@@ -959,7 +1031,7 @@ public sealed class ClientSession : IAsyncDisposable {
 
     private async Task FetchEpochKeysAsync(string channelId, CancellationToken ct, Connection? connection = null) {
         var fromEpoch = this.Read(() => {
-            var epoch = this._channels.GetValueOrDefault(channelId)?.Epoch ?? 0;
+            var epoch = this._channels.GetValueOrDefault(channelId)?.ServerEpoch ?? 0;
             return epoch > 0 ? epoch - 1 : 0;
         });
 
@@ -999,10 +1071,17 @@ public sealed class ClientSession : IAsyncDisposable {
                 }
             }
 
-            // Only accept a name encrypted under the current epoch, so old names can't be replayed.
-            if (keys.Name != null && keys.Name.Epoch == channel.Epoch) {
+            // TryDecryptName only accepts it if it isn't older than the name already held.
+            if (keys.Name != null) {
                 channel.EncryptedName = keys.Name;
-                this.TryDecryptName(channelId);
+            }
+
+            this.TryDecryptName(channelId);
+
+            // The server is ahead and has no newer key for us (never sent, or sealed so we
+            // can't open it): rekey to the server's epoch + 1 rather than stay stuck.
+            if (this.KeyEpochOf(channelId) is { } held && held < channel.ServerEpoch) {
+                channel.RekeyPending = true;
             }
         }
 
@@ -1132,7 +1211,8 @@ public sealed class ClientSession : IAsyncDisposable {
             this._channels[info.ChannelId] = channel;
         }
 
-        channel.Epoch = Math.Max(channel.Epoch, info.Epoch);
+        // Only a hint: it decides when to fetch keys or rekey, never which key is used.
+        channel.ServerEpoch = info.Epoch;
         channel.RekeyPending = info.RekeyPending;
         channel.MyRank = info.MyRank;
         channel.Members = info.Members.ToList();
@@ -1144,24 +1224,49 @@ public sealed class ClientSession : IAsyncDisposable {
         return channel;
     }
 
+    /// <summary>
+    /// Shows the name the server offered, if it is encrypted under the key epoch
+    /// in use and is not older than the name already accepted. Otherwise a
+    /// server could replay an old, validly signed name.
+    /// </summary>
     private void TryDecryptName(string channelId) {
-        if (!this._channels.TryGetValue(channelId, out var channel) || channel.EncryptedName == null) {
+        if (!this._channels.TryGetValue(channelId, out var channel) || channel.EncryptedName is not { } offered) {
             return;
         }
 
-        var key = this.GetEpochKey(channelId, channel.EncryptedName.Epoch);
-        if (key == null || !this._identities.TryGetValue(channel.EncryptedName.AuthorId, out var author)) {
+        var version = new NameVersion(offered.Epoch, offered.Revision);
+        if (offered.Epoch != this.KeyEpochOf(channelId)
+            || (this._secrets.ChannelNameVersions.TryGetValue(channelId, out var held) && version.CompareTo(held) < 0)) {
             return;
         }
 
-        var name = ChannelCrypto.DecryptName(channel.EncryptedName, channelId, key, author.Identity.SigningPublicKey.Span);
+        var key = this.GetEpochKey(channelId, offered.Epoch);
+        if (key == null || !this._identities.TryGetValue(offered.AuthorId, out var author)) {
+            return;
+        }
+
+        var name = ChannelCrypto.DecryptName(offered, channelId, key, author.Identity.SigningPublicKey.Span);
         if (name != null) {
             channel.Name = name;
+            this.SetNameVersion(channelId, version);
         }
     }
 
+    private void SetNameVersion(string channelId, NameVersion version) {
+        if (!this._secrets.ChannelNameVersions.TryGetValue(channelId, out var held) || held != version) {
+            this._secrets.ChannelNameVersions[channelId] = version;
+            this._secretsVersion++;
+        }
+    }
+
+    /// <summary>The newest epoch this client holds a key for: the one it sends with.</summary>
+    private ulong? KeyEpochOf(string channelId) {
+        return this._secrets.EpochKeys.TryGetValue(channelId, out var keys) && keys.Count > 0 ? keys.Keys.Max() : null;
+    }
+
+    /// <summary>True if this client holds a key at least as new as the server's epoch.</summary>
     private bool HasCurrentKey(string channelId) {
-        return this._channels.TryGetValue(channelId, out var channel) && this.GetEpochKey(channelId, channel.Epoch) != null;
+        return this._channels.TryGetValue(channelId, out var channel) && this.KeyEpochOf(channelId) is { } held && held >= channel.ServerEpoch;
     }
 
     private byte[]? GetEpochKey(string channelId, ulong epoch) {
@@ -1187,6 +1292,7 @@ public sealed class ClientSession : IAsyncDisposable {
         lock (this._lock) {
             this._channels.Remove(channelId);
             this._secrets.EpochKeys.Remove(channelId);
+            this._secrets.ChannelNameVersions.Remove(channelId);
             this._secretsVersion++;
         }
 
@@ -1292,7 +1398,9 @@ public sealed class ClientSession : IAsyncDisposable {
             })
             .ToImmutableArray();
 
-        return new ChannelView(channel.Id, channel.Name, channel.Epoch, this.GetEpochKey(channel.Id, channel.Epoch) != null, channel.RekeyPending, channel.MyRank, members);
+        var keyEpoch = this.KeyEpochOf(channel.Id);
+        return new ChannelView(channel.Id, channel.Name, keyEpoch ?? channel.ServerEpoch, channel.ServerEpoch,
+            this.HasCurrentKey(channel.Id), channel.RekeyPending, channel.MyRank, members);
     }
 
     // ================================================================ plumbing
@@ -1421,13 +1529,17 @@ public sealed class ClientSession : IAsyncDisposable {
 
     private sealed class ChannelState(string id) {
         public string Id { get; } = id;
-        public ulong Epoch { get; set; }
+
+        /// <summary>The epoch the server last reported. A hint for fetching keys and rekeying; the key epoch is <see cref="KeyEpochOf"/>.</summary>
+        public ulong ServerEpoch { get; set; }
         public bool RekeyPending { get; set; }
         public Rank MyRank { get; set; }
         public List<Member> Members { get; set; } = [];
+
+        /// <summary>The newest name the server offered. Only shown once <see cref="TryDecryptName"/> accepts it.</summary>
         public EncryptedName? EncryptedName { get; set; }
         public string? Name { get; set; }
-        public string DisplayName => this.Name ?? $"(encrypted channel {this.Id[..8]})";
+        public string DisplayName => this.Name ?? ChannelView.PlaceholderName(this.Id);
     }
 
     private sealed class InviteState(InviteInfo info) {

@@ -58,22 +58,24 @@ public static class ChannelCrypto {
 
     // ------------------------------------------------------------ channel names
 
-    private static byte[] NameAssociatedData(string channelId, ulong epoch, long authorId) {
-        return new SigningPayload(Domains.ChannelName).Add(channelId).Add(epoch).Add(authorId).ToArray();
+    private static byte[] NameAssociatedData(string channelId, ulong epoch, ulong revision, long authorId) {
+        return new SigningPayload(Domains.ChannelName).Add(channelId).Add(epoch).Add(revision).Add(authorId).ToArray();
     }
 
     private static byte[] NameSignaturePayload(string channelId, EncryptedName name) {
         return new SigningPayload(Domains.ChannelName)
-            .Add(NameAssociatedData(channelId, name.Epoch, name.AuthorId))
+            .Add(NameAssociatedData(channelId, name.Epoch, name.Revision, name.AuthorId))
             .Add(name.Ciphertext.Span)
             .ToArray();
     }
 
-    public static EncryptedName EncryptName(string name, byte[] epochKey, string channelId, ulong epoch, IdentityKeys author, long authorId) {
+    /// <param name="revision">Incremented by every rename within the epoch; 0 for a new channel or a rekey.</param>
+    public static EncryptedName EncryptName(string name, byte[] epochKey, string channelId, ulong epoch, IdentityKeys author, long authorId, ulong revision = 0) {
         var encrypted = new EncryptedName {
             Epoch = epoch,
+            Revision = revision,
             AuthorId = authorId,
-            Ciphertext = ByteString.CopyFrom(EncryptWithNonce(epochKey, NameAssociatedData(channelId, epoch, authorId), Encoding.UTF8.GetBytes(name))),
+            Ciphertext = ByteString.CopyFrom(EncryptWithNonce(epochKey, NameAssociatedData(channelId, epoch, revision, authorId), Encoding.UTF8.GetBytes(name))),
         };
         encrypted.Signature = ByteString.CopyFrom(author.Sign(NameSignaturePayload(channelId, encrypted)));
         return encrypted;
@@ -88,7 +90,7 @@ public static class ChannelCrypto {
             return null;
         }
 
-        var plaintext = DecryptWithNonce(epochKey, NameAssociatedData(channelId, name.Epoch, name.AuthorId), name.Ciphertext.Span);
+        var plaintext = DecryptWithNonce(epochKey, NameAssociatedData(channelId, name.Epoch, name.Revision, name.AuthorId), name.Ciphertext.Span);
         return plaintext == null ? null : Encoding.UTF8.GetString(plaintext);
     }
 

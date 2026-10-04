@@ -44,7 +44,7 @@ public enum RekeyResult {
 /// Methods are synchronous (SQLite is in-process) and short.
 /// </summary>
 public sealed class Database {
-    private const int SchemaVersion = 1;
+    private const int SchemaVersion = 2;
     private const int KeptEpochs = 4;
 
     private readonly string _connectionString;
@@ -79,6 +79,22 @@ public sealed class Database {
         }
 
         using var tx = connection.BeginTransaction();
+        if (current < 1) {
+            CreateVersion1(connection, tx);
+        }
+
+        if (current < 2) {
+            // Signed name revisions (so an older name can't be replayed within an epoch).
+            Execute(connection, tx, """
+                ALTER TABLE channels ADD COLUMN name_revision INTEGER NOT NULL DEFAULT 0;
+                INSERT INTO schema_version (version) VALUES (2);
+                """);
+        }
+
+        tx.Commit();
+    }
+
+    private static void CreateVersion1(SqliteConnection connection, SqliteTransaction tx) {
         Execute(connection, tx, """
             CREATE TABLE users (
                 user_id           INTEGER PRIMARY KEY,
@@ -151,7 +167,6 @@ public sealed class Database {
 
             INSERT INTO schema_version (version) VALUES (1);
             """);
-        tx.Commit();
     }
 
     // ================================================================ users and devices
@@ -297,10 +312,10 @@ public sealed class Database {
         using var tx = connection.BeginTransaction();
         var now = Now();
         Execute(connection, tx, """
-            INSERT INTO channels (channel_id, epoch, rekey_pending, name_epoch, name_author, name_ciphertext, name_signature, created_at)
-            VALUES ($id, 0, 0, $nameEpoch, $nameAuthor, $nameCiphertext, $nameSignature, $now);
+            INSERT INTO channels (channel_id, epoch, rekey_pending, name_epoch, name_revision, name_author, name_ciphertext, name_signature, created_at)
+            VALUES ($id, 0, 0, $nameEpoch, $nameRevision, $nameAuthor, $nameCiphertext, $nameSignature, $now);
             """,
-            ("$id", channelId), ("$nameEpoch", (long) name.Epoch), ("$nameAuthor", name.AuthorId),
+            ("$id", channelId), ("$nameEpoch", (long) name.Epoch), ("$nameRevision", (long) name.Revision), ("$nameAuthor", name.AuthorId),
             ("$nameCiphertext", name.Ciphertext.ToByteArray()), ("$nameSignature", name.Signature.ToByteArray()), ("$now", now));
         Execute(connection, tx, "INSERT INTO members (channel_id, user_id, rank, joined_at) VALUES ($id, $user, $rank, $now);",
             ("$id", channelId), ("$user", creatorId), ("$rank", (long) Rank.Admin), ("$now", now));
@@ -313,15 +328,20 @@ public sealed class Database {
         Execute(connection, null, "DELETE FROM channels WHERE channel_id = $id;", ("$id", channelId));
     }
 
-    /// <summary>Renames only if the channel is still at the name's epoch and not awaiting a rekey.</summary>
-    /// <returns>False if the channel changed meanwhile.</returns>
+    /// <summary>
+    /// Renames only if the channel is still at the name's epoch, not awaiting a
+    /// rekey, and the name's revision is newer than the stored one.
+    /// </summary>
+    /// <returns>False if the channel changed meanwhile, or the revision isn't newer.</returns>
     public bool RenameChannel(string channelId, EncryptedName name) {
         using var connection = this.Open();
         return Execute(connection, null, """
-            UPDATE channels SET name_epoch = $epoch, name_author = $author, name_ciphertext = $ciphertext, name_signature = $signature
-            WHERE channel_id = $id AND epoch = $epoch AND rekey_pending = 0;
+            UPDATE channels SET name_epoch = $epoch, name_revision = $revision, name_author = $author,
+                name_ciphertext = $ciphertext, name_signature = $signature
+            WHERE channel_id = $id AND epoch = $epoch AND rekey_pending = 0
+                AND (name_epoch < $epoch OR name_revision < $revision);
             """,
-            ("$id", channelId), ("$epoch", (long) name.Epoch), ("$author", name.AuthorId),
+            ("$id", channelId), ("$epoch", (long) name.Epoch), ("$revision", (long) name.Revision), ("$author", name.AuthorId),
             ("$ciphertext", name.Ciphertext.ToByteArray()), ("$signature", name.Signature.ToByteArray())) == 1;
     }
 
@@ -462,12 +482,12 @@ public sealed class Database {
         }
 
         Execute(connection, tx, """
-            UPDATE channels SET epoch = $epoch, rekey_pending = 0,
-                name_epoch = $nameEpoch, name_author = $nameAuthor, name_ciphertext = $nameCiphertext, name_signature = $nameSignature
+            UPDATE channels SET epoch = $epoch, rekey_pending = 0, name_epoch = $nameEpoch, name_revision = $nameRevision,
+                name_author = $nameAuthor, name_ciphertext = $nameCiphertext, name_signature = $nameSignature
             WHERE channel_id = $id AND epoch = $oldEpoch;
             """,
             ("$epoch", (long) newEpoch), ("$oldEpoch", (long) channel.Epoch), ("$id", channelId),
-            ("$nameEpoch", (long) name.Epoch), ("$nameAuthor", name.AuthorId),
+            ("$nameEpoch", (long) name.Epoch), ("$nameRevision", (long) name.Revision), ("$nameAuthor", name.AuthorId),
             ("$nameCiphertext", name.Ciphertext.ToByteArray()), ("$nameSignature", name.Signature.ToByteArray()));
 
         foreach (var key in keys) {
@@ -599,6 +619,7 @@ public sealed class Database {
             reader.GetInt64(reader.GetOrdinal("rekey_pending")) != 0,
             new EncryptedName {
                 Epoch = (ulong) reader.GetInt64(reader.GetOrdinal("name_epoch")),
+                Revision = (ulong) reader.GetInt64(reader.GetOrdinal("name_revision")),
                 AuthorId = reader.GetInt64(reader.GetOrdinal("name_author")),
                 Ciphertext = ByteString.CopyFrom((byte[]) reader["name_ciphertext"]),
                 Signature = ByteString.CopyFrom((byte[]) reader["name_signature"]),

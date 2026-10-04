@@ -256,6 +256,9 @@ message EncryptedName {
   int64 author_id = 2;
   bytes ciphertext = 3;
   bytes signature = 4;
+  // Increases with every rename within an epoch (a rekey starts again at 0).
+  // Signed, so clients can refuse an older name replayed within the same epoch.
+  uint64 revision = 5;
 }
 
 message ChannelInfo {

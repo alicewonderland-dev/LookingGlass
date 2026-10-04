@@ -19,6 +19,12 @@ public sealed class ClientSecrets {
     /// <summary>Channel ID → epoch → raw epoch key.</summary>
     public Dictionary<string, Dictionary<ulong, byte[]>> EpochKeys { get; set; } = new();
 
+    /// <summary>
+    /// Channel ID → the (epoch, revision) of the newest channel name accepted.
+    /// Kept so a server can't roll a name back, even across restarts.
+    /// </summary>
+    public Dictionary<string, NameVersion> ChannelNameVersions { get; set; } = new();
+
     public ClientSecrets Clone() {
         return JsonSerializer.Deserialize<ClientSecrets>(JsonSerializer.SerializeToUtf8Bytes(this))!;
     }
@@ -39,6 +45,18 @@ public sealed class PinnedIdentity {
 
     /// <summary>The keys changed since they were first seen, and the user hasn't confirmed the new ones yet.</summary>
     public bool KeyChangeUnacknowledged { get; set; }
+}
+
+/// <summary>Orders channel names: a later epoch wins, then a higher revision within the epoch.</summary>
+public sealed record NameVersion(ulong Epoch, ulong Revision) : IComparable<NameVersion> {
+    public int CompareTo(NameVersion? other) {
+        if (other == null) {
+            return 1;
+        }
+
+        var byEpoch = this.Epoch.CompareTo(other.Epoch);
+        return byEpoch != 0 ? byEpoch : this.Revision.CompareTo(other.Revision);
+    }
 }
 
 /// <summary>Where a client keeps its <see cref="ClientSecrets"/>.</summary>

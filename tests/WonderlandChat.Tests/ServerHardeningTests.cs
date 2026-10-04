@@ -59,10 +59,16 @@ public sealed class ServerHardeningTests {
         var (db, directory) = NewDatabase();
         try {
             var (channelId, admin, keys) = CreateChannel(db);
-            var name = ChannelCrypto.EncryptName("Renamed", ChannelCrypto.NewEpochKey(), channelId, 0, keys, admin);
+            var name = ChannelCrypto.EncryptName("Renamed", ChannelCrypto.NewEpochKey(), channelId, 0, keys, admin, revision: 1);
 
             Assert.True(db.RenameChannel(channelId, name));
-            Assert.False(db.RenameChannel(channelId, ChannelCrypto.EncryptName("Stale", ChannelCrypto.NewEpochKey(), channelId, 5, keys, admin)));
+            Assert.Equal(1UL, db.GetChannel(channelId)!.Name!.Revision);
+            Assert.False(db.RenameChannel(channelId, ChannelCrypto.EncryptName("Stale", ChannelCrypto.NewEpochKey(), channelId, 5, keys, admin, revision: 2)));
+
+            // A revision that isn't newer than the stored one (a replay, or a stale client) is refused.
+            Assert.False(db.RenameChannel(channelId, name));
+            Assert.False(db.RenameChannel(channelId, ChannelCrypto.EncryptName("Older", ChannelCrypto.NewEpochKey(), channelId, 0, keys, admin)));
+            Assert.True(db.RenameChannel(channelId, ChannelCrypto.EncryptName("Newer", ChannelCrypto.NewEpochKey(), channelId, 0, keys, admin, revision: 2)));
 
             var other = RegisterUser(db, "Other User");
             db.AddInvite(channelId, other, admin, new SealedBox { EphemeralPublicKey = ByteString.CopyFrom(new byte[32]), Ciphertext = ByteString.CopyFrom(new byte[48]) }, new byte[64]);

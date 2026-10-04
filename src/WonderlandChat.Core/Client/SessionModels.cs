@@ -45,15 +45,22 @@ public sealed record SessionSnapshot(
     }
 }
 
+/// <param name="Epoch">The newest epoch this client holds a key for (what it sends with), or the server's epoch if it holds none.</param>
+/// <param name="ServerEpoch">The epoch the server last reported. Only a hint: the server can claim anything.</param>
+/// <param name="HasKey">The client holds a key for the server's current epoch.</param>
 public sealed record ChannelView(
     string Id,
     string? Name,
     ulong Epoch,
+    ulong ServerEpoch,
     bool HasKey,
     bool RekeyPending,
     Rank MyRank,
     ImmutableArray<MemberView> Members) {
-    public string DisplayName => this.Name ?? $"(encrypted channel {this.Id[..8]})";
+    public string DisplayName => this.Name ?? PlaceholderName(this.Id);
+
+    /// <summary>What to show before a channel's name has been decrypted. Safe for IDs of any length.</summary>
+    public static string PlaceholderName(string id) => $"(encrypted channel {(id.Length > 8 ? id[..8] : id)})";
 }
 
 public sealed record MemberView(User User, Rank Rank, string? Fingerprint, bool KeyChanged);

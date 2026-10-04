@@ -434,6 +434,11 @@ public sealed class RequestHandler(
         }
 
         this.ValidateName(request.Name, channelId, channel.Epoch, me);
+        if (channel.Name is { } current && current.Epoch == request.Name.Epoch && request.Name.Revision <= current.Revision) {
+            // Clients refuse a name that isn't newer than theirs, so storing it would hide later renames.
+            throw new RequestException(ErrorCode.Conflict, "The name's revision must be newer than the current one; refresh and try again.");
+        }
+
         if (!db.RenameChannel(channelId, request.Name)) {
             throw new RequestException(ErrorCode.Conflict, "The channel changed while renaming; try again.");
         }
