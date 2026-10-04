@@ -51,12 +51,13 @@ public sealed class SignedLogMembership : IChannelMembership {
     private readonly ImmutableList<byte[]> _recent;
     private readonly ulong _recentFrom;
 
-    private SignedLogMembership(string channelId, LogPosition? head, ulong membersChangedAt,
+    private SignedLogMembership(string channelId, LogPosition? head, ulong membersChangedAt, ulong? membersLeftAt,
         ImmutableDictionary<long, ChannelMember> members, ImmutableDictionary<long, ChannelInvitee> invitees,
         ImmutableList<byte[]> recent, ulong recentFrom) {
         this.ChannelId = channelId;
         this.Head = head;
         this.MembersChangedAt = membersChangedAt;
+        this.MembersLeftAt = membersLeftAt;
         this._members = members;
         this._invitees = invitees;
         this._recent = recent;
@@ -64,7 +65,7 @@ public sealed class SignedLogMembership : IChannelMembership {
     }
 
     public static SignedLogMembership Empty(string channelId) {
-        return new SignedLogMembership(channelId, null, 0, ImmutableDictionary<long, ChannelMember>.Empty,
+        return new SignedLogMembership(channelId, null, 0, null, ImmutableDictionary<long, ChannelMember>.Empty,
             ImmutableDictionary<long, ChannelInvitee>.Empty, ImmutableList<byte[]>.Empty, 0);
     }
 
@@ -91,12 +92,13 @@ public sealed class SignedLogMembership : IChannelMembership {
             recentFrom = checkpoint.Seq;
         }
 
-        return new SignedLogMembership(checkpoint.ChannelId, head, checkpoint.MembersChangedAt, members, invitees, recent, recentFrom);
+        return new SignedLogMembership(checkpoint.ChannelId, head, checkpoint.MembersChangedAt, checkpoint.MembersLeftAt, members, invitees, recent, recentFrom);
     }
 
     public string ChannelId { get; }
     public LogPosition? Head { get; }
     public ulong MembersChangedAt { get; }
+    public ulong? MembersLeftAt { get; }
     public IReadOnlyCollection<ChannelMember> Members => this._members.Values.ToList();
     public IReadOnlyCollection<ChannelInvitee> Invitees => this._invitees.Values.ToList();
 
@@ -182,6 +184,7 @@ public sealed class SignedLogMembership : IChannelMembership {
             Seq = this.Head?.Seq ?? 0,
             Hash = this.Head?.Hash.ToByteArray() ?? [],
             MembersChangedAt = this.MembersChangedAt,
+            MembersLeftAt = this.MembersLeftAt,
             RecentHashes = [.. this._recent],
             RecentFrom = this._recentFrom,
             Members = this._members.Values.OrderBy(member => member.UserId).Select(member => new CheckpointMember {
@@ -442,7 +445,8 @@ public sealed class SignedLogMembership : IChannelMembership {
             }
         }
 
-        next = new SignedLogMembership(this.ChannelId, position, membersChanged ? entry.Seq : this.MembersChangedAt,
+        var left = kind is MembershipEntryKind.Remove or MembershipEntryKind.Leave;
+        next = new SignedLogMembership(this.ChannelId, position, membersChanged ? entry.Seq : this.MembersChangedAt, left ? entry.Seq : this.MembersLeftAt,
             members, invitees, recent, recentFrom);
         return MembershipVerdict.Valid;
     }

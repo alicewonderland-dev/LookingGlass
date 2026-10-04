@@ -245,7 +245,8 @@ public sealed class MembershipLogTests : IAsyncLifetime {
         Assert.Contains("hasn't taken effect", warning);
         Assert.Contains(alice.Notices, n => n.Level == NoticeLevel.Warning && n.Text == warning);
 
-        // Once the server takes a rekey made after the removal, the warning goes.
+        // Once the server takes a rekey made after the removal (here Bob's: Alice has used up the server's rekey
+        // allowance for now), the removal has taken effect and the warning goes.
         if (asConflict) {
             this._server.ExecuteSql("DELETE FROM members WHERE channel_id = $channel AND user_id = $carol;", ("$channel", channelId), ("$carol", carol.UserId));
         } else {
@@ -253,9 +254,10 @@ public sealed class MembershipLogTests : IAsyncLifetime {
                 ("$channel", channelId), ("$alice", alice.UserId), ("$signing", aliceKeys.SigningKeyArray()));
         }
 
-        await alice.Session.RekeyAsync(channelId, Ct);
+        await WaitFor(() => bob.Session.Snapshot.FindChannel(channelId) is { } c && c.Members.All(m => m.User.UserId != carol.UserId) ? c : null);
+        await bob.Session.RekeyAsync(channelId, Ct);
         Assert.Equal(epoch + 1, this._server.Database.GetChannel(channelId)!.Epoch);
-        Assert.Null(alice.Session.Snapshot.FindChannel(channelId)!.MembershipWarning);
+        await WaitFor(() => alice.Session.Snapshot.FindChannel(channelId) is { MembershipWarning: null, Epoch: var e } c && e == epoch + 1 ? c : null);
     }
 
     /// <summary>

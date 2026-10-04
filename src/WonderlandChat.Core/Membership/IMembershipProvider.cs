@@ -35,6 +35,12 @@ public interface IChannelMembership {
     /// <summary>The sequence number of the newest entry that changed who is a member.</summary>
     ulong MembersChangedAt { get; }
 
+    /// <summary>
+    /// The sequence number of the newest entry by which someone stopped being a member (a removal or a leave),
+    /// or null if nobody has (or it isn't known: a state saved before this was kept).
+    /// </summary>
+    ulong? MembersLeftAt { get; }
+
     IReadOnlyCollection<ChannelMember> Members { get; }
     IReadOnlyCollection<ChannelInvitee> Invitees { get; }
 

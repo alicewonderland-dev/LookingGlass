@@ -13,6 +13,9 @@ public sealed class MembershipCheckpoint {
     public byte[] Hash { get; set; } = [];
     public ulong MembersChangedAt { get; set; }
 
+    /// <summary>See <see cref="IChannelMembership.MembersLeftAt"/>. Null in checkpoints saved before it was kept.</summary>
+    public ulong? MembersLeftAt { get; set; }
+
     /// <summary>Hashes of the entries from <see cref="RecentFrom"/> to <see cref="Seq"/>, oldest first.</summary>
     public List<byte[]> RecentHashes { get; set; } = [];
 

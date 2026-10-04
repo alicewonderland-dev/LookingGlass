@@ -714,9 +714,64 @@ public sealed class ClientSession : IAsyncDisposable {
             }
 
             throw new InvalidOperationException("Rekeying kept conflicting with other changes; try again.");
+        } catch (Exception ex) when (ex is not OperationCanceledException && this.Read(() => this.RemovalAwaitingRekey(channelId)) != null) {
+            // This rekey was to make a removal (or a leave) take effect, and it didn't, however the server refused it.
+            if (ex is ServerErrorException or TimeoutException) {
+                // As after conflicts: a server that refuses keys for a change it is hiding may not show it either.
+                try {
+                    if (!await this.ConfirmHeadAsync(channelId, ct)) {
+                        this.WarnAboutMembership(channelId, HidingWarning);
+                    }
+                } catch (Exception confirm) when (confirm is ServerErrorException or SessionDisconnectedException or TimeoutException) {
+                    this.Log(NoticeLevel.Warning, $"Couldn't check the membership log of {channelId} after a refused rekey: {confirm.Message}");
+                }
+            }
+
+            this.WarnRemovalNotInEffect(channelId);
+            throw;
         } finally {
             gate.Release();
         }
+    }
+
+    /// <summary>
+    /// The log position of the newest removal (or leave) that no key this client holds was made after, if any: the new
+    /// key that would leave whoever went out hasn't been shared yet, so the other members still share theirs. Unknown,
+    /// so null, without a key held (just joined), or for a membership saved before removals were tracked. Call inside the lock.
+    /// </summary>
+    private ulong? RemovalAwaitingRekey(string channelId) {
+        if (this.MembershipOf(channelId).MembersLeftAt is not { } left
+            || !this._secrets.EpochKeyPositions.TryGetValue(channelId, out var positions) || positions.Count == 0) {
+            return null;
+        }
+
+        // Keys are only kept for positions in the verified log, so one made at or after the removal was made after it.
+        return positions.Values.Any(position => position.Seq >= left) ? null : left;
+    }
+
+    /// <summary>
+    /// Tells the user, and shows on the channel until a key made after it is held, that a removal (or leave) hasn't taken
+    /// effect for the other members: the new key that leaves whoever went out couldn't be shared.
+    /// </summary>
+    private void WarnRemovalNotInEffect(string channelId) {
+        string text;
+        lock (this._lock) {
+            if (!this._channels.TryGetValue(channelId, out var channel) || this.RemovalAwaitingRekey(channelId) is not { } seq) {
+                return;
+            }
+
+            text = $"A removal from {channel.DisplayName} (or someone leaving it, at membership log entry #{seq}) hasn't taken effect for the other members yet: " +
+                   "the server didn't take the new key that leaves them out, so the others still share the old key with them. Rekey the channel to try again. " +
+                   "If it keeps failing, the server may be hiding the change from the other members.";
+            if (channel.RemovalWarning == text) {
+                return;
+            }
+
+            channel.RemovalWarning = text;
+        }
+
+        this.Publish();
+        this.RaiseNotice(NoticeLevel.Warning, text, channelId);
     }
 
     // ================================================================ messages
@@ -2581,6 +2636,10 @@ public sealed class ClientSession : IAsyncDisposable {
 
         if (this._channels.TryGetValue(channelId, out var channel)) {
             channel.KeyAcceptedAt[epoch] = this._options.TimeProvider.GetUtcNow();
+            if (channel.RemovalWarning != null && this.RemovalAwaitingRekey(channelId) == null) {
+                // A key made after the removal: it has taken effect.
+                channel.RemovalWarning = null;
+            }
         }
 
         var newest = keys.Keys.Max();
@@ -2750,7 +2809,7 @@ public sealed class ClientSession : IAsyncDisposable {
             .ToImmutableArray();
 
         var mine = this._me == null ? null : membership.FindMember(this._me.UserId);
-        var warning = channel.MembershipWarning;
+        var warning = channel.MembershipWarning ?? channel.RemovalWarning;
         if (warning == null && mine != null && mine.Keys != this._myKeys) {
             warning = "Your place in this channel belongs to the identity key you had before you registered again. A moderator must remove you and invite you again.";
         }
@@ -2907,6 +2966,9 @@ public sealed class ClientSession : IAsyncDisposable {
 
         /// <summary>A fork or hidden change seen in the channel's membership, to keep showing.</summary>
         public string? MembershipWarning { get; set; }
+
+        /// <summary>A removal (or leave) whose rekey the server didn't take: shown until a key made after it is held.</summary>
+        public string? RemovalWarning { get; set; }
 
         /// <summary>The newest name the server offered. Only shown once <see cref="TryDecryptName"/> accepts it.</summary>
         public EncryptedName? EncryptedName { get; set; }
