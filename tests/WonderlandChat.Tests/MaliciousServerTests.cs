@@ -278,6 +278,44 @@ public sealed class MaliciousServerTests : IAsyncLifetime {
     }
 
     [Fact]
+    public async Task FakeRemovalDoesNotResetReplayProtection() {
+        var alice = await this._server.RegisterAsync("Alice Removal");
+        var bob = await this._server.RegisterAsync("Bob Removal");
+        var channelId = await alice.Session.CreateChannelAsync("Original Name", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        var epoch = bob.Session.Snapshot.FindChannel(channelId)!.Epoch;
+        await alice.Session.RenameAsync(channelId, "Second", Ct);
+        await alice.Session.RenameAsync(channelId, "Third", Ct);
+        await WaitFor(() => bob.Session.Snapshot.FindChannel(channelId)?.Name == "Third" ? new object() : null);
+
+        // A message Alice wrote earlier is captured; Bob has already seen a newer one from her.
+        var captured = alice.ForgeMessage(channelId, epoch, "written earlier", DateTimeOffset.UtcNow.AddMinutes(-5));
+        await alice.Session.SendTextAsync(channelId, "latest", Ct);
+        await WaitFor(() => bob.Messages.FirstOrDefault(m => m.Text == "latest"));
+
+        // The server tells Bob he was removed, rolls its stored name back, and lists the channel again.
+        await this._server.SendAndSettleAsync(bob, new Event { ChannelRemoved = new ChannelRemoved { ChannelId = channelId, Reason = RemovalReason.Kicked } });
+        Assert.Null(bob.Session.Snapshot.FindChannel(channelId));
+        using var aliceKeys = alice.LoadIdentity();
+        var second = ChannelCrypto.EncryptName("Second", alice.LoadEpochKey(channelId, epoch), channelId, epoch, aliceKeys, alice.UserId, revision: 1);
+        this.StoreName(channelId, second);
+        await bob.Session.RefreshAsync(Ct);
+        await this._server.SendAndSettleAsync(bob, new Event { ChannelRenamed = new ChannelRenamed { ChannelId = channelId, Name = second } });
+
+        var relisted = bob.Session.Snapshot.FindChannel(channelId)!;
+        Assert.True(relisted.HasKey);
+        Assert.NotEqual("Second", relisted.Name);
+
+        this._server.Registry.Send(bob.UserId, new Event { ChatMessage = captured });
+        await WaitFor(() => bob.Notices.FirstOrDefault(n => n.Text.Contains("older than messages already received")));
+        Assert.DoesNotContain(bob.Messages, m => m.Text == "written earlier");
+
+        // A genuinely newer rename still gets through.
+        await alice.Session.RenameAsync(channelId, "Fourth", Ct);
+        await WaitFor(() => bob.Session.Snapshot.FindChannel(channelId)?.Name == "Fourth" ? new object() : null);
+    }
+
+    [Fact]
     public async Task ServerEpochJumpDoesNotMoveTheKeyEpoch() {
         var alice = await this._server.RegisterAsync("Alice Jump");
         var bob = await this._server.RegisterAsync("Bob Jump");

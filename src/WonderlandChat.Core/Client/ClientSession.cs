@@ -1563,8 +1563,8 @@ public sealed class ClientSession : IAsyncDisposable {
         lock (this._lock) {
             this._channels.Remove(channelId);
             this._secrets.EpochKeys.Remove(channelId);
-            this._secrets.ChannelNameVersions.Remove(channelId);
-            this._secrets.NewestMessageTimes.Remove(channelId);
+            // The name version and message times stay (they aren't secret): otherwise a server
+            // could fake a removal, list the channel again and replay older names or messages.
             this._secretsVersion++;
         }
 
