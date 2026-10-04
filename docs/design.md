@@ -2,6 +2,8 @@
 
 Exported from the working design document. Diagrams are described in text.
 
+This document describes the target design. Not all of it is built yet: see the README's "Security model" section for what the current version actually guarantees.
+
 ## Summary
 
 WonderlandChat is a from-scratch rewrite of the ExtraChat plugin and server. It keeps the original's core ideas: a server that only relays ciphertext, Lodestone as the identity root, and native in-game chat. It fixes the original's trust, threading and reliability flaws, and adds a versioned, capability-based protocol so new features can be added without breaking existing clients.
@@ -112,49 +114,66 @@ Each character has a long-term identity key that its contacts verify, and each c
 
 - The identity private key, epoch keys and device token are stored encrypted: DPAPI on Windows, or a random local key file where DPAPI is unavailable (Wine/Proton), which guards against accidental sharing rather than a local attacker.
 
-## Authenticated membership (v0.2, proposed)
+## Authenticated membership (v0.2, revised)
 
-The code review showed that 0.1 trusts the server's member list, so a malicious server can add a ghost member and receive every new channel key. The fix: every membership is proven by signatures from the members themselves, and clients only seal keys to, and accept keys from, members they can verify. **Status: awaiting approval before implementation.**
+Every membership change becomes a signed entry in a hash-chained log for the channel, and clients replay that log to work out who the members are. Every epoch key commits to the log position it was made for. The second code review showed the first version of this design was unsound: trust only ever grew, and ranks and removals weren't signed, so a removed member's key could keep vouching for new ghosts, and any member could add one. **Status: revised design approved on 2026-10-03, as an interim step before MLS (see below).**
 
-### Signed statements
+### The membership log
 
-| Statement | Signed by | Covers |
+Each channel has an append-only log. Every entry carries the channel ID, a sequence number, the hash of the previous entry, its kind, the actor (user ID and key fingerprint), the subject (user ID and identity keys), a rank where relevant, and a timestamp. It is signed by the actor.
+
+| Entry | Signed by | Valid only if, at that point in the log |
 | --- | --- | --- |
-| Genesis | Channel creator | Channel ID, creator ID, creator's identity keys |
-| Invite | Inviter | Channel ID, invitee ID and identity keys, inviter ID and identity keys, the sealed channel name |
-| Accept | Invitee | Channel ID, invitee ID, hash of the exact invite statement and its signature |
+| Genesis | Creator | It is entry 0; the creator becomes admin |
+| Invite | Inviter | The inviter is a moderator or admin; the invitee isn't a member or invited |
+| Accept | Invitee | It names the exact invite entry, and is signed by the exact key that invite names |
+| Decline / Cancel invite | Invitee / a moderator or admin | There is an open invite |
+| Remove | Moderator or admin | The subject's rank is below the actor's |
+| Leave | The leaving member | They are a member and not the last admin of a non-empty channel |
+| Set rank / Transfer admin | Admin | The subject is a member |
 
-A member's **membership proof** is either the genesis statement (for the creator) or an invite plus its acceptance. The server stores every proof, including those of members who later left, and returns them with the channel. It can withhold or delete proofs, but it cannot forge one.
+The server stores and serves the log and checks each entry before appending it, but clients never rely on that check. The server can't forge an entry, because that needs a member's signature, and it can't reorder entries, because of the hash chain. A removed member's key can't sign anything that counts after their removal. A re-registered user's new key isn't a member until a fresh invite and accept.
 
-### Which members a client trusts
+### Freshness and rekeys
 
-Each client works out a set of trusted identity keys for the channel, starting from its own key and, if it joined by invite, the inviter key it accepted. It then repeats two rules until nothing changes:
+- Each client keeps, and persists, the newest log position (sequence number and hash) it has verified for each channel.
+- Every sealed epoch key and every channel name signs the log position it was made for. A client rejects a key or name made for an older position than its own; for a newer one, it fetches and verifies the log first.
+- A rekey seals to exactly the members at that position, and the server checks that the position is the current head. A key commitment (one shared hash of the key in every copy) stops a member sealing different or junk keys to different people.
 
-1. **Downward:** if an invite was signed by a trusted key and accepted by the invitee's key, the invitee's key is trusted.
-2. **Upward:** if a trusted key accepted an invite, the inviter key named in that invite is trusted, because the acceptance commits to it.
+### What this stops
 
-Invites form a tree rooted at the creator, so this reaches every genuine member. A ghost needs either an invite signed by a real member or a real member's acceptance naming it, and the server can forge neither. A member is **verified** when their current identity key is trusted and their proof checks out.
+| Attack (from the review) | Result |
+| --- | --- |
+| Server inserts a ghost member | No valid invite and accept chain, so it isn't a member, and nobody seals to it |
+| Former member signs invites for ghosts | Invalid: the inviter isn't a member at that point in the log |
+| Ordinary member invites ghosts | Invalid: rank is part of the signed log |
+| Server hides a removal | The remover's client, and everyone who saw the removal, reject keys made for the older position, and warn that the server may be hiding a change |
+| Server shows different member lists to different clients | Needs a member to sign two different entries at the same position; a client that sees both reports a fork |
+| Old key reused after re-registration | The old key stopped being a member when they were removed |
+| Old channel name replayed | Names are bound to the log position and a revision counter |
 
-### Rules that use it
+### Remaining limits (documented, not fixed)
 
-- **Sealing:** a rekey seals the new key only to verified current members. If the server's member list contains anyone else, the rekey can't satisfy the server, and the client shows which listed members failed verification.
-- **Accepting keys:** an epoch key is accepted only if its author is a verified current member and its epoch is newer than any key held.
-- **Names:** a channel name is accepted only if encrypted under the current epoch by a verified member.
+- **You trust the keys of the people you invite on first use.** When you invite "Bob" by name, the server supplies Bob's key and could substitute its own. Each member therefore shows "fingerprint not compared" until you compare over /tell and confirm. A strict mode can refuse to invite, or seal to, anyone not yet compared.
+- **A removal takes effect when the remover's client publishes it.** The remover's client rekeys immediately. A server that suppresses that rekey stops the channel working for everyone else, but can't hide the removal from the remover, who is warned.
+- **Metadata and availability.** The server still sees who is in which channel and can drop or delay anything.
 
-### Key changes and removals
+### MLS
 
-- **Re-registration with new keys** invalidates every proof bound to the old key. The server removes that user from their channels, which triggers a rekey, and they must be invited again.
-- **Removals are not signed.** A malicious server can falsely remove someone (denial of service) or keep a removed member listed. Every client remembers removals it has seen and refuses to seal to that member until they show a newer proof. A server that hides a removal from every client is a remaining limitation.
+MLS (RFC 9420) solves the same problems with an audited standard, and scales better. There is no mature C# implementation, so adopting it would mean shipping a Rust library (OpenMLS) through native interop in both the plugin and the server.
 
-### What it does not protect
+**Decision (2026-10-03): build the log design for v0.2 as an interim step, then move to MLS once core functionality is confirmed in real use.** The group-key and membership layers stay behind interfaces so the switch replaces them without touching chat, UI or server routing.
 
-- Membership metadata, and availability.
-- Who your inviter really is: you trust your inviter's key on first use. Compare fingerprints over /tell for certainty.
+### Protocol and tests
 
-### Protocol and migration
-
-- New fields: a membership proof on each Member, past proofs on ChannelInfo, invitee keys inside the invite signature, and an accept signature on RespondToInvite. The server checks signatures too, as early rejection.
-- Protocol version 1 is unreleased, so v0.2 changes it in place. Test servers need a fresh database.
+- New protocol pieces: a membership entry message; channel info carries the log (or the part after the client's position); a log-fetch request; invite, accept, decline, remove, leave and rank requests each carry their signed entry; epoch keys and names carry the log position. Protocol version 1 is unreleased, so it changes in place.
+- Acceptance tests:
+    1. A server-inserted ghost never receives a key.
+    2. A former member's invite is rejected.
+    3. A non-moderator's invite is rejected.
+    4. A hidden removal is detected by the remover.
+    5. A forked log is reported.
+    6. All existing malicious-server tests still pass.
 
 ## Protocol and extensibility
 
@@ -237,3 +256,4 @@ M0 Foundations (repo, schema, CI, core library) â†’ gate: crypto spec reviewed â
 - [ ] **Message history:** in 1.0, or later?
 - [ ] **Limits:** confirm after beta load testing.
 - [ ] **Public hosting:** who runs it, cost, privacy note, and acceptable Lodestone volume.
+- [ ] **Move to MLS (RFC 9420)** once core functionality is confirmed in real use. The v0.2 signed membership log is the interim design; plan the switch as its own milestone, including how existing channels migrate.
