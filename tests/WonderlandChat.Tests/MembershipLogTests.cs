@@ -261,9 +261,12 @@ public sealed class MembershipLogTests : IAsyncLifetime {
         using var aliceKeys = alice.LoadIdentity();
         var bobAgreement = bob.LoadIdentity().AgreementPublicKey;
         var stale = ChannelCrypto.SealEpochKey(ChannelCrypto.NewEpochKey(), channelId, current.Epoch + 1, withCarol, aliceKeys, alice.UserId, bob.UserId, bobAgreement);
-        this._server.Registry.Send(bob.UserId, new Event { EpochAdvanced = new EpochAdvanced { ChannelId = channelId, Epoch = current.Epoch + 1, AuthorId = alice.UserId, MyKey = stale } });
-        await WaitFor(() => bob.Notices.FirstOrDefault(n => n.Text.StartsWith("Rejected a new key") && n.Text.Contains("not the current one")));
+        // (The server here is honest otherwise, and can show the log Bob verified, so he isn't told it's hiding anything:
+        // an honest server sends such a key now and then, made just before a change.)
+        await this._server.SendAndSettleAsync(bob, new Event { EpochAdvanced = new EpochAdvanced { ChannelId = channelId, Epoch = current.Epoch + 1, AuthorId = alice.UserId, MyKey = stale } });
         Assert.Equal(current.Epoch, bob.Session.Snapshot.FindChannel(channelId)!.Epoch);
+        Assert.False(bob.Store.Load().EpochKeys[channelId].ContainsKey(current.Epoch + 1));
+        Assert.Null(bob.Session.Snapshot.FindChannel(channelId)!.MembershipWarning);
 
         var oldName = ChannelCrypto.EncryptName("Carol Was Here", bob.LoadEpochKey(channelId, current.Epoch), channelId, current.Epoch, withCarol, aliceKeys, alice.UserId, revision: 5);
         await this._server.SendAndSettleAsync(bob, new Event { ChannelRenamed = new ChannelRenamed { ChannelId = channelId, Name = oldName } });
@@ -304,7 +307,7 @@ public sealed class MembershipLogTests : IAsyncLifetime {
         var unseen = new LogPosition { Seq = newer.Seq + 5, Hash = ByteString.CopyFrom(new byte[32]) };
         var key = ChannelCrypto.SealEpochKey(ChannelCrypto.NewEpochKey(), channelId, current.Epoch + 1, unseen, aliceKeys, alice.UserId, bob.UserId, bob.Keys().AgreementPublicKey);
         this._server.Registry.Send(bob.UserId, new Event { EpochAdvanced = new EpochAdvanced { ChannelId = channelId, Epoch = current.Epoch + 1, AuthorId = alice.UserId, MyKey = key } });
-        await WaitFor(() => bob.Notices.FirstOrDefault(n => n.Text.StartsWith("Rejected a new key") && n.Text.Contains("not the current one")));
+        await WaitFor(() => bob.Notices.FirstOrDefault(n => n.Text.StartsWith("Rejected a new key") && n.Text.Contains("hasn't shown you")));
         Assert.Equal(current.Epoch, bob.Session.Snapshot.FindChannel(channelId)!.Epoch);
     }
 

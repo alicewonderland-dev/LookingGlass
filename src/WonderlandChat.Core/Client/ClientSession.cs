@@ -615,7 +615,6 @@ public sealed class ClientSession : IAsyncDisposable {
         var gate = this._channelLocks.GetOrAdd(channelId, _ => new SemaphoreSlim(1, 1));
         await gate.WaitAsync(ct);
         try {
-            var behindServer = false;
             for (var attempt = 0; attempt < 3; attempt++) {
                 var (identity, me) = this.RequireIdentityAndUser();
                 var membership = await this.SyncLogAsync(channelId, ct, fetch: attempt == 0 ? LogFetch.IfBehind : LogFetch.Always);
@@ -668,7 +667,6 @@ public sealed class ClientSession : IAsyncDisposable {
                 } catch (ServerErrorException ex) when (ex.Code is ErrorCode.Conflict or ErrorCode.EpochStale) {
                     // Someone else rekeyed first, or membership changed meanwhile.
                     await this.RefreshAsync(this.RequireConnection(), ct);
-                    behindServer = this.Read(() => this._channels.GetValueOrDefault(channelId)?.LogHead is { } head && head.Seq < position.Seq);
                     force = false;
                     continue;
                 }
@@ -692,9 +690,15 @@ public sealed class ClientSession : IAsyncDisposable {
                 return;
             }
 
-            throw new InvalidOperationException(behindServer
-                ? "The server refuses the new key: it says the channel's membership is older than the change you made. It may be hiding that change from the other members."
-                : "Rekeying kept conflicting with other changes; try again.");
+            // Whatever head the server claims, it must still have the newest entry this client verified (a removal
+            // it made, say), and show everything after it. If not, it refuses keys for a change it is hiding.
+            if (!await this.ConfirmHeadAsync(channelId, ct)) {
+                this.WarnAboutMembership(channelId, HidingWarning);
+                throw new InvalidOperationException(
+                    "The server refuses the new key, and won't show the newest membership change you have verified, or what it says came after it. It may be hiding a change from the other members.");
+            }
+
+            throw new InvalidOperationException("Rekeying kept conflicting with other changes; try again.");
         } finally {
             gate.Release();
         }
@@ -918,9 +922,12 @@ public sealed class ClientSession : IAsyncDisposable {
     private async Task RefreshAsync(Connection connection, CancellationToken ct, bool refreshIdentities = false, bool rekeyIfDesignated = false) {
         // Say how much of each log is already verified, so the server only sends what's new.
         var request = new ListChannels();
+        // Only channels this user is in or invited to, as last verified; not every channel ever left.
         request.Known.AddRange(this.Read(() => this._secrets.Memberships.Keys.Union(this._memberships.Keys).ToList()
-            .Select(channelId => (channelId, head: this.MembershipOf(channelId).Head))
-            .Where(known => known.head != null)
+            .Select(channelId => (channelId, membership: this.MembershipOf(channelId)))
+            .Where(known => known.membership.Head != null && this._me != null
+                            && (known.membership.FindMember(this._me.UserId) != null || known.membership.FindInvitee(this._me.UserId) != null))
+            .Select(known => (known.channelId, head: known.membership.Head))
             .Select(known => new KnownLog { ChannelId = known.channelId, NextSeq = known.head!.Seq + 1 })
             .ToList()));
 
@@ -1026,6 +1033,9 @@ public sealed class ClientSession : IAsyncDisposable {
 
     // ================================================================ the membership log
 
+    private const string HidingSuffix = "It may be hiding a change (such as someone's removal) from other members";
+    private const string HidingWarning = "the server won't show the membership of {0} as you have verified it. " + HidingSuffix;
+
     private enum LogFetch {
         /// <summary>Use what was offered; fetch only if the server is known to be further on.</summary>
         IfBehind,
@@ -1051,6 +1061,8 @@ public sealed class ClientSession : IAsyncDisposable {
         await gate.WaitAsync(ct);
         MembershipEntry? conflicting = null;
         var headDiffers = false;
+        // The server said its log goes further than it would show.
+        var stalled = false;
         string? problem = null;
         List<MembershipEntry> applied = [];
         try {
@@ -1066,8 +1078,9 @@ public sealed class ClientSession : IAsyncDisposable {
             while (true) {
                 while (problem == null && conflicting == null && pending.TryDequeue(out var entry)) {
                     if (state.Head != null && entry.Seq <= state.Head.Seq) {
-                        // A position already verified: the same entry again, or a second one there.
-                        if (state.HashAt(entry.Seq) is not { } known || !known.AsSpan().SequenceEqual(MembershipEntries.Hash(entry))) {
+                        // A position already verified: the same entry again, or a second one there. (Too far back
+                        // to remember its hash, it is let go: a fork there shows at the head too.)
+                        if (state.HashAt(entry.Seq) is { } known && !known.AsSpan().SequenceEqual(MembershipEntries.Hash(entry))) {
                             conflicting = entry;
                         }
 
@@ -1111,6 +1124,10 @@ public sealed class ClientSession : IAsyncDisposable {
                 pages++;
                 mustFetch = false;
                 freshHead = knownHead = log.Head;
+                if (log.Head == null || (log.Entries.Count == 0 && (state.Head == null || log.Head.Seq > state.Head.Seq))) {
+                    stalled = true;
+                }
+
                 if (log.Entries.Count == 0) {
                     break;
                 }
@@ -1120,9 +1137,11 @@ public sealed class ClientSession : IAsyncDisposable {
                 }
             }
 
-            if (problem == null && conflicting == null && freshHead is { Hash.Length: > 0 } && state.Head != null) {
+            if (problem == null && conflicting == null && stalled) {
+                problem = "the server says the membership of {0} has changed further than it will show you. " + HidingSuffix;
+            } else if (problem == null && conflicting == null && freshHead is { Hash.Length: > 0 } && state.Head != null) {
                 if (freshHead.Seq < state.Head.Seq) {
-                    problem = "the server shows an older version of the membership of {0} than you have already seen. It may be hiding a change (such as someone's removal) from other members";
+                    problem = "the server shows an older version of the membership of {0} than you have already seen. " + HidingSuffix;
                 } else if (freshHead.Seq == state.Head.Seq && !MembershipEntries.SamePosition(freshHead, state.Head)) {
                     headDiffers = true;
                 }
@@ -1177,12 +1196,14 @@ public sealed class ClientSession : IAsyncDisposable {
         var hashes = new List<byte[]>();
         IChannelMembership? beforeCandidate = candidate is { Seq: 0 } ? chain : null;
         var valid = true;
+        var complete = false;
         for (var pages = 0; valid && pages < MaxLogPagesPerSync; pages++) {
             var response = await this.RequestAsync(connection ?? this.RequireConnection(), new ClientFrame {
                 FetchMembershipLog = new FetchMembershipLog { ChannelId = channelId, FromSeq = (ulong) hashes.Count },
             }, ct);
             var log = response.MembershipLog ?? throw Unexpected(response);
             if (log.Entries.Count == 0) {
+                complete = true;
                 break;
             }
 
@@ -1201,8 +1222,11 @@ public sealed class ClientSession : IAsyncDisposable {
         }
 
         ulong? forkAt = null;
+        var shortOrInvalid = false;
         lock (this._lock) {
             var ours = this.MembershipOf(channelId);
+            // A log that doesn't check out, or stops before what this client verified, can't be the one it verified.
+            shortOrInvalid = !valid || (complete && ours.Head != null && (ulong) hashes.Count <= ours.Head.Seq);
             // Both versions are valid from the start, so where they differ, two members' signatures (or
             // one member's twice) made different entries at the same position.
             if (ours.Head != null && ours.Head.Seq < (ulong) hashes.Count && !hashes[(int) ours.Head.Seq].AsSpan().SequenceEqual(ours.Head.Hash.Span)) {
@@ -1224,7 +1248,43 @@ public sealed class ClientSession : IAsyncDisposable {
             this.WarnAboutMembership(channelId,
                 $"the server has shown you two different versions of the membership of {{0}}, both validly signed, that differ at or before entry #{forkAt}. " +
                 "Someone may be seeing a different member list from you: compare it with other members over /tell before trusting it");
+        } else if (shortOrInvalid) {
+            this.Log(NoticeLevel.Warning, $"Membership log of {channelId} from the server is invalid or shorter than the one verified");
+            this.WarnAboutMembership(channelId, HidingWarning);
         }
+    }
+
+    /// <summary>
+    /// Asks the server for the newest entry this client verified and everything after it. Whatever
+    /// head the server claims, an honest one can show that entry (it stored it), and the entries up
+    /// to its head, which must check out. Used before blaming the server for something that an
+    /// honest one does too, now and then (a key made just before a change, say).
+    /// </summary>
+    /// <returns>False if the server doesn't have that entry, or claims more than it shows.</returns>
+    private async Task<bool> ConfirmHeadAsync(string channelId, CancellationToken ct, Connection? connection = null) {
+        var head = this.Read(() => this.MembershipOf(channelId).Head);
+        if (head == null) {
+            return true;
+        }
+
+        MembershipLog log;
+        try {
+            var response = await this.RequestAsync(connection ?? this.RequireConnection(), new ClientFrame {
+                FetchMembershipLog = new FetchMembershipLog { ChannelId = channelId, FromSeq = head.Seq },
+            }, ct);
+            log = response.MembershipLog ?? throw Unexpected(response);
+        } catch (ServerErrorException ex) when (ex.Code == ErrorCode.NotFound) {
+            return false;
+        }
+
+        if (log.Head == null || log.Entries.Count == 0 || !MembershipEntries.SamePosition(MembershipEntries.PositionOf(log.Entries[0]), head)) {
+            return false;
+        }
+
+        var after = await this.SyncLogAsync(channelId, ct, log.Entries.Skip(1).ToList(), log.Head, connection: connection);
+        // (If a join or leave since moved its hash out of memory, it was still checked on the way.)
+        return after.Head != null && after.Head.Seq >= log.Head.Seq
+                                  && (after.HashAt(log.Head.Seq) is not { } hash || hash.AsSpan().SequenceEqual(log.Head.Hash.Span));
     }
 
     /// <summary>Tells the user (once per problem) that a channel's membership can't be trusted as shown, and shows it on the channel.</summary>
@@ -1503,6 +1563,7 @@ public sealed class ClientSession : IAsyncDisposable {
         }
 
         string? rejected = null;
+        var stale = false;
         BadKey? bad = null;
         MemberKeys? failedSigner = null;
         lock (this._lock) {
@@ -1525,9 +1586,12 @@ public sealed class ClientSession : IAsyncDisposable {
                 if (rejected == null && check == EpochKeyCheck.BadSignature) {
                     rejected = "it failed signature or decryption checks";
                     failedSigner = author?.Keys;
+                } else if (rejected == null && position != null && membership.Head is { } head && position.Seq > head.Seq) {
+                    rejected = $"it was made at membership log entry #{position.Seq}, which the server hasn't shown you";
                 } else if (rejected == null && !membership.IsCurrent(position)) {
                     // Validly signed by a member, but sealed to the members of another time.
                     rejected = $"it was made for the channel's membership at entry #{position?.Seq}, not the current one (entry #{membership.Head?.Seq}). The server may be hiding a change from someone";
+                    stale = true;
                 } else if (rejected == null && key == null) {
                     bad = this.FlagBadEpochKey(channel, advanced.Epoch, this.UserOf(advanced.AuthorId), check);
                     rejected = "it failed signature or decryption checks";
@@ -1556,6 +1620,13 @@ public sealed class ClientSession : IAsyncDisposable {
 
         if (bad != null) {
             this.HandleBadEpochKey(bad);
+            return;
+        }
+
+        // An honest server sends such a key now and then: made just before a change this client already
+        // applied (its own, say), or while it was away. Only a server that can't show what was verified is blamed.
+        if (stale && await this.ConfirmHeadAsync(advanced.ChannelId, ct)) {
+            this.Log(NoticeLevel.Debug, $"Ignored epoch {advanced.Epoch} key for {advanced.ChannelId}: made before the latest membership change");
             return;
         }
 
@@ -1857,7 +1928,8 @@ public sealed class ClientSession : IAsyncDisposable {
 
         this.SaveSecrets();
         this.Publish();
-        if (staleNewest != null) {
+        // Normal while a join or leave awaits its rekey; only a server that can't show what was verified is blamed.
+        if (staleNewest != null && !await this.ConfirmHeadAsync(channelId, ct, connection)) {
             this.WarnAboutMembership(channelId,
                 $"the server offered a key for {{0}} made for an older membership (entry #{staleNewest.Key.LogPosition?.Seq}) than you have verified. It may be hiding a change from someone");
         }
@@ -2214,7 +2286,10 @@ public sealed class ClientSession : IAsyncDisposable {
         // hash is no longer remembered is still shown if nobody joined or left since; otherwise a long run
         // of invites would leave restarted clients without the name, which they need to rekey.
         var tooOldToCheck = position.Seq >= membership.MembersChangedAt && membership.HashAt(position.Seq) == null;
-        if (!membership.IsCurrent(position) && !tooOldToCheck) {
+        // And one made with the key it is encrypted under (by that rekey) still goes with that key while a
+        // later join or leave awaits its rekey: a client restarted meanwhile needs it to make that rekey.
+        var madeWithItsKey = MembershipEntries.SamePosition(position, this.KeyPositionOf(channelId, offered.Epoch));
+        if (!membership.IsCurrent(position) && !tooOldToCheck && !madeWithItsKey) {
             return;
         }
 
