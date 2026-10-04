@@ -382,8 +382,11 @@ public sealed class ClientSession : IAsyncDisposable {
 
         if (accept) {
             await this.EnsureChannelReadyAsync(channelId, ct);
-            var (hasKey, pending) = this.Read(() => (this.HasCurrentKey(channelId), this._channels.GetValueOrDefault(channelId)?.RekeyPending == true));
-            if (designated && pending) {
+            var (hasKey, pending, nameKnown) = this.Read(() => {
+                var channel = this._channels.GetValueOrDefault(channelId);
+                return (this.HasCurrentKey(channelId), channel?.RekeyPending == true, channel?.Name != null);
+            });
+            if (designated && pending && nameKnown) {
                 // Nobody else is online to share the key. (The server's RekeyNeeded arrived before
                 // this response, while the channel was unknown, so it was ignored.)
                 if (this._options.AutoRekeyWhenDesignated) {
@@ -859,8 +862,13 @@ public sealed class ClientSession : IAsyncDisposable {
         this.Publish();
 
         if (rekeyIfDesignated && this._options.AutoRekeyWhenDesignated) {
-            foreach (var info in channels.Where(info => info.RekeyPending && info.RekeyDesignated)) {
-                this.RunBackground("Rekeying a channel", rekeyCt => this.RekeyAsync(info.ChannelId, rekeyCt));
+            // Without the name (say, after registering again with new keys) this client can't rekey; another member must.
+            var designated = this.Read(() => channels
+                .Where(info => info.RekeyPending && info.RekeyDesignated && this._channels.GetValueOrDefault(info.ChannelId)?.Name != null)
+                .Select(info => info.ChannelId)
+                .ToList());
+            foreach (var channelId in designated) {
+                this.RunBackground("Rekeying a channel", rekeyCt => this.RekeyAsync(channelId, rekeyCt));
             }
         }
     }
