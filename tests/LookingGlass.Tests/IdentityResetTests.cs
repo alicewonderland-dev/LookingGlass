@@ -436,7 +436,9 @@ public sealed class IdentityResetTests : IAsyncLifetime {
     /// <summary>
     /// A login checked just before a retirement (or a registration, which revokes every device too) lands, and put online
     /// just after it disconnected the account, would stay logged in with a deleted login until it closed. It is checked
-    /// again once online, and refused.
+    /// again once online, and refused. The revocation shows only once the connection is online (the hook runs between
+    /// going online and the check), so a check made before going online, which the revocation could still slip past,
+    /// doesn't pass this.
     /// </summary>
     [Theory]
     [InlineData(true)]
@@ -448,19 +450,19 @@ public sealed class IdentityResetTests : IAsyncLifetime {
         await alice.Session.DisposeAsync();
 
         await using var raw = await this._server.ConnectRawAsync();
-        this._server.Handler.BeforeAuthenticateSetOnlineForTests = () => {
-            // As the other request would, all of it, between this login's checks and its going online.
+        this._server.Handler.AfterAuthenticateSetOnlineForTests = () => {
+            // The other request's revocation, seen only now. Its disconnect came before this connection went online and
+            // so found nothing to close: not repeated here, where it would close this connection and hide the check.
             if (retire) {
                 Assert.True(this._server.Database.RetireIdentity(user.UserId, user.SigningKey, user.KeyVersion));
             } else {
                 using var newKeys = IdentityKeys.Generate();
                 this._server.Database.RegisterUser(user.UserId, user.Name, 0, ProtocolInfo.DebugWorldName, newKeys.ToBundle(), true);
             }
-
-            this._server.Registry.Disconnect(user.UserId, "Revoked");
         };
 
         var response = await raw.SendAsync(new ClientFrame { Authenticate = new Authenticate { DeviceToken = token } });
+        Assert.Null(this._server.Handler.AfterAuthenticateSetOnlineForTests);
         Assert.Equal(ErrorCode.NotAuthenticated, response.Error?.Code);
         Assert.Null(response.AuthenticateOk);
         Assert.False(this._server.Registry.IsOnline(user.UserId));

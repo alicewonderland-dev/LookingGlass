@@ -115,10 +115,11 @@ public sealed class RequestHandler(
     internal Action? BeforeKeyLoginDeviceAddedForTests { get; set; }
 
     /// <summary>
-    /// Runs once, after a login (Authenticate) has been checked and before the connection goes online, so tests can have
-    /// the account's devices revoked in between, as a concurrent retirement or registration could.
+    /// Runs once, after a login (Authenticate) has gone online and before it is checked again, so tests can have the
+    /// account's devices revoked only now, as a concurrent retirement or registration could have done just before the
+    /// connection went online (its disconnect then finding nothing to close). Only a check made after going online sees it.
     /// </summary>
-    internal Action? BeforeAuthenticateSetOnlineForTests { get; set; }
+    internal Action? AfterAuthenticateSetOnlineForTests { get; set; }
 
     /// <summary>
     /// Runs once, after a retirement has been checked and before the key is retired, so tests can have another connection
@@ -405,14 +406,14 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.NotAuthenticated, "Debug accounts are disabled on this server.");
         }
 
-        if (this.BeforeAuthenticateSetOnlineForTests is { } hook) {
-            this.BeforeAuthenticateSetOnlineForTests = null;
-            hook();
-        }
-
         connection.User = user;
         connection.DeviceTokenHash = tokenHash;
         registry.SetOnline(user.UserId, connection);
+
+        if (this.AfterAuthenticateSetOnlineForTests is { } hook) {
+            this.AfterAuthenticateSetOnlineForTests = null;
+            hook();
+        }
 
         // A retirement or registration (each revokes every device, then disconnects the account) that landed after the
         // checks above, and disconnected the account before this connection was online, would leave it logged in with a
