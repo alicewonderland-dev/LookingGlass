@@ -430,21 +430,35 @@ public sealed class RequestHandler(
         }
 
         user = db.GetUser(pending.UserId);
-        if (user == null) {
-            return "no such account";
+        var refused = user == null ? "no such account"
+            : user.IsDebug && !options.Value.Dev.AllowDebugAccounts ? "debug accounts are disabled"
+            : null;
+
+        // Against the account's current key only: keys replaced by registering again can't sign in. An account that
+        // doesn't exist, or may not sign in, is checked against a key nobody holds, so every answer that gets this far
+        // costs one verification and the time a failure takes doesn't tell whether the account exists.
+        var valid = KeyLoginProof.Verify(refused == null ? user!.SigningKey : NobodysKey, pending.Challenge, pending.UserId, request.ServerUrl, request.Signature.Span);
+        Interlocked.Increment(ref this._keyLoginSignatureChecks);
+        if (refused != null) {
+            user = null;
+            return refused;
         }
 
-        if (user.IsDebug && !options.Value.Dev.AllowDebugAccounts) {
-            return "debug accounts are disabled";
-        }
-
-        // Against the account's current key only: keys replaced by registering again can't sign in.
-        if (!KeyLoginProof.Verify(user.SigningKey, pending.Challenge, pending.UserId, request.ServerUrl, request.Signature.Span)) {
-            return "the signature isn't by the account's identity key";
-        }
-
-        return null;
+        return valid ? null : "the signature isn't by the account's identity key";
     }
+
+    // A valid Ed25519 public key whose private key was thrown away when the server started.
+    private static readonly byte[] NobodysKey = MakeNobodysKey();
+
+    private static byte[] MakeNobodysKey() {
+        using var keys = IdentityKeys.Generate();
+        return keys.SigningPublicKey;
+    }
+
+    private int _keyLoginSignatureChecks;
+
+    /// <summary>Key login signatures verified so far, for tests that every answer costs the same.</summary>
+    internal int KeyLoginSignatureChecks => Volatile.Read(ref this._keyLoginSignatureChecks);
 
     /// <summary>Which server addresses a key login signature may name.</summary>
     internal enum KeyLoginOrigins {
