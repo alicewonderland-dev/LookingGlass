@@ -435,6 +435,57 @@ public sealed class KeyLoginTests : IAsyncLifetime {
         Assert.Single(errors.Select(error => error.Message).Distinct());
     }
 
+    /// <summary>
+    /// Every answer that gets as far as the account checks one signature, whether or not the account exists (or may sign
+    /// in at all), so how long a failure takes doesn't tell who is registered. Unknown and refused accounts are checked
+    /// against a fixed key nobody holds.
+    /// </summary>
+    [Fact]
+    public async Task EveryAnswerChecksOneSignatureWhetherOrNotTheAccountExists() {
+        var directory = Path.Combine(Path.GetTempPath(), "lgt-" + Guid.NewGuid().ToString("N"));
+        try {
+            long debugUser;
+            byte[] debugKey;
+            await using (var enabled = new Harness(directory)) {
+                var debug = await enabled.RegisterAsync("Debug Timing");
+                debugUser = debug.UserId;
+                using var keys = debug.LoadIdentity();
+                debugKey = keys.SigningPublicKey;
+                await debug.Session.DisposeAsync();
+            }
+
+            await using var server = new Harness(directory, allowDebugAccounts: false);
+            var url = server.ServerUri.AbsoluteUri;
+            using var someone = IdentityKeys.Generate();
+            Assert.NotEqual(debugKey, someone.SigningPublicKey);
+
+            foreach (var userId in new[] { 4242424242L, debugUser }) {
+                await using var raw = await server.ConnectRawAsync();
+                var before = server.Handler.KeyLoginSignatureChecks;
+                var challenge = (await raw.SendAsync(new ClientFrame { StartKeyLogin = new StartKeyLogin { UserId = userId } })).KeyLoginChallenge!.Challenge.ToByteArray();
+                var response = await this.CompleteAsync(raw, challenge, url, KeyLoginProof.Sign(someone, challenge, userId, url));
+                Assert.Equal(ErrorCode.NotAuthenticated, response.Error?.Code);
+                Assert.Equal(before + 1, server.Handler.KeyLoginSignatureChecks);
+            }
+
+            // As for an account that exists and may sign in (a verified character), with the wrong key...
+            using var aliceKeys = IdentityKeys.Generate();
+            var (alice, _) = server.Database.RegisterUser(31337, "Alice Timing", 21, "Gilgamesh", aliceKeys.ToBundle(), false);
+            await using var known = await server.ConnectRawAsync();
+            var checks = server.Handler.KeyLoginSignatureChecks;
+            var aliceChallenge = await this.ChallengeAsync(known, alice.UserId);
+            Assert.Equal(ErrorCode.NotAuthenticated, (await this.CompleteAsync(known, aliceChallenge, url, KeyLoginProof.Sign(someone, aliceChallenge, alice.UserId, url))).Error?.Code);
+            Assert.Equal(checks + 1, server.Handler.KeyLoginSignatureChecks);
+
+            // ...and with the right one.
+            aliceChallenge = await this.ChallengeAsync(known, alice.UserId);
+            Assert.NotNull((await this.CompleteAsync(known, aliceChallenge, url, KeyLoginProof.Sign(aliceKeys, aliceChallenge, alice.UserId, url))).KeyLoginComplete);
+            Assert.Equal(checks + 2, server.Handler.KeyLoginSignatureChecks);
+        } finally {
+            DeleteDirectory(directory);
+        }
+    }
+
     [Fact]
     public async Task ChallengesAreLimitedPerConnection() {
         var alice = await this._server.RegisterAsync("Alice Many");
