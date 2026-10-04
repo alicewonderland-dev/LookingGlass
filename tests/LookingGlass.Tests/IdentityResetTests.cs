@@ -313,6 +313,41 @@ public sealed class IdentityResetTests : IAsyncLifetime {
         Assert.Equal(0, this._server.Database.CountDevices(alice.UserId));
     }
 
+    /// <summary>
+    /// A login checked just before a retirement (or a registration, which revokes every device too) lands, and put online
+    /// just after it disconnected the account, would stay logged in with a deleted login until it closed. It is checked
+    /// again once online, and refused.
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ALoginCheckedJustBeforeItsDeviceIsRevokedIsRefused(bool retire) {
+        var alice = await this._server.RegisterAsync(retire ? "Alice Late Retire" : "Alice Late Register");
+        var token = alice.Store.Load().DeviceToken!;
+        var user = this._server.Database.GetUser(alice.UserId)!;
+        await alice.Session.DisposeAsync();
+
+        await using var raw = await this._server.ConnectRawAsync();
+        this._server.Handler.BeforeAuthenticateSetOnlineForTests = () => {
+            // As the other request would, all of it, between this login's checks and its going online.
+            if (retire) {
+                Assert.True(this._server.Database.RetireIdentity(user.UserId, user.SigningKey, user.KeyVersion));
+            } else {
+                using var newKeys = IdentityKeys.Generate();
+                this._server.Database.RegisterUser(user.UserId, user.Name, 0, ProtocolInfo.DebugWorldName, newKeys.ToBundle(), true);
+            }
+
+            this._server.Registry.Disconnect(user.UserId, "Revoked");
+        };
+
+        var response = await raw.SendAsync(new ClientFrame { Authenticate = new Authenticate { DeviceToken = token } });
+        Assert.Equal(ErrorCode.NotAuthenticated, response.Error?.Code);
+        Assert.Null(response.AuthenticateOk);
+        Assert.False(this._server.Registry.IsOnline(user.UserId));
+        // And the connection is still logged out: requests that need a login are refused.
+        Assert.Equal(ErrorCode.NotAuthenticated, (await raw.SendAsync(new ClientFrame { ListChannels = new ListChannels() })).Error?.Code);
+    }
+
     [Fact]
     public void TheRetireSignatureCoversTheUserAndTheLogin() {
         using var keys = IdentityKeys.Generate();
