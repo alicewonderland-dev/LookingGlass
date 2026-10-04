@@ -313,6 +313,7 @@ public sealed class RequestHandler(
         }
 
         this.ValidateName(request.Name, channelId, 0, me);
+        RequireFirstRevision(request.Name);
         db.CreateChannel(channelId, me.UserId, request.CreatorKey, request.Name);
         logger.LogDebug("User {User} created channel {Channel}", me.UserId, channelId);
         return new Response { Channel = this.BuildChannelInfo(db.GetChannel(channelId)!, me.UserId) };
@@ -506,6 +507,10 @@ public sealed class RequestHandler(
         }
 
         this.ValidateName(request.Name, channelId, channel.Epoch, me);
+        if (request.Name.Revision > ProtocolInfo.MaxNameRevision) {
+            throw new RequestException(ErrorCode.InvalidRequest, "The name's revision is out of range.");
+        }
+
         if (channel.Name is { } current && current.Epoch == request.Name.Epoch && request.Name.Revision <= current.Revision) {
             // Clients refuse a name that isn't newer than theirs, so storing it would hide later renames.
             throw new RequestException(ErrorCode.Conflict, "The name's revision must be newer than the current one; refresh and try again.");
@@ -552,6 +557,7 @@ public sealed class RequestHandler(
         }
 
         this.ValidateName(request.Name, channelId, request.NewEpoch, me);
+        RequireFirstRevision(request.Name);
 
         switch (db.ApplyRekey(channelId, request.NewEpoch, me.UserId, request.Keys, request.Name)) {
             case RekeyResult.EpochStale:
@@ -718,6 +724,17 @@ public sealed class RequestHandler(
             || name.Ciphertext.Length is 0 or > 512
             || !ChannelCrypto.VerifyName(name, channelId, author.SigningKey)) {
             throw new RequestException(ErrorCode.InvalidRequest, "The encrypted channel name is missing or wrongly signed.");
+        }
+    }
+
+    /// <summary>
+    /// Revisions count renames within an epoch, so a new channel's or a new epoch's name is
+    /// revision 0. Renaming is the admin's alone; a member's rekey only carries the name over,
+    /// and must not be able to set a revision that blocks the admin's next renames.
+    /// </summary>
+    private static void RequireFirstRevision(EncryptedName name) {
+        if (name.Revision != 0) {
+            throw new RequestException(ErrorCode.InvalidRequest, "A new epoch's name must have revision 0; only a rename can change it.");
         }
     }
 

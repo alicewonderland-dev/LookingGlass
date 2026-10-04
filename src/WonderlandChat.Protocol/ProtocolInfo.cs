@@ -10,6 +10,9 @@ public static class ProtocolInfo {
     /// <summary>Path of the WebSocket endpoint on the server.</summary>
     public const string WebSocketPath = "/ws";
 
+    /// <summary>The highest channel name revision a server accepts (it stores them as signed 64-bit integers).</summary>
+    public const ulong MaxNameRevision = long.MaxValue;
+
     public static class Capabilities {
         public const string Chat = "chat.v1";
     }

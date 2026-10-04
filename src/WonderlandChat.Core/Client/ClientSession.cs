@@ -59,6 +59,8 @@ public sealed class ClientSession : IAsyncDisposable {
     // NewestMessageTimes changed but hasn't been saved; the next save includes it.
     private bool _replayStateDirty;
     private DateTimeOffset _replayStateSavedAt = DateTimeOffset.MinValue;
+    // Notices found while holding the lock; Publish raises them.
+    private readonly List<SessionNotice> _pendingNotices = new();
     // ----
 
     private long _savedSecretsVersion;
@@ -419,6 +421,11 @@ public sealed class ClientSession : IAsyncDisposable {
                 && this._identities.TryGetValue(offered.AuthorId, out var author)
                 && ChannelCrypto.VerifyName(offered, channelId, author.Identity.SigningPublicKey.Span)) {
                 current = Math.Max(current, offered.Revision);
+            }
+
+            // Only reachable if someone set a huge revision on purpose. It resets with the next epoch.
+            if (current >= ProtocolInfo.MaxNameRevision) {
+                throw new InvalidOperationException("This channel can't be renamed again until its key changes. Rekey it, then rename it.");
             }
 
             return (keyEpoch, this.GetEpochKey(channelId, keyEpoch)!, current + 1);
@@ -1508,10 +1515,19 @@ public sealed class ClientSession : IAsyncDisposable {
         }
 
         var name = ChannelCrypto.DecryptName(offered, channelId, key, author.Identity.SigningPublicKey.Span);
-        if (name != null) {
-            channel.Name = name;
-            this.SetNameVersion(channelId, version);
+        if (name == null) {
+            return;
         }
+
+        // A rekey carries the current name into the new epoch as revision 0; only the admin
+        // renames, as later revisions. But any member can rekey, so say who changed it.
+        if (offered.Revision == 0 && held != null && offered.Epoch == held.Epoch + 1 && channel.Name is { } previous && previous != name) {
+            this._pendingNotices.Add(new SessionNotice(NoticeLevel.Warning,
+                $"{author.User.Name}@{author.User.WorldName} changed the channel name from \"{previous}\" to \"{name}\" while rekeying.", channelId));
+        }
+
+        channel.Name = name;
+        this.SetNameVersion(channelId, version);
     }
 
     private void SetNameVersion(string channelId, NameVersion version) {
@@ -1639,7 +1655,10 @@ public sealed class ClientSession : IAsyncDisposable {
 
     private void Publish() {
         SessionSnapshot snapshot;
+        List<SessionNotice> notices;
         lock (this._lock) {
+            notices = [.. this._pendingNotices];
+            this._pendingNotices.Clear();
             snapshot = new SessionSnapshot(
                 this._state,
                 this._status,
@@ -1664,6 +1683,9 @@ public sealed class ClientSession : IAsyncDisposable {
         }
 
         this.InvokeSafely(this.SnapshotChanged, snapshot);
+        foreach (var notice in notices) {
+            this.InvokeSafely(this.Notice, notice);
+        }
     }
 
     private ChannelView ToView(ChannelState channel) {
