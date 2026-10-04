@@ -164,6 +164,41 @@ public sealed class MembershipLogTests : IAsyncLifetime {
         Assert.False(alice.Store.Load().EpochKeys[channelId].ContainsKey(epoch + 1));
     }
 
+    /// <summary>
+    /// Acceptance test 4, against a server that doesn't admit to an older log: after hiding the removal,
+    /// it claims a head past the remover's that it won't show, or her head's position with another hash.
+    /// </summary>
+    [Theory]
+    [InlineData(2)]
+    [InlineData(1)]
+    public async Task HiddenRemovalIsDetectedWhateverHeadTheServerClaims(int claimedAfterHiddenSeq) {
+        var alice = await this._server.RegisterAsync("Alice Lied To");
+        var carol = await this._server.RegisterAsync("Carol Lied About");
+        var channelId = await alice.Session.CreateChannelAsync("Lies", Ct);
+        await AddMemberAsync(alice, channelId, carol);
+        await alice.Session.DisposeAsync();
+        alice = await this._server.RestartAsync(alice, this._server.Options(autoRekey: false));
+        var before = this._server.Database.GetMembershipCheckpoint(channelId)!;
+        var carolKeys = carol.Keys();
+
+        alice.Session.AfterKickRequestForTests = () => {
+            this._server.ExecuteSql("""
+                DELETE FROM membership_log WHERE channel_id = $channel AND seq > $seq;
+                UPDATE channels SET log_seq = $claimed, log_hash = $junk, rekey_pending = 0 WHERE channel_id = $channel;
+                INSERT INTO members (channel_id, user_id, rank, joined_at, signing_key, agreement_key) VALUES ($channel, $carol, 2, 0, $signing, $agreement);
+                """,
+                ("$channel", channelId), ("$seq", (long) before.Seq), ("$claimed", (long) before.Seq + claimedAfterHiddenSeq),
+                ("$junk", new byte[32]), ("$carol", carol.UserId),
+                ("$signing", carolKeys.SigningKeyArray()), ("$agreement", carolKeys.AgreementKeyArray()));
+            return Task.CompletedTask;
+        };
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => alice.Session.KickAsync(channelId, carol.UserId, Ct));
+        Assert.Contains("hiding", error.Message);
+        await WaitFor(() => alice.Notices.FirstOrDefault(n => n.Level == NoticeLevel.Warning && n.Text.Contains("hiding a change")));
+        Assert.NotNull(alice.Session.Snapshot.FindChannel(channelId)!.MembershipWarning);
+    }
+
     /// <summary>Acceptance test 5.</summary>
     [Fact]
     public async Task ForkedLogIsReported() {
