@@ -44,8 +44,20 @@ On the server machine (Linux or Windows):
 
 ```sh
 ./scripts/run-dev-server.sh        # Linux / macOS
-./scripts/run-dev-server.ps1       # Windows PowerShell
 ```
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run-dev-server.ps1   # Windows
+```
+
+(Windows blocks `.ps1` scripts by default; `-ExecutionPolicy Bypass` applies to
+that one run only and changes no system setting.)
+
+The database lives outside the build output, so rebuilding, cleaning or running
+from another checkout of the code keeps your registrations and channels:
+`%LOCALAPPDATA%\LookingGlass\dev-server` on Windows,
+`~/.local/share/lookingglass/dev-server` on Linux (the script prints it). Set
+`LookingGlass__DataDirectory` first to use another folder.
 
 This listens on port 5180 on all interfaces in **Development** mode, which
 turns on debug accounts and runs an echo bot inside the server. Only do this
