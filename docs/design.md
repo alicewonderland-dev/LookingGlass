@@ -215,7 +215,7 @@ A single process with an embedded database, built around three rules: no lock he
 | Limit | Value | Why |
 | --- | --- | --- |
 | Message ciphertext size | 4 KiB | The game's chat input holds about 500 characters |
-| Frame size (any request) | 128 KiB | Bounds rekey bundles and list responses; a rekey for 500 members is about 82 KB |
+| Frame size (any request) | 128 KiB | Bounds rekey bundles and list responses; a rekey for 500 members is about 100 KB |
 | Messages per user | 5 per second burst, 1 per second sustained | Stops floods without affecting normal chat |
 | Rekeys per user | 5 burst, 1 every 2 seconds | Each rekey costs every member's client work |
 | Members per channel | 500 | Keeps rekey bundles small |
