@@ -55,9 +55,12 @@ that one run only and changes no system setting.)
 
 The database lives outside the build output, so rebuilding, cleaning or running
 from another checkout of the code keeps your registrations and channels:
-`%LOCALAPPDATA%\LookingGlass\dev-server` on Windows,
+`%USERPROFILE%\.lookingglass\dev-server` on Windows,
 `~/.local/share/lookingglass/dev-server` on Linux (the script prints it). Set
-`LookingGlass__DataDirectory` first to use another folder.
+`LookingGlass__DataDirectory` first to use another folder; the script says so
+when it does. (Not under `AppData` on Windows: Windows redirects packaged apps'
+`AppData` writes to a private folder, so a tool started from one, such as an AI
+coding assistant, would see a different database than you do.)
 
 This listens on port 5180 on all interfaces in **Development** mode, which
 turns on debug accounts and runs an echo bot inside the server. Only do this
