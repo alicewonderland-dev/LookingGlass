@@ -149,7 +149,9 @@ title shows the total. The counts start again from zero when you log in.
 **Members.** The icon before each member says whether you've compared
 fingerprints with them (a question mark until you have, a check once you
 marked them verified, a warning if their key changed); click it to compare.
-Their ⋮ menu has the rest. To remove someone, hold **Ctrl** while choosing
+Its colour says whether they're online: green while they're connected, grey
+when they aren't (a warning keeps its orange either way, and invitees stay
+grey until they join). Hover over it to see which. Their ⋮ menu has the rest. To remove someone, hold **Ctrl** while choosing
 **Remove from channel** (it stays greyed out otherwise); cancelling an invite
 happens straight away. Leaving or disbanding a channel (from the channel's ⋮
 menu) asks first.
@@ -286,6 +288,11 @@ What it does not do yet (0.2):
   channel (or invited to it) replays it from the start.
 - The server sees metadata (who is in which channel, when messages are sent)
   and can drop or delay anything.
+- Members who share a channel see when each other are online: the server
+  tells them when a fellow member connects or disconnects, and when someone
+  online joins. Invitees and people you share no channel with aren't told,
+  and you aren't shown to them. This comes from the server, which could lie
+  about it.
 - Debug accounts on a Development server can be taken over by anyone who can
   reach it.
 
