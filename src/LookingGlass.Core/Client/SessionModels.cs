@@ -15,6 +15,11 @@ public enum ConnectionState {
     Registering,
     Ready,
     Reconnecting,
+    /// <summary>
+    /// Connected, but the server doesn't recognise this device's saved login (the wrong server, or one that was
+    /// reset or restored). The login is kept and tried again now and then; registering again replaces it.
+    /// </summary>
+    LoginNotRecognized,
 }
 
 /// <summary>
@@ -25,6 +30,10 @@ public enum ConnectionState {
 /// <see cref="Channels"/> is the server's complete list, fetched on this connection.
 /// Until then it may be empty or left over from an earlier connection, so a channel
 /// missing from it may still exist.
+/// </param>
+/// <param name="LoginRejected">
+/// The server refused this device's saved login on this connection. The login is kept and tried again now and then;
+/// registering again replaces it. True in <see cref="ConnectionState.LoginNotRecognized"/>, and while registering again from it.
 /// </param>
 public sealed record SessionSnapshot(
     ConnectionState State,
@@ -37,7 +46,8 @@ public sealed record SessionSnapshot(
     bool DebugAccountsEnabled,
     RegistrationChallenge? PendingChallenge,
     ImmutableArray<User> BlockedUsers,
-    bool ChannelsLoaded) {
+    bool ChannelsLoaded,
+    bool LoginRejected = false) {
     public static readonly SessionSnapshot Empty = new(
         ConnectionState.Stopped, null, null, null,
         ImmutableArray<ChannelView>.Empty, ImmutableArray<InviteView>.Empty,
@@ -153,6 +163,14 @@ public sealed class ClientSessionOptions {
     public TimeSpan RequestTimeout { get; init; } = TimeSpan.FromSeconds(15);
     public TimeSpan ReconnectMinDelay { get; init; } = TimeSpan.FromSeconds(1);
     public TimeSpan ReconnectMaxDelay { get; init; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// How long to wait, at first, before trying a saved login the server didn't recognise again on the same
+    /// connection. The wait doubles after every try, up to <see cref="LoginRetryMaxDelay"/>.
+    /// </summary>
+    public TimeSpan LoginRetryMinDelay { get; init; } = TimeSpan.FromSeconds(5);
+
+    public TimeSpan LoginRetryMaxDelay { get; init; } = TimeSpan.FromMinutes(1);
 
     /// <summary>Rekey automatically when the server designates this client.</summary>
     public bool AutoRekeyWhenDesignated { get; init; } = true;

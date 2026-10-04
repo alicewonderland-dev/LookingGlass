@@ -29,6 +29,7 @@ public sealed class MainWindow : Window {
     private readonly SessionManager _sessions;
     private readonly UiActions _actions;
     private readonly Action _toggleSettings;
+    private readonly Action _openSettings;
     private readonly Modals _modals;
     private readonly ChannelPane _pane;
 
@@ -37,11 +38,14 @@ public sealed class MainWindow : Window {
     private string _newChannelName = "";
     private float _sidebarWidth = DefaultSidebarWidth;
 
-    public MainWindow(Configuration config, SessionManager sessions, UiActions actions, UiFonts fonts, Action toggleSettings) : base(Title + Id) {
+    /// <param name="toggleSettings">Opens the settings window, or closes it if open (the gear).</param>
+    /// <param name="openSettings">Opens the settings window, and brings it to the front.</param>
+    public MainWindow(Configuration config, SessionManager sessions, UiActions actions, UiFonts fonts, Action toggleSettings, Action openSettings) : base(Title + Id) {
         this._config = config;
         this._sessions = sessions;
         this._actions = actions;
         this._toggleSettings = toggleSettings;
+        this._openSettings = openSettings;
         this._modals = new Modals(actions);
         this._pane = new ChannelPane(sessions, actions, this._modals, fonts);
         this._pane.Closed += () => this._selectedChannel = null;
@@ -140,6 +144,9 @@ public sealed class MainWindow : Window {
             ConnectionState.Ready => ("Connected", ImGuiColors.HealerGreen, snapshot.StatusText ?? "Connected to the server."),
             ConnectionState.Connecting => ("Connecting...", ImGuiColors.DalamudOrange, snapshot.StatusText ?? "Waiting for the server."),
             ConnectionState.Reconnecting => ("Reconnecting...", ImGuiColors.DalamudOrange, snapshot.StatusText ?? "The connection to the server dropped. Trying again."),
+            ConnectionState.LoginNotRecognized => ("Login not recognised", Widgets.Warning, snapshot.StatusText ?? LoginNotRecognisedText),
+            ConnectionState.Registering when snapshot.LoginRejected => ("Registering again", Widgets.Warning,
+                snapshot.StatusText ?? "The server didn't recognise your login, so you're registering again. Follow the steps below."),
             ConnectionState.Unregistered or ConnectionState.Registering => ("Not registered", ImGuiColors.DalamudOrange,
                 snapshot.StatusText ?? "Connected, but this character isn't registered yet. Register it below."),
             _ => ("Stopped", ImGuiColors.DalamudGrey, snapshot.StatusText ?? "Not connected."),
@@ -280,6 +287,7 @@ public sealed class MainWindow : Window {
         switch (snapshot.State) {
             case ConnectionState.Unregistered:
             case ConnectionState.Registering:
+            case ConnectionState.LoginNotRecognized:
                 this.DrawRegistration(snapshot, session, player);
                 break;
             case ConnectionState.Ready when snapshot.Channels.IsEmpty:
@@ -303,8 +311,17 @@ public sealed class MainWindow : Window {
         ImGui.Indent(indent);
         ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + width);
         ImGui.Spacing();
-        ImGui.TextUnformatted("Register this character");
-        ImGui.TextColored(Widgets.Muted, "LookingGlass checks that the character is yours with a short code you put in your Lodestone profile for a few minutes.");
+
+        // A login the server refused: first what may be wrong and what to try, then registering again as the last resort.
+        var rejected = snapshot.State == ConnectionState.LoginNotRecognized || snapshot.LoginRejected;
+        if (rejected) {
+            this.DrawLoginNotRecognised(session);
+        }
+
+        ImGui.TextUnformatted(rejected ? "Register again" : "Register this character");
+        ImGui.TextColored(Widgets.Muted, rejected
+            ? "If your login doesn't work again, register again: it replaces your login. LookingGlass checks that the character is yours with a short code you put in your Lodestone profile for a few minutes."
+            : "LookingGlass checks that the character is yours with a short code you put in your Lodestone profile for a few minutes.");
         ImGui.Spacing();
         ImGui.Spacing();
 
@@ -374,6 +391,37 @@ public sealed class MainWindow : Window {
         EndStep();
         ImGui.PopTextWrapPos();
         ImGui.Unindent(indent);
+    }
+
+    private const string LoginNotRecognisedText =
+        "This server doesn't recognise your login. If you changed the server address or the server was reset, check the address in Settings; otherwise register again.";
+
+    /// <summary>
+    /// Above the registration steps when the server refused the saved login: what may be wrong, that the login is kept
+    /// and tried again, and buttons to check the server address and to try the login again now.
+    /// </summary>
+    private void DrawLoginNotRecognised(ClientSession session) {
+        Widgets.IconText(FontAwesomeIcon.ExclamationTriangle, "This server doesn't recognise your login", Widgets.Warning);
+        ImGui.TextUnformatted("If you changed the server address or the server was reset, check the address in Settings; otherwise register again.");
+        ImGui.TextColored(Widgets.Muted, "Your login is kept and tried again every minute or so, so it works again by itself once the server knows it.");
+        ImGui.TextColored(Widgets.Muted, $"Server: {this._config.ServerUrl}");
+        ImGui.Spacing();
+        ImGui.BeginDisabled(this._actions.Busy);
+        if (ImGui.Button("Retry now")) {
+            this._actions.Run("Trying your login again", () => session.RetryLoginAsync());
+        }
+
+        ImGui.EndDisabled();
+        Widgets.Tooltip("Try your saved login on this server again now.");
+        ImGui.SameLine();
+        if (Widgets.GhostButton("Open settings", "Check the server address. Also behind the gear in the title bar.")) {
+            this._openSettings();
+        }
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+        ImGui.Spacing();
     }
 
     /// <summary>A numbered circle (a check once done), with the step's lines beside it until <see cref="EndStep"/>. Later steps are greyed.</summary>

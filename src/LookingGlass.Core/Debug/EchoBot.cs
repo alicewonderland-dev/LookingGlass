@@ -43,7 +43,9 @@ public sealed class EchoBot : IAsyncDisposable {
     }
 
     private void OnSnapshot(SessionSnapshot snapshot) {
-        if (snapshot.State != ConnectionState.Unregistered || this._registration is { IsCompleted: false }) {
+        // A server that doesn't recognise the bot's login lost it (the bot runs on its own server), and a debug
+        // account needs no Lodestone, so it registers again straight away rather than waiting for the login to work again.
+        if (snapshot.State is not (ConnectionState.Unregistered or ConnectionState.LoginNotRecognized) || this._registration is { IsCompleted: false }) {
             return;
         }
 

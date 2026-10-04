@@ -29,10 +29,12 @@ public sealed class ServerHardeningTests {
 
             await using var disabled = new Harness(directory, allowDebugAccounts: false);
 
-            // The existing debug account's token is refused...
+            // The existing debug account's token is refused (and kept, in case the server allows them again)...
+            var token = store.Load().DeviceToken;
             var returning = disabled.StartClient("Debug Gate", store);
-            await WaitFor(() => returning.Session.Snapshot.State == ConnectionState.Unregistered ? new object() : null);
+            await WaitFor(() => returning.Session.Snapshot.State == ConnectionState.LoginNotRecognized ? new object() : null);
             Assert.False(returning.Session.Snapshot.DebugAccountsEnabled);
+            Assert.Equal(token, store.Load().DeviceToken);
 
             // ...and new debug registrations are refused.
             var error = await Assert.ThrowsAsync<ServerErrorException>(() => returning.Session.StartRegistrationAsync(
