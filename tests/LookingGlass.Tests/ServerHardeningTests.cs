@@ -105,6 +105,7 @@ public sealed class ServerHardeningTests {
             // As if made by schema 2, before name sources and the membership log, and holding no channels.
             QueryLong(path, """
                 DROP TABLE retired_keys;
+                DROP INDEX users_by_signing_key;
                 DROP TABLE membership_log;
                 ALTER TABLE channels DROP COLUMN name_source_epoch;
                 ALTER TABLE channels DROP COLUMN name_source_revision;
@@ -128,7 +129,7 @@ public sealed class ServerHardeningTests {
             Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
 
             var migrated = new Database(path);
-            Assert.Equal(5L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
+            Assert.Equal(6L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
             Assert.NotNull(migrated.GetUser(user));
             var (channelId, _, _) = CreateChannel(migrated);
             Assert.Null(migrated.GetChannel(channelId)!.Name!.CarriedFrom);
@@ -149,18 +150,71 @@ public sealed class ServerHardeningTests {
         try {
             var path = Path.Combine(directory, "test.db");
             var (channelId, admin, keys) = CreateChannel(db);
-            QueryLong(path, "DROP TABLE retired_keys; DELETE FROM schema_version WHERE version >= 5; SELECT 0;");
+            QueryLong(path, "DROP TABLE retired_keys; DROP INDEX users_by_signing_key; DELETE FROM schema_version WHERE version >= 5; SELECT 0;");
             Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
 
             var migrated = new Database(path);
-            Assert.Equal(5L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
+            Assert.Equal(6L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
             Assert.NotNull(migrated.GetChannel(channelId));
-            Assert.False(migrated.IsKeyRetired(keys.SigningPublicKey));
+            Assert.False(migrated.IsKeyRetired(admin, keys.SigningPublicKey));
 
             using var newKeys = IdentityKeys.Generate();
             migrated.RegisterUser(admin, "Channel Admin", 0, ProtocolInfo.DebugWorldName, newKeys.ToBundle(), true);
-            Assert.True(migrated.IsKeyRetired(keys.SigningPublicKey));
+            Assert.True(migrated.IsKeyRetired(admin, keys.SigningPublicKey));
             Assert.Throws<KeyRetiredException>(() => migrated.RegisterUser(admin, "Channel Admin", 0, ProtocolInfo.DebugWorldName, keys.ToBundle(), true));
+        } finally {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            DeleteDirectory(directory);
+        }
+    }
+
+    /// <summary>
+    /// A database made while retired keys were kept per key alone (schema 5, never released) keeps its retirements, each
+    /// now for the account it was recorded for: one that recorded another account's key (as the exploit of registering
+    /// someone's public key did) no longer shuts that account out.
+    /// </summary>
+    [Fact]
+    public void Schema5DatabaseKeepsItsRetiredKeysPerAccount() {
+        var (db, directory) = NewDatabase();
+        try {
+            var path = Path.Combine(directory, "test.db");
+            var (alice, aliceKeys) = RegisterUser(db, "Schema Five Alice");
+            var (mallory, _) = RegisterUser(db, "Schema Five Mallory");
+            using var replaced = IdentityKeys.Generate();
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={path};Pooling=False")) {
+                connection.Open();
+                using var command = connection.CreateCommand();
+                command.CommandText = """
+                    DROP TABLE retired_keys;
+                    DROP INDEX users_by_signing_key;
+                    CREATE TABLE retired_keys (
+                        signing_key BLOB    PRIMARY KEY,
+                        user_id     INTEGER NOT NULL,
+                        retired_at  INTEGER NOT NULL
+                    );
+                    INSERT INTO retired_keys (signing_key, user_id, retired_at) VALUES ($replaced, $alice, 1), ($aliceKey, $mallory, 2);
+                    DELETE FROM schema_version WHERE version >= 6;
+                    """;
+                command.Parameters.AddWithValue("$replaced", replaced.SigningPublicKey);
+                command.Parameters.AddWithValue("$alice", alice);
+                command.Parameters.AddWithValue("$aliceKey", aliceKeys.SigningPublicKey);
+                command.Parameters.AddWithValue("$mallory", mallory);
+                command.ExecuteNonQuery();
+            }
+
+            var migrated = new Database(path);
+            Assert.Equal(6L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
+            Assert.Equal(2L, QueryLong(path, "SELECT COUNT(*) FROM retired_keys;"));
+            Assert.True(migrated.IsKeyRetired(alice, replaced.SigningPublicKey));
+            Assert.True(migrated.IsKeyRetired(mallory, aliceKeys.SigningPublicKey));
+            Assert.False(migrated.IsKeyRetired(alice, aliceKeys.SigningPublicKey));
+            var user = migrated.GetUser(alice)!;
+            Assert.True(migrated.AddDeviceForKey(alice, user.SigningKey, user.KeyVersion, System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)));
+
+            // One key may now be retired for several accounts.
+            Assert.True(migrated.RetireIdentity(alice, user.SigningKey, user.KeyVersion));
+            Assert.Equal(2L, QueryLong(path, "SELECT COUNT(*) FROM retired_keys WHERE signing_key = x'" + Convert.ToHexString(aliceKeys.SigningPublicKey) + "';"));
         } finally {
             Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
             DeleteDirectory(directory);
@@ -173,7 +227,7 @@ public sealed class ServerHardeningTests {
         try {
             var path = Path.Combine(directory, "test.db");
             var (channelId, _, _) = CreateChannel(db);
-            Assert.Equal(5L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
+            Assert.Equal(6L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
 
             // As if the file were left over from the unreleased schema 1.
             QueryLong(path, "DELETE FROM schema_version WHERE version >= 2; SELECT 0;");

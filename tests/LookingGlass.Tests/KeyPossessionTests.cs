@@ -2,6 +2,7 @@ using Google.Protobuf;
 using LookingGlass.Core.Client;
 using LookingGlass.Core.Crypto;
 using LookingGlass.Protocol;
+using LookingGlass.Server.Data;
 using LookingGlass.Server.Realtime;
 using static LookingGlass.Tests.Harness;
 
@@ -133,6 +134,98 @@ public sealed class KeyPossessionTests : IAsyncLifetime {
         Assert.False(RegistrationProof.Verify(other.SigningPublicKey, nonce, 1234, url, signature));
         // Its own domain: a key login signature over the same fields doesn't count.
         Assert.False(RegistrationProof.Verify(keys.SigningPublicKey, nonce, 1234, url, KeyLoginProof.Sign(keys, nonce, 1234, url)));
+    }
+
+    // ================================================================ one key, one account
+
+    /// <summary>
+    /// A signing key is registered to one account at most: with registrations signed, only the key's owner could register
+    /// it for a second character, and the plugin never does (it keeps keys per character). Refused when registering
+    /// starts, and when it completes for a key another account registered meanwhile; nothing is stored.
+    /// </summary>
+    [Fact]
+    public async Task AKeyIsRegisteredToOneAccountOnly() {
+        var alice = await this._server.RegisterAsync("Alice Unique");
+        using var aliceKeys = alice.LoadIdentity();
+
+        await using var raw = await this._server.ConnectRawAsync();
+        var refused = await raw.SendAsync(Start("Alice Second", aliceKeys.ToBundle()));
+        Assert.Equal(ErrorCode.RegistrationFailed, refused.Error?.Code);
+        Assert.Contains("another character", refused.Error!.Message);
+        Assert.Throws<KeyInUseException>(() =>
+            this._server.Database.RegisterUser(RequestHandler.DebugUserId("Alice Second"), "Alice Second", 0, ProtocolInfo.DebugWorldName, aliceKeys.ToBundle(), true));
+        Assert.Null(this._server.Database.GetUser(RequestHandler.DebugUserId("Alice Second")));
+
+        // A key no account has when registering starts, registered by another before it completes.
+        using var keys = IdentityKeys.Generate();
+        var challenge = (await raw.SendAsync(Start("Bob Raced", keys.ToBundle()))).RegistrationChallenge!;
+        this._server.Database.RegisterUser(RequestHandler.DebugUserId("Carol Raced"), "Carol Raced", 0, ProtocolInfo.DebugWorldName, keys.ToBundle(), true);
+        var late = await raw.SendAsync(Complete(this.Url, RegistrationProof.Sign(keys, challenge.Nonce.Span, challenge.LodestoneId, this.Url)));
+        Assert.Equal(ErrorCode.RegistrationFailed, late.Error?.Code);
+        Assert.Contains("another character", late.Error!.Message);
+        Assert.Null(this._server.Database.GetUser(challenge.LodestoneId));
+
+        // Registering again with the key the account already has is fine.
+        await using var again = await this._server.ConnectRawAsync();
+        Assert.NotNull((await this.RegisterRawAsync(again, alice.Name, aliceKeys)).RegistrationComplete);
+    }
+
+    // ================================================================ retirement is per account
+
+    /// <summary>
+    /// A key is retired for the account that replaced or retired it, never for another account: even if one account's
+    /// row somehow named another's key, its retirement doesn't touch the other account's login, key login or registration.
+    /// </summary>
+    [Fact]
+    public async Task ARetiredKeyOnlyShutsOutTheAccountItWasRetiredFor() {
+        var alice = await this._server.RegisterAsync("Alice Untouched");
+        var token = alice.Store.Load().DeviceToken!;
+        using var aliceKeys = alice.LoadIdentity();
+        const long otherAccount = 4242424242;
+        this._server.ExecuteSql("INSERT INTO retired_keys (user_id, signing_key, retired_at) VALUES ($id, $key, 0);",
+            ("$id", otherAccount), ("$key", aliceKeys.SigningPublicKey));
+
+        Assert.True(this._server.Database.IsKeyRetired(otherAccount, aliceKeys.SigningPublicKey));
+        Assert.False(this._server.Database.IsKeyRetired(alice.UserId, aliceKeys.SigningPublicKey));
+        await this.AssertUnaffectedAsync(alice, token, aliceKeys);
+    }
+
+    /// <summary>
+    /// The exploit's end state on a database from before registrations were signed: Mallory's account was registered with
+    /// Alice's key. Mallory registering again with new keys retires that key for Mallory's account only.
+    /// </summary>
+    [Fact]
+    public async Task ReplacingAKeyAnotherAccountAlsoHasRetiresItOnlyForTheOneReplacingIt() {
+        var alice = await this._server.RegisterAsync("Alice Shared");
+        var token = alice.Store.Load().DeviceToken!;
+        using var aliceKeys = alice.LoadIdentity();
+        var mallory = await this._server.RegisterAsync("Mallory Shared");
+        var malloryId = mallory.UserId;
+        await mallory.Session.DisposeAsync();
+        var published = this._server.Database.GetUser(alice.UserId)!;
+        this._server.ExecuteSql("UPDATE users SET signing_key = $s, agreement_key = $a, binding_signature = $b WHERE user_id = $id;",
+            ("$s", published.SigningKey), ("$a", published.AgreementKey), ("$b", published.BindingSignature), ("$id", malloryId));
+
+        using var newKeys = IdentityKeys.Generate();
+        var (_, changed) = this._server.Database.RegisterUser(malloryId, mallory.Name, 0, ProtocolInfo.DebugWorldName, newKeys.ToBundle(), true);
+        Assert.True(changed);
+
+        Assert.True(this._server.Database.IsKeyRetired(malloryId, aliceKeys.SigningPublicKey));
+        Assert.False(this._server.Database.IsKeyRetired(alice.UserId, aliceKeys.SigningPublicKey));
+        await this.AssertUnaffectedAsync(alice, token, aliceKeys);
+    }
+
+    /// <summary>Alice's login, key login, a new device, and registering again with her key all work.</summary>
+    private async Task AssertUnaffectedAsync(TestClient alice, string token, IdentityKeys aliceKeys) {
+        await alice.Session.DisposeAsync();
+        await using var login = await this._server.ConnectRawAsync();
+        Assert.NotNull((await login.SendAsync(new ClientFrame { Authenticate = new Authenticate { DeviceToken = token } })).AuthenticateOk);
+        await using var keyLogin = await this._server.ConnectRawAsync();
+        Assert.NotNull((await KeyLoginAsync(keyLogin, aliceKeys, alice.UserId, this.Url)).KeyLoginComplete);
+        var user = this._server.Database.GetUser(alice.UserId)!;
+        Assert.True(this._server.Database.AddDeviceForKey(user.UserId, user.SigningKey, user.KeyVersion, System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)));
+        await using var register = await this._server.ConnectRawAsync();
+        Assert.NotNull((await this.RegisterRawAsync(register, alice.Name, aliceKeys)).RegistrationComplete);
     }
 
     // ================================================================ helpers
