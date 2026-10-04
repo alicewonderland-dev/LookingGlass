@@ -108,6 +108,25 @@ public sealed class RequestHandlerTests : IDisposable {
         Assert.Null(this._db.GetUser(RequestHandler.DebugUserId("Zero Key")));
     }
 
+    /// <summary>
+    /// v0.2 changed the wire protocol (log positions in signatures, entries on membership requests), so a
+    /// 0.1 plugin, which only offers protocol version 1, must be turned away at Hello with a clear message,
+    /// not let in to fail confusingly later.
+    /// </summary>
+    [Fact]
+    public async Task HelloOfferingOnlyProtocolVersion1IsAskedToUpdate() {
+        var connection = new ClientConnection(new ClosedWebSocket(), "203.0.113.50", 128 * 1024, 64, NullLogger.Instance);
+        var hello = new Hello { ClientVersion = "0.1.0" };
+        hello.ProtocolVersions.Add(1);
+
+        var response = await this.SendAsync(connection, new ClientFrame { Hello = hello });
+
+        Assert.Null(response.Welcome);
+        Assert.Equal(ErrorCode.UnsupportedVersion, response.Error?.Code);
+        Assert.Contains("Please update the plugin", response.Error!.Message);
+        Assert.False(connection.HelloDone);
+    }
+
     // ---------------------------------------------------------------- helpers
 
     private Task<Response> SendAsync(ClientConnection connection, ClientFrame frame) => this._handler.HandleAsync(connection, frame, Ct);
