@@ -99,10 +99,23 @@ against the install folder.
 
 Production deployment: `deploy/wonderlandchat.service` (systemd) or the
 `Dockerfile`. By default the server only listens on `127.0.0.1:5180`; put a
-TLS reverse proxy (for example Caddy) in front and use `wss://` URLs. The
-server reads client addresses from `X-Forwarded-For` only when the proxy is on
-the same machine, or listed in `WonderlandChat:TrustedProxies`, so per-IP
-limits apply to real clients.
+TLS reverse proxy (for example Caddy) in front and use `wss://` URLs.
+
+Per-IP limits (registrations and concurrent connections) only work if the
+server sees real client addresses. It reads them from `X-Forwarded-For`, but
+only when the connection comes from a trusted proxy: one on the same machine
+(loopback), or one listed in `WonderlandChat:TrustedProxies`, which takes
+single addresses (`"10.0.0.5"`) and networks in CIDR form
+(`"172.17.0.0/16"`). Otherwise every client appears to be the proxy, and the
+limits apply to everyone together. IPv6 clients are counted per /64.
+
+**Docker:** a reverse proxy on the host reaches the container through Docker's
+bridge network, so inside the container the proxy's address is the bridge
+gateway (often `172.17.0.1`), not loopback. Trust the bridge network, for
+example `WonderlandChat__TrustedProxies__0=172.17.0.0/16` (check yours with
+`docker network inspect bridge`). Only do this if nothing untrusted can
+connect to the container from that network; a proxy running in another
+container on a user-defined network needs that network trusted instead.
 
 ## Security model
 
@@ -114,14 +127,30 @@ What the encryption does today:
   fingerprints over /tell, then press "Mark verified").
 - Each channel has an epoch key. Any membership change (join, leave, kick,
   re-registration) makes a member generate a new one, seal it to every
-  member's X25519 key, and sign it. The server stores and forwards the sealed
-  copies but can't open them.
+  member's X25519 key, and sign it together with a commitment to the key.
+  Every copy carries the same commitment, so a member who hands someone a
+  different or unreadable key is named in a warning, and that client rekeys.
+  The server stores and forwards the sealed copies but can't open them.
 - Messages are XChaCha20-Poly1305 encrypted under the epoch key and signed by
   the sender. The server can't read them, alter them, or attribute them to
-  someone else, and clients drop replays and messages dated more than 10
-  minutes from now.
-- Clients only accept a new epoch key from a current member, and only for a
-  newer epoch than they hold; channel names from older epochs are ignored.
+  someone else.
+- Replays: clients remember the IDs of recent verified messages (in memory),
+  drop messages dated more than 10 minutes from their own clock, and save,
+  per channel and sender, the timestamp of the newest message accepted.
+  Messages more than 2 minutes older than that are dropped, even after a
+  restart. A message is only accepted from a current member, and under an
+  older epoch only within 2 minutes of the client getting the newer key.
+- Clients only accept a new epoch key from a member according to the
+  server's member list (verifiable membership is planned for v0.2), and only
+  for a newer epoch than they hold. They send with the newest key they hold,
+  whatever epoch the server claims.
+- Channel names carry a signed epoch and revision. Clients only accept a
+  name encrypted under the key they use, and never one older than the newest
+  they have accepted (remembered across restarts), so a server can't roll a
+  name back, whether to a name from an older epoch or an earlier rename.
+- Clients can block users: their invites are declined unseen and their
+  messages hidden. An invite from someone whose identity key changed can't
+  be accepted until it is marked verified.
 
 What it does not do yet (0.1):
 
