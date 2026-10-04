@@ -66,6 +66,36 @@ public class CryptoTests {
     }
 
     [Fact]
+    public void EpochKeyCommitmentIsSignedAndChecked() {
+        using var author = IdentityKeys.Generate();
+        using var member = IdentityKeys.Generate();
+        var key = ChannelCrypto.NewEpochKey();
+        var otherKey = ChannelCrypto.NewEpochKey();
+
+        var honest = ChannelCrypto.SealEpochKey(key, ChannelId, 3, author, 1, 2, member.AgreementPublicKey);
+        Assert.Equal(EpochKeyCheck.Valid, ChannelCrypto.TryOpenEpochKey(honest, ChannelId, 3, 1, author.SigningPublicKey, member, 2, out var opened));
+        Assert.Equal(key, opened);
+
+        // The author seals a different key under the commitment everyone else got: signed, but caught.
+        var split = ChannelCrypto.SealEpochKey(otherKey, ChannelId, 3, author, 1, 2, member.AgreementPublicKey);
+        split.KeyCommitment = honest.KeyCommitment;
+        ChannelCrypto.SignEpochKey(split, ChannelId, 3, author, 1);
+        Assert.Equal(EpochKeyCheck.CommitmentMismatch, ChannelCrypto.TryOpenEpochKey(split, ChannelId, 3, 1, author.SigningPublicKey, member, 2, out _));
+        Assert.Null(ChannelCrypto.OpenEpochKey(split, ChannelId, 3, 1, author.SigningPublicKey, member, 2));
+
+        // The author signs a box that opens to nothing.
+        var junk = honest.Clone();
+        junk.Box = new SealedBox { EphemeralPublicKey = honest.Box.EphemeralPublicKey, Ciphertext = ByteString.CopyFrom(new byte[48]) };
+        ChannelCrypto.SignEpochKey(junk, ChannelId, 3, author, 1);
+        Assert.Equal(EpochKeyCheck.Unreadable, ChannelCrypto.TryOpenEpochKey(junk, ChannelId, 3, 1, author.SigningPublicKey, member, 2, out _));
+
+        // Anyone else changing the commitment breaks the signature.
+        var tampered = honest.Clone();
+        tampered.KeyCommitment = ByteString.CopyFrom(ChannelCrypto.KeyCommitment(ChannelId, 3, otherKey));
+        Assert.Equal(EpochKeyCheck.BadSignature, ChannelCrypto.TryOpenEpochKey(tampered, ChannelId, 3, 1, author.SigningPublicKey, member, 2, out _));
+    }
+
+    [Fact]
     public void MessageDecryptsAndTamperingIsDetected() {
         using var sender = IdentityKeys.Generate();
         using var impostor = IdentityKeys.Generate();

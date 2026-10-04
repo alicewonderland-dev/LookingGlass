@@ -1,4 +1,4 @@
-using System.Security.Cryptography;
+﻿using System.Security.Cryptography;
 using System.Text;
 using Google.Protobuf;
 using NSec.Cryptography;
@@ -13,6 +13,7 @@ namespace WonderlandChat.Core.Crypto;
 /// </summary>
 public static class ChannelCrypto {
     public const int EpochKeySize = 32;
+    public const int KeyCommitmentSize = 32;
     private static readonly AeadAlgorithm Aead = AeadAlgorithm.XChaCha20Poly1305;
 
     public static byte[] NewEpochKey() => RandomNumberGenerator.GetBytes(EpochKeySize);
@@ -30,30 +31,65 @@ public static class ChannelCrypto {
             .Add(EpochKeyContext(channelId, epoch, key.RecipientId, authorId))
             .Add(key.Box == null ? ReadOnlySpan<byte>.Empty : key.Box.EphemeralPublicKey.Span)
             .Add(key.Box == null ? ReadOnlySpan<byte>.Empty : key.Box.Ciphertext.Span)
+            .Add(key.KeyCommitment.Span)
             .ToArray();
+    }
+
+    /// <summary>
+    /// Commits to an epoch key without revealing it. Every copy of a key carries
+    /// this, signed, so a recipient can tell whether the author gave everyone
+    /// the same key.
+    /// </summary>
+    public static byte[] KeyCommitment(string channelId, ulong epoch, ReadOnlySpan<byte> epochKey) {
+        return SHA256.HashData(new SigningPayload(Domains.EpochKeyCommitment).Add(channelId).Add(epoch).Add(epochKey).ToArray());
     }
 
     public static SealedEpochKey SealEpochKey(byte[] epochKey, string channelId, ulong epoch, IdentityKeys author, long authorId, long recipientId, ReadOnlySpan<byte> recipientAgreementKey) {
         var sealedKey = new SealedEpochKey {
             RecipientId = recipientId,
             Box = SealedBoxes.Seal(epochKey, recipientAgreementKey, EpochKeyContext(channelId, epoch, recipientId, authorId)),
+            KeyCommitment = ByteString.CopyFrom(KeyCommitment(channelId, epoch, epochKey)),
         };
-        sealedKey.Signature = ByteString.CopyFrom(author.Sign(EpochKeySignaturePayload(channelId, epoch, authorId, sealedKey)));
+        SignEpochKey(sealedKey, channelId, epoch, author, authorId);
         return sealedKey;
+    }
+
+    /// <summary>(Re)signs a sealed key as it stands. Tests use it to forge keys a dishonest member could make.</summary>
+    internal static void SignEpochKey(SealedEpochKey key, string channelId, ulong epoch, IdentityKeys author, long authorId) {
+        key.Signature = ByteString.CopyFrom(author.Sign(EpochKeySignaturePayload(channelId, epoch, authorId, key)));
     }
 
     public static bool VerifyEpochKey(SealedEpochKey key, string channelId, ulong epoch, long authorId, ReadOnlySpan<byte> authorSigningKey) {
         return IdentityKeys.Verify(authorSigningKey, EpochKeySignaturePayload(channelId, epoch, authorId, key), key.Signature.Span);
     }
 
-    /// <returns>The epoch key, or null if the signature or decryption fails.</returns>
-    public static byte[]? OpenEpochKey(SealedEpochKey key, string channelId, ulong epoch, long authorId, ReadOnlySpan<byte> authorSigningKey, IdentityKeys me, long myId) {
+    /// <summary>
+    /// Verifies and opens a sealed epoch key. <see cref="EpochKeyCheck.Unreadable"/>
+    /// and <see cref="EpochKeyCheck.CommitmentMismatch"/> mean the author really
+    /// signed a key that is no use to this recipient.
+    /// </summary>
+    public static EpochKeyCheck TryOpenEpochKey(SealedEpochKey key, string channelId, ulong epoch, long authorId, ReadOnlySpan<byte> authorSigningKey, IdentityKeys me, long myId, out byte[]? epochKey) {
+        epochKey = null;
         if (key.RecipientId != myId || !VerifyEpochKey(key, channelId, epoch, authorId, authorSigningKey)) {
-            return null;
+            return EpochKeyCheck.BadSignature;
         }
 
         var opened = SealedBoxes.Open(key.Box, me, EpochKeyContext(channelId, epoch, myId, authorId));
-        return opened is { Length: EpochKeySize } ? opened : null;
+        if (opened is not { Length: EpochKeySize }) {
+            return EpochKeyCheck.Unreadable;
+        }
+
+        if (!CryptographicOperations.FixedTimeEquals(KeyCommitment(channelId, epoch, opened), key.KeyCommitment.Span)) {
+            return EpochKeyCheck.CommitmentMismatch;
+        }
+
+        epochKey = opened;
+        return EpochKeyCheck.Valid;
+    }
+
+    /// <returns>The epoch key, or null if the signature, decryption or commitment check fails.</returns>
+    public static byte[]? OpenEpochKey(SealedEpochKey key, string channelId, ulong epoch, long authorId, ReadOnlySpan<byte> authorSigningKey, IdentityKeys me, long myId) {
+        return TryOpenEpochKey(key, channelId, epoch, authorId, authorSigningKey, me, myId, out var epochKey) == EpochKeyCheck.Valid ? epochKey : null;
     }
 
     // ------------------------------------------------------------ channel names
@@ -202,4 +238,17 @@ public static class ChannelCrypto {
         using var key = Key.Import(Aead, rawKey, KeyBlobFormat.RawSymmetricKey);
         return Aead.Decrypt(key, data[..Aead.NonceSize], associatedData, data[Aead.NonceSize..]);
     }
+}
+
+public enum EpochKeyCheck {
+    Valid,
+
+    /// <summary>Not addressed to this recipient, or not signed by the claimed author. Could be forged by the server.</summary>
+    BadSignature,
+
+    /// <summary>Signed by the author, but the box doesn't open to a key for this recipient.</summary>
+    Unreadable,
+
+    /// <summary>Signed by the author, but the key inside doesn't match the commitment everyone else got.</summary>
+    CommitmentMismatch,
 }

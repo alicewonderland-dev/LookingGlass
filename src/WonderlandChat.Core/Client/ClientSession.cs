@@ -149,6 +149,9 @@ public sealed class ClientSession : IAsyncDisposable {
         return DateTimeOffset.UtcNow - started;
     }
 
+    /// <summary>Sends a request exactly as given, bypassing every client check. Only for tests that play a misbehaving client.</summary>
+    internal Task<Response> SendRawAsync(ClientFrame frame, CancellationToken ct = default) => this.RequestAsync(frame, ct);
+
     // ================================================================ registration
 
     public async Task<RegistrationChallenge> StartRegistrationAsync(Character character, CancellationToken ct = default) {
@@ -398,6 +401,7 @@ public sealed class ClientSession : IAsyncDisposable {
                     ChannelId = channelId,
                     NewEpoch = newEpoch,
                     Name = ChannelCrypto.EncryptName(name, key, channelId, newEpoch, identity, me.UserId),
+                    KeyCommitment = ByteString.CopyFrom(ChannelCrypto.KeyCommitment(channelId, newEpoch, key)),
                 };
 
                 foreach (var memberId in memberIds) {
@@ -908,20 +912,32 @@ public sealed class ClientSession : IAsyncDisposable {
         }
 
         string? rejected = null;
+        BadKey? bad = null;
         lock (this._lock) {
             if (this._identity == null || this._me == null || !this._channels.TryGetValue(advanced.ChannelId, out var channel)) {
                 return;
             }
 
-            rejected = this.CheckEpochKeyAuthor(channel, advanced.Epoch, advanced.AuthorId);
-            var key = rejected != null || advanced.MyKey == null
-                ? null
-                : ChannelCrypto.OpenEpochKey(advanced.MyKey, advanced.ChannelId, advanced.Epoch, advanced.AuthorId, author.Identity.SigningPublicKey.Span, this._identity, this._me.UserId);
+            byte[]? key = null;
+            var check = advanced.MyKey == null
+                ? EpochKeyCheck.BadSignature
+                : ChannelCrypto.TryOpenEpochKey(advanced.MyKey, advanced.ChannelId, advanced.Epoch, advanced.AuthorId, author.Identity.SigningPublicKey.Span, this._identity, this._me.UserId, out key);
+            var alreadyHeld = key != null && this.GetEpochKey(advanced.ChannelId, advanced.Epoch) is { } existing && existing.AsSpan().SequenceEqual(key);
 
-            if (key == null) {
-                rejected ??= "it failed signature or decryption checks";
-            } else {
-                this.StoreEpochKey(advanced.ChannelId, advanced.Epoch, key);
+            // The same key may already have been fetched while this event waited in the queue: not a replay.
+            if (!alreadyHeld) {
+                rejected = this.CheckEpochKeyAuthor(channel, advanced.Epoch, advanced.AuthorId);
+                if (rejected == null && key == null) {
+                    bad = this.FlagBadEpochKey(channel, advanced.Epoch, author.User, check);
+                    rejected = "it failed signature or decryption checks";
+                }
+            }
+
+            if (rejected == null) {
+                if (!alreadyHeld) {
+                    this.StoreEpochKey(advanced.ChannelId, advanced.Epoch, key!);
+                }
+
                 channel.ServerEpoch = Math.Max(channel.ServerEpoch, advanced.Epoch);
                 channel.RekeyPending = false;
                 if (advanced.Name != null) {
@@ -932,6 +948,11 @@ public sealed class ClientSession : IAsyncDisposable {
             }
         }
 
+        if (bad != null) {
+            this.HandleBadEpochKey(bad);
+            return;
+        }
+
         if (rejected != null) {
             this.RaiseNotice(NoticeLevel.Warning, $"Rejected a new key for a channel: {rejected}.", advanced.ChannelId);
             return;
@@ -939,6 +960,47 @@ public sealed class ClientSession : IAsyncDisposable {
 
         this.SaveSecrets();
         this.Publish();
+    }
+
+    private sealed record BadKey(string ChannelId, string Message, bool Rekey);
+
+    /// <summary>
+    /// A member signed an epoch key that is no use to us: it doesn't open, or
+    /// it isn't the key they committed to for everyone. Either they are trying
+    /// to cut us off or split the channel, or they sealed it to an outdated
+    /// identity. The fix is the same: a fresh key from us. Call inside the lock.
+    /// </summary>
+    /// <returns>What to tell the user and whether to rekey, or null if the key was fine or merely forged.</returns>
+    private BadKey? FlagBadEpochKey(ChannelState channel, ulong epoch, User author, EpochKeyCheck check) {
+        var problem = check switch {
+            EpochKeyCheck.CommitmentMismatch => "isn't the key they committed to giving everyone else",
+            EpochKeyCheck.Unreadable => "can't be opened with your identity key",
+            // A bad signature proves nothing about the author: the server could have made it up.
+            _ => null,
+        };
+
+        if (problem == null) {
+            return null;
+        }
+
+        channel.ServerEpoch = Math.Max(channel.ServerEpoch, epoch);
+        channel.RekeyPending = true;
+        // One automatic rekey per epoch, so two clients can't keep rekeying each other.
+        var rekey = channel.BadKeyRekeyEpoch != epoch;
+        channel.BadKeyRekeyEpoch = epoch;
+
+        return new BadKey(channel.Id,
+            $"{author.Name}@{author.WorldName} sent you a key for {channel.DisplayName} (epoch {epoch}) that {problem}. " +
+            $"They may be trying to cut you off or split the channel{(rekey ? "; rekeying it now." : ".")}",
+            rekey);
+    }
+
+    private void HandleBadEpochKey(BadKey bad) {
+        this.Publish();
+        this.RaiseNotice(NoticeLevel.Warning, bad.Message, bad.ChannelId);
+        if (bad.Rekey) {
+            this.RunBackground("Rekeying a channel", ct => this.RekeyAsync(bad.ChannelId, ct));
+        }
     }
 
     /// <summary>
@@ -1047,6 +1109,7 @@ public sealed class ClientSession : IAsyncDisposable {
 
         var identities = await this.EnsureIdentitiesAsync(authors, ct, connection);
 
+        BadKey? bad = null;
         lock (this._lock) {
             if (this._identity == null || this._me == null || !this._channels.TryGetValue(channelId, out var channel)) {
                 return;
@@ -1063,11 +1126,12 @@ public sealed class ClientSession : IAsyncDisposable {
                     continue;
                 }
 
-                var key = ChannelCrypto.OpenEpochKey(entry.Key, channelId, entry.Epoch, entry.AuthorId, author.Identity.SigningPublicKey.Span, this._identity, this._me.UserId);
+                var check = ChannelCrypto.TryOpenEpochKey(entry.Key, channelId, entry.Epoch, entry.AuthorId, author.Identity.SigningPublicKey.Span, this._identity, this._me.UserId, out var key);
                 if (key != null) {
                     this.StoreEpochKey(channelId, entry.Epoch, key);
                 } else {
-                    this.Log(NoticeLevel.Warning, $"Epoch {entry.Epoch} key for {channelId} failed verification");
+                    this.Log(NoticeLevel.Warning, $"Epoch {entry.Epoch} key for {channelId} failed verification ({check})");
+                    bad ??= this.FlagBadEpochKey(channel, entry.Epoch, author.User, check);
                 }
             }
 
@@ -1087,6 +1151,9 @@ public sealed class ClientSession : IAsyncDisposable {
 
         this.SaveSecrets();
         this.Publish();
+        if (bad != null) {
+            this.HandleBadEpochKey(bad);
+        }
     }
 
     /// <summary>Returns verified identities for the given users, fetching any that aren't cached (or all of them, with <paramref name="refresh"/>).</summary>
@@ -1539,6 +1606,9 @@ public sealed class ClientSession : IAsyncDisposable {
         /// <summary>The newest name the server offered. Only shown once <see cref="TryDecryptName"/> accepts it.</summary>
         public EncryptedName? EncryptedName { get; set; }
         public string? Name { get; set; }
+
+        /// <summary>The last epoch whose unusable key made this client rekey automatically.</summary>
+        public ulong? BadKeyRekeyEpoch { get; set; }
         public string DisplayName => this.Name ?? ChannelView.PlaceholderName(this.Id);
     }
 

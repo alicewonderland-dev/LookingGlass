@@ -84,9 +84,11 @@ public sealed class Database {
         }
 
         if (current < 2) {
-            // Signed name revisions (so an older name can't be replayed within an epoch).
+            // Signed name revisions (so an older name can't be replayed within an epoch), and
+            // epoch key commitments (so a member can't hand out different keys undetected).
             Execute(connection, tx, """
                 ALTER TABLE channels ADD COLUMN name_revision INTEGER NOT NULL DEFAULT 0;
+                ALTER TABLE epoch_keys ADD COLUMN key_commitment BLOB NOT NULL DEFAULT x'';
                 INSERT INTO schema_version (version) VALUES (2);
                 """);
         }
@@ -503,7 +505,7 @@ public sealed class Database {
     public List<EpochKeyForMe> GetEpochKeys(string channelId, long recipientId, ulong fromEpoch) {
         using var connection = this.Open();
         using var command = Command(connection, null, """
-            SELECT epoch, author_id, ephemeral, ciphertext, signature FROM epoch_keys
+            SELECT epoch, author_id, ephemeral, ciphertext, signature, key_commitment FROM epoch_keys
             WHERE channel_id = $channel AND recipient_id = $user AND epoch >= $from ORDER BY epoch;
             """, ("$channel", channelId), ("$user", recipientId), ("$from", (long) fromEpoch));
         using var reader = command.ExecuteReader();
@@ -519,6 +521,7 @@ public sealed class Database {
                         Ciphertext = ByteString.CopyFrom((byte[]) reader[3]),
                     },
                     Signature = ByteString.CopyFrom((byte[]) reader[4]),
+                    KeyCommitment = ByteString.CopyFrom((byte[]) reader[5]),
                 },
             });
         }
@@ -580,12 +583,12 @@ public sealed class Database {
 
     private static void InsertEpochKey(SqliteConnection connection, SqliteTransaction tx, string channelId, ulong epoch, long authorId, SealedEpochKey key) {
         Execute(connection, tx, """
-            INSERT OR REPLACE INTO epoch_keys (channel_id, epoch, recipient_id, author_id, ephemeral, ciphertext, signature)
-            VALUES ($channel, $epoch, $recipient, $author, $ephemeral, $ciphertext, $signature);
+            INSERT OR REPLACE INTO epoch_keys (channel_id, epoch, recipient_id, author_id, ephemeral, ciphertext, signature, key_commitment)
+            VALUES ($channel, $epoch, $recipient, $author, $ephemeral, $ciphertext, $signature, $commitment);
             """,
             ("$channel", channelId), ("$epoch", (long) epoch), ("$recipient", key.RecipientId), ("$author", authorId),
             ("$ephemeral", key.Box.EphemeralPublicKey.ToByteArray()), ("$ciphertext", key.Box.Ciphertext.ToByteArray()),
-            ("$signature", key.Signature.ToByteArray()));
+            ("$signature", key.Signature.ToByteArray()), ("$commitment", key.KeyCommitment.ToByteArray()));
     }
 
     private static List<UserRow> QueryUsers(SqliteConnection connection, SqliteTransaction? tx, string sql, params (string, object)[] parameters) {

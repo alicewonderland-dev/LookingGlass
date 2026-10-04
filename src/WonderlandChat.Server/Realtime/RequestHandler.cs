@@ -1,4 +1,4 @@
-using System.Security.Cryptography;
+﻿using System.Security.Cryptography;
 using System.Text;
 using Google.Protobuf;
 using Microsoft.Extensions.Options;
@@ -265,7 +265,8 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.Conflict, "That channel ID is taken.");
         }
 
-        if (request.CreatorKey == null || request.CreatorKey.RecipientId != me.UserId
+        if (request.CreatorKey == null || request.CreatorKey.RecipientId != me.UserId || request.CreatorKey.Box == null
+            || request.CreatorKey.KeyCommitment.Length != ChannelCrypto.KeyCommitmentSize
             || !ChannelCrypto.VerifyEpochKey(request.CreatorKey, channelId, 0, me.UserId, me.SigningKey)) {
             throw new RequestException(ErrorCode.InvalidRequest, "The creator's epoch key is missing or wrongly signed.");
         }
@@ -465,6 +466,12 @@ public sealed class RequestHandler(
 
         if (request.Keys.Select(key => key.RecipientId).Distinct().Count() != request.Keys.Count) {
             throw new RequestException(ErrorCode.InvalidRequest, "Duplicate recipients in rekey.");
+        }
+
+        // Every copy must commit to the same key. The server can't check what is inside the
+        // boxes, but a recipient whose copy doesn't match this commitment knows who cheated.
+        if (request.KeyCommitment.Length != ChannelCrypto.KeyCommitmentSize || request.Keys.Any(key => key.KeyCommitment != request.KeyCommitment)) {
+            throw new RequestException(ErrorCode.InvalidRequest, "Every key in a rekey must carry the rekey's key commitment.");
         }
 
         foreach (var key in request.Keys) {

@@ -49,6 +49,7 @@ public static class Domains {
     public const string Fingerprint = "wonderlandchat/fingerprint/v1";
     public const string Seal = "wonderlandchat/seal/v1";
     public const string EpochKey = "wonderlandchat/epoch-key/v1";
+    public const string EpochKeyCommitment = "wonderlandchat/epoch-key-commitment/v1";
     public const string ChannelName = "wonderlandchat/channel-name/v1";
     public const string Invite = "wonderlandchat/invite/v1";
     public const string Message = "wonderlandchat/message/v1";
