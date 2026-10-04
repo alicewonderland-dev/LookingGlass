@@ -281,44 +281,6 @@ internal static class Widgets {
         return clicked;
     }
 
-    /// <summary>The width of an <see cref="IconButton"/>: the icon and the frame's padding.</summary>
-    public static float IconButtonWidth(FontAwesomeIcon icon) => IconSize(icon).X + ImGui.GetStyle().FramePadding.X * 2;
-
-    public static bool IconButton(string id, FontAwesomeIcon icon, string tooltip) {
-        var clicked = Dalamud.Interface.Components.ImGuiComponents.IconButton(id, icon);
-        Tooltip(tooltip);
-        return clicked;
-    }
-
-    /// <summary>A rounded label with a coloured dot, such as the connection state.</summary>
-    public static void Pill(string text, Vector4 colour, string? tooltip = null) {
-        var scale = Scale;
-        var height = ImGui.GetFrameHeight();
-        var dot = height * 0.16f;
-        var padding = 8 * scale;
-        var textSize = ImGui.CalcTextSize(text);
-        var size = new Vector2(padding * 2 + dot * 2 + 6 * scale + textSize.X, height);
-        var pos = ImGui.GetCursorScreenPos();
-        ImGui.Dummy(size);
-
-        var drawList = ImGui.GetWindowDrawList();
-        drawList.AddRectFilled(pos, pos + size, ImGui.GetColorU32(colour with { W = colour.W * 0.2f }), height / 2);
-        var middle = pos.Y + height / 2;
-        drawList.AddCircleFilled(new Vector2(pos.X + padding + dot, middle), dot, ImGui.GetColorU32(colour));
-        drawList.AddText(new Vector2(pos.X + padding + dot * 2 + 6 * scale, middle - textSize.Y / 2), ImGui.GetColorU32(ImGuiCol.Text), text);
-
-        if (tooltip != null) {
-            Tooltip(tooltip);
-        }
-    }
-
-    /// <summary>A coloured square for a channel's colour.</summary>
-    public static void Swatch(Vector4 colour, float size) {
-        var pos = ImGui.GetCursorScreenPos();
-        ImGui.Dummy(new Vector2(size, size));
-        ImGui.GetWindowDrawList().AddRectFilled(pos, pos + new Vector2(size, size), ImGui.GetColorU32(colour), 3 * Scale);
-    }
-
     // ================================================================ badges
 
     /// <summary>A small rounded count (unread messages, invites) with its right edge at <paramref name="right"/>, centred on its Y.</summary>

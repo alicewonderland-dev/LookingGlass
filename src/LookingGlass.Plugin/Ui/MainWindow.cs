@@ -43,7 +43,7 @@ public sealed class MainWindow : Window {
         this._actions = actions;
         this._toggleSettings = toggleSettings;
         this._modals = new Modals(actions);
-        this._pane = new ChannelPane(sessions, actions, this._modals);
+        this._pane = new ChannelPane(sessions, actions, this._modals, fonts);
         this._pane.Closed += () => this._selectedChannel = null;
 
         // Laid out to fit: the panes scroll, the window doesn't.
