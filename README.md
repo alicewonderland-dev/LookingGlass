@@ -130,6 +130,10 @@ be different from your other channels' nicknames, ignoring case: `/lgc Sky hi`
 and `/lgc sky hi` go to the same channel. Problems are shown under the box.
 Nicknames, like numbers, are kept per character in the plugin's settings and
 are never sent to the server; a channel's nickname goes away when you leave it.
+In chat, a channel with a nickname is tagged with it, as in `[sky]`, instead of
+its number (`[LGC3]`); turn off **Show nicknames in chat tags** in Settings to
+always see numbers. A channel with neither (more than fifty channels, or a
+message that arrives before the channel list is in) is tagged `[LGC]`.
 
 **Colours.** Click the swatch next to a channel's commands to give it one of
 the game's own chat colours. Its lines in chat take that colour (or only the

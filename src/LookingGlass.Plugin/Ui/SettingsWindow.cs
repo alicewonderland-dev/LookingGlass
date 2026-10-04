@@ -111,7 +111,15 @@ public sealed class SettingsWindow : Window {
             this._config.Save();
         }
 
-        Widgets.Tooltip("Off: only the [LGC] tag takes the channel's colour. Channels without a colour of their own always colour only the tag.");
+        Widgets.Tooltip("Off: only the tag ([LGC1] or [nickname]) takes the channel's colour. Channels without a colour of their own always colour only the tag.");
+
+        var nicknameTags = this._config.NicknameTags;
+        if (ImGui.Checkbox("Show nicknames in chat tags", ref nicknameTags)) {
+            this._config.NicknameTags = nicknameTags;
+            this._config.Save();
+        }
+
+        Widgets.Tooltip("On: a channel with a nickname is tagged [nickname] in chat, as in [sky]. Off: always by its number, as in [LGC1].");
     }
 
     private void DrawIdentity() {

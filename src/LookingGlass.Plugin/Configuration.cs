@@ -22,6 +22,9 @@ public sealed class Configuration : IPluginConfiguration {
     /// <summary>A channel's colour is used for its whole chat line, not only the [LGC] tag.</summary>
     public bool ColourWholeLine { get; set; } = true;
 
+    /// <summary>A channel with a nickname is tagged [nickname] in chat instead of [LGCn]. See <see cref="ChannelTag"/>.</summary>
+    public bool NicknameTags { get; set; } = true;
+
     /// <summary>Per character, keyed by content ID.</summary>
     public Dictionary<ulong, CharacterSettings> Characters { get; set; } = new();
 

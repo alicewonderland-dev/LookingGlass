@@ -148,7 +148,7 @@ public sealed class SessionManager : IDisposable {
     /// <summary>Prints a message and counts it as unread. From any thread.</summary>
     private void Deliver(IncomingMessage message) {
         this.Unread.Add(message);
-        this._chat.Message(message, this.SlotOf(message.ChannelId), this.ColourOf(message.ChannelId));
+        this._chat.Message(message, this.SlotOf(message.ChannelId), this.NicknameOf(message.ChannelId), this.ColourOf(message.ChannelId));
     }
 
     private void OnPlayerChanged(PlayerInfo? player) {
