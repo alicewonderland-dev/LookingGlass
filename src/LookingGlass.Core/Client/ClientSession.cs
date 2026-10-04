@@ -334,6 +334,12 @@ public sealed class ClientSession : IAsyncDisposable {
 
     private bool IsBlocked(long userId) => this._secrets.BlockedUsers.Contains(userId);
 
+    /// <summary>Tries the saved login again now.</summary>
+    public Task RetryLoginAsync(CancellationToken ct = default) {
+        this.Reconnect();
+        return Task.CompletedTask;
+    }
+
     /// <summary>Forgets the device token, for example to register again.</summary>
     public void ForgetAccount() {
         lock (this._lock) {
