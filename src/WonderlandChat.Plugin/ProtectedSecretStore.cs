@@ -20,7 +20,6 @@ public sealed class ProtectedSecretStore : ISecretStore {
 
     private readonly string _path;
     private readonly string _keyFilePath;
-    private readonly Lock _lock = new();
 
     public ProtectedSecretStore(string path, string keyFilePath) {
         this._path = path;
@@ -30,8 +29,10 @@ public sealed class ProtectedSecretStore : ISecretStore {
     /// <summary>How the secrets are protected, for the settings UI.</summary>
     public static string Protection { get; private set; } = "not saved yet";
 
+    // Locks are per file and shared by every instance: a closing session and a new one for
+    // the same character use different store objects but the same secrets file.
     public ClientSecrets Load() {
-        lock (this._lock) {
+        lock (AtomicFile.LockFor(this._path)) {
             if (!File.Exists(this._path)) {
                 return new ClientSecrets();
             }
@@ -59,7 +60,7 @@ public sealed class ProtectedSecretStore : ISecretStore {
     }
 
     public void Save(ClientSecrets secrets) {
-        lock (this._lock) {
+        lock (AtomicFile.LockFor(this._path)) {
             var plaintext = secrets.Serialize();
             byte[] output;
 
@@ -78,11 +79,14 @@ public sealed class ProtectedSecretStore : ISecretStore {
     }
 
     private Key LoadOrCreateFileKey() {
-        if (!File.Exists(this._keyFilePath)) {
-            AtomicFile.Write(this._keyFilePath, RandomNumberGenerator.GetBytes(Aead.KeySize));
-        }
+        // Shared by every character: two stores creating it at once would each encrypt with a different key.
+        lock (AtomicFile.LockFor(this._keyFilePath)) {
+            if (!File.Exists(this._keyFilePath)) {
+                AtomicFile.Write(this._keyFilePath, RandomNumberGenerator.GetBytes(Aead.KeySize));
+            }
 
-        return Key.Import(Aead, File.ReadAllBytes(this._keyFilePath), KeyBlobFormat.RawSymmetricKey);
+            return Key.Import(Aead, File.ReadAllBytes(this._keyFilePath), KeyBlobFormat.RawSymmetricKey);
+        }
     }
 
     /// <summary>One secrets file per character and server.</summary>

@@ -26,10 +26,27 @@ public sealed class RequestHandler(
     private static readonly TimeSpan VerifyCooldown = TimeSpan.FromSeconds(10);
     private const int MaxVerifyAttempts = 10;
 
+    /// <summary>Pending invites one user can have at once, across all channels.</summary>
+    public const int MaxPendingInvitesPerUser = 20;
+
+    // Channel names are at most 64 UTF-8 bytes; sealing adds a 16-byte tag. The cap keeps
+    // invites (which strangers can send) from bloating the invitee's channel list.
+    private const int MaxSealedNameBytes = 128;
+
     private readonly WindowCounter _registrations = new(options.Value.Limits.RegistrationsPerHourPerIp, TimeSpan.FromHours(1));
     private readonly UserRateLimits _rekeys = new(perSecond: 0.5, burst: 5);
     private readonly UserRateLimits _lookups = new(perSecond: 0.5, burst: 10);
     private readonly UserRateLimits _messages = new(ProtocolInfo.DefaultLimits().MessagesPerSecond, ProtocolInfo.DefaultLimits().MessageBurst);
+    // Invites are limited on both ends: an inviter can't spam many people, and many
+    // inviters (or invite, cancel, invite loops) can't flood one person.
+    private readonly UserRateLimits _invitesSent = new(perSecond: 1.0 / 15, burst: 20);
+    private readonly UserRateLimits _invitesReceived = new(perSecond: 1.0 / 30, burst: 10);
+    private readonly UserRateLimits _creates = new(perSecond: 1.0 / 60, burst: 10);
+    private readonly UserRateLimits _renames = new(perSecond: 0.1, burst: 10);
+    private readonly UserRateLimits _disbands = new(perSecond: 1.0 / 60, burst: 5);
+    // One budget for the requests that read a lot from the database. A client needs about
+    // two per channel when it connects, so the burst covers a full channel list.
+    private readonly UserRateLimits _reads = new(perSecond: 4, burst: 120);
 
     public Limits Limits { get; } = ProtocolInfo.DefaultLimits();
 
@@ -129,6 +146,8 @@ public sealed class RequestHandler(
             found = await lodestone.FindCharacterAsync(name, worldName, ct);
         } catch (LodestoneUnavailableException) {
             throw new RequestException(ErrorCode.RegistrationFailed, "The Lodestone isn't responding right now; try again in a few minutes.");
+        } catch (LodestoneBusyException) {
+            throw new RequestException(ErrorCode.RateLimited, "The server is busy checking other characters; try again in a minute.");
         }
 
         if (found == null) {
@@ -172,7 +191,15 @@ public sealed class RequestHandler(
 
             connection.VerifyAttempts++;
             connection.LastVerifyAttempt = DateTimeOffset.UtcNow;
-            var check = await lodestone.ProfileContainsAsync(pending.UserId, pending.Code, ct);
+            ProfileCheck check;
+            try {
+                check = await lodestone.ProfileContainsAsync(pending.UserId, pending.Code, ct);
+            } catch (LodestoneBusyException) {
+                // Not the user's fault: don't count the attempt.
+                connection.VerifyAttempts--;
+                throw new RequestException(ErrorCode.RateLimited, "The server is busy checking other characters; try again in a minute.");
+            }
+
             switch (check) {
                 case ProfileCheck.ProfileUnavailable:
                     throw new RequestException(ErrorCode.RegistrationFailed, "Couldn't read your Lodestone profile. Is it public?");
@@ -201,6 +228,11 @@ public sealed class RequestHandler(
     }
 
     private Response Authenticate(ClientConnection connection, Authenticate request) {
+        if (connection.User != null) {
+            // Switching users would leave the first one registered as online on this connection.
+            throw new RequestException(ErrorCode.InvalidRequest, "Already logged in on this connection.");
+        }
+
         var userId = string.IsNullOrEmpty(request.DeviceToken) ? null : db.FindDevice(HashToken(request.DeviceToken));
         var user = userId == null ? null : db.GetUser(userId.Value);
         if (user == null) {
@@ -218,6 +250,7 @@ public sealed class RequestHandler(
 
     private Response GetIdentities(ClientConnection connection, GetIdentities request) {
         var me = RequireUser(connection);
+        this.RequireReadBudget(me);
         if (request.UserIds.Count > options.Value.Limits.MaxIdentitiesPerRequest) {
             throw new RequestException(ErrorCode.TooLarge, "Too many identities requested at once.");
         }
@@ -247,15 +280,23 @@ public sealed class RequestHandler(
 
     private Response ListChannels(ClientConnection connection) {
         var me = RequireUser(connection);
+        this.RequireReadBudget(me);
+
+        // Bounded, so nobody can make this response too big for a client to receive and lock
+        // them out: at most 50 channels of at most 500 members, and 20 small invites (about
+        // 2 MB at worst, where clients accept 4 MB).
         var list = new ChannelList();
-        list.Channels.AddRange(db.GetChannelsForUser(me.UserId).Select(channel => this.BuildChannelInfo(channel, me.UserId)));
-        list.Invites.AddRange(db.GetInvitesForUser(me.UserId).Select(ToInviteInfo));
+        list.Channels.AddRange(db.GetChannelsForUser(me.UserId, (int) this.Limits.MaxChannelsPerUser).Select(channel => this.BuildChannelInfo(channel, me.UserId)));
+        list.Invites.AddRange(db.GetInvitesForUser(me.UserId, MaxPendingInvitesPerUser).Select(ToInviteInfo));
         return new Response { ChannelList = list };
     }
 
     private Response CreateChannel(ClientConnection connection, CreateChannel request) {
         var me = RequireUser(connection);
         var channelId = RequireChannelId(request.ChannelId);
+        if (!this._creates.TryTake(me.UserId)) {
+            throw new RequestException(ErrorCode.RateLimited, "You're creating channels too quickly; try again later.");
+        }
 
         if (db.CountChannelsForUser(me.UserId) >= this.Limits.MaxChannelsPerUser) {
             throw new RequestException(ErrorCode.LimitReached, $"You're already in {this.Limits.MaxChannelsPerUser} channels.");
@@ -265,7 +306,8 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.Conflict, "That channel ID is taken.");
         }
 
-        if (request.CreatorKey == null || request.CreatorKey.RecipientId != me.UserId
+        if (request.CreatorKey == null || request.CreatorKey.RecipientId != me.UserId || request.CreatorKey.Box == null
+            || request.CreatorKey.KeyCommitment.Length != ChannelCrypto.KeyCommitmentSize
             || !ChannelCrypto.VerifyEpochKey(request.CreatorKey, channelId, 0, me.UserId, me.SigningKey)) {
             throw new RequestException(ErrorCode.InvalidRequest, "The creator's epoch key is missing or wrongly signed.");
         }
@@ -280,6 +322,9 @@ public sealed class RequestHandler(
         var me = RequireUser(connection);
         var channelId = RequireChannelId(request.ChannelId);
         this.RequireAllowed(channelId, me, ChannelAction.Invite);
+        if (!this._invitesSent.TryTake(me.UserId)) {
+            throw new RequestException(ErrorCode.RateLimited, "You're sending invites too quickly; try again later.");
+        }
 
         var invitee = db.GetUser(request.UserId) ?? throw new RequestException(ErrorCode.NotFound, "That user isn't registered.");
         if (db.GetRank(channelId, invitee.UserId) != null) {
@@ -294,8 +339,26 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.LimitReached, "This channel is full.");
         }
 
-        if (request.SealedName == null || request.SealedName.EphemeralPublicKey.Length != 32 || request.Signature.Length != 64) {
+        if (request.SealedName == null || request.SealedName.EphemeralPublicKey.Length != 32 || request.SealedName.Ciphertext.Length == 0
+            || request.Signature.Length != 64) {
             throw new RequestException(ErrorCode.InvalidRequest, "Malformed invite.");
+        }
+
+        if (request.SealedName.Ciphertext.Length > MaxSealedNameBytes) {
+            throw new RequestException(ErrorCode.TooLarge, "The invite's channel name is too long.");
+        }
+
+        // Only the invitee can open the name, but anyone can check who signed it.
+        if (!ChannelCrypto.VerifyInvite(channelId, invitee.UserId, me.UserId, request.SealedName, request.Signature.Span, me.SigningKey)) {
+            throw new RequestException(ErrorCode.InvalidRequest, "The invite is wrongly signed.");
+        }
+
+        if (db.CountInvitesForUser(invitee.UserId) >= MaxPendingInvitesPerUser) {
+            throw new RequestException(ErrorCode.LimitReached, $"{invitee.Name} has too many pending invites.");
+        }
+
+        if (!this._invitesReceived.TryTake(invitee.UserId)) {
+            throw new RequestException(ErrorCode.RateLimited, $"{invitee.Name} has been sent too many invites recently; try again later.");
         }
 
         db.AddInvite(channelId, invitee.UserId, me.UserId, request.SealedName, request.Signature.ToByteArray());
@@ -404,9 +467,11 @@ public sealed class RequestHandler(
 
             this.BroadcastMemberChange(channelId, target, MemberChangeKind.RankChanged, Rank.Admin, me);
             this.BroadcastMemberChange(channelId, me, MemberChangeKind.RankChanged, Rank.Moderator, me);
-        } else {
-            db.SetRank(channelId, target.UserId, request.Rank);
+        } else if (db.SetRank(channelId, target.UserId, request.Rank)) {
             this.BroadcastMemberChange(channelId, target, MemberChangeKind.RankChanged, request.Rank, me);
+        } else if (db.GetRank(channelId, target.UserId) != request.Rank) {
+            // Not a no-op: they left (or the admin changed) since the checks above.
+            throw new RequestException(ErrorCode.Conflict, "Membership changed; try again.");
         }
 
         return Ack();
@@ -416,6 +481,9 @@ public sealed class RequestHandler(
         var me = RequireUser(connection);
         var channelId = RequireChannelId(request.ChannelId);
         this.RequireAllowed(channelId, me, ChannelAction.Disband);
+        if (!this._disbands.TryTake(me.UserId)) {
+            throw new RequestException(ErrorCode.RateLimited, "You're disbanding channels too quickly; try again later.");
+        }
 
         var everyone = db.GetMembers(channelId).Concat(db.GetInvitees(channelId)).Select(member => member.User.UserId).ToList();
         db.DeleteChannel(channelId);
@@ -427,6 +495,10 @@ public sealed class RequestHandler(
         var me = RequireUser(connection);
         var channelId = RequireChannelId(request.ChannelId);
         this.RequireAllowed(channelId, me, ChannelAction.Rename);
+        if (!this._renames.TryTake(me.UserId)) {
+            throw new RequestException(ErrorCode.RateLimited, "You're renaming too quickly; try again later.");
+        }
+
         var channel = db.GetChannel(channelId)!;
         if (channel.RekeyPending) {
             // The current key may still be held by someone who just left.
@@ -434,6 +506,11 @@ public sealed class RequestHandler(
         }
 
         this.ValidateName(request.Name, channelId, channel.Epoch, me);
+        if (channel.Name is { } current && current.Epoch == request.Name.Epoch && request.Name.Revision <= current.Revision) {
+            // Clients refuse a name that isn't newer than theirs, so storing it would hide later renames.
+            throw new RequestException(ErrorCode.Conflict, "The name's revision must be newer than the current one; refresh and try again.");
+        }
+
         if (!db.RenameChannel(channelId, request.Name)) {
             throw new RequestException(ErrorCode.Conflict, "The channel changed while renaming; try again.");
         }
@@ -460,6 +537,12 @@ public sealed class RequestHandler(
 
         if (request.Keys.Select(key => key.RecipientId).Distinct().Count() != request.Keys.Count) {
             throw new RequestException(ErrorCode.InvalidRequest, "Duplicate recipients in rekey.");
+        }
+
+        // Every copy must commit to the same key. The server can't check what is inside the
+        // boxes, but a recipient whose copy doesn't match this commitment knows who cheated.
+        if (request.KeyCommitment.Length != ChannelCrypto.KeyCommitmentSize || request.Keys.Any(key => key.KeyCommitment != request.KeyCommitment)) {
+            throw new RequestException(ErrorCode.InvalidRequest, "Every key in a rekey must carry the rekey's key commitment.");
         }
 
         foreach (var key in request.Keys) {
@@ -496,6 +579,7 @@ public sealed class RequestHandler(
     private Response FetchEpochKeys(ClientConnection connection, FetchEpochKeys request) {
         var me = RequireUser(connection);
         var channelId = RequireChannelId(request.ChannelId);
+        this.RequireReadBudget(me);
         this.RequireAllowed(channelId, me, ChannelAction.FetchKeys);
 
         var keys = new EpochKeys { ChannelId = channelId, Name = db.GetChannel(channelId)!.Name };
@@ -634,6 +718,12 @@ public sealed class RequestHandler(
             || name.Ciphertext.Length is 0 or > 512
             || !ChannelCrypto.VerifyName(name, channelId, author.SigningKey)) {
             throw new RequestException(ErrorCode.InvalidRequest, "The encrypted channel name is missing or wrongly signed.");
+        }
+    }
+
+    private void RequireReadBudget(UserRow me) {
+        if (!this._reads.TryTake(me.UserId)) {
+            throw new RequestException(ErrorCode.RateLimited, "Too many requests; slow down.");
         }
     }
 

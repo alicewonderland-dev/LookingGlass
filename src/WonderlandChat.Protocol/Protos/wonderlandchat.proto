@@ -247,7 +247,12 @@ message SealedBox {
 message SealedEpochKey {
   int64 recipient_id = 1;
   SealedBox box = 2;
+  // Signature over the recipient, box and key_commitment (see ChannelCrypto).
   bytes signature = 3;
+  // SHA-256 commitment to the epoch key itself (see ChannelCrypto.KeyCommitment).
+  // Every copy in a rekey carries the same one, so a recipient whose copy
+  // opens to a different key knows the author tried to split the channel.
+  bytes key_commitment = 4;
 }
 
 // The channel name encrypted under an epoch key and signed by its author.
@@ -256,6 +261,9 @@ message EncryptedName {
   int64 author_id = 2;
   bytes ciphertext = 3;
   bytes signature = 4;
+  // Increases with every rename within an epoch (a rekey starts again at 0).
+  // Signed, so clients can refuse an older name replayed within the same epoch.
+  uint64 revision = 5;
 }
 
 message ChannelInfo {
@@ -336,6 +344,8 @@ message SubmitRekey {
   uint64 new_epoch = 2;
   repeated SealedEpochKey keys = 3;
   EncryptedName name = 4;
+  // The new key's commitment. The server rejects the rekey unless every key carries it.
+  bytes key_commitment = 5;
 }
 
 message FetchEpochKeys {

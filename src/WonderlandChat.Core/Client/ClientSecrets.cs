@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 
 namespace WonderlandChat.Core.Client;
@@ -19,6 +20,22 @@ public sealed class ClientSecrets {
     /// <summary>Channel ID → epoch → raw epoch key.</summary>
     public Dictionary<string, Dictionary<ulong, byte[]>> EpochKeys { get; set; } = new();
 
+    /// <summary>
+    /// Channel ID → the (epoch, revision) of the newest channel name accepted.
+    /// Kept so a server can't roll a name back, even across restarts.
+    /// </summary>
+    public Dictionary<string, NameVersion> ChannelNameVersions { get; set; } = new();
+
+    /// <summary>
+    /// Channel ID → sender → timestamp (Unix ms) of the newest message accepted
+    /// from them. Messages much older than this are replays; unlike the in-memory
+    /// seen-set, this survives restarts. Saved along with other changes, not per message.
+    /// </summary>
+    public Dictionary<string, Dictionary<long, long>> NewestMessageTimes { get; set; } = new();
+
+    /// <summary>Users whose invites are declined unseen and whose messages are hidden.</summary>
+    public HashSet<long> BlockedUsers { get; set; } = new();
+
     public ClientSecrets Clone() {
         return JsonSerializer.Deserialize<ClientSecrets>(JsonSerializer.SerializeToUtf8Bytes(this))!;
     }
@@ -39,6 +56,18 @@ public sealed class PinnedIdentity {
 
     /// <summary>The keys changed since they were first seen, and the user hasn't confirmed the new ones yet.</summary>
     public bool KeyChangeUnacknowledged { get; set; }
+}
+
+/// <summary>Orders channel names: a later epoch wins, then a higher revision within the epoch.</summary>
+public sealed record NameVersion(ulong Epoch, ulong Revision) : IComparable<NameVersion> {
+    public int CompareTo(NameVersion? other) {
+        if (other == null) {
+            return 1;
+        }
+
+        var byEpoch = this.Epoch.CompareTo(other.Epoch);
+        return byEpoch != 0 ? byEpoch : this.Revision.CompareTo(other.Revision);
+    }
 }
 
 /// <summary>Where a client keeps its <see cref="ClientSecrets"/>.</summary>
@@ -67,22 +96,27 @@ public sealed class InMemorySecretStore : ISecretStore {
 /// encrypted store instead.
 /// </summary>
 public sealed class FileSecretStore(string path) : ISecretStore {
-    private readonly Lock _lock = new();
-
     public ClientSecrets Load() {
-        lock (this._lock) {
+        lock (AtomicFile.LockFor(path)) {
             return File.Exists(path) ? ClientSecrets.Deserialize(File.ReadAllBytes(path)) : new ClientSecrets();
         }
     }
 
     public void Save(ClientSecrets secrets) {
-        lock (this._lock) {
-            AtomicFile.Write(path, secrets.Serialize());
-        }
+        AtomicFile.Write(path, secrets.Serialize());
     }
 }
 
 public static class AtomicFile {
+    private static readonly ConcurrentDictionary<string, Lock> Locks = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// One lock per file, shared by everything in the process, so two stores
+    /// (say, an old session still saving and a new one starting) never write
+    /// the same file at once. Reentrant, so callers may hold it around <see cref="Write"/>.
+    /// </summary>
+    public static Lock LockFor(string path) => Locks.GetOrAdd(Path.GetFullPath(path), _ => new Lock());
+
     /// <summary>Writes to a temporary file, then replaces the target, so a crash never leaves a half-written file.</summary>
     public static void Write(string path, byte[] data) {
         var directory = Path.GetDirectoryName(Path.GetFullPath(path));
@@ -90,8 +124,17 @@ public static class AtomicFile {
             Directory.CreateDirectory(directory);
         }
 
-        var temp = path + ".tmp";
-        File.WriteAllBytes(temp, data);
-        File.Move(temp, path, overwrite: true);
+        lock (LockFor(path)) {
+            // Unique, so a writer in another process (or a leftover from a crash) can't collide with it.
+            var temp = $"{path}.{Guid.NewGuid():N}.tmp";
+            try {
+                File.WriteAllBytes(temp, data);
+                File.Move(temp, path, overwrite: true);
+            } finally {
+                if (File.Exists(temp)) {
+                    File.Delete(temp);
+                }
+            }
+        }
     }
 }

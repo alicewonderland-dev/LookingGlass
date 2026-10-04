@@ -81,6 +81,118 @@ public sealed class EndToEndTests : IAsyncLifetime {
     }
 
     [Fact]
+    public async Task KickDoesNotRekeyAgainWhenTheBackgroundRekeyFinishedFirst() {
+        var alice = await this._server.RegisterAsync("Alice Race");
+        var bob = await this._server.RegisterAsync("Bob Race");
+        var carol = await this._server.RegisterAsync("Carol Race");
+        var channelId = await alice.Session.CreateChannelAsync("Race", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        await AddMemberAsync(alice, channelId, carol);
+        var epochBeforeKick = alice.Session.Snapshot.FindChannel(channelId)!.Epoch;
+
+        // Force the race: the rekey the server asks for completes before KickAsync carries on.
+        alice.Session.AfterKickRequestForTests = () => WaitFor(() =>
+            alice.Session.Snapshot.FindChannel(channelId) is { Epoch: var e, RekeyPending: false } c && e > epochBeforeKick ? c : null);
+        await alice.Session.KickAsync(channelId, carol.UserId, Ct);
+
+        Assert.Equal(epochBeforeKick + 1, alice.Session.Snapshot.FindChannel(channelId)!.Epoch);
+        Assert.Equal(epochBeforeKick + 1, this._server.Database.GetChannel(channelId)!.Epoch);
+    }
+
+    [Fact]
+    public async Task NoticesWithUserContentStayOutOfTheLog() {
+        var log = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        var alice = await this._server.RegisterAsync("Alice Quiet", options: this._server.Options(log: (_, text) => log.Enqueue(text)));
+        var bob = await this._server.RegisterAsync("Bob Quiet");
+        var channelId = await alice.Session.CreateChannelAsync("Hush Channel", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+
+        // The notice is shown to the user...
+        await WaitFor(() => alice.Notices.FirstOrDefault(n => n.Text.Contains("Bob Quiet@Debug joined Hush Channel")));
+        await alice.Session.RenameAsync(channelId, "Hush Renamed", Ct);
+        await bob.Session.LeaveAsync(channelId, Ct);
+        await WaitFor(() => alice.Notices.FirstOrDefault(n => n.Text.Contains("left Hush Renamed")));
+
+        // ...but names and channel names never reach the diagnostic log.
+        Assert.NotEmpty(log);
+        Assert.DoesNotContain(log, line => line.Contains("Hush") || line.Contains("Bob Quiet"));
+    }
+
+    [Fact]
+    public async Task InvitesFromBlockedUsersAreDeclinedUnseen() {
+        var alice = await this._server.RegisterAsync("Alice Blocked");
+        var bob = await this._server.RegisterAsync("Bob Blocker");
+        var first = await alice.Session.CreateChannelAsync("Pending When Blocked", Ct);
+        var second = await alice.Session.CreateChannelAsync("Sent After Blocking", Ct);
+
+        // Blocking declines an invite already pending...
+        await alice.Session.InviteAsync(first, bob.Name, ProtocolInfo.DebugWorldName, Ct);
+        await WaitFor(() => bob.Session.Snapshot.Invites.FirstOrDefault(i => i.ChannelId == first && i.ChannelName != null));
+        bob.Session.BlockUser(alice.UserId);
+        Assert.Empty(bob.Session.Snapshot.Invites);
+        await WaitFor(() => this._server.Database.GetInvite(first, bob.UserId) == null ? new object() : null);
+
+        // ...and later invites are declined without ever being shown.
+        var noticesBefore = bob.Notices.Count;
+        await alice.Session.InviteAsync(second, bob.Name, ProtocolInfo.DebugWorldName, Ct);
+        await WaitFor(() => alice.Notices.FirstOrDefault(n => n.Text.Contains("declined the invite to Sent After Blocking")));
+        Assert.Empty(bob.Session.Snapshot.Invites);
+        Assert.Equal(noticesBefore, bob.Notices.Count);
+
+        // The block list is shown with names, and saved.
+        Assert.Equal("Alice Blocked", Assert.Single(bob.Session.Snapshot.BlockedUsers).Name);
+        Assert.Contains(alice.UserId, bob.Store.Load().BlockedUsers);
+    }
+
+    [Fact]
+    public async Task MessagesFromBlockedUsersAreHidden() {
+        var alice = await this._server.RegisterAsync("Alice Hidden");
+        var bob = await this._server.RegisterAsync("Bob Hiding");
+        var carol = await this._server.RegisterAsync("Carol Hidden");
+        var channelId = await alice.Session.CreateChannelAsync("Hidden", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        await AddMemberAsync(alice, channelId, carol);
+        await WaitFor(() => bob.Session.Snapshot.FindChannel(channelId) is { RekeyPending: false, HasKey: true } c ? c : null);
+
+        bob.Session.BlockUser(alice.UserId);
+        await alice.Session.SendTextAsync(channelId, "you won't see this", Ct);
+        // Messages reach Bob in order, so once Carol's arrives, Alice's has been handled.
+        await carol.Session.SendTextAsync(channelId, "barrier", Ct);
+        await WaitFor(() => bob.Messages.FirstOrDefault(m => m.Text == "barrier"));
+        Assert.DoesNotContain(bob.Messages, m => m.Text == "you won't see this");
+
+        bob.Session.UnblockUser(alice.UserId);
+        Assert.Empty(bob.Session.Snapshot.BlockedUsers);
+        await alice.Session.SendTextAsync(channelId, "but you'll see this", Ct);
+        await WaitFor(() => bob.Messages.FirstOrDefault(m => m.Text == "but you'll see this"));
+    }
+
+    [Fact]
+    public async Task InviteFromInviterWithChangedKeyNeedsVerification() {
+        var alice = await this._server.RegisterAsync("Alice Changed");
+        var bob = await this._server.RegisterAsync("Bob Careful");
+        var first = await alice.Session.CreateChannelAsync("Before", Ct);
+        await alice.Session.InviteAsync(first, bob.Name, ProtocolInfo.DebugWorldName, Ct);
+        var before = await WaitFor(() => bob.Session.Snapshot.Invites.FirstOrDefault(i => i.ChannelId == first && i.ChannelName != null));
+        Assert.False(before.InviterKeyChanged);
+
+        // Alice (or someone who took over her account) registers again with new keys.
+        await alice.Session.DisposeAsync();
+        var aliceAgain = await this._server.RegisterAsync("Alice Changed");
+        var second = await aliceAgain.Session.CreateChannelAsync("After", Ct);
+        await aliceAgain.Session.InviteAsync(second, bob.Name, ProtocolInfo.DebugWorldName, Ct);
+
+        // The invite is validly signed by the new key, but flagged until Bob checks the fingerprint.
+        var after = await WaitFor(() => bob.Session.Snapshot.Invites.FirstOrDefault(i => i.ChannelId == second && i.ChannelName != null));
+        Assert.True(after.Verified);
+        Assert.True(after.InviterKeyChanged);
+        Assert.Equal(aliceAgain.Session.Snapshot.MyFingerprint, after.InviterFingerprint);
+
+        bob.Session.AcknowledgeKeyChange(aliceAgain.UserId);
+        Assert.False(bob.Session.Snapshot.Invites.Single(i => i.ChannelId == second).InviterKeyChanged);
+    }
+
+    [Fact]
     public async Task MemberCannotKickModerator() {
         var alice = await this._server.RegisterAsync("Alice Rank");
         var bob = await this._server.RegisterAsync("Bob Rank");

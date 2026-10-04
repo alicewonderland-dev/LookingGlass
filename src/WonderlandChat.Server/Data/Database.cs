@@ -44,7 +44,7 @@ public enum RekeyResult {
 /// Methods are synchronous (SQLite is in-process) and short.
 /// </summary>
 public sealed class Database {
-    private const int SchemaVersion = 1;
+    private const int SchemaVersion = 2;
     private const int KeptEpochs = 4;
 
     private readonly string _connectionString;
@@ -79,6 +79,24 @@ public sealed class Database {
         }
 
         using var tx = connection.BeginTransaction();
+        if (current < 1) {
+            CreateVersion1(connection, tx);
+        }
+
+        if (current < 2) {
+            // Signed name revisions (so an older name can't be replayed within an epoch), and
+            // epoch key commitments (so a member can't hand out different keys undetected).
+            Execute(connection, tx, """
+                ALTER TABLE channels ADD COLUMN name_revision INTEGER NOT NULL DEFAULT 0;
+                ALTER TABLE epoch_keys ADD COLUMN key_commitment BLOB NOT NULL DEFAULT x'';
+                INSERT INTO schema_version (version) VALUES (2);
+                """);
+        }
+
+        tx.Commit();
+    }
+
+    private static void CreateVersion1(SqliteConnection connection, SqliteTransaction tx) {
         Execute(connection, tx, """
             CREATE TABLE users (
                 user_id           INTEGER PRIMARY KEY,
@@ -151,7 +169,6 @@ public sealed class Database {
 
             INSERT INTO schema_version (version) VALUES (1);
             """);
-        tx.Commit();
     }
 
     // ================================================================ users and devices
@@ -195,9 +212,11 @@ public sealed class Database {
         var keyVersion = existing == null ? 1u : keysChanged ? existing.KeyVersion + 1 : existing.KeyVersion;
 
         // Another character may previously have held this name on this world (renames). Free the
-        // name without deleting that account, which would silently cascade away its memberships.
+        // name without deleting that account, which would silently cascade away its memberships,
+        // and mark its display name so two members never show as the same Name@World.
         Execute(connection, tx, """
-            UPDATE users SET name_key = name_key || '#stale-' || user_id, world_key = world_key || '#stale-' || user_id
+            UPDATE users SET name = name || ' (former)',
+                name_key = name_key || '#stale-' || user_id, world_key = world_key || '#stale-' || user_id
             WHERE name_key = $name AND world_key = $world AND user_id <> $id;
             """,
             ("$name", Key(name)), ("$world", Key(worldName)), ("$id", userId));
@@ -256,10 +275,12 @@ public sealed class Database {
         return GetChannel(connection, null, channelId);
     }
 
-    public List<ChannelRow> GetChannelsForUser(long userId) {
+    /// <param name="limit">At most this many, oldest memberships first.</param>
+    public List<ChannelRow> GetChannelsForUser(long userId, int limit = int.MaxValue) {
         using var connection = this.Open();
         using var command = Command(connection, null,
-            "SELECT c.* FROM channels c JOIN members m ON m.channel_id = c.channel_id WHERE m.user_id = $id;", ("$id", userId));
+            "SELECT c.* FROM channels c JOIN members m ON m.channel_id = c.channel_id WHERE m.user_id = $id ORDER BY m.joined_at, c.channel_id LIMIT $limit;",
+            ("$id", userId), ("$limit", limit));
         using var reader = command.ExecuteReader();
         var channels = new List<ChannelRow>();
         while (reader.Read()) {
@@ -297,10 +318,10 @@ public sealed class Database {
         using var tx = connection.BeginTransaction();
         var now = Now();
         Execute(connection, tx, """
-            INSERT INTO channels (channel_id, epoch, rekey_pending, name_epoch, name_author, name_ciphertext, name_signature, created_at)
-            VALUES ($id, 0, 0, $nameEpoch, $nameAuthor, $nameCiphertext, $nameSignature, $now);
+            INSERT INTO channels (channel_id, epoch, rekey_pending, name_epoch, name_revision, name_author, name_ciphertext, name_signature, created_at)
+            VALUES ($id, 0, 0, $nameEpoch, $nameRevision, $nameAuthor, $nameCiphertext, $nameSignature, $now);
             """,
-            ("$id", channelId), ("$nameEpoch", (long) name.Epoch), ("$nameAuthor", name.AuthorId),
+            ("$id", channelId), ("$nameEpoch", (long) name.Epoch), ("$nameRevision", (long) name.Revision), ("$nameAuthor", name.AuthorId),
             ("$nameCiphertext", name.Ciphertext.ToByteArray()), ("$nameSignature", name.Signature.ToByteArray()), ("$now", now));
         Execute(connection, tx, "INSERT INTO members (channel_id, user_id, rank, joined_at) VALUES ($id, $user, $rank, $now);",
             ("$id", channelId), ("$user", creatorId), ("$rank", (long) Rank.Admin), ("$now", now));
@@ -313,15 +334,20 @@ public sealed class Database {
         Execute(connection, null, "DELETE FROM channels WHERE channel_id = $id;", ("$id", channelId));
     }
 
-    /// <summary>Renames only if the channel is still at the name's epoch and not awaiting a rekey.</summary>
-    /// <returns>False if the channel changed meanwhile.</returns>
+    /// <summary>
+    /// Renames only if the channel is still at the name's epoch, not awaiting a
+    /// rekey, and the name's revision is newer than the stored one.
+    /// </summary>
+    /// <returns>False if the channel changed meanwhile, or the revision isn't newer.</returns>
     public bool RenameChannel(string channelId, EncryptedName name) {
         using var connection = this.Open();
         return Execute(connection, null, """
-            UPDATE channels SET name_epoch = $epoch, name_author = $author, name_ciphertext = $ciphertext, name_signature = $signature
-            WHERE channel_id = $id AND epoch = $epoch AND rekey_pending = 0;
+            UPDATE channels SET name_epoch = $epoch, name_revision = $revision, name_author = $author,
+                name_ciphertext = $ciphertext, name_signature = $signature
+            WHERE channel_id = $id AND epoch = $epoch AND rekey_pending = 0
+                AND (name_epoch < $epoch OR name_revision < $revision);
             """,
-            ("$id", channelId), ("$epoch", (long) name.Epoch), ("$author", name.AuthorId),
+            ("$id", channelId), ("$epoch", (long) name.Epoch), ("$revision", (long) name.Revision), ("$author", name.AuthorId),
             ("$ciphertext", name.Ciphertext.ToByteArray()), ("$signature", name.Signature.ToByteArray())) == 1;
     }
 
@@ -356,9 +382,15 @@ public sealed class Database {
         return this.QueryInvites(connection, "WHERE i.channel_id = $channel AND i.user_id = $user", ("$channel", channelId), ("$user", userId)).FirstOrDefault();
     }
 
-    public List<InviteRow> GetInvitesForUser(long userId) {
+    /// <param name="limit">At most this many, newest first.</param>
+    public List<InviteRow> GetInvitesForUser(long userId, int limit = int.MaxValue) {
         using var connection = this.Open();
-        return this.QueryInvites(connection, "WHERE i.user_id = $user", ("$user", userId));
+        return this.QueryInvites(connection, "WHERE i.user_id = $user ORDER BY i.created_at DESC, i.channel_id LIMIT $limit", ("$user", userId), ("$limit", limit));
+    }
+
+    public int CountInvitesForUser(long userId) {
+        using var connection = this.Open();
+        return Convert.ToInt32(Scalar(connection, null, "SELECT COUNT(*) FROM invites WHERE user_id = $user;", ("$user", userId)));
     }
 
     public bool DeleteInvite(string channelId, long userId) {
@@ -395,10 +427,19 @@ public sealed class Database {
         return true;
     }
 
-    public void SetRank(string channelId, long userId, Rank rank) {
+    /// <summary>
+    /// Sets a member's or moderator's rank. Admin is never set or taken away
+    /// here (see <see cref="TransferAdmin"/>).
+    /// </summary>
+    /// <returns>False if nothing changed: they left, are the admin, or already have that rank.</returns>
+    public bool SetRank(string channelId, long userId, Rank rank) {
         using var connection = this.Open();
-        Execute(connection, null, "UPDATE members SET rank = $rank WHERE channel_id = $channel AND user_id = $user;",
-            ("$rank", (long) rank), ("$channel", channelId), ("$user", userId));
+        return Execute(connection, null, """
+            UPDATE members SET rank = $rank
+            WHERE channel_id = $channel AND user_id = $user AND rank IN ($member, $moderator) AND rank <> $rank;
+            """,
+            ("$rank", (long) rank), ("$channel", channelId), ("$user", userId),
+            ("$member", (long) Rank.Member), ("$moderator", (long) Rank.Moderator)) == 1;
     }
 
     /// <summary>Makes <paramref name="newAdminId"/> the admin and demotes the old admin to moderator, atomically.</summary>
@@ -462,12 +503,12 @@ public sealed class Database {
         }
 
         Execute(connection, tx, """
-            UPDATE channels SET epoch = $epoch, rekey_pending = 0,
-                name_epoch = $nameEpoch, name_author = $nameAuthor, name_ciphertext = $nameCiphertext, name_signature = $nameSignature
+            UPDATE channels SET epoch = $epoch, rekey_pending = 0, name_epoch = $nameEpoch, name_revision = $nameRevision,
+                name_author = $nameAuthor, name_ciphertext = $nameCiphertext, name_signature = $nameSignature
             WHERE channel_id = $id AND epoch = $oldEpoch;
             """,
             ("$epoch", (long) newEpoch), ("$oldEpoch", (long) channel.Epoch), ("$id", channelId),
-            ("$nameEpoch", (long) name.Epoch), ("$nameAuthor", name.AuthorId),
+            ("$nameEpoch", (long) name.Epoch), ("$nameRevision", (long) name.Revision), ("$nameAuthor", name.AuthorId),
             ("$nameCiphertext", name.Ciphertext.ToByteArray()), ("$nameSignature", name.Signature.ToByteArray()));
 
         foreach (var key in keys) {
@@ -483,7 +524,7 @@ public sealed class Database {
     public List<EpochKeyForMe> GetEpochKeys(string channelId, long recipientId, ulong fromEpoch) {
         using var connection = this.Open();
         using var command = Command(connection, null, """
-            SELECT epoch, author_id, ephemeral, ciphertext, signature FROM epoch_keys
+            SELECT epoch, author_id, ephemeral, ciphertext, signature, key_commitment FROM epoch_keys
             WHERE channel_id = $channel AND recipient_id = $user AND epoch >= $from ORDER BY epoch;
             """, ("$channel", channelId), ("$user", recipientId), ("$from", (long) fromEpoch));
         using var reader = command.ExecuteReader();
@@ -499,6 +540,7 @@ public sealed class Database {
                         Ciphertext = ByteString.CopyFrom((byte[]) reader[3]),
                     },
                     Signature = ByteString.CopyFrom((byte[]) reader[4]),
+                    KeyCommitment = ByteString.CopyFrom((byte[]) reader[5]),
                 },
             });
         }
@@ -560,12 +602,12 @@ public sealed class Database {
 
     private static void InsertEpochKey(SqliteConnection connection, SqliteTransaction tx, string channelId, ulong epoch, long authorId, SealedEpochKey key) {
         Execute(connection, tx, """
-            INSERT OR REPLACE INTO epoch_keys (channel_id, epoch, recipient_id, author_id, ephemeral, ciphertext, signature)
-            VALUES ($channel, $epoch, $recipient, $author, $ephemeral, $ciphertext, $signature);
+            INSERT OR REPLACE INTO epoch_keys (channel_id, epoch, recipient_id, author_id, ephemeral, ciphertext, signature, key_commitment)
+            VALUES ($channel, $epoch, $recipient, $author, $ephemeral, $ciphertext, $signature, $commitment);
             """,
             ("$channel", channelId), ("$epoch", (long) epoch), ("$recipient", key.RecipientId), ("$author", authorId),
             ("$ephemeral", key.Box.EphemeralPublicKey.ToByteArray()), ("$ciphertext", key.Box.Ciphertext.ToByteArray()),
-            ("$signature", key.Signature.ToByteArray()));
+            ("$signature", key.Signature.ToByteArray()), ("$commitment", key.KeyCommitment.ToByteArray()));
     }
 
     private static List<UserRow> QueryUsers(SqliteConnection connection, SqliteTransaction? tx, string sql, params (string, object)[] parameters) {
@@ -599,6 +641,7 @@ public sealed class Database {
             reader.GetInt64(reader.GetOrdinal("rekey_pending")) != 0,
             new EncryptedName {
                 Epoch = (ulong) reader.GetInt64(reader.GetOrdinal("name_epoch")),
+                Revision = (ulong) reader.GetInt64(reader.GetOrdinal("name_revision")),
                 AuthorId = reader.GetInt64(reader.GetOrdinal("name_author")),
                 Ciphertext = ByteString.CopyFrom((byte[]) reader["name_ciphertext"]),
                 Signature = ByteString.CopyFrom((byte[]) reader["name_signature"]),

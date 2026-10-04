@@ -28,11 +28,12 @@ public sealed record SessionSnapshot(
     ImmutableArray<InviteView> Invites,
     Limits? Limits,
     bool DebugAccountsEnabled,
-    RegistrationChallenge? PendingChallenge) {
+    RegistrationChallenge? PendingChallenge,
+    ImmutableArray<User> BlockedUsers) {
     public static readonly SessionSnapshot Empty = new(
         ConnectionState.Stopped, null, null, null,
         ImmutableArray<ChannelView>.Empty, ImmutableArray<InviteView>.Empty,
-        null, false, null);
+        null, false, null, ImmutableArray<User>.Empty);
 
     public ChannelView? FindChannel(string channelId) {
         foreach (var channel in this.Channels) {
@@ -45,20 +46,40 @@ public sealed record SessionSnapshot(
     }
 }
 
+/// <param name="Epoch">The newest epoch this client holds a key for (what it sends with), or the server's epoch if it holds none.</param>
+/// <param name="ServerEpoch">The epoch the server last reported. Only a hint: the server can claim anything.</param>
+/// <param name="HasKey">The client holds a key for the server's current epoch.</param>
 public sealed record ChannelView(
     string Id,
     string? Name,
     ulong Epoch,
+    ulong ServerEpoch,
     bool HasKey,
     bool RekeyPending,
     Rank MyRank,
     ImmutableArray<MemberView> Members) {
-    public string DisplayName => this.Name ?? $"(encrypted channel {this.Id[..8]})";
+    public string DisplayName => this.Name ?? PlaceholderName(this.Id);
+
+    /// <summary>What to show before a channel's name has been decrypted. Safe for IDs of any length.</summary>
+    public static string PlaceholderName(string id) => $"(encrypted channel {(id.Length > 8 ? id[..8] : id)})";
 }
 
 public sealed record MemberView(User User, Rank Rank, string? Fingerprint, bool KeyChanged);
 
-public sealed record InviteView(string ChannelId, User Inviter, string? ChannelName, bool Verified, DateTimeOffset Created);
+/// <param name="Verified">The invite is signed by the inviter's current identity key.</param>
+/// <param name="InviterKeyChanged">
+/// The inviter's identity key changed (or their name moved to another account)
+/// and the user hasn't marked the new one verified. Don't offer Accept until they do.
+/// </param>
+/// <param name="InviterFingerprint">The inviter's current fingerprint, to compare over /tell.</param>
+public sealed record InviteView(
+    string ChannelId,
+    User Inviter,
+    string? ChannelName,
+    bool Verified,
+    DateTimeOffset Created,
+    bool InviterKeyChanged,
+    string? InviterFingerprint);
 
 public sealed record IncomingMessage(
     string ChannelId,
@@ -106,6 +127,12 @@ public sealed class ClientSessionOptions {
     public int MaxReceiveBytes { get; init; } = 4 * 1024 * 1024;
     public int TraceCapacity { get; init; } = 200;
 
-    /// <summary>Diagnostic log sink. Called from background threads.</summary>
+    /// <summary>
+    /// Diagnostic log sink. Called from background threads. Never given user
+    /// content (names, channel names, messages): that only goes to <see cref="ClientSession.Notice"/>.
+    /// </summary>
     public Action<NoticeLevel, string>? Log { get; init; }
+
+    /// <summary>The clock used to judge message ages. Tests replace it.</summary>
+    public TimeProvider TimeProvider { get; init; } = TimeProvider.System;
 }

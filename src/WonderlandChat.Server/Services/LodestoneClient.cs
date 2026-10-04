@@ -9,6 +9,9 @@ public sealed record LodestoneCharacter(long Id, string Name, string WorldName);
 
 public sealed class LodestoneUnavailableException() : Exception("The Lodestone couldn't be reached.");
 
+/// <summary>Too many Lodestone requests are already queued; the caller should try again later.</summary>
+public sealed class LodestoneBusyException() : Exception("Too many Lodestone requests are waiting.");
+
 public enum ProfileCheck {
     CodeFound,
     CodeNotFound,
@@ -25,14 +28,22 @@ public sealed partial class LodestoneClient(HttpClient http, IOptions<ServerOpti
     private static readonly TimeSpan MissCacheTime = TimeSpan.FromMinutes(10);
     private const int MaxSearchPages = 10;
 
+    /// <summary>
+    /// Requests allowed to wait for the queue. With a gap of seconds between
+    /// requests, more would only time out, and each waiter holds a connection.
+    /// </summary>
+    public const int MaxWaitingRequests = 20;
+
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly ConcurrentDictionary<string, (LodestoneCharacter? Result, DateTimeOffset Expires)> _searchCache = new();
     private DateTimeOffset _lastRequest = DateTimeOffset.MinValue;
+    private int _waiting;
 
     private LodestoneOptions Options => options.Value.Lodestone;
 
     /// <summary>Finds the character with exactly this name on this home world.</summary>
     /// <exception cref="LodestoneUnavailableException">The Lodestone couldn't be reached; nothing is cached.</exception>
+    /// <exception cref="LodestoneBusyException">Too many requests are already waiting.</exception>
     public async Task<LodestoneCharacter?> FindCharacterAsync(string name, string worldName, CancellationToken ct) {
         var cacheKey = $"{name.ToLowerInvariant()}@{worldName.ToLowerInvariant()}";
         if (this._searchCache.TryGetValue(cacheKey, out var cached) && cached.Expires > DateTimeOffset.UtcNow) {
@@ -82,8 +93,19 @@ public sealed partial class LodestoneClient(HttpClient http, IOptions<ServerOpti
         return text.Contains(code, StringComparison.OrdinalIgnoreCase) ? ProfileCheck.CodeFound : ProfileCheck.CodeNotFound;
     }
 
+    /// <exception cref="LodestoneBusyException">Too many requests are already waiting.</exception>
     private async Task<string?> GetAsync(string url, CancellationToken ct) {
-        await this._gate.WaitAsync(ct);
+        if (Interlocked.Increment(ref this._waiting) > MaxWaitingRequests) {
+            Interlocked.Decrement(ref this._waiting);
+            throw new LodestoneBusyException();
+        }
+
+        try {
+            await this._gate.WaitAsync(ct);
+        } finally {
+            Interlocked.Decrement(ref this._waiting);
+        }
+
         try {
             var wait = this._lastRequest + TimeSpan.FromSeconds(this.Options.MinDelaySeconds) - DateTimeOffset.UtcNow;
             if (wait > TimeSpan.Zero) {

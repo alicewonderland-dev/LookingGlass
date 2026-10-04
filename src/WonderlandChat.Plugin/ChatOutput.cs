@@ -30,9 +30,9 @@ public sealed class ChatOutput(Configuration config) {
         });
     }
 
+    /// <summary>Shows a notice in chat only. Notice text can contain names and channel names, so it is never logged.</summary>
     public void Notice(NoticeLevel level, string text) {
         if (level == NoticeLevel.Debug) {
-            Services.Log.Debug(text);
             return;
         }
 

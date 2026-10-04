@@ -10,6 +10,7 @@ namespace WonderlandChat.Plugin.Ui;
 /// <summary>Registration, channels, invites and settings. Reads only immutable session snapshots.</summary>
 public sealed class MainWindow : Window {
     private static readonly XivChatType[] ChatTypes = [XivChatType.Debug, XivChatType.Echo, XivChatType.Notice, XivChatType.SystemMessage];
+    private static readonly Vector4 KeyChangedColour = new(1f, 0.7f, 0.2f, 1f);
 
     private readonly Configuration _config;
     private readonly SessionManager _sessions;
@@ -141,8 +142,23 @@ public sealed class MainWindow : Window {
             ImGui.PushID(invite.ChannelId);
             var name = invite.ChannelName ?? "(couldn't verify)";
             ImGui.TextUnformatted($"\"{name}\" from {invite.Inviter.Name}@{invite.Inviter.WorldName}");
+
+            // An inviter whose key changed may not be who they were: make the user check first.
+            if (invite.Verified && invite.InviterKeyChanged) {
+                ImGui.SameLine();
+                ImGui.TextColored(KeyChangedColour, "key changed!");
+                if (ImGui.IsItemHovered()) {
+                    ImGui.SetTooltip($"Their identity key changed, or this name now belongs to a different account.\nCompare fingerprints with them over /tell before accepting: {invite.InviterFingerprint}");
+                }
+
+                ImGui.SameLine();
+                if (ImGui.SmallButton("Mark verified")) {
+                    session.AcknowledgeKeyChange(invite.Inviter.UserId);
+                }
+            }
+
             ImGui.SameLine();
-            ImGui.BeginDisabled(this._actions.Busy || !invite.Verified);
+            ImGui.BeginDisabled(this._actions.Busy || !invite.Verified || invite.InviterKeyChanged);
             if (ImGui.Button("Accept")) {
                 this._actions.Run($"Joining {name}", () => session.RespondToInviteAsync(invite.ChannelId, true));
             }
@@ -155,6 +171,15 @@ public sealed class MainWindow : Window {
             }
 
             ImGui.EndDisabled();
+            ImGui.SameLine();
+            if (ImGui.Button("Block")) {
+                session.BlockUser(invite.Inviter.UserId);
+            }
+
+            if (ImGui.IsItemHovered()) {
+                ImGui.SetTooltip("Decline, and silently decline their future invites and hide their messages.\nUndo under Settings > Blocked users.");
+            }
+
             ImGui.PopID();
         }
 
@@ -247,7 +272,7 @@ public sealed class MainWindow : Window {
                 ImGui.TextUnformatted($"{member.User.Name}@{member.User.WorldName}{(isMe ? " (you)" : "")}");
                 if (member.KeyChanged) {
                     ImGui.SameLine();
-                    ImGui.TextColored(new Vector4(1f, 0.7f, 0.2f, 1f), "key changed!");
+                    ImGui.TextColored(KeyChangedColour, "key changed!");
                     if (ImGui.IsItemHovered()) {
                         ImGui.SetTooltip("Their identity key changed, or this name now belongs to a different account.\nCompare fingerprints with them over /tell, then mark it verified.");
                     }
@@ -387,5 +412,31 @@ public sealed class MainWindow : Window {
         }
 
         ImGui.TextDisabled($"Keys are stored with: {ProtectedSecretStore.Protection}");
+        this.DrawBlockedUsers();
+    }
+
+    private void DrawBlockedUsers() {
+        if (this._sessions.Session is not { } session) {
+            return;
+        }
+
+        ImGui.Spacing();
+        ImGui.TextUnformatted("Blocked users");
+        var blocked = this._sessions.Snapshot.BlockedUsers;
+        if (blocked.IsEmpty) {
+            ImGui.TextDisabled("Nobody. Use Block next to an invite.");
+            return;
+        }
+
+        foreach (var user in blocked) {
+            ImGui.PushID(user.UserId.ToString());
+            ImGui.TextUnformatted(string.IsNullOrEmpty(user.WorldName) ? user.Name : $"{user.Name}@{user.WorldName}");
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Unblock")) {
+                session.UnblockUser(user.UserId);
+            }
+
+            ImGui.PopID();
+        }
     }
 }

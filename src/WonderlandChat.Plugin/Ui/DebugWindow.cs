@@ -95,7 +95,7 @@ public sealed class DebugWindow : Window {
             ImGui.EndCombo();
         }
 
-        ImGui.TextDisabled($"id {selected.Id}  epoch {selected.Epoch}  key {(selected.HasKey ? "yes" : "no")}  rekey pending {(selected.RekeyPending ? "yes" : "no")}");
+        ImGui.TextDisabled($"id {selected.Id}  key epoch {selected.Epoch}  server epoch {selected.ServerEpoch}  current key {(selected.HasKey ? "yes" : "no")}  rekey pending {(selected.RekeyPending ? "yes" : "no")}");
 
         ImGui.SetNextItemWidth(260);
         ImGui.InputText("##test-message", ref this._testMessage, 400);
