@@ -17,6 +17,8 @@ public class PolicyTests {
             [ChannelAction.SetRank] = Rank.Admin,
             [ChannelAction.Rename] = Rank.Admin,
             [ChannelAction.Disband] = Rank.Admin,
+            // Invitees read the log to check an invite before answering it.
+            [ChannelAction.FetchLog] = Rank.Invited,
         };
 
         Rank?[] ranks = [null, Rank.Unspecified, Rank.Invited, Rank.Member, Rank.Moderator, Rank.Admin];

@@ -1,6 +1,7 @@
 using WonderlandChat.Core.Client;
 using WonderlandChat.Core.Crypto;
 using WonderlandChat.Core.Debug;
+using WonderlandChat.Core.Membership;
 using WonderlandChat.Protocol;
 using static WonderlandChat.Tests.Harness;
 
@@ -282,6 +283,10 @@ public sealed class EndToEndTests : IAsyncLifetime {
         return channelId;
     }
 
+    /// <summary>
+    /// Adapted: the client now refuses from its own verified log before asking the server, so the
+    /// server's refusal is checked with a signed removal sent anyway.
+    /// </summary>
     [Fact]
     public async Task MemberCannotKickModerator() {
         var alice = await this._server.RegisterAsync("Alice Rank");
@@ -289,8 +294,15 @@ public sealed class EndToEndTests : IAsyncLifetime {
         var channelId = await alice.Session.CreateChannelAsync("Ranks", Ct);
         await AddMemberAsync(alice, channelId, bob);
 
-        var error = await Assert.ThrowsAsync<ServerErrorException>(() => bob.Session.KickAsync(channelId, alice.UserId, Ct));
+        var refused = await Assert.ThrowsAsync<MembershipException>(() => bob.Session.KickAsync(channelId, alice.UserId, Ct));
+        Assert.Equal(MembershipVerdictKind.Forbidden, refused.Verdict.Kind);
+
+        var removal = this._server.ForgeEntry(channelId, bob, MembershipEntryKind.Remove, alice.UserId, alice.Keys());
+        var error = await Assert.ThrowsAsync<ServerErrorException>(() => bob.Session.SendRawAsync(new ClientFrame {
+            KickMember = new KickMember { ChannelId = channelId, Entry = removal },
+        }, Ct));
         Assert.Equal(ErrorCode.Forbidden, error.Code);
+        Assert.Equal(Rank.Admin, this._server.Database.GetRank(channelId, alice.UserId));
     }
 
     [Fact]
@@ -326,8 +338,14 @@ public sealed class EndToEndTests : IAsyncLifetime {
         Assert.Equal(fingerprint, second.Session.Snapshot.MyFingerprint);
     }
 
+    /// <summary>
+    /// Replaces "ReRegisteredMemberGetsKeySealedToNewIdentity". In 0.1 a member who registered again was
+    /// sent the channel key under their new identity key straight away: the server's word that the new
+    /// key was theirs was enough. Now their membership stays bound to the key they joined with, and the
+    /// new key only gets in through a fresh invite and accept, signed in the log.
+    /// </summary>
     [Fact]
-    public async Task ReRegisteredMemberGetsKeySealedToNewIdentity() {
+    public async Task ReRegisteredMembersNewKeyIsNotAMemberUntilInvitedAgain() {
         var alice = await this._server.RegisterAsync("Alice Rereg");
         var carol = await this._server.RegisterAsync("Carol Rereg");
         var channelId = await alice.Session.CreateChannelAsync("Phoenix", Ct);
@@ -337,30 +355,58 @@ public sealed class EndToEndTests : IAsyncLifetime {
         // Carol loses her config and registers again from a fresh install: new identity keys.
         var carolAgain = await this._server.RegisterAsync("Carol Rereg");
         Assert.Equal(carol.Name, carolAgain.Name);
+        var listed = await WaitFor(() => carolAgain.Session.Snapshot.FindChannel(channelId));
+        Assert.Equal(Rank.Unspecified, listed.MyRank);
+        Assert.NotNull(listed.MembershipWarning);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => carolAgain.Session.SendTextAsync(channelId, "let me in", Ct));
 
-        // Alice must rekey to Carol's NEW key (0.1 sealed it to the stale cached one).
-        var channel = await WaitFor(() => carolAgain.Session.Snapshot.FindChannel(channelId) is { HasKey: true, Name: not null } c ? c : null);
-        Assert.Equal("Phoenix", channel.Name);
-
-        // And Alice is warned, persistently, that Carol's key changed.
-        var member = await WaitFor(() => alice.Session.Snapshot.FindChannel(channelId)?.Members.FirstOrDefault(m => m.User.Name == carol.Name && m.KeyChanged));
+        // Alice is warned, persistently, that Carol's key changed, and sees that the new one isn't the member.
+        await alice.Session.RefreshAsync(Ct);
+        var member = alice.Session.Snapshot.FindChannel(channelId)!.Members.Single(m => m.User.UserId == carolAgain.UserId);
         Assert.True(member.KeyChanged);
-        alice.Session.AcknowledgeKeyChange(member.User.UserId);
-        Assert.False(alice.Session.Snapshot.FindChannel(channelId)!.Members.First(m => m.User.Name == carol.Name).KeyChanged);
+        Assert.True(member.KeyReplaced);
+        Assert.NotEqual(carolAgain.Session.Snapshot.MyFingerprint, member.Fingerprint);
+
+        // A rekey still goes to the member, Carol's old key: nothing is sealed to the new one.
+        await alice.Session.RekeyAsync(channelId, Ct, force: true);
+        await carolAgain.Session.RefreshAsync(Ct);
+        Assert.False(carolAgain.Store.Load().EpochKeys.ContainsKey(channelId));
+        Assert.False(carolAgain.Session.Snapshot.FindChannel(channelId)!.HasKey);
+
+        // Removed and invited again, the new key is a member.
+        await alice.Session.KickAsync(channelId, carolAgain.UserId, Ct);
+        await WaitFor(() => carolAgain.Session.Snapshot.FindChannel(channelId) == null ? new object() : null);
+        await AddMemberAsync(alice, channelId, carolAgain);
+        Assert.Equal("Phoenix", carolAgain.Session.Snapshot.FindChannel(channelId)!.Name);
+
+        var rejoined = alice.Session.Snapshot.FindChannel(channelId)!.Members.Single(m => m.User.UserId == carolAgain.UserId);
+        Assert.Equal(carolAgain.Session.Snapshot.MyFingerprint, rejoined.Fingerprint);
+        Assert.False(rejoined.KeyReplaced);
+        Assert.True(rejoined.KeyChanged);
+        alice.Session.AcknowledgeKeyChange(carolAgain.UserId);
+        rejoined = alice.Session.Snapshot.FindChannel(channelId)!.Members.Single(m => m.User.UserId == carolAgain.UserId);
+        Assert.False(rejoined.KeyChanged);
+        Assert.True(rejoined.FingerprintCompared);
 
         await carolAgain.Session.SendTextAsync(channelId, "I'm back", Ct);
         await WaitFor(() => alice.Messages.FirstOrDefault(m => m.Text == "I'm back"));
     }
 
+    /// <summary>
+    /// Adapted: in 0.1 Bob's new key counted as soon as a member rekeyed to it. Now it counts once he is
+    /// removed and invited again. Carol, who has his old key, must take the new one from the log without
+    /// restarting, and still be warned that his key changed.
+    /// </summary>
     [Fact]
     public async Task OtherMembersPickUpAReRegisteredMembersNewKeyWithoutRestarting() {
         var (alice, bob, carol, channelId) = await this.ThreeMembersAsync("Stale");
         await bob.Session.DisposeAsync();
 
-        // Bob registers again with new keys; Alice rekeys to them. Carol still has his old key cached.
         var bobAgain = await this._server.RegisterAsync(bob.Name);
-        await WaitFor(() => bobAgain.Session.Snapshot.FindChannel(channelId) is { HasKey: true, RekeyPending: false } c ? c : null);
-        Assert.False(carol.Session.Snapshot.FindChannel(channelId)!.Members.Single(m => m.User.UserId == bobAgain.UserId).KeyChanged);
+        await alice.Session.KickAsync(channelId, bobAgain.UserId, Ct);
+        await AddMemberAsync(alice, channelId, bobAgain);
+        await WaitFor(() => carol.Session.Snapshot.FindChannel(channelId)?.Members.FirstOrDefault(m => m.User.UserId == bobAgain.UserId && m.Rank == Rank.Member));
+        await WaitFor(() => carol.Session.Snapshot.FindChannel(channelId) is { HasKey: true, RekeyPending: false } c ? c : null);
 
         await bobAgain.Session.SendTextAsync(channelId, "new keys, same Bob", Ct);
         await WaitFor(() => carol.Messages.FirstOrDefault(m => m.Text == "new keys, same Bob"));
@@ -373,163 +419,73 @@ public sealed class EndToEndTests : IAsyncLifetime {
         Assert.DoesNotContain(carol.Notices, n => n.Text.Contains("failed signature"));
     }
 
+    /// <summary>
+    /// Adapted: Bob registering again no longer makes anyone rekey (his membership stays bound to his
+    /// old key), so there is nothing to wait for but the registration. Reconnecting must still fetch
+    /// identities again and notice his new key.
+    /// </summary>
     [Fact]
     public async Task ReconnectingFetchesIdentitiesAgain() {
         var (_, bob, carol, channelId) = await this.ThreeMembersAsync("Reconnect");
-        var epoch = carol.Session.Snapshot.FindChannel(channelId)!.Epoch;
         await bob.Session.DisposeAsync();
         var bobAgain = await this._server.RegisterAsync(bob.Name);
-        await WaitFor(() => carol.Session.Snapshot.FindChannel(channelId) is { Epoch: var e, HasKey: true } c && e > epoch ? c : null);
         Assert.False(carol.Session.Snapshot.FindChannel(channelId)!.Members.Single(m => m.User.UserId == bobAgain.UserId).KeyChanged);
 
         // Nothing from Bob has arrived, but reconnecting is enough to notice his new key.
         carol.Session.Reconnect();
         var member = await WaitFor(() => carol.Session.Snapshot.FindChannel(channelId)?.Members.FirstOrDefault(m => m.User.UserId == bobAgain.UserId && m.KeyChanged));
-        Assert.Equal(bobAgain.Session.Snapshot.MyFingerprint, member.Fingerprint);
-        await WaitFor(() => carol.Notices.FirstOrDefault(n => n.Level == NoticeLevel.Warning && n.Text.StartsWith($"{bob.Name}@Debug's identity key changed")));
+        Assert.True(member.KeyReplaced);
+        var newFingerprint = bobAgain.Session.Snapshot.MyFingerprint!;
+        await WaitFor(() => carol.Notices.FirstOrDefault(n => n.Level == NoticeLevel.Warning
+                                                              && n.Text.StartsWith($"{bob.Name}@Debug's identity key changed") && n.Text.EndsWith(newFingerprint)));
     }
 
+    /// <summary>
+    /// Replaces "NameSignedWithAnAuthorsNewKeyIsShownAfterFetchingItAgain" and the two
+    /// "MessageIsDelivered...ItsAuthorsNewIdentity" tests (R5-3). Those checked that a name or message
+    /// signed with a member's new keys, after they registered again, was shown once the client had
+    /// fetched their identity again, however those fetches raced. Now a new key signs nothing that
+    /// counts until its owner is invited again, so both are refused, and fetching the identity again
+    /// only explains why. What R5-3 protected still matters for that: a name's fetch must not leave
+    /// the message with a bare "failed checks", nor cost a second lookup. (Names and messages are now
+    /// handled in one queue, in order, so the old tests' way of holding one while the other ran no
+    /// longer applies.)
+    /// </summary>
     [Fact]
-    public async Task NameSignedWithAnAuthorsNewKeyIsShownAfterFetchingItAgain() {
+    public async Task NamesAndMessagesSignedWithAReRegisteredMembersNewKeyAreRefusedWithAReason() {
         var alice = await this._server.RegisterAsync("Alice Renamer");
         // Carol doesn't rekey when asked, which would also fetch Alice's new identity.
         var carol = await this._server.RegisterAsync("Carol Renamed", options: this._server.Options(autoRekey: false));
         var channelId = await alice.Session.CreateChannelAsync("Old Name", Ct);
         await AddMemberAsync(alice, channelId, carol);
         var epoch = carol.Session.Snapshot.FindChannel(channelId)!.Epoch;
+        var position = PositionOf(carol, channelId);
         await alice.Session.DisposeAsync();
         var aliceAgain = await this._server.RegisterAsync(alice.Name);
+        int Lookups() => carol.Session.GetTrace().Count(entry => entry.Outgoing && entry.Summary.EndsWith(" GetIdentities"));
+        var before = Lookups();
 
-        // A name signed with Alice's new keys reaches Carol, who has her old ones cached.
+        // A name and a message signed with Alice's new keys reach Carol, who knows only her old ones.
         using var newKeys = aliceAgain.LoadIdentity();
-        var name = ChannelCrypto.EncryptName("New Name", carol.LoadEpochKey(channelId, epoch), channelId, epoch, newKeys, aliceAgain.UserId, revision: 1);
-        this._server.Registry.Send(carol.UserId, new Event { ChannelRenamed = new ChannelRenamed { ChannelId = channelId, Name = name } });
-
-        await WaitFor(() => carol.Session.Snapshot.FindChannel(channelId)?.Name == "New Name" ? new object() : null);
-        await WaitFor(() => carol.Notices.FirstOrDefault(n => n.Level == NoticeLevel.Warning && n.Text.StartsWith($"{alice.Name}@Debug's identity key changed")));
-    }
-
-    [Fact]
-    public async Task MessageIsDeliveredWhenANameAlreadyFetchedItsAuthorsNewIdentity() {
-        using var clock = new StallingClock();
-        var (carol, aliceAgain, channelId, epoch) = await this.MessageHeldWithAStaleIdentityAsync("Name First", clock);
-
-        // Meanwhile a name signed with Alice's new keys arrives, and following it up fetches her identity again.
-        await this._server.SendAndSettleAsync(carol, RenameSignedBy(aliceAgain, carol, channelId, epoch, "Renamed First"));
-        await WaitFor(() => carol.Session.Snapshot.FindChannel(channelId)?.Name == "Renamed First" ? new object() : null);
-
-        // The message's check then fails against the identity it looked up before. It must use the
-        // one just fetched, not be refused another fetch for a minute and dropped.
-        clock.Resume();
-        await AssertDeliveredAsync(carol, HeldMessageText);
-    }
-
-    [Fact]
-    public async Task MessageIsDeliveredWhileANameIsStillFetchingItsAuthorsNewIdentity() {
-        using var clock = new StallingClock();
-        var (carol, aliceAgain, channelId, epoch) = await this.MessageHeldWithAStaleIdentityAsync("Name Fetching", clock);
-        var lastRequest = LastRequestId(carol);
-
-        // A name signed with Alice's new keys arrives and starts a fetch of her identity, whose answer
-        // can't arrive yet: Carol stops reading from the server just after the name.
-        var hold = "hold " + Guid.NewGuid().ToString("N");
-        var readerHeld = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseReader = new ManualResetEventSlim();
-        carol.Session.Notice += notice => {
-            if (notice.Text == hold && readerHeld.TrySetResult()) {
-                releaseReader.Wait(Harness.Timeout);
-            }
-        };
-
-        try {
-            this._server.Registry.Send(carol.UserId, RenameSignedBy(aliceAgain, carol, channelId, epoch, "Renamed Later"));
-            this._server.Registry.Send(carol.UserId, new Event { Announcement = new Announcement { Text = hold } });
-            await readerHeld.Task.WaitAsync(Harness.Timeout, Ct);
-            await WaitFor(() => carol.Session.GetTrace().Any(entry => entry.Outgoing && entry.Summary.EndsWith(" GetIdentities") && RequestIdOf(entry) > lastRequest) ? new object() : null);
-
-            // The message's check fails while that fetch is under way: it must wait for it. Unfixed,
-            // the message is dropped at once; give that a moment to show before letting the fetch finish.
-            clock.Resume();
-            try {
-                await WaitFor(() => carol.Notices.FirstOrDefault(n => n.Text.Contains("failed signature or decryption checks")), TimeSpan.FromMilliseconds(500));
-            } catch (TimeoutException) {
-                // Still waiting, as it should be.
-            }
-        } finally {
-            releaseReader.Set();
-        }
-
-        await AssertDeliveredAsync(carol, HeldMessageText);
-        Assert.Equal("Renamed Later", carol.Session.Snapshot.FindChannel(channelId)!.Name);
-    }
-
-    private const string HeldMessageText = "signed with my new keys";
-
-    /// <summary>
-    /// Alice (admin) and Carol share a channel; Alice registers again with new keys, which Carol hasn't
-    /// fetched. A message signed with Alice's new keys reaches Carol, whose inbox is then held by
-    /// <paramref name="clock"/> just after it has looked up Alice's (old) identity for it, before the
-    /// message's signature is checked. <see cref="StallingClock.Resume"/> lets it carry on.
-    /// </summary>
-    private async Task<(TestClient Carol, TestClient AliceAgain, string ChannelId, ulong Epoch)> MessageHeldWithAStaleIdentityAsync(string suffix, StallingClock clock) {
-        var alice = await this._server.RegisterAsync("Alice " + suffix);
-        // Carol doesn't rekey when asked, which would also fetch Alice's new identity.
-        var carol = await this._server.RegisterAsync("Carol " + suffix, options: this._server.Options(autoRekey: false, time: clock));
-        var channelId = await alice.Session.CreateChannelAsync("Before " + suffix, Ct);
-        await AddMemberAsync(alice, channelId, carol);
-        var epoch = carol.Session.Snapshot.FindChannel(channelId)!.Epoch;
-        await alice.Session.DisposeAsync();
-        var aliceAgain = await this._server.RegisterAsync(alice.Name);
-
-        // Hold Carol's inbox on a harmless event (a stale key it rejects), to learn its thread...
-        var inboxThread = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseInbox = new ManualResetEventSlim();
-        carol.Session.Notice += notice => {
-            if (notice.Text.StartsWith("Rejected a new key for a channel: it's for epoch 0,") && inboxThread.TrySetResult(Environment.CurrentManagedThreadId)) {
-                releaseInbox.Wait(Harness.Timeout);
-            }
-        };
-
-        try {
-            this._server.Registry.Send(carol.UserId, new Event { EpochAdvanced = new EpochAdvanced { ChannelId = channelId, Epoch = 0, AuthorId = aliceAgain.UserId } });
-            var thread = await inboxThread.Task.WaitAsync(Harness.Timeout, Ct);
-
-            // ...queue the message behind it...
-            using var newKeys = aliceAgain.LoadIdentity();
-            var sent = ChannelCrypto.EncryptMessage(new Content { Text = new TextContent { Text = HeldMessageText } }, carol.LoadEpochKey(channelId, epoch),
-                channelId, epoch, newKeys, aliceAgain.UserId, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-            await this._server.SendAndSettleAsync(carol, new Event {
+        var key = carol.LoadEpochKey(channelId, epoch);
+        var name = ChannelCrypto.EncryptName("New Name", key, channelId, epoch, position, newKeys, aliceAgain.UserId, revision: 1);
+        var sent = ChannelCrypto.EncryptMessage(new Content { Text = new TextContent { Text = "signed with my new keys" } }, key,
+            channelId, epoch, newKeys, aliceAgain.UserId, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        await this._server.SendAndSettleAsync(carol,
+            new Event { ChannelRenamed = new ChannelRenamed { ChannelId = channelId, Name = name } },
+            new Event {
                 ChatMessage = new ChatMessage {
                     ChannelId = channelId, Epoch = epoch, SenderId = aliceAgain.UserId, MessageId = sent.MessageId,
                     TimestampUnixMs = sent.TimestampUnixMs, Ciphertext = sent.Ciphertext, Signature = sent.Signature,
                 },
             });
 
-            // ...and let the inbox go on to the message, until it next reads the time.
-            clock.StallNextReadOn(thread);
-        } finally {
-            releaseInbox.Set();
-        }
-
-        await clock.Stalled.WaitAsync(Harness.Timeout, Ct);
-        return (carol, aliceAgain, channelId, epoch);
-    }
-
-    private static Event RenameSignedBy(TestClient author, TestClient holder, string channelId, ulong epoch, string name) {
-        using var keys = author.LoadIdentity();
-        var encrypted = ChannelCrypto.EncryptName(name, holder.LoadEpochKey(channelId, epoch), channelId, epoch, keys, author.UserId, revision: 1);
-        return new Event { ChannelRenamed = new ChannelRenamed { ChannelId = channelId, Name = encrypted } };
-    }
-
-    private static uint LastRequestId(TestClient client) => client.Session.GetTrace().Where(entry => entry.Outgoing).Select(RequestIdOf).DefaultIfEmpty(0u).Max();
-
-    /// <summary>Outgoing trace entries read "#id Kind".</summary>
-    private static uint RequestIdOf(TraceEntry entry) => uint.Parse(entry.Summary.AsSpan(1, entry.Summary.IndexOf(' ') - 1));
-
-    private static async Task AssertDeliveredAsync(TestClient client, string text) {
-        var outcome = await WaitFor(() => (object?) client.Messages.FirstOrDefault(m => m.Text == text)
-                                          ?? client.Notices.FirstOrDefault(n => n.Text.Contains("failed signature or decryption checks")));
-        Assert.True(outcome is IncomingMessage, $"The message was dropped: {(outcome as SessionNotice)?.Text}");
+        var dropped = await WaitFor(() => carol.Notices.FirstOrDefault(n => n.Text.StartsWith($"Dropped a message from {alice.Name}")));
+        Assert.Contains("registered again", dropped.Text);
+        await WaitFor(() => carol.Notices.FirstOrDefault(n => n.Level == NoticeLevel.Warning && n.Text.StartsWith($"{alice.Name}@Debug's identity key changed")));
+        Assert.Equal("Old Name", carol.Session.Snapshot.FindChannel(channelId)!.Name);
+        Assert.DoesNotContain(carol.Messages, m => m.Text == "signed with my new keys");
+        Assert.Equal(before + 1, Lookups());
     }
 
     [Fact]

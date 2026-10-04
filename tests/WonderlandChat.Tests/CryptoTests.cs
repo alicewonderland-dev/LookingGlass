@@ -6,6 +6,7 @@ namespace WonderlandChat.Tests;
 
 public class CryptoTests {
     private const string ChannelId = "0123456789abcdef0123456789abcdef";
+    private static readonly LogPosition Position = new() { Seq = 7, Hash = ByteString.CopyFrom(Enumerable.Repeat((byte) 7, 32).ToArray()) };
 
     [Fact]
     public void IdentityBundleVerifies() {
@@ -79,7 +80,7 @@ public class CryptoTests {
         using var member = IdentityKeys.Generate();
         var key = ChannelCrypto.NewEpochKey();
 
-        var sealedKey = ChannelCrypto.SealEpochKey(key, ChannelId, 3, author, 1, 2, member.AgreementPublicKey);
+        var sealedKey = ChannelCrypto.SealEpochKey(key, ChannelId, 3, Position, author, 1, 2, member.AgreementPublicKey);
         Assert.Equal(key, ChannelCrypto.OpenEpochKey(sealedKey, ChannelId, 3, 1, author.SigningPublicKey, member, 2));
 
         // A server substituting its own author key is caught by the signature.
@@ -96,12 +97,12 @@ public class CryptoTests {
         var key = ChannelCrypto.NewEpochKey();
         var otherKey = ChannelCrypto.NewEpochKey();
 
-        var honest = ChannelCrypto.SealEpochKey(key, ChannelId, 3, author, 1, 2, member.AgreementPublicKey);
+        var honest = ChannelCrypto.SealEpochKey(key, ChannelId, 3, Position, author, 1, 2, member.AgreementPublicKey);
         Assert.Equal(EpochKeyCheck.Valid, ChannelCrypto.TryOpenEpochKey(honest, ChannelId, 3, 1, author.SigningPublicKey, member, 2, out var opened));
         Assert.Equal(key, opened);
 
         // The author seals a different key under the commitment everyone else got: signed, but caught.
-        var split = ChannelCrypto.SealEpochKey(otherKey, ChannelId, 3, author, 1, 2, member.AgreementPublicKey);
+        var split = ChannelCrypto.SealEpochKey(otherKey, ChannelId, 3, Position, author, 1, 2, member.AgreementPublicKey);
         split.KeyCommitment = honest.KeyCommitment;
         ChannelCrypto.SignEpochKey(split, ChannelId, 3, author, 1);
         Assert.Equal(EpochKeyCheck.CommitmentMismatch, ChannelCrypto.TryOpenEpochKey(split, ChannelId, 3, 1, author.SigningPublicKey, member, 2, out _));
@@ -148,7 +149,7 @@ public class CryptoTests {
     public void ChannelNameRoundTrips() {
         using var author = IdentityKeys.Generate();
         var key = ChannelCrypto.NewEpochKey();
-        var name = ChannelCrypto.EncryptName("Tea Party", key, ChannelId, 2, author, 5);
+        var name = ChannelCrypto.EncryptName("Tea Party", key, ChannelId, 2, Position, author, 5);
         Assert.True(ChannelCrypto.VerifyName(name, ChannelId, author.SigningPublicKey));
         Assert.Equal("Tea Party", ChannelCrypto.DecryptName(name, ChannelId, key, author.SigningPublicKey));
     }
@@ -157,7 +158,7 @@ public class CryptoTests {
     public void CarriedOverNameVersionIsSigned() {
         using var author = IdentityKeys.Generate();
         var key = ChannelCrypto.NewEpochKey();
-        var name = ChannelCrypto.EncryptName("Tea Party", key, ChannelId, 3, author, 5, carriedFrom: new NameSource { Epoch = 2, Revision = 4 });
+        var name = ChannelCrypto.EncryptName("Tea Party", key, ChannelId, 3, Position, author, 5, carriedFrom: new NameSource { Epoch = 2, Revision = 4 });
         Assert.Equal("Tea Party", ChannelCrypto.DecryptName(name, ChannelId, key, author.SigningPublicKey));
 
         // Claiming another source, or none, breaks the signature.
@@ -169,9 +170,31 @@ public class CryptoTests {
         Assert.False(ChannelCrypto.VerifyName(stripped, ChannelId, author.SigningPublicKey));
 
         // And one can't be added to a name made without.
-        var plain = ChannelCrypto.EncryptName("Tea Party", key, ChannelId, 3, author, 5);
+        var plain = ChannelCrypto.EncryptName("Tea Party", key, ChannelId, 3, Position, author, 5);
         plain.CarriedFrom = new NameSource();
         Assert.False(ChannelCrypto.VerifyName(plain, ChannelId, author.SigningPublicKey));
+    }
+
+    [Fact]
+    public void LogPositionsOfKeysAndNamesAreSigned() {
+        using var author = IdentityKeys.Generate();
+        using var member = IdentityKeys.Generate();
+        var key = ChannelCrypto.NewEpochKey();
+        var older = new LogPosition { Seq = 6, Hash = ByteString.CopyFrom(new byte[32]) };
+
+        // A server can't pass a key or a name off as made for another membership.
+        var sealedKey = ChannelCrypto.SealEpochKey(key, ChannelId, 3, Position, author, 1, 2, member.AgreementPublicKey);
+        var moved = sealedKey.Clone();
+        moved.LogPosition = older;
+        Assert.False(ChannelCrypto.VerifyEpochKey(moved, ChannelId, 3, 1, author.SigningPublicKey));
+        moved.LogPosition = null;
+        Assert.False(ChannelCrypto.VerifyEpochKey(moved, ChannelId, 3, 1, author.SigningPublicKey));
+
+        var name = ChannelCrypto.EncryptName("Tea Party", key, ChannelId, 3, Position, author, 1);
+        var movedName = name.Clone();
+        movedName.LogPosition = older;
+        Assert.False(ChannelCrypto.VerifyName(movedName, ChannelId, author.SigningPublicKey));
+        Assert.Null(ChannelCrypto.DecryptName(movedName, ChannelId, key, author.SigningPublicKey));
     }
 
     [Fact]

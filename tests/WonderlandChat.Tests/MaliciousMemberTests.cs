@@ -1,6 +1,7 @@
 using Google.Protobuf;
 using WonderlandChat.Core.Client;
 using WonderlandChat.Core.Crypto;
+using WonderlandChat.Core.Membership;
 using WonderlandChat.Protocol;
 using static WonderlandChat.Tests.Harness;
 
@@ -35,18 +36,20 @@ public sealed class MaliciousMemberTests : IAsyncLifetime {
         // Bob rekeys to epoch 2, but seals Alice a different key than the one he commits to,
         // which would leave her unable to read the channel (or split it in two).
         using var bobKeys = bob.LoadIdentity();
+        var position = PositionOf(bob, channelId);
         var real = ChannelCrypto.NewEpochKey();
-        var forAlice = ChannelCrypto.SealEpochKey(ChannelCrypto.NewEpochKey(), channelId, 2, bobKeys, bob.UserId, alice.UserId, alice.LoadIdentity().AgreementPublicKey);
+        var forAlice = ChannelCrypto.SealEpochKey(ChannelCrypto.NewEpochKey(), channelId, 2, position, bobKeys, bob.UserId, alice.UserId, alice.LoadIdentity().AgreementPublicKey);
         forAlice.KeyCommitment = ByteString.CopyFrom(ChannelCrypto.KeyCommitment(channelId, 2, real));
         ChannelCrypto.SignEpochKey(forAlice, channelId, 2, bobKeys, bob.UserId);
         var request = new SubmitRekey {
             ChannelId = channelId,
             NewEpoch = 2,
+            LogPosition = position,
             KeyCommitment = ByteString.CopyFrom(ChannelCrypto.KeyCommitment(channelId, 2, real)),
-            Name = ChannelCrypto.EncryptName("Wedged", real, channelId, 2, bobKeys, bob.UserId),
+            Name = ChannelCrypto.EncryptName("Wedged", real, channelId, 2, position, bobKeys, bob.UserId),
         };
         request.Keys.Add(forAlice);
-        request.Keys.Add(ChannelCrypto.SealEpochKey(real, channelId, 2, bobKeys, bob.UserId, bob.UserId, bobKeys.AgreementPublicKey));
+        request.Keys.Add(ChannelCrypto.SealEpochKey(real, channelId, 2, position, bobKeys, bob.UserId, bob.UserId, bobKeys.AgreementPublicKey));
         await bob.Session.SendRawAsync(new ClientFrame { SubmitRekey = request }, Ct);
 
         // Alice is told who did it, and rekeys on her own (not through the debug-only force path).
@@ -87,16 +90,18 @@ public sealed class MaliciousMemberTests : IAsyncLifetime {
         await AddMemberAsync(alice, channelId, bob);
 
         using var bobKeys = bob.LoadIdentity();
+        var position = PositionOf(bob, channelId);
         var real = ChannelCrypto.NewEpochKey();
         var request = new SubmitRekey {
             ChannelId = channelId,
             NewEpoch = 2,
+            LogPosition = position,
             KeyCommitment = ByteString.CopyFrom(ChannelCrypto.KeyCommitment(channelId, 2, real)),
-            Name = ChannelCrypto.EncryptName("Commitments", real, channelId, 2, bobKeys, bob.UserId),
+            Name = ChannelCrypto.EncryptName("Commitments", real, channelId, 2, position, bobKeys, bob.UserId),
         };
         // Honestly sealed and signed, but a different key (and commitment) for Alice.
-        request.Keys.Add(ChannelCrypto.SealEpochKey(ChannelCrypto.NewEpochKey(), channelId, 2, bobKeys, bob.UserId, alice.UserId, alice.LoadIdentity().AgreementPublicKey));
-        request.Keys.Add(ChannelCrypto.SealEpochKey(real, channelId, 2, bobKeys, bob.UserId, bob.UserId, bobKeys.AgreementPublicKey));
+        request.Keys.Add(ChannelCrypto.SealEpochKey(ChannelCrypto.NewEpochKey(), channelId, 2, position, bobKeys, bob.UserId, alice.UserId, alice.LoadIdentity().AgreementPublicKey));
+        request.Keys.Add(ChannelCrypto.SealEpochKey(real, channelId, 2, position, bobKeys, bob.UserId, bob.UserId, bobKeys.AgreementPublicKey));
 
         var error = await Assert.ThrowsAsync<ServerErrorException>(() => bob.Session.SendRawAsync(new ClientFrame { SubmitRekey = request }, Ct));
         Assert.Equal(ErrorCode.InvalidRequest, error.Code);
@@ -117,14 +122,17 @@ public sealed class MaliciousMemberTests : IAsyncLifetime {
         Assert.Equal(ErrorCode.InvalidRequest, error.Code);
         Assert.Equal(1UL, this._server.Database.GetChannel(channelId)!.Epoch);
 
-        // The same goes for a new channel.
+        // The same goes for a new channel (otherwise valid, so the revision is what's refused).
         var newId = Guid.NewGuid().ToString("N");
         var key = ChannelCrypto.NewEpochKey();
+        var genesis = SignedLogMembershipProvider.Instance.CreateGenesis(newId, bobKeys, bob.UserId, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        var genesisPosition = MembershipEntries.PositionOf(genesis);
         error = await Assert.ThrowsAsync<ServerErrorException>(() => bob.Session.SendRawAsync(new ClientFrame {
             CreateChannel = new CreateChannel {
                 ChannelId = newId,
-                CreatorKey = ChannelCrypto.SealEpochKey(key, newId, 0, bobKeys, bob.UserId, bob.UserId, bobKeys.AgreementPublicKey),
-                Name = ChannelCrypto.EncryptName("Created", key, newId, 0, bobKeys, bob.UserId, revision: 5),
+                Genesis = genesis,
+                CreatorKey = ChannelCrypto.SealEpochKey(key, newId, 0, genesisPosition, bobKeys, bob.UserId, bob.UserId, bobKeys.AgreementPublicKey),
+                Name = ChannelCrypto.EncryptName("Created", key, newId, 0, genesisPosition, bobKeys, bob.UserId, revision: 5),
             },
         }, Ct));
         Assert.Equal(ErrorCode.InvalidRequest, error.Code);
@@ -173,7 +181,7 @@ public sealed class MaliciousMemberTests : IAsyncLifetime {
         Assert.Equal(ErrorCode.InvalidRequest, error.Code);
 
         using var aliceKeys = alice.LoadIdentity();
-        var renamed = ChannelCrypto.EncryptName("Renamed", alice.LoadEpochKey(channelId, 1), channelId, 1, aliceKeys, alice.UserId, 1, new NameSource { Epoch = 0 });
+        var renamed = ChannelCrypto.EncryptName("Renamed", alice.LoadEpochKey(channelId, 1), channelId, 1, PositionOf(alice, channelId), aliceKeys, alice.UserId, 1, new NameSource { Epoch = 0 });
         error = await Assert.ThrowsAsync<ServerErrorException>(() => alice.Session.SendRawAsync(new ClientFrame { RenameChannel = new RenameChannel { ChannelId = channelId, Name = renamed } }, Ct));
         Assert.Equal(ErrorCode.InvalidRequest, error.Code);
 
@@ -192,13 +200,13 @@ public sealed class MaliciousMemberTests : IAsyncLifetime {
         using var aliceKeys = alice.LoadIdentity();
         var key = alice.LoadEpochKey(channelId, 0);
         var error = await Assert.ThrowsAsync<ServerErrorException>(() => alice.Session.SendRawAsync(new ClientFrame {
-            RenameChannel = new RenameChannel { ChannelId = channelId, Name = ChannelCrypto.EncryptName("Too Far", key, channelId, 0, aliceKeys, alice.UserId, ulong.MaxValue) },
+            RenameChannel = new RenameChannel { ChannelId = channelId, Name = ChannelCrypto.EncryptName("Too Far", key, channelId, 0, PositionOf(alice, channelId), aliceKeys, alice.UserId, ulong.MaxValue) },
         }, Ct));
         Assert.Equal(ErrorCode.InvalidRequest, error.Code);
 
         // At the highest revision, the client refuses to rename (rather than wrap around to 0)...
         await alice.Session.SendRawAsync(new ClientFrame {
-            RenameChannel = new RenameChannel { ChannelId = channelId, Name = ChannelCrypto.EncryptName("At The Limit", key, channelId, 0, aliceKeys, alice.UserId, ProtocolInfo.MaxNameRevision) },
+            RenameChannel = new RenameChannel { ChannelId = channelId, Name = ChannelCrypto.EncryptName("At The Limit", key, channelId, 0, PositionOf(alice, channelId), aliceKeys, alice.UserId, ProtocolInfo.MaxNameRevision) },
         }, Ct);
         await alice.Session.RefreshAsync(Ct);
         Assert.Equal("At The Limit", alice.Session.Snapshot.FindChannel(channelId)!.Name);
@@ -214,14 +222,16 @@ public sealed class MaliciousMemberTests : IAsyncLifetime {
     /// <summary>A correctly sealed and signed rekey by <paramref name="author"/> for the two members, with any name, revision and source.</summary>
     private SubmitRekey Rekey(string channelId, ulong epoch, TestClient author, IdentityKeys authorKeys, TestClient other, string name, ulong revision, NameSource? source = null) {
         var key = ChannelCrypto.NewEpochKey();
+        var position = PositionOf(author, channelId);
         var request = new SubmitRekey {
             ChannelId = channelId,
             NewEpoch = epoch,
+            LogPosition = position,
             KeyCommitment = ByteString.CopyFrom(ChannelCrypto.KeyCommitment(channelId, epoch, key)),
-            Name = ChannelCrypto.EncryptName(name, key, channelId, epoch, authorKeys, author.UserId, revision, source),
+            Name = ChannelCrypto.EncryptName(name, key, channelId, epoch, position, authorKeys, author.UserId, revision, source),
         };
-        request.Keys.Add(ChannelCrypto.SealEpochKey(key, channelId, epoch, authorKeys, author.UserId, other.UserId, other.LoadIdentity().AgreementPublicKey));
-        request.Keys.Add(ChannelCrypto.SealEpochKey(key, channelId, epoch, authorKeys, author.UserId, author.UserId, authorKeys.AgreementPublicKey));
+        request.Keys.Add(ChannelCrypto.SealEpochKey(key, channelId, epoch, position, authorKeys, author.UserId, other.UserId, other.LoadIdentity().AgreementPublicKey));
+        request.Keys.Add(ChannelCrypto.SealEpochKey(key, channelId, epoch, position, authorKeys, author.UserId, author.UserId, authorKeys.AgreementPublicKey));
         return request;
     }
 }

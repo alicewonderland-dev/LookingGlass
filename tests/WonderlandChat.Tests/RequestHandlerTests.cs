@@ -3,6 +3,7 @@ using System.Net.WebSockets;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using WonderlandChat.Core.Crypto;
+using WonderlandChat.Core.Membership;
 using WonderlandChat.Protocol;
 using WonderlandChat.Server;
 using WonderlandChat.Server.Data;
@@ -35,7 +36,8 @@ public sealed class RequestHandlerTests : IDisposable {
             Limits = { RegistrationsPerHourPerIp = 3 },
         });
         var lodestone = new LodestoneClient(new HttpClient(new StubLodestone()), options, NullLogger<LodestoneClient>.Instance);
-        this._handler = new RequestHandler(this._db, this._registry, lodestone, options, NullLogger<RequestHandler>.Instance);
+        this._handler = new RequestHandler(this._db, this._registry, lodestone, options, NullLogger<RequestHandler>.Instance,
+            SignedLogMembershipProvider.Instance, SealedEpochKeyProvider.Instance);
     }
 
     public void Dispose() => DeleteDirectory(this._directory);

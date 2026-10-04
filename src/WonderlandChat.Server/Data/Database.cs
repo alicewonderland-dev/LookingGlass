@@ -1,5 +1,6 @@
 using Google.Protobuf;
 using Microsoft.Data.Sqlite;
+using WonderlandChat.Core.Membership;
 using WonderlandChat.Protocol;
 
 namespace WonderlandChat.Server.Data;
@@ -16,6 +17,9 @@ public sealed record UserRow(
     bool IsDebug) {
     public User ToProto() => new() { UserId = this.UserId, Name = this.Name, WorldId = this.WorldId, WorldName = this.WorldName };
 
+    /// <summary>The identity keys the user is registered with now.</summary>
+    public MemberKeys Keys => new(this.SigningKey, this.AgreementKey);
+
     public UserIdentity ToIdentity() => new() {
         User = this.ToProto(),
         KeyVersion = this.KeyVersion,
@@ -27,11 +31,13 @@ public sealed record UserRow(
     };
 }
 
-public sealed record ChannelRow(string ChannelId, ulong Epoch, bool RekeyPending, EncryptedName? Name);
+/// <param name="LogHead">The newest entry in the channel's membership log.</param>
+public sealed record ChannelRow(string ChannelId, ulong Epoch, bool RekeyPending, EncryptedName? Name, LogPosition LogHead);
 
 public sealed record MemberRow(UserRow User, Rank Rank);
 
-public sealed record InviteRow(string ChannelId, UserRow Invitee, UserRow Inviter, SealedBox SealedName, byte[] Signature, long CreatedUnix);
+/// <param name="Entry">The invite's entry in the channel's membership log.</param>
+public sealed record InviteRow(string ChannelId, UserRow Invitee, UserRow Inviter, SealedBox SealedName, byte[] Signature, long CreatedUnix, MembershipEntry? Entry);
 
 public enum RekeyResult {
     Applied,
@@ -47,7 +53,7 @@ public sealed class UnsupportedDatabaseException(string message) : Exception(mes
 /// Methods are synchronous (SQLite is in-process) and short.
 /// </summary>
 public sealed class Database {
-    private const int SchemaVersion = 3;
+    private const int SchemaVersion = 4;
     private const int KeptEpochs = 4;
 
     private readonly string _path;
@@ -94,6 +100,16 @@ public sealed class Database {
                 "to create a new database. Everyone will need to register again.");
         }
 
+        // Version 4 derives membership from a signed log that schema 2 and 3 channels don't have, and
+        // nobody can sign one for them now: their members would all be ghosts to the new clients.
+        // 0.1 was a pre-release, so as above, ask for a fresh database rather than migrate.
+        if (current is 2 or 3 && Convert.ToInt64(Scalar(connection, null, "SELECT COUNT(*) FROM channels;")) > 0) {
+            throw new UnsupportedDatabaseException(
+                $"The database {Path.GetFullPath(this._path)} was made by version 0.1 (schema {current}), whose channels have no signed membership log, " +
+                "so this version can't use them. It has not been changed. Stop the server and delete or move that file (with its -wal and -shm files, " +
+                "if any), then start again to create a new database. Everyone will need to register again and create their channels anew.");
+        }
+
         using var tx = connection.BeginTransaction();
         if (current < 1) {
             CreateVersion1(connection, tx);
@@ -115,6 +131,35 @@ public sealed class Database {
                 ALTER TABLE channels ADD COLUMN name_source_epoch INTEGER;
                 ALTER TABLE channels ADD COLUMN name_source_revision INTEGER;
                 INSERT INTO schema_version (version) VALUES (3);
+                """);
+        }
+
+        if (current < 4) {
+            // The signed membership log, and the state it leads to: the keys each member and invitee
+            // was admitted with, each invite's entry, and the log position keys and names were made at.
+            Execute(connection, tx, """
+                CREATE TABLE membership_log (
+                    channel_id TEXT    NOT NULL REFERENCES channels (channel_id) ON DELETE CASCADE,
+                    seq        INTEGER NOT NULL,
+                    hash       BLOB    NOT NULL,
+                    entry      BLOB    NOT NULL,
+                    PRIMARY KEY (channel_id, seq)
+                );
+                ALTER TABLE channels ADD COLUMN log_seq INTEGER NOT NULL DEFAULT 0;
+                ALTER TABLE channels ADD COLUMN log_hash BLOB NOT NULL DEFAULT x'';
+                ALTER TABLE channels ADD COLUMN name_log_seq INTEGER NOT NULL DEFAULT 0;
+                ALTER TABLE channels ADD COLUMN name_log_hash BLOB NOT NULL DEFAULT x'';
+                ALTER TABLE members ADD COLUMN signing_key BLOB NOT NULL DEFAULT x'';
+                ALTER TABLE members ADD COLUMN agreement_key BLOB NOT NULL DEFAULT x'';
+                ALTER TABLE invites ADD COLUMN signing_key BLOB NOT NULL DEFAULT x'';
+                ALTER TABLE invites ADD COLUMN agreement_key BLOB NOT NULL DEFAULT x'';
+                ALTER TABLE invites ADD COLUMN invite_seq INTEGER NOT NULL DEFAULT 0;
+                ALTER TABLE invites ADD COLUMN invite_hash BLOB NOT NULL DEFAULT x'';
+                ALTER TABLE invites ADD COLUMN inviter_signing_key BLOB NOT NULL DEFAULT x'';
+                ALTER TABLE invites ADD COLUMN inviter_agreement_key BLOB NOT NULL DEFAULT x'';
+                ALTER TABLE epoch_keys ADD COLUMN log_seq INTEGER NOT NULL DEFAULT 0;
+                ALTER TABLE epoch_keys ADD COLUMN log_hash BLOB NOT NULL DEFAULT x'';
+                INSERT INTO schema_version (version) VALUES (4);
                 """);
         }
 
@@ -265,8 +310,8 @@ public sealed class Database {
         Execute(connection, tx, "DELETE FROM devices WHERE user_id = $id;", ("$id", userId));
 
         if (keysChanged) {
-            // Their old keys can't open anything sealed to the new identity: every channel needs a rekey.
-            Execute(connection, tx, "UPDATE channels SET rekey_pending = 1 WHERE channel_id IN (SELECT channel_id FROM members WHERE user_id = $id);", ("$id", userId));
+            // The new keys can't open anything sealed to the old ones. Their memberships stay bound to the
+            // old keys (the log says so), and the new ones only join a channel when invited again.
             Execute(connection, tx, "DELETE FROM epoch_keys WHERE recipient_id = $id;", ("$id", userId));
         }
 
@@ -338,19 +383,30 @@ public sealed class Database {
             .ToList();
     }
 
-    public void CreateChannel(string channelId, long creatorId, SealedEpochKey creatorKey, EncryptedName name) {
+    /// <summary>Creates a channel from its genesis entry, which makes the creator admin.</summary>
+    public void CreateChannel(string channelId, MembershipEntry genesis, SealedEpochKey creatorKey, EncryptedName name) {
         using var connection = this.Open();
         using var tx = connection.BeginTransaction();
         var now = Now();
+        var hash = MembershipEntries.Hash(genesis);
         Execute(connection, tx, """
-            INSERT INTO channels (channel_id, epoch, rekey_pending, name_epoch, name_revision, name_author, name_ciphertext, name_signature, created_at)
-            VALUES ($id, 0, 0, $nameEpoch, $nameRevision, $nameAuthor, $nameCiphertext, $nameSignature, $now);
+            INSERT INTO channels (channel_id, epoch, rekey_pending, name_epoch, name_revision, name_author, name_ciphertext, name_signature,
+                                  name_log_seq, name_log_hash, log_seq, log_hash, created_at)
+            VALUES ($id, 0, 0, $nameEpoch, $nameRevision, $nameAuthor, $nameCiphertext, $nameSignature, $nameLogSeq, $nameLogHash, 0, $hash, $now);
             """,
             ("$id", channelId), ("$nameEpoch", (long) name.Epoch), ("$nameRevision", (long) name.Revision), ("$nameAuthor", name.AuthorId),
-            ("$nameCiphertext", name.Ciphertext.ToByteArray()), ("$nameSignature", name.Signature.ToByteArray()), ("$now", now));
-        Execute(connection, tx, "INSERT INTO members (channel_id, user_id, rank, joined_at) VALUES ($id, $user, $rank, $now);",
-            ("$id", channelId), ("$user", creatorId), ("$rank", (long) Rank.Admin), ("$now", now));
-        InsertEpochKey(connection, tx, channelId, 0, creatorId, creatorKey);
+            ("$nameCiphertext", name.Ciphertext.ToByteArray()), ("$nameSignature", name.Signature.ToByteArray()),
+            ("$nameLogSeq", (long) (name.LogPosition?.Seq ?? 0)), ("$nameLogHash", name.LogPosition?.Hash.ToByteArray() ?? []),
+            ("$hash", hash), ("$now", now));
+        Execute(connection, tx, "INSERT INTO membership_log (channel_id, seq, hash, entry) VALUES ($id, 0, $hash, $entry);",
+            ("$id", channelId), ("$hash", hash), ("$entry", genesis.ToByteArray()));
+        Execute(connection, tx, """
+            INSERT INTO members (channel_id, user_id, rank, joined_at, signing_key, agreement_key)
+            VALUES ($id, $user, $rank, $now, $signing, $agreement);
+            """,
+            ("$id", channelId), ("$user", genesis.Subject.UserId), ("$rank", (long) Rank.Admin), ("$now", now),
+            ("$signing", genesis.Subject.SigningPublicKey.ToByteArray()), ("$agreement", genesis.Subject.AgreementPublicKey.ToByteArray()));
+        InsertEpochKey(connection, tx, channelId, 0, genesis.Subject.UserId, creatorKey);
         tx.Commit();
     }
 
@@ -360,8 +416,8 @@ public sealed class Database {
     }
 
     /// <summary>
-    /// Renames only if the channel is still at the name's epoch, not awaiting a
-    /// rekey, and the name's revision is newer than the stored one.
+    /// Renames only if the channel is still at the name's epoch and log position, not
+    /// awaiting a rekey, and the name's revision is newer than the stored one.
     /// </summary>
     /// <returns>False if the channel changed meanwhile, or the revision isn't newer.</returns>
     public bool RenameChannel(string channelId, EncryptedName name) {
@@ -369,12 +425,169 @@ public sealed class Database {
         return Execute(connection, null, """
             UPDATE channels SET name_epoch = $epoch, name_revision = $revision, name_author = $author,
                 name_ciphertext = $ciphertext, name_signature = $signature,
-                name_source_epoch = NULL, name_source_revision = NULL
+                name_source_epoch = NULL, name_source_revision = NULL,
+                name_log_seq = $logSeq, name_log_hash = $logHash
             WHERE channel_id = $id AND epoch = $epoch AND rekey_pending = 0
+                AND log_seq = $logSeq AND log_hash = $logHash
                 AND (name_epoch < $epoch OR name_revision < $revision);
             """,
             ("$id", channelId), ("$epoch", (long) name.Epoch), ("$revision", (long) name.Revision), ("$author", name.AuthorId),
-            ("$ciphertext", name.Ciphertext.ToByteArray()), ("$signature", name.Signature.ToByteArray())) == 1;
+            ("$ciphertext", name.Ciphertext.ToByteArray()), ("$signature", name.Signature.ToByteArray()),
+            ("$logSeq", (long) (name.LogPosition?.Seq ?? 0)), ("$logHash", name.LogPosition?.Hash.ToByteArray() ?? [])) == 1;
+    }
+
+    // ================================================================ the membership log
+
+    /// <summary>
+    /// The channel's membership as its tables stand (members and invitees with the keys they were
+    /// admitted with, at the log's head), for checking the next entry. The tables only ever change
+    /// with an entry (see <see cref="AppendEntry"/>), so they agree with replaying the log.
+    /// </summary>
+    public MembershipCheckpoint? GetMembershipCheckpoint(string channelId) {
+        using var connection = this.Open();
+        var channel = GetChannel(connection, null, channelId);
+        if (channel == null) {
+            return null;
+        }
+
+        var checkpoint = new MembershipCheckpoint {
+            ChannelId = channelId,
+            Seq = channel.LogHead.Seq,
+            Hash = channel.LogHead.Hash.ToByteArray(),
+            MembersChangedAt = channel.LogHead.Seq,
+            RecentHashes = [channel.LogHead.Hash.ToByteArray()],
+            RecentFrom = channel.LogHead.Seq,
+        };
+
+        using (var command = Command(connection, null, "SELECT user_id, rank, signing_key, agreement_key FROM members WHERE channel_id = $id;", ("$id", channelId))) {
+            using var reader = command.ExecuteReader();
+            while (reader.Read()) {
+                checkpoint.Members.Add(new CheckpointMember {
+                    UserId = reader.GetInt64(0),
+                    Rank = (Rank) reader.GetInt32(1),
+                    SigningPublicKey = (byte[]) reader[2],
+                    AgreementPublicKey = (byte[]) reader[3],
+                });
+            }
+        }
+
+        using (var command = Command(connection, null, """
+                   SELECT user_id, signing_key, agreement_key, invite_seq, invite_hash, inviter_id, inviter_signing_key, inviter_agreement_key
+                   FROM invites WHERE channel_id = $id;
+                   """, ("$id", channelId))) {
+            using var reader = command.ExecuteReader();
+            while (reader.Read()) {
+                checkpoint.Invitees.Add(new CheckpointInvitee {
+                    UserId = reader.GetInt64(0),
+                    SigningPublicKey = (byte[]) reader[1],
+                    AgreementPublicKey = (byte[]) reader[2],
+                    InviteSeq = (ulong) reader.GetInt64(3),
+                    InviteHash = (byte[]) reader[4],
+                    InviterId = reader.GetInt64(5),
+                    InviterSigningPublicKey = (byte[]) reader[6],
+                    InviterAgreementPublicKey = (byte[]) reader[7],
+                });
+            }
+        }
+
+        return checkpoint;
+    }
+
+    /// <param name="limit">At most this many, oldest first.</param>
+    public List<MembershipEntry> GetLogEntries(string channelId, ulong fromSeq, int limit) {
+        using var connection = this.Open();
+        using var command = Command(connection, null, "SELECT entry FROM membership_log WHERE channel_id = $id AND seq >= $from ORDER BY seq LIMIT $limit;",
+            ("$id", channelId), ("$from", (long) Math.Min(fromSeq, long.MaxValue)), ("$limit", limit));
+        using var reader = command.ExecuteReader();
+        var entries = new List<MembershipEntry>();
+        while (reader.Read()) {
+            entries.Add(MembershipEntry.Parser.ParseFrom((byte[]) reader[0]));
+        }
+
+        return entries;
+    }
+
+    /// <summary>
+    /// Appends an entry the caller has checked against <see cref="GetMembershipCheckpoint"/>, and
+    /// changes the members and invites as it says, in one transaction. For an invite, also stores
+    /// the channel name sealed to the invitee.
+    /// </summary>
+    /// <returns>False (and nothing changes) if the log has moved on since: the entry isn't next any more.</returns>
+    public bool AppendEntry(string channelId, MembershipEntry entry, SealedBox? sealedName = null, byte[]? inviteSignature = null) {
+        using var connection = this.Open();
+        using var tx = connection.BeginTransaction();
+        var channel = GetChannel(connection, tx, channelId);
+        if (channel == null || entry.Seq != channel.LogHead.Seq + 1 || !entry.PreviousHash.Span.SequenceEqual(channel.LogHead.Hash.Span)) {
+            return false;
+        }
+
+        var hash = MembershipEntries.Hash(entry);
+        Execute(connection, tx, "INSERT INTO membership_log (channel_id, seq, hash, entry) VALUES ($id, $seq, $hash, $entry);",
+            ("$id", channelId), ("$seq", (long) entry.Seq), ("$hash", hash), ("$entry", entry.ToByteArray()));
+
+        var subject = entry.Subject;
+        (string, object)[] who = [("$channel", channelId), ("$user", subject.UserId)];
+        switch (entry.Kind) {
+            case MembershipEntryKind.Invite: {
+                var inviter = Query(connection, tx, "SELECT signing_key, agreement_key FROM members WHERE channel_id = $channel AND user_id = $user;",
+                    reader => ((byte[]) reader[0], (byte[]) reader[1]), ("$channel", channelId), ("$user", entry.ActorId)).Single();
+                Execute(connection, tx, """
+                    INSERT INTO invites (channel_id, user_id, inviter_id, sealed_ephemeral, sealed_ciphertext, signature, created_at,
+                                         signing_key, agreement_key, invite_seq, invite_hash, inviter_signing_key, inviter_agreement_key)
+                    VALUES ($channel, $user, $inviter, $ephemeral, $ciphertext, $signature, $now,
+                            $signing, $agreement, $seq, $hash, $inviterSigning, $inviterAgreement)
+                    ON CONFLICT (channel_id, user_id) DO UPDATE SET
+                        inviter_id = excluded.inviter_id, sealed_ephemeral = excluded.sealed_ephemeral,
+                        sealed_ciphertext = excluded.sealed_ciphertext, signature = excluded.signature, created_at = excluded.created_at,
+                        signing_key = excluded.signing_key, agreement_key = excluded.agreement_key,
+                        invite_seq = excluded.invite_seq, invite_hash = excluded.invite_hash,
+                        inviter_signing_key = excluded.inviter_signing_key, inviter_agreement_key = excluded.inviter_agreement_key;
+                    """,
+                    ("$channel", channelId), ("$user", subject.UserId), ("$inviter", entry.ActorId),
+                    ("$ephemeral", sealedName?.EphemeralPublicKey.ToByteArray() ?? []), ("$ciphertext", sealedName?.Ciphertext.ToByteArray() ?? []),
+                    ("$signature", inviteSignature ?? []), ("$now", Now()),
+                    ("$signing", subject.SigningPublicKey.ToByteArray()), ("$agreement", subject.AgreementPublicKey.ToByteArray()),
+                    ("$seq", (long) entry.Seq), ("$hash", hash), ("$inviterSigning", inviter.Item1), ("$inviterAgreement", inviter.Item2));
+                break;
+            }
+            case MembershipEntryKind.Accept:
+                Execute(connection, tx, "DELETE FROM invites WHERE channel_id = $channel AND user_id = $user;", who);
+                Execute(connection, tx, """
+                    INSERT OR REPLACE INTO members (channel_id, user_id, rank, joined_at, signing_key, agreement_key)
+                    VALUES ($channel, $user, $rank, $now, $signing, $agreement);
+                    """,
+                    ("$channel", channelId), ("$user", subject.UserId), ("$rank", (long) Rank.Member), ("$now", Now()),
+                    ("$signing", subject.SigningPublicKey.ToByteArray()), ("$agreement", subject.AgreementPublicKey.ToByteArray()));
+                Execute(connection, tx, "UPDATE channels SET rekey_pending = 1 WHERE channel_id = $channel;", ("$channel", channelId));
+                break;
+            case MembershipEntryKind.Decline:
+            case MembershipEntryKind.CancelInvite:
+                Execute(connection, tx, "DELETE FROM invites WHERE channel_id = $channel AND user_id = $user;", who);
+                break;
+            case MembershipEntryKind.Remove:
+            case MembershipEntryKind.Leave:
+                Execute(connection, tx, "DELETE FROM members WHERE channel_id = $channel AND user_id = $user;", who);
+                Execute(connection, tx, "DELETE FROM epoch_keys WHERE channel_id = $channel AND recipient_id = $user;", who);
+                Execute(connection, tx, "UPDATE channels SET rekey_pending = 1 WHERE channel_id = $channel;", ("$channel", channelId));
+                break;
+            case MembershipEntryKind.SetRank:
+                Execute(connection, tx, "UPDATE members SET rank = $rank WHERE channel_id = $channel AND user_id = $user;",
+                    ("$rank", (long) entry.Rank), ("$channel", channelId), ("$user", subject.UserId));
+                break;
+            case MembershipEntryKind.TransferAdmin:
+                Execute(connection, tx, "UPDATE members SET rank = $rank WHERE channel_id = $channel AND user_id = $user;",
+                    ("$rank", (long) Rank.Admin), ("$channel", channelId), ("$user", subject.UserId));
+                Execute(connection, tx, "UPDATE members SET rank = $rank WHERE channel_id = $channel AND user_id = $user;",
+                    ("$rank", (long) Rank.Moderator), ("$channel", channelId), ("$user", entry.ActorId));
+                break;
+            default:
+                throw new ArgumentException($"A {entry.Kind} entry can't be appended.", nameof(entry));
+        }
+
+        Execute(connection, tx, "UPDATE channels SET log_seq = $seq, log_hash = $hash WHERE channel_id = $channel;",
+            ("$seq", (long) entry.Seq), ("$hash", hash), ("$channel", channelId));
+        tx.Commit();
+        return true;
     }
 
     // ================================================================ invites and membership
@@ -387,20 +600,6 @@ public sealed class Database {
     public int CountMembers(string channelId) {
         using var connection = this.Open();
         return Convert.ToInt32(Scalar(connection, null, "SELECT COUNT(*) FROM members WHERE channel_id = $id;", ("$id", channelId)));
-    }
-
-    public void AddInvite(string channelId, long inviteeId, long inviterId, SealedBox sealedName, byte[] signature) {
-        using var connection = this.Open();
-        Execute(connection, null, """
-            INSERT INTO invites (channel_id, user_id, inviter_id, sealed_ephemeral, sealed_ciphertext, signature, created_at)
-            VALUES ($channel, $user, $inviter, $ephemeral, $ciphertext, $signature, $now)
-            ON CONFLICT (channel_id, user_id) DO UPDATE SET
-                inviter_id = excluded.inviter_id, sealed_ephemeral = excluded.sealed_ephemeral,
-                sealed_ciphertext = excluded.sealed_ciphertext, signature = excluded.signature, created_at = excluded.created_at;
-            """,
-            ("$channel", channelId), ("$user", inviteeId), ("$inviter", inviterId),
-            ("$ephemeral", sealedName.EphemeralPublicKey.ToByteArray()), ("$ciphertext", sealedName.Ciphertext.ToByteArray()),
-            ("$signature", signature), ("$now", Now()));
     }
 
     public InviteRow? GetInvite(string channelId, long userId) {
@@ -417,75 +616,6 @@ public sealed class Database {
     public int CountInvitesForUser(long userId) {
         using var connection = this.Open();
         return Convert.ToInt32(Scalar(connection, null, "SELECT COUNT(*) FROM invites WHERE user_id = $user;", ("$user", userId)));
-    }
-
-    public bool DeleteInvite(string channelId, long userId) {
-        using var connection = this.Open();
-        return Execute(connection, null, "DELETE FROM invites WHERE channel_id = $channel AND user_id = $user;", ("$channel", channelId), ("$user", userId)) > 0;
-    }
-
-    /// <summary>Turns an invite into membership and marks the channel for rekeying.</summary>
-    public bool AcceptInvite(string channelId, long userId) {
-        using var connection = this.Open();
-        using var tx = connection.BeginTransaction();
-        if (Execute(connection, tx, "DELETE FROM invites WHERE channel_id = $channel AND user_id = $user;", ("$channel", channelId), ("$user", userId)) == 0) {
-            return false;
-        }
-
-        Execute(connection, tx, "INSERT INTO members (channel_id, user_id, rank, joined_at) VALUES ($channel, $user, $rank, $now);",
-            ("$channel", channelId), ("$user", userId), ("$rank", (long) Rank.Member), ("$now", Now()));
-        Execute(connection, tx, "UPDATE channels SET rekey_pending = 1 WHERE channel_id = $channel;", ("$channel", channelId));
-        tx.Commit();
-        return true;
-    }
-
-    /// <summary>Removes a member, their stored keys, and marks the channel for rekeying.</summary>
-    public bool RemoveMember(string channelId, long userId) {
-        using var connection = this.Open();
-        using var tx = connection.BeginTransaction();
-        if (Execute(connection, tx, "DELETE FROM members WHERE channel_id = $channel AND user_id = $user;", ("$channel", channelId), ("$user", userId)) == 0) {
-            return false;
-        }
-
-        Execute(connection, tx, "DELETE FROM epoch_keys WHERE channel_id = $channel AND recipient_id = $user;", ("$channel", channelId), ("$user", userId));
-        Execute(connection, tx, "UPDATE channels SET rekey_pending = 1 WHERE channel_id = $channel;", ("$channel", channelId));
-        tx.Commit();
-        return true;
-    }
-
-    /// <summary>
-    /// Sets a member's or moderator's rank. Admin is never set or taken away
-    /// here (see <see cref="TransferAdmin"/>).
-    /// </summary>
-    /// <returns>False if nothing changed: they left, are the admin, or already have that rank.</returns>
-    public bool SetRank(string channelId, long userId, Rank rank) {
-        using var connection = this.Open();
-        return Execute(connection, null, """
-            UPDATE members SET rank = $rank
-            WHERE channel_id = $channel AND user_id = $user AND rank IN ($member, $moderator) AND rank <> $rank;
-            """,
-            ("$rank", (long) rank), ("$channel", channelId), ("$user", userId),
-            ("$member", (long) Rank.Member), ("$moderator", (long) Rank.Moderator)) == 1;
-    }
-
-    /// <summary>Makes <paramref name="newAdminId"/> the admin and demotes the old admin to moderator, atomically.</summary>
-    /// <returns>False (and nothing changes) if either is no longer in the expected role.</returns>
-    public bool TransferAdmin(string channelId, long oldAdminId, long newAdminId) {
-        using var connection = this.Open();
-        using var tx = connection.BeginTransaction();
-        var demoted = Execute(connection, tx, "UPDATE members SET rank = $new WHERE channel_id = $channel AND user_id = $user AND rank = $old;",
-            ("$new", (long) Rank.Moderator), ("$old", (long) Rank.Admin), ("$channel", channelId), ("$user", oldAdminId));
-        var promoted = Execute(connection, tx, "UPDATE members SET rank = $new WHERE channel_id = $channel AND user_id = $user AND rank IN ($member, $moderator);",
-            ("$new", (long) Rank.Admin), ("$member", (long) Rank.Member), ("$moderator", (long) Rank.Moderator),
-            ("$channel", channelId), ("$user", newAdminId));
-
-        if (demoted != 1 || promoted != 1) {
-            tx.Rollback();
-            return false;
-        }
-
-        tx.Commit();
-        return true;
     }
 
     /// <summary>Users whose identities a user may fetch: themselves, people in their channels, and their inviters.</summary>
@@ -510,16 +640,21 @@ public sealed class Database {
     // ================================================================ epochs
 
     /// <summary>
-    /// Applies a rekey if the channel is still at <c>newEpoch - 1</c> and the
-    /// keys cover exactly the current members. All in one transaction.
+    /// Applies a rekey if the channel is still at <c>newEpoch - 1</c> and at the log
+    /// <paramref name="position"/> it was made for, and the keys cover exactly the members
+    /// there. All in one transaction.
     /// </summary>
-    public RekeyResult ApplyRekey(string channelId, ulong newEpoch, long authorId, IReadOnlyList<SealedEpochKey> keys, EncryptedName name) {
+    public RekeyResult ApplyRekey(string channelId, ulong newEpoch, long authorId, IReadOnlyList<SealedEpochKey> keys, EncryptedName name, LogPosition position) {
         using var connection = this.Open();
         using var tx = connection.BeginTransaction();
 
         var channel = GetChannel(connection, tx, channelId);
         if (channel == null || channel.Epoch + 1 != newEpoch) {
             return RekeyResult.EpochStale;
+        }
+
+        if (!MembershipEntries.SamePosition(channel.LogHead, position)) {
+            return RekeyResult.MembershipChanged;
         }
 
         var memberIds = GetMembers(connection, tx, channelId).Select(member => member.User.UserId).ToHashSet();
@@ -531,14 +666,16 @@ public sealed class Database {
         Execute(connection, tx, """
             UPDATE channels SET epoch = $epoch, rekey_pending = 0, name_epoch = $nameEpoch, name_revision = $nameRevision,
                 name_author = $nameAuthor, name_ciphertext = $nameCiphertext, name_signature = $nameSignature,
-                name_source_epoch = $sourceEpoch, name_source_revision = $sourceRevision
+                name_source_epoch = $sourceEpoch, name_source_revision = $sourceRevision,
+                name_log_seq = $logSeq, name_log_hash = $logHash
             WHERE channel_id = $id AND epoch = $oldEpoch;
             """,
             ("$epoch", (long) newEpoch), ("$oldEpoch", (long) channel.Epoch), ("$id", channelId),
             ("$nameEpoch", (long) name.Epoch), ("$nameRevision", (long) name.Revision), ("$nameAuthor", name.AuthorId),
             ("$nameCiphertext", name.Ciphertext.ToByteArray()), ("$nameSignature", name.Signature.ToByteArray()),
             ("$sourceEpoch", name.CarriedFrom == null ? DBNull.Value : (object) (long) name.CarriedFrom.Epoch),
-            ("$sourceRevision", name.CarriedFrom == null ? DBNull.Value : (object) (long) name.CarriedFrom.Revision));
+            ("$sourceRevision", name.CarriedFrom == null ? DBNull.Value : (object) (long) name.CarriedFrom.Revision),
+            ("$logSeq", (long) position.Seq), ("$logHash", position.Hash.ToByteArray()));
 
         foreach (var key in keys) {
             InsertEpochKey(connection, tx, channelId, newEpoch, authorId, key);
@@ -553,7 +690,7 @@ public sealed class Database {
     public List<EpochKeyForMe> GetEpochKeys(string channelId, long recipientId, ulong fromEpoch) {
         using var connection = this.Open();
         using var command = Command(connection, null, """
-            SELECT epoch, author_id, ephemeral, ciphertext, signature, key_commitment FROM epoch_keys
+            SELECT epoch, author_id, ephemeral, ciphertext, signature, key_commitment, log_seq, log_hash FROM epoch_keys
             WHERE channel_id = $channel AND recipient_id = $user AND epoch >= $from ORDER BY epoch;
             """, ("$channel", channelId), ("$user", recipientId), ("$from", (long) fromEpoch));
         using var reader = command.ExecuteReader();
@@ -570,6 +707,7 @@ public sealed class Database {
                     },
                     Signature = ByteString.CopyFrom((byte[]) reader[4]),
                     KeyCommitment = ByteString.CopyFrom((byte[]) reader[5]),
+                    LogPosition = ReadPosition(reader, 6, 7),
                 },
             });
         }
@@ -608,11 +746,16 @@ public sealed class Database {
     }
 
     private List<InviteRow> QueryInvites(SqliteConnection connection, string where, params (string, object)[] parameters) {
-        using var command = Command(connection, null, $"SELECT i.channel_id, i.user_id, i.inviter_id, i.sealed_ephemeral, i.sealed_ciphertext, i.signature, i.created_at FROM invites i {where};", parameters);
+        using var command = Command(connection, null, $"""
+            SELECT i.channel_id, i.user_id, i.inviter_id, i.sealed_ephemeral, i.sealed_ciphertext, i.signature, i.created_at, l.entry
+            FROM invites i LEFT JOIN membership_log l ON l.channel_id = i.channel_id AND l.seq = i.invite_seq AND l.hash = i.invite_hash
+            {where};
+            """, parameters);
         using var reader = command.ExecuteReader();
-        var raw = new List<(string Channel, long Invitee, long Inviter, byte[] Ephemeral, byte[] Ciphertext, byte[] Signature, long Created)>();
+        var raw = new List<(string Channel, long Invitee, long Inviter, byte[] Ephemeral, byte[] Ciphertext, byte[] Signature, long Created, MembershipEntry? Entry)>();
         while (reader.Read()) {
-            raw.Add((reader.GetString(0), reader.GetInt64(1), reader.GetInt64(2), (byte[]) reader[3], (byte[]) reader[4], (byte[]) reader[5], reader.GetInt64(6)));
+            var entry = reader.IsDBNull(7) ? null : MembershipEntry.Parser.ParseFrom((byte[]) reader[7]);
+            raw.Add((reader.GetString(0), reader.GetInt64(1), reader.GetInt64(2), (byte[]) reader[3], (byte[]) reader[4], (byte[]) reader[5], reader.GetInt64(6), entry));
         }
 
         var users = raw.Count == 0
@@ -625,18 +768,36 @@ public sealed class Database {
             .Where(r => users.ContainsKey(r.Invitee) && users.ContainsKey(r.Inviter))
             .Select(r => new InviteRow(r.Channel, users[r.Invitee], users[r.Inviter],
                 new SealedBox { EphemeralPublicKey = ByteString.CopyFrom(r.Ephemeral), Ciphertext = ByteString.CopyFrom(r.Ciphertext) },
-                r.Signature, r.Created))
+                r.Signature, r.Created, r.Entry))
             .ToList();
     }
 
     private static void InsertEpochKey(SqliteConnection connection, SqliteTransaction tx, string channelId, ulong epoch, long authorId, SealedEpochKey key) {
         Execute(connection, tx, """
-            INSERT OR REPLACE INTO epoch_keys (channel_id, epoch, recipient_id, author_id, ephemeral, ciphertext, signature, key_commitment)
-            VALUES ($channel, $epoch, $recipient, $author, $ephemeral, $ciphertext, $signature, $commitment);
+            INSERT OR REPLACE INTO epoch_keys (channel_id, epoch, recipient_id, author_id, ephemeral, ciphertext, signature, key_commitment, log_seq, log_hash)
+            VALUES ($channel, $epoch, $recipient, $author, $ephemeral, $ciphertext, $signature, $commitment, $logSeq, $logHash);
             """,
             ("$channel", channelId), ("$epoch", (long) epoch), ("$recipient", key.RecipientId), ("$author", authorId),
             ("$ephemeral", key.Box.EphemeralPublicKey.ToByteArray()), ("$ciphertext", key.Box.Ciphertext.ToByteArray()),
-            ("$signature", key.Signature.ToByteArray()), ("$commitment", key.KeyCommitment.ToByteArray()));
+            ("$signature", key.Signature.ToByteArray()), ("$commitment", key.KeyCommitment.ToByteArray()),
+            ("$logSeq", (long) (key.LogPosition?.Seq ?? 0)), ("$logHash", key.LogPosition?.Hash.ToByteArray() ?? []));
+    }
+
+    /// <summary>A stored log position; an empty hash means none was stored.</summary>
+    private static LogPosition? ReadPosition(SqliteDataReader reader, int seqColumn, int hashColumn) {
+        var hash = (byte[]) reader[hashColumn];
+        return hash.Length == 0 ? null : new LogPosition { Seq = (ulong) reader.GetInt64(seqColumn), Hash = ByteString.CopyFrom(hash) };
+    }
+
+    private static List<T> Query<T>(SqliteConnection connection, SqliteTransaction? tx, string sql, Func<SqliteDataReader, T> read, params (string, object)[] parameters) {
+        using var command = Command(connection, tx, sql, parameters);
+        using var reader = command.ExecuteReader();
+        var rows = new List<T>();
+        while (reader.Read()) {
+            rows.Add(read(reader));
+        }
+
+        return rows;
     }
 
     private static List<UserRow> QueryUsers(SqliteConnection connection, SqliteTransaction? tx, string sql, params (string, object)[] parameters) {
@@ -678,6 +839,11 @@ public sealed class Database {
                     Epoch = (ulong) reader.GetInt64(reader.GetOrdinal("name_source_epoch")),
                     Revision = (ulong) reader.GetInt64(reader.GetOrdinal("name_source_revision")),
                 },
+                LogPosition = ReadPosition(reader, reader.GetOrdinal("name_log_seq"), reader.GetOrdinal("name_log_hash")),
+            },
+            new LogPosition {
+                Seq = (ulong) reader.GetInt64(reader.GetOrdinal("log_seq")),
+                Hash = ByteString.CopyFrom((byte[]) reader["log_hash"]),
             });
     }
 

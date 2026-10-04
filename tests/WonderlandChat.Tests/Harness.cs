@@ -5,6 +5,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using WonderlandChat.Core.Client;
 using WonderlandChat.Core.Crypto;
+using WonderlandChat.Core.Membership;
 using WonderlandChat.Protocol;
 using WonderlandChat.Server.Data;
 using WonderlandChat.Server.Realtime;
@@ -118,6 +119,45 @@ public sealed class Harness : IAsyncDisposable {
         await WaitFor(() => client.Session.Snapshot.State == ConnectionState.Ready ? new object() : null);
         return client;
     }
+
+    /// <summary>The channel's membership as the server's database has it, as a misbehaving member would build on.</summary>
+    public IChannelMembership ServerMembership(string channelId) {
+        return SignedLogMembershipProvider.Instance.Restore(this.Database.GetMembershipCheckpoint(channelId)!);
+    }
+
+    /// <summary>The next entry of the server's log, signed by <paramref name="actor"/> (checked like any client would make it).</summary>
+    public MembershipEntry NextEntry(string channelId, TestClient actor, MembershipEntryKind kind, long subjectId, MemberKeys? inviteeKeys = null, Rank rank = Rank.Unspecified) {
+        using var keys = actor.LoadIdentity();
+        return this.ServerMembership(channelId).Create(kind, subjectId, keys, actor.UserId, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), inviteeKeys, rank);
+    }
+
+    /// <summary>
+    /// An entry chained to <paramref name="after"/> (by default the server's log head), signed with
+    /// <paramref name="actor"/>'s keys, with none of the membership rules checked: what a dishonest
+    /// member (or a server holding their keys) could make.
+    /// </summary>
+    public MembershipEntry ForgeEntry(string channelId, TestClient actor, MembershipEntryKind kind, long subjectId, MemberKeys subjectKeys,
+        LogPosition? invite = null, Rank rank = Rank.Unspecified, LogPosition? after = null) {
+        after ??= this.ServerMembership(channelId).Head!;
+        using var keys = actor.LoadIdentity();
+        var entry = new MembershipEntry {
+            ChannelId = channelId,
+            Seq = after.Seq + 1,
+            PreviousHash = after.Hash,
+            Kind = kind,
+            ActorId = actor.UserId,
+            ActorKeyHash = Google.Protobuf.ByteString.CopyFrom(MemberKeys.Of(keys).Hash),
+            Subject = subjectKeys.ToProto(subjectId),
+            Rank = rank,
+            TimestampUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            Invite = invite,
+        };
+        MembershipEntries.Sign(entry, keys);
+        return entry;
+    }
+
+    /// <summary>The newest membership log position <paramref name="client"/> has verified for a channel.</summary>
+    public static LogPosition PositionOf(TestClient client, string channelId) => client.Session.Snapshot.FindChannel(channelId)!.LogHead!;
 
     /// <summary>Invites <paramref name="member"/> and waits until they hold the channel key.</summary>
     public static async Task AddMemberAsync(TestClient admin, string channelId, TestClient member) {
@@ -239,6 +279,11 @@ public sealed class TestClient {
     }
 
     public byte[] LoadEpochKey(string channelId, ulong epoch) => this.Store.Load().EpochKeys[channelId][epoch];
+
+    public MemberKeys Keys() {
+        using var keys = this.LoadIdentity();
+        return MemberKeys.Of(keys);
+    }
 
     /// <summary>A message signed and encrypted with this client's keys, as the server would deliver it.</summary>
     public ChatMessage ForgeMessage(string channelId, ulong epoch, string text, DateTimeOffset when) {

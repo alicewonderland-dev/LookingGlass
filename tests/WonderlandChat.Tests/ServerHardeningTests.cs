@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 using Google.Protobuf;
 using WonderlandChat.Core.Client;
 using WonderlandChat.Core.Crypto;
+using WonderlandChat.Core.Membership;
 using WonderlandChat.Core.Util;
 using WonderlandChat.Protocol;
 using WonderlandChat.Server;
@@ -65,46 +66,70 @@ public sealed class ServerHardeningTests {
         var (db, directory) = NewDatabase();
         try {
             var (channelId, admin, keys) = CreateChannel(db);
-            var name = ChannelCrypto.EncryptName("Renamed", ChannelCrypto.NewEpochKey(), channelId, 0, keys, admin, revision: 1);
+            var head = db.GetChannel(channelId)!.LogHead;
+            var name = ChannelCrypto.EncryptName("Renamed", ChannelCrypto.NewEpochKey(), channelId, 0, head, keys, admin, revision: 1);
 
             Assert.True(db.RenameChannel(channelId, name));
             Assert.Equal(1UL, db.GetChannel(channelId)!.Name!.Revision);
-            Assert.False(db.RenameChannel(channelId, ChannelCrypto.EncryptName("Stale", ChannelCrypto.NewEpochKey(), channelId, 5, keys, admin, revision: 2)));
+            Assert.False(db.RenameChannel(channelId, ChannelCrypto.EncryptName("Stale", ChannelCrypto.NewEpochKey(), channelId, 5, head, keys, admin, revision: 2)));
 
             // A revision that isn't newer than the stored one (a replay, or a stale client) is refused.
             Assert.False(db.RenameChannel(channelId, name));
-            Assert.False(db.RenameChannel(channelId, ChannelCrypto.EncryptName("Older", ChannelCrypto.NewEpochKey(), channelId, 0, keys, admin)));
-            Assert.True(db.RenameChannel(channelId, ChannelCrypto.EncryptName("Newer", ChannelCrypto.NewEpochKey(), channelId, 0, keys, admin, revision: 2)));
+            Assert.False(db.RenameChannel(channelId, ChannelCrypto.EncryptName("Older", ChannelCrypto.NewEpochKey(), channelId, 0, head, keys, admin)));
+            Assert.True(db.RenameChannel(channelId, ChannelCrypto.EncryptName("Newer", ChannelCrypto.NewEpochKey(), channelId, 0, head, keys, admin, revision: 2)));
 
-            var other = RegisterUser(db, "Other User");
-            db.AddInvite(channelId, other, admin, new SealedBox { EphemeralPublicKey = ByteString.CopyFrom(new byte[32]), Ciphertext = ByteString.CopyFrom(new byte[48]) }, new byte[64]);
-            Assert.True(db.AcceptInvite(channelId, other));
+            // A name made for an older log position is refused once the log moves on...
+            var (other, otherKeys) = RegisterUser(db, "Other User");
+            Assert.True(db.AppendEntry(channelId, Next(db, channelId, MembershipEntryKind.Invite, other, keys, admin, MemberKeys.Of(otherKeys)), SomeBox(), new byte[64]));
+            Assert.False(db.RenameChannel(channelId, ChannelCrypto.EncryptName("Old Position", ChannelCrypto.NewEpochKey(), channelId, 0, head, keys, admin, revision: 3)));
+
+            // ...and any name while a membership change awaits its rekey.
+            Assert.True(db.AppendEntry(channelId, Next(db, channelId, MembershipEntryKind.Accept, other, otherKeys, other)));
             Assert.True(db.GetChannel(channelId)!.RekeyPending);
-            Assert.False(db.RenameChannel(channelId, name));
+            var newHead = db.GetChannel(channelId)!.LogHead;
+            Assert.False(db.RenameChannel(channelId, ChannelCrypto.EncryptName("Pending", ChannelCrypto.NewEpochKey(), channelId, 0, newHead, keys, admin, revision: 4)));
         } finally {
             DeleteDirectory(directory);
         }
     }
 
     [Fact]
-    public void SchemaTwoDatabaseGainsNameSources() {
+    public void EmptyOlderDatabaseIsMigrated() {
         var (db, directory) = NewDatabase();
         try {
             var path = Path.Combine(directory, "test.db");
-            var (channelId, _, _) = CreateChannel(db);
+            var (user, _) = RegisterUser(db, "Early User");
 
-            // As if made before rekeys said which name they carry over.
+            // As if made by schema 2, before name sources and the membership log, and holding no channels.
             QueryLong(path, """
+                DROP TABLE membership_log;
                 ALTER TABLE channels DROP COLUMN name_source_epoch;
                 ALTER TABLE channels DROP COLUMN name_source_revision;
-                DELETE FROM schema_version WHERE version = 3;
+                ALTER TABLE channels DROP COLUMN log_seq;
+                ALTER TABLE channels DROP COLUMN log_hash;
+                ALTER TABLE channels DROP COLUMN name_log_seq;
+                ALTER TABLE channels DROP COLUMN name_log_hash;
+                ALTER TABLE members DROP COLUMN signing_key;
+                ALTER TABLE members DROP COLUMN agreement_key;
+                ALTER TABLE invites DROP COLUMN signing_key;
+                ALTER TABLE invites DROP COLUMN agreement_key;
+                ALTER TABLE invites DROP COLUMN invite_seq;
+                ALTER TABLE invites DROP COLUMN invite_hash;
+                ALTER TABLE invites DROP COLUMN inviter_signing_key;
+                ALTER TABLE invites DROP COLUMN inviter_agreement_key;
+                ALTER TABLE epoch_keys DROP COLUMN log_seq;
+                ALTER TABLE epoch_keys DROP COLUMN log_hash;
+                DELETE FROM schema_version WHERE version >= 3;
                 SELECT 0;
                 """);
             Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
 
             var migrated = new Database(path);
-            Assert.Equal(3L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
+            Assert.Equal(4L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
+            Assert.NotNull(migrated.GetUser(user));
+            var (channelId, _, _) = CreateChannel(migrated);
             Assert.Null(migrated.GetChannel(channelId)!.Name!.CarriedFrom);
+            Assert.Single(migrated.GetLogEntries(channelId, 0, 10));
         } finally {
             Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
             DeleteDirectory(directory);
@@ -117,7 +142,7 @@ public sealed class ServerHardeningTests {
         try {
             var path = Path.Combine(directory, "test.db");
             var (channelId, _, _) = CreateChannel(db);
-            Assert.Equal(3L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
+            Assert.Equal(4L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
 
             // As if the file were left over from the unreleased schema 1.
             QueryLong(path, "DELETE FROM schema_version WHERE version >= 2; SELECT 0;");
@@ -127,6 +152,29 @@ public sealed class ServerHardeningTests {
 
             // Nothing was deleted or migrated.
             Assert.Equal(1L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
+            Assert.Equal(1L, QueryLong(path, "SELECT COUNT(*) FROM channels WHERE channel_id = '" + channelId + "';"));
+        } finally {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            DeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
+    public void VersionZeroPointOneDatabaseWithChannelsIsRefusedAndLeftAlone() {
+        var (db, directory) = NewDatabase();
+        try {
+            var path = Path.Combine(directory, "test.db");
+            var (channelId, _, _) = CreateChannel(db);
+
+            // As if made by 0.1 (schema 3): its channels have no membership log anyone could sign now.
+            QueryLong(path, "DELETE FROM schema_version WHERE version >= 4; SELECT 0;");
+            var error = Assert.Throws<UnsupportedDatabaseException>(() => new Database(path));
+            Assert.Contains(Path.GetFullPath(path), error.Message);
+            Assert.Contains("schema 3", error.Message);
+            Assert.Contains("delete or move", error.Message);
+
+            // Nothing was deleted or migrated.
+            Assert.Equal(3L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
             Assert.Equal(1L, QueryLong(path, "SELECT COUNT(*) FROM channels WHERE channel_id = '" + channelId + "';"));
         } finally {
             Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
@@ -146,14 +194,17 @@ public sealed class ServerHardeningTests {
     public void AdminTransferFailsIfTargetLeftMeanwhile() {
         var (db, directory) = NewDatabase();
         try {
-            var (channelId, admin, _) = CreateChannel(db);
-            var member = RegisterUser(db, "Leaving Member");
-            db.AddInvite(channelId, member, admin, new SealedBox { EphemeralPublicKey = ByteString.CopyFrom(new byte[32]), Ciphertext = ByteString.CopyFrom(new byte[48]) }, new byte[64]);
-            db.AcceptInvite(channelId, member);
-            db.RemoveMember(channelId, member);
+            var (channelId, admin, keys) = CreateChannel(db);
+            var (member, memberKeys) = RegisterUser(db, "Leaving Member");
+            AddMember(db, channelId, admin, keys, member, memberKeys);
 
-            Assert.False(db.TransferAdmin(channelId, admin, member));
+            // The transfer is made at the log's head, but the member leaves first: it's no longer next.
+            var transfer = Next(db, channelId, MembershipEntryKind.TransferAdmin, member, keys, admin);
+            Assert.True(db.AppendEntry(channelId, Next(db, channelId, MembershipEntryKind.Leave, member, memberKeys, member)));
+            Assert.False(db.AppendEntry(channelId, transfer));
+
             Assert.Equal(Rank.Admin, db.GetRank(channelId, admin));
+            Assert.Null(db.GetRank(channelId, member));
         } finally {
             DeleteDirectory(directory);
         }
@@ -163,10 +214,10 @@ public sealed class ServerHardeningTests {
     public void IdentitiesAreOnlyVisibleToChannelMates() {
         var (db, directory) = NewDatabase();
         try {
-            var (channelId, admin, _) = CreateChannel(db);
-            var invitee = RegisterUser(db, "Invited Person");
-            var stranger = RegisterUser(db, "Total Stranger");
-            db.AddInvite(channelId, invitee, admin, new SealedBox { EphemeralPublicKey = ByteString.CopyFrom(new byte[32]), Ciphertext = ByteString.CopyFrom(new byte[48]) }, new byte[64]);
+            var (channelId, admin, keys) = CreateChannel(db);
+            var (invitee, inviteeKeys) = RegisterUser(db, "Invited Person");
+            var (stranger, _) = RegisterUser(db, "Total Stranger");
+            Assert.True(db.AppendEntry(channelId, Next(db, channelId, MembershipEntryKind.Invite, invitee, keys, admin, MemberKeys.Of(inviteeKeys)), SomeBox(), new byte[64]));
 
             var adminSees = db.GetVisibleUserIds(admin);
             Assert.Contains(invitee, adminSees);
@@ -202,24 +253,41 @@ public sealed class ServerHardeningTests {
         }
     }
 
+    /// <summary>
+    /// Replaces "SetRankOnlyChangesCurrentNonAdminMembers": who may change whose rank is now decided by
+    /// the log's rules (see MembershipRulesTests), and the database only applies entries checked
+    /// against them. What must hold here is that its tables, which the server checks the next entry
+    /// against, always agree with replaying its log.
+    /// </summary>
     [Fact]
-    public void SetRankOnlyChangesCurrentNonAdminMembers() {
+    public void ServerTablesFollowTheLog() {
         var (db, directory) = NewDatabase();
         try {
-            var (channelId, admin, _) = CreateChannel(db);
-            var member = RegisterUser(db, "Ranked Member");
-            db.AddInvite(channelId, member, admin, new SealedBox { EphemeralPublicKey = ByteString.CopyFrom(new byte[32]), Ciphertext = ByteString.CopyFrom(new byte[48]) }, new byte[64]);
-            Assert.False(db.SetRank(channelId, member, Rank.Moderator));
-            db.AcceptInvite(channelId, member);
+            var (channelId, admin, keys) = CreateChannel(db);
+            var (member, memberKeys) = RegisterUser(db, "Ranked Member");
+            var (other, otherKeys) = RegisterUser(db, "Other Member");
+            var (invitee, inviteeKeys) = RegisterUser(db, "Still Invited");
+            AddMember(db, channelId, admin, keys, member, memberKeys);
+            AddMember(db, channelId, admin, keys, other, otherKeys);
+            Assert.True(db.AppendEntry(channelId, Next(db, channelId, MembershipEntryKind.Invite, invitee, keys, admin, MemberKeys.Of(inviteeKeys)), SomeBox(), new byte[64]));
+            Assert.True(db.AppendEntry(channelId, Next(db, channelId, MembershipEntryKind.SetRank, member, keys, admin, rank: Rank.Moderator)));
+            Assert.True(db.AppendEntry(channelId, Next(db, channelId, MembershipEntryKind.Remove, other, memberKeys, member)));
+            Assert.True(db.AppendEntry(channelId, Next(db, channelId, MembershipEntryKind.TransferAdmin, member, keys, admin)));
 
-            Assert.True(db.SetRank(channelId, member, Rank.Moderator));
-            Assert.False(db.SetRank(channelId, member, Rank.Moderator));
-            Assert.False(db.SetRank(channelId, admin, Rank.Member));
-            Assert.Equal(Rank.Admin, db.GetRank(channelId, admin));
+            Assert.Equal(Rank.Moderator, db.GetRank(channelId, admin));
+            Assert.Equal(Rank.Admin, db.GetRank(channelId, member));
+            Assert.Null(db.GetRank(channelId, other));
+            Assert.Equal(Rank.Invited, db.GetRank(channelId, invitee));
 
-            db.RemoveMember(channelId, member);
-            Assert.False(db.SetRank(channelId, member, Rank.Member));
-            Assert.Null(db.GetRank(channelId, member));
+            var replayed = Membership.Empty(channelId);
+            foreach (var entry in db.GetLogEntries(channelId, 0, 100)) {
+                replayed = replayed.Apply(entry);
+            }
+
+            var tables = Membership.Restore(db.GetMembershipCheckpoint(channelId)!);
+            Assert.True(MembershipEntries.SamePosition(replayed.Head, tables.Head));
+            Assert.Equal(replayed.Members.OrderBy(m => m.UserId), tables.Members.OrderBy(m => m.UserId));
+            Assert.Equal(replayed.Invitees.OrderBy(i => i.UserId), tables.Invitees.OrderBy(i => i.UserId));
         } finally {
             DeleteDirectory(directory);
         }
@@ -292,30 +360,46 @@ public sealed class ServerHardeningTests {
         }
     }
 
+    private static readonly IMembershipProvider Membership = SignedLogMembershipProvider.Instance;
+
     private static (Database Db, string Directory) NewDatabase() {
         var directory = Path.Combine(Path.GetTempPath(), "wct-db-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         return (new Database(Path.Combine(directory, "test.db")), directory);
     }
 
-    private static long RegisterUser(Database db, string name) {
-        using var keys = IdentityKeys.Generate();
+    /// <returns>The user's ID and identity keys (left for the test process to clean up).</returns>
+    private static (long Id, IdentityKeys Keys) RegisterUser(Database db, string name) {
+        var keys = IdentityKeys.Generate();
         var id = Random.Shared.NextInt64(1, long.MaxValue / 2);
         db.RegisterUser(id, name, 0, ProtocolInfo.DebugWorldName, keys.ToBundle(), true);
-        return id;
+        return (id, keys);
     }
 
     private static (string ChannelId, long Admin, IdentityKeys Keys) CreateChannel(Database db) {
-        var keys = IdentityKeys.Generate();
-        var admin = Random.Shared.NextInt64(1, long.MaxValue / 2);
-        db.RegisterUser(admin, "Channel Admin " + admin, 0, ProtocolInfo.DebugWorldName, keys.ToBundle(), true);
+        var (admin, keys) = RegisterUser(db, "Channel Admin " + Guid.NewGuid().ToString("N")[..8]);
         var channelId = Guid.NewGuid().ToString("N");
         var key = ChannelCrypto.NewEpochKey();
-        db.CreateChannel(channelId, admin,
-            ChannelCrypto.SealEpochKey(key, channelId, 0, keys, admin, admin, keys.AgreementPublicKey),
-            ChannelCrypto.EncryptName("Original", key, channelId, 0, keys, admin));
+        var genesis = Membership.CreateGenesis(channelId, keys, admin, 1);
+        var position = MembershipEntries.PositionOf(genesis);
+        db.CreateChannel(channelId, genesis,
+            ChannelCrypto.SealEpochKey(key, channelId, 0, position, keys, admin, admin, keys.AgreementPublicKey),
+            ChannelCrypto.EncryptName("Original", key, channelId, 0, position, keys, admin));
         return (channelId, admin, keys);
     }
+
+    /// <summary>The next entry of the channel's log in the database, made and signed by <paramref name="actorId"/>.</summary>
+    private static MembershipEntry Next(Database db, string channelId, MembershipEntryKind kind, long subjectId, IdentityKeys actor, long actorId,
+        MemberKeys? inviteeKeys = null, Rank rank = Rank.Unspecified) {
+        return Membership.Restore(db.GetMembershipCheckpoint(channelId)!).Create(kind, subjectId, actor, actorId, 1, inviteeKeys, rank);
+    }
+
+    private static void AddMember(Database db, string channelId, long inviter, IdentityKeys inviterKeys, long userId, IdentityKeys userKeys) {
+        Assert.True(db.AppendEntry(channelId, Next(db, channelId, MembershipEntryKind.Invite, userId, inviterKeys, inviter, MemberKeys.Of(userKeys)), SomeBox(), new byte[64]));
+        Assert.True(db.AppendEntry(channelId, Next(db, channelId, MembershipEntryKind.Accept, userId, userKeys, userId)));
+    }
+
+    private static SealedBox SomeBox() => new() { EphemeralPublicKey = ByteString.CopyFrom(new byte[32]), Ciphertext = ByteString.CopyFrom(new byte[48]) };
 }
 
 public sealed class SecretFileTests {

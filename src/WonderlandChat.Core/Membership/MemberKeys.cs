@@ -13,6 +13,7 @@ public sealed class MemberKeys : IEquatable<MemberKeys> {
 
     private readonly byte[] _signing;
     private readonly byte[] _agreement;
+    private string? _fingerprint;
 
     public MemberKeys(ReadOnlySpan<byte> signingPublicKey, ReadOnlySpan<byte> agreementPublicKey) {
         this._signing = signingPublicKey.ToArray();
@@ -26,7 +27,7 @@ public sealed class MemberKeys : IEquatable<MemberKeys> {
     /// <summary>What log entries name their signer's keys by (see <see cref="IdentityKeys.KeyHash"/>).</summary>
     public byte[] Hash { get; }
 
-    public string Fingerprint => IdentityKeys.FingerprintOf(this._signing, this._agreement);
+    public string Fingerprint => this._fingerprint ??= IdentityKeys.FingerprintOf(this._signing, this._agreement);
 
     /// <summary>Both keys have the right size. Says nothing about whether they're any use.</summary>
     public bool IsWellFormed => this._signing.Length == KeySize && this._agreement.Length == KeySize;

@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Runtime.ExceptionServices;
 using System.Text.Json;
+using WonderlandChat.Core.Membership;
 
 namespace WonderlandChat.Core.Client;
 
@@ -37,6 +38,16 @@ public sealed class ClientSecrets {
     /// <summary>Users whose invites are declined unseen and whose messages are hidden.</summary>
     public HashSet<long> BlockedUsers { get; set; } = new();
 
+    /// <summary>
+    /// Channel ID → the membership verified from its log, at the newest position verified. Not
+    /// secret, but kept so the next session carries on from there and notices a server that
+    /// shows an older log. Kept after leaving a channel, as name versions are.
+    /// </summary>
+    public Dictionary<string, MembershipCheckpoint> Memberships { get; set; } = new();
+
+    /// <summary>Channel ID → epoch → the log position its key was made for (pruned with <see cref="EpochKeys"/>).</summary>
+    public Dictionary<string, Dictionary<ulong, KeyPosition>> EpochKeyPositions { get; set; } = new();
+
     public ClientSecrets Clone() {
         return JsonSerializer.Deserialize<ClientSecrets>(JsonSerializer.SerializeToUtf8Bytes(this))!;
     }
@@ -57,6 +68,15 @@ public sealed class PinnedIdentity {
 
     /// <summary>The keys changed since they were first seen, and the user hasn't confirmed the new ones yet.</summary>
     public bool KeyChangeUnacknowledged { get; set; }
+
+    /// <summary>The user confirmed these keys (compared fingerprints). Cleared when the keys change.</summary>
+    public bool Compared { get; set; }
+}
+
+/// <summary>A membership log position, as saved with an epoch key.</summary>
+public sealed class KeyPosition {
+    public ulong Seq { get; set; }
+    public byte[] Hash { get; set; } = [];
 }
 
 /// <summary>Orders channel names: a later epoch wins, then a higher revision within the epoch.</summary>

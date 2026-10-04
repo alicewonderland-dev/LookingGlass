@@ -76,8 +76,10 @@ message Event {
   // Increases by one for every event on a connection, so gaps are detectable.
   uint64 seq = 1;
 
+  // 12 was MemberChanged, which the server could make up. Membership now comes from the signed log.
+  reserved 12;
+
   oneof kind {
-    MemberChanged member_changed = 12;
     Announcement announcement = 10;
     InviteReceived invite_received = 11;
     RekeyNeeded rekey_needed = 13;
@@ -375,7 +377,8 @@ message ChannelInfo {
   // The users the server lists as members and invitees, for their names only.
   // Clients take members and ranks from the log.
   repeated Member members = 5;
-  Rank my_rank = 6;
+  // 6 was my_rank: ranks come from the log.
+  reserved 6;
   // With rekey_pending: the server asks the viewer to perform the rekey, as RekeyNeeded's
   // designated_user_id would. Lets a member who wasn't told (because the event came before
   // they knew the channel, or while they were offline) act on it.
@@ -428,8 +431,9 @@ message CreateChannel {
 
 // An invite entry, and the channel name sealed to the invitee.
 message InviteMember {
+  // 2 was user_id: the entry names the invitee and the keys they're invited with.
+  reserved 2;
   string channel_id = 1;
-  int64 user_id = 2;
   SealedBox sealed_name = 3;
   bytes signature = 4;
   MembershipEntry entry = 5;
@@ -437,8 +441,9 @@ message InviteMember {
 
 // An accept or decline entry.
 message RespondToInvite {
+  // 2 was accept: the entry's kind says.
+  reserved 2;
   string channel_id = 1;
-  bool accept = 2;
   MembershipEntry entry = 3;
 }
 
@@ -450,16 +455,15 @@ message LeaveChannel {
 
 // A remove or cancel-invite entry.
 message KickMember {
+  reserved 2;
   string channel_id = 1;
-  int64 user_id = 2;
   MembershipEntry entry = 3;
 }
 
 // A set-rank or transfer-admin entry.
 message SetMemberRank {
+  reserved 2, 3;
   string channel_id = 1;
-  int64 user_id = 2;
-  Rank rank = 3;
   MembershipEntry entry = 4;
 }
 
@@ -554,29 +558,11 @@ message LogEntryAdded {
   User actor = 4;
 }
 
-enum MemberChangeKind {
-  MEMBER_CHANGE_KIND_UNSPECIFIED = 0;
-  MEMBER_CHANGE_KIND_INVITED = 1;
-  MEMBER_CHANGE_KIND_JOINED = 2;
-  MEMBER_CHANGE_KIND_DECLINED = 3;
-  MEMBER_CHANGE_KIND_LEFT = 4;
-  MEMBER_CHANGE_KIND_KICKED = 5;
-  MEMBER_CHANGE_KIND_RANK_CHANGED = 6;
-  MEMBER_CHANGE_KIND_INVITE_CANCELLED = 7;
-}
-
-message MemberChanged {
-  string channel_id = 1;
-  User user = 2;
-  MemberChangeKind kind = 3;
-  Rank rank = 4;
-  User actor = 5;
-}
-
 message RekeyNeeded {
+  // 3 was member_ids: clients rekey for the members in their own verified log.
+  reserved 3;
   string channel_id = 1;
   uint64 current_epoch = 2;
-  repeated int64 member_ids = 3;
   // The member the server asks to perform the rekey. Any member may do it.
   int64 designated_user_id = 4;
 }
