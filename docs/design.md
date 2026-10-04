@@ -199,7 +199,7 @@ The client is a thin Dalamud shell around a core library with no Dalamud depende
 
 - **Game thread:** hooks, chat printing, commands, ImGui, and capturing the player snapshot each frame. Nothing else reads game objects.
 - **Session:** owns the socket and all session state, publishes an immutable snapshot after every change; the UI reads only snapshots. Anything that must touch the game is queued with `Framework.RunOnFrameworkThread`.
-- **Chat:** `/lgc1`–`/lgc8` commands today; a chat-input hook for a sticky channel later. Sending fails closed: an error never falls through to plain game chat. All remote text is sanitised before it reaches the chat log.
+- **Chat:** `/lgc1`–`/lgc50` commands today; a chat-input hook for a sticky channel later. Sending fails closed: an error never falls through to plain game chat. All remote text is sanitised before it reaches the chat log.
 - **Game interop:** signatures live in one module; a missing one disables only its feature.
 - **ChatTwo:** the original exposed `ExtraChat.ChannelNames`, `ExtraChat.ChannelCommandColours` and `ExtraChat.OverrideChannelColour` to ChatTwo, and added an invite item to ChatTwo's context menu via `ChatTwo.Register`/`Invoke`. LookingGlass keeps equivalent integration (IPC naming is an open question).
 
@@ -254,7 +254,7 @@ M0 Foundations (repo, schema, CI, core library) → gate: crypto spec reviewed �
 - [ ] **Secret storage on Wine/Proton:** is the local key-file fallback enough?
 - [ ] **Key-change policy:** warn and continue (current), or block until re-verified?
 - [ ] **ChatTwo IPC names:** reuse `ExtraChat.*` or use `LookingGlass.*` and ask ChatTwo to support them?
-- [x] **Command prefix and internal name:** `LookingGlass`, `/lgc1` to `/lgc8`.
+- [x] **Command prefix and internal name:** `LookingGlass`, `/lgc1` to `/lgc50`.
 - [ ] **Message history:** in 1.0, or later?
 - [ ] **Limits:** confirm after beta load testing.
 - [ ] **Public hosting:** who runs it, cost, privacy note, and acceptable Lodestone volume.

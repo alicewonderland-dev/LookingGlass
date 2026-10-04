@@ -24,7 +24,7 @@ the import wizard come next (see [docs/design.md](docs/design.md)).
 | `src/LookingGlass.Protocol` | The wire protocol (`Protos/lookingglass.proto`), shared by everything |
 | `src/LookingGlass.Core` | Crypto, the membership log, the client session, and the echo bot. No Dalamud dependency |
 | `src/LookingGlass.Server` | ASP.NET Core server with SQLite. Runs on Linux and Windows |
-| `src/LookingGlass.Plugin` | The Dalamud plugin (`/lookingglass` or `/lg`, `/lgc1`–`/lgc8`, `/lgdebug`) |
+| `src/LookingGlass.Plugin` | The Dalamud plugin (`/lookingglass` or `/lg`, `/lgc1`–`/lgc50`, `/lgc <nickname>`, `/lgdebug`) |
 | `tools/LookingGlass.DevTool` | `lgdev`: run an echo bot, or smoke-test a server |
 | `tests/LookingGlass.Tests` | Crypto, policy, membership log and end-to-end tests, including a malicious in-process server |
 
@@ -99,6 +99,35 @@ the backup and says so in chat. So to reset a character's identity (you then
 register again, other members see that your key changed, and in each of your
 channels a moderator must remove you and invite you again), disconnect,
 delete **both** the secrets file and its `.bak`, then connect again.
+
+## Commands
+
+| Command | What it does |
+| --- | --- |
+| `/lookingglass` or `/lg` | Open the main window: register, create and manage channels, settings |
+| `/lgc1 <message>` … `/lgc50 <message>` | Send to the channel on that number |
+| `/lgc <nickname> <message>` | Send to the channel with that nickname, numbered or not |
+| `/lgdebug` | Open the debug window |
+
+Only `/lgc` is listed in Dalamud's command help (`/xlhelp`); the fifty
+numbered commands are hidden there to keep the list short. `/lgc` on its own
+prints how to use it.
+
+**Numbers.** Each channel you're in gets a number automatically, and keeps it
+across restarts until you leave it (or it's disbanded, or you're removed);
+the freed number then goes to the next channel without one. To change a
+channel's number, select it in the main window and pick another under
+**Command**: if another channel has that number, the two swap. The list shows
+which channel has each number. Typing a number with no channel on it says so.
+
+**Nicknames.** Select a channel in the main window, type a nickname next to
+its number, and press **Set nickname** (clear the box and press **Clear
+nickname** to remove it). A nickname is 1 to 16 letters, digits, `-` or `_`,
+can't be only digits (so `/lgc 3` is never confused with `/lgc3`), and must
+be different from your other channels' nicknames, ignoring case: `/lgc Sky hi`
+and `/lgc sky hi` go to the same channel. Problems are shown under the box.
+Nicknames, like numbers, are kept per character in the plugin's settings and
+are never sent to the server; a channel's nickname goes away when you leave it.
 
 ## Server configuration
 
