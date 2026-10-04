@@ -85,6 +85,7 @@ Rules:
 
 - **Re-registering is allowed**, for lost configs and new PCs. It publishes a new identity key, revokes old device tokens, and every contact sees a "key changed" warning.
 - **Device tokens** are 256-bit random values, hashed at rest, and revocable.
+- **A refused device token is kept.** A server that doesn't recognise it may be the wrong one, or one reset or restored from a backup, so the client keeps the token, stays connected (to allow registering again), and tries it again: on that connection with a backoff up to a minute apart, and on every reconnect. Only registering again, or "Forget account" in the debug window, replaces it. Login and registration requests go through one gate, and the old token isn't tried while a registration challenge is pending, so a try of it never races registering again.
 - **Names and worlds** are keyed by Lodestone ID; name lookups go through an index updated on rename.
 - **Lodestone traffic** goes through one worker with a global rate limit and a result cache. Registration is rate-limited per IP, and verification attempts per connection.
 

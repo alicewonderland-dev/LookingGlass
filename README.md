@@ -116,6 +116,13 @@ register again, other members see that your key changed, and in each of your
 channels a moderator must remove you and invite you again), disconnect,
 delete **both** the secrets file and its `.bak`, then connect again.
 
+If a server doesn't recognise your login (say, it was reset or restored from
+a backup, or the address now leads to another server), the main window says
+"Login not recognised". The plugin keeps your login and tries it again every
+minute or so, so it works again by itself once the right server is back;
+"Retry now" tries it at once. Register again only if it doesn't come back:
+that replaces the login.
+
 ## Commands
 
 | Command | What it does |
