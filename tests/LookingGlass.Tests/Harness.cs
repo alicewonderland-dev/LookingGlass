@@ -103,15 +103,17 @@ public sealed class Harness : IAsyncDisposable {
     /// <param name="wrap">Wraps every connection's WebSocket, for example in a <see cref="HoldingWebSocket"/>.</param>
     /// <param name="forkCheckInterval">How often the client may fetch a channel's whole log to look into a possible fork.</param>
     /// <param name="loginRetryDelay">How often a saved login the server didn't recognise is tried again (by default, soon and often).</param>
+    /// <param name="serverUri">The address the client thinks it connects to (and signs for); it reaches this server whatever it is.</param>
     public ClientSessionOptions Options(bool autoRekey = true, Action<NoticeLevel, string>? log = null, TimeProvider? time = null, Func<CancellationToken, Task>? beforeConnect = null,
-        uint protocolVersion = ProtocolInfo.CurrentVersion, Func<WebSocket, WebSocket>? wrap = null, TimeSpan? forkCheckInterval = null, TimeSpan? loginRetryDelay = null) => new() {
-        ServerUri = new Uri(this.Factory.Server.BaseAddress, ProtocolInfo.WebSocketPath),
+        uint protocolVersion = ProtocolInfo.CurrentVersion, Func<WebSocket, WebSocket>? wrap = null, TimeSpan? forkCheckInterval = null, TimeSpan? loginRetryDelay = null,
+        Uri? serverUri = null) => new() {
+        ServerUri = serverUri ?? new Uri(this.Factory.Server.BaseAddress, ProtocolInfo.WebSocketPath),
         Connect = async (uri, ct) => {
             if (beforeConnect != null) {
                 await beforeConnect(ct);
             }
 
-            var socket = await this.Factory.Server.CreateWebSocketClient().ConnectAsync(uri, ct);
+            var socket = await this.ConnectAsync(uri, ct);
             return wrap?.Invoke(socket) ?? socket;
         },
         ReconnectMinDelay = TimeSpan.FromMilliseconds(100),
@@ -123,6 +125,9 @@ public sealed class Harness : IAsyncDisposable {
         ProtocolVersion = protocolVersion,
         ForkCheckInterval = forkCheckInterval ?? TimeSpan.FromMinutes(1),
     };
+
+    /// <summary>Opens a WebSocket to this server, whatever address <paramref name="uri"/> names (as a client's Connect).</summary>
+    public Task<WebSocket> ConnectAsync(Uri uri, CancellationToken ct) => this.Factory.Server.CreateWebSocketClient().ConnectAsync(uri, ct);
 
     public void Track(IAsyncDisposable disposable) => this._disposables.Add(disposable);
 
