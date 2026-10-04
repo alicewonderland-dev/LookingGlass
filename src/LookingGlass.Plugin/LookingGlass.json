@@ -1,0 +1,13 @@
+{
+  "Author": "WonderlandDev",
+  "Name": "LookingGlass",
+  "Punchline": "End-to-end encrypted, cross-world linkshells.",
+  "Description": "LookingGlass adds extra linkshells that work across worlds and data centres. Channel names and messages are end-to-end encrypted: the server only relays ciphertext. Use /lookingglass (or /lg) to set up, and /lgc1 to /lgc50, or /lgc followed by a channel nickname, to talk.",
+  "RepoUrl": "https://github.com/alicewonderland-dev/LookingGlass",
+  "Tags": [
+    "chat",
+    "linkshell",
+    "social"
+  ],
+  "AcceptsFeedback": false
+}

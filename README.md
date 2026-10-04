@@ -1,4 +1,4 @@
-# WonderlandChat
+# LookingGlass
 
 End-to-end encrypted, cross-world linkshells for FFXIV: a Dalamud plugin and
 a small server. The server relays ciphertext only; channel names and messages
@@ -21,12 +21,12 @@ the import wizard come next (see [docs/design.md](docs/design.md)).
 
 | Path | What it is |
 | --- | --- |
-| `src/WonderlandChat.Protocol` | The wire protocol (`Protos/wonderlandchat.proto`), shared by everything |
-| `src/WonderlandChat.Core` | Crypto, the membership log, the client session, and the echo bot. No Dalamud dependency |
-| `src/WonderlandChat.Server` | ASP.NET Core server with SQLite. Runs on Linux and Windows |
-| `src/WonderlandChat.Plugin` | The Dalamud plugin (`/wcl1`–`/wcl8`, `/wonderlandchat`, `/wcdebug`) |
-| `tools/WonderlandChat.DevTool` | `wcdev`: run an echo bot, or smoke-test a server |
-| `tests/WonderlandChat.Tests` | Crypto, policy, membership log and end-to-end tests, including a malicious in-process server |
+| `src/LookingGlass.Protocol` | The wire protocol (`Protos/lookingglass.proto`), shared by everything |
+| `src/LookingGlass.Core` | Crypto, the membership log, the client session, and the echo bot. No Dalamud dependency |
+| `src/LookingGlass.Server` | ASP.NET Core server with SQLite. Runs on Linux and Windows |
+| `src/LookingGlass.Plugin` | The Dalamud plugin (`/lookingglass` or `/lg`, `/lgc1`–`/lgc50`, `/lgc <nickname>`, `/lgdebug`) |
+| `tools/LookingGlass.DevTool` | `lgdev`: run an echo bot, or smoke-test a server |
+| `tests/LookingGlass.Tests` | Crypto, policy, membership log and end-to-end tests, including a malicious in-process server |
 
 ## Build and test
 
@@ -34,8 +34,8 @@ Needs the .NET 10 SDK (newer SDKs work too). The plugin also needs Dalamud's
 dev files, which XIVLauncher installs.
 
 ```sh
-dotnet build WonderlandChat.slnx -c Release
-dotnet test WonderlandChat.slnx -c Release
+dotnet build LookingGlass.slnx -c Release
+dotnet test LookingGlass.slnx -c Release
 ```
 
 ## Running a test server (Tailscale)
@@ -53,7 +53,7 @@ on a private network such as your tailnet: anyone who can reach a Development
 server can register (or take over) any debug account, including the echo bot.
 
 1. Make sure the machine's firewall allows TCP 5180 from the tailnet.
-2. In game, open `/wonderlandchat`, expand **Settings**, and set the server URL
+2. In game, open `/lookingglass`, expand **Settings**, and set the server URL
    to `ws://<machine-name>:5180/ws` (the Tailscale MagicDNS name or 100.x IP).
 3. Register your character. The plugin shows a code to paste into your
    Lodestone profile; then press **Verify**.
@@ -66,7 +66,7 @@ the plugin URL then becomes `wss://<machine>.<tailnet>.ts.net/ws`.
 Check a server from any machine:
 
 ```sh
-dotnet run --project tools/WonderlandChat.DevTool -c Release -- smoke --server ws://<machine-name>:5180/ws
+dotnet run --project tools/LookingGlass.DevTool -c Release -- smoke --server ws://<machine-name>:5180/ws
 ```
 
 It registers a throwaway debug user, creates a channel, invites the echo bot,
@@ -77,19 +77,19 @@ sends a message and waits for the reply.
 - **Echo bot.** On a Development server, invite `Echo Bot` on world `Debug`.
   It accepts, takes part in rekeys, and echoes everything. Send `!ping`,
   `!rekey` or `!leave` to exercise those paths. Run extra bots with
-  `wcdev bot --server ... --name "Another Bot"`.
-- **`/wcdebug`** in game: connection state, fingerprint, limits, a protocol
+  `lgdev bot --server ... --name "Another Bot"`.
+- **`/lgdebug`** in game: connection state, fingerprint, limits, a protocol
   trace (frame types only, never contents), recent notices, and buttons to
   ping, reconnect, refresh, force a rekey, send a test message, or print a
   simulated incoming message locally.
-- **Debug accounts** (`WonderlandChat:Dev:AllowDebugAccounts`) let characters on
+- **Debug accounts** (`LookingGlass:Dev:AllowDebugAccounts`) let characters on
   the fake world `Debug` register without Lodestone. Never enable this on a
   public server.
 
 ## Loading the plugin
 
 Build in Release, then in Dalamud settings → Experimental → Dev Plugin
-Locations add `src/WonderlandChat.Plugin/bin/Release/WonderlandChat.dll`.
+Locations add `src/LookingGlass.Plugin/bin/Release/LookingGlass.dll`.
 
 Each character's identity and channel keys, per server, are kept encrypted
 in a `secrets-….bin` file in the plugin's config folder (under XIVLauncher's
@@ -100,15 +100,44 @@ register again, other members see that your key changed, and in each of your
 channels a moderator must remove you and invite you again), disconnect,
 delete **both** the secrets file and its `.bak`, then connect again.
 
+## Commands
+
+| Command | What it does |
+| --- | --- |
+| `/lookingglass` or `/lg` | Open the main window: register, create and manage channels, settings |
+| `/lgc1 <message>` … `/lgc50 <message>` | Send to the channel on that number |
+| `/lgc <nickname> <message>` | Send to the channel with that nickname, numbered or not |
+| `/lgdebug` | Open the debug window |
+
+Only `/lgc` is listed in Dalamud's command help (`/xlhelp`); the fifty
+numbered commands are hidden there to keep the list short. `/lgc` on its own
+prints how to use it.
+
+**Numbers.** Each channel you're in gets a number automatically, and keeps it
+across restarts until you leave it (or it's disbanded, or you're removed);
+the freed number then goes to the next channel without one. To change a
+channel's number, select it in the main window and pick another under
+**Command**: if another channel has that number, the two swap. The list shows
+which channel has each number. Typing a number with no channel on it says so.
+
+**Nicknames.** Select a channel in the main window, type a nickname next to
+its number, and press **Set nickname** (clear the box and press **Clear
+nickname** to remove it). A nickname is 1 to 16 letters, digits, `-` or `_`,
+can't be only digits (so `/lgc 3` is never confused with `/lgc3`), and must
+be different from your other channels' nicknames, ignoring case: `/lgc Sky hi`
+and `/lgc sky hi` go to the same channel. Problems are shown under the box.
+Nicknames, like numbers, are kept per character in the plugin's settings and
+are never sent to the server; a channel's nickname goes away when you leave it.
+
 ## Server configuration
 
 Settings live in `appsettings.json` next to the server binary, and can be
-overridden on the command line (`--WonderlandChat:Announcement="Hello"`) or
-with environment variables (`WonderlandChat__Dev__AllowDebugAccounts=true`).
+overridden on the command line (`--LookingGlass:Announcement="Hello"`) or
+with environment variables (`LookingGlass__Dev__AllowDebugAccounts=true`).
 Relative paths, such as the default `data` folder for the database, resolve
 against the install folder.
 
-Production deployment: `deploy/wonderlandchat.service` (systemd) or the
+Production deployment: `deploy/lookingglass.service` (systemd) or the
 `Dockerfile`. By default the server only listens on `127.0.0.1:5180`; put a
 TLS reverse proxy (for example Caddy) in front and use `wss://` URLs.
 
@@ -122,7 +151,7 @@ channels is upgraded in place.
 Per-IP limits (registrations and concurrent connections) only work if the
 server sees real client addresses. It reads them from `X-Forwarded-For`, but
 only when the connection comes from a trusted proxy: one on the same machine
-(loopback), or one listed in `WonderlandChat:TrustedProxies`, which takes
+(loopback), or one listed in `LookingGlass:TrustedProxies`, which takes
 single addresses (`"10.0.0.5"`) and networks in CIDR form
 (`"172.17.0.0/16"`). Otherwise every client appears to be the proxy, and the
 limits apply to everyone together. IPv6 clients are counted per /64.
@@ -130,7 +159,7 @@ limits apply to everyone together. IPv6 clients are counted per /64.
 **Docker:** a reverse proxy on the host reaches the container through Docker's
 bridge network, so inside the container the proxy's address is the bridge
 gateway (often `172.17.0.1`), not loopback. Trust the bridge network, for
-example `WonderlandChat__TrustedProxies__0=172.17.0.0/16` (check yours with
+example `LookingGlass__TrustedProxies__0=172.17.0.0/16` (check yours with
 `docker network inspect bridge`). Only do this if nothing untrusted can
 connect to the container from that network; a proxy running in another
 container on a user-defined network needs that network trusted instead.
