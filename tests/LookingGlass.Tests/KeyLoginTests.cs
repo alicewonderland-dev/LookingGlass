@@ -471,11 +471,11 @@ public sealed class KeyLoginTests : IAsyncLifetime {
             await using var elsewhere = await server.ConnectRawAsync(remoteAddress: "203.0.113.2");
             Assert.NotNull((await this.KeyLoginAsync(elsewhere, keys, alice.UserId)).KeyLoginComplete);
 
-            // Challenges are counted per address too, failed or not.
+            // Challenges are counted per address too, failed or not: here all four work (unanswered ones would count as failures).
             await using var busy = await server.ConnectRawAsync(remoteAddress: "203.0.113.3");
             await using var busier = await server.ConnectRawAsync(remoteAddress: "203.0.113.3");
             for (var i = 0; i < 4; i++) {
-                Assert.NotNull((await (i < 2 ? busy : busier).SendAsync(new ClientFrame { StartKeyLogin = new StartKeyLogin { UserId = alice.UserId } })).KeyLoginChallenge);
+                Assert.NotNull((await this.KeyLoginAsync(i < 2 ? busy : busier, keys, alice.UserId, url)).KeyLoginComplete);
             }
 
             await using var busiest = await server.ConnectRawAsync(remoteAddress: "203.0.113.3");

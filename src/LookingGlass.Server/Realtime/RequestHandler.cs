@@ -55,11 +55,20 @@ public sealed class RequestHandler(
     private const int MaxSealedNameBytes = 128;
 
     private readonly WindowCounter _registrations = new(options.Value.Limits.RegistrationsPerHourPerIp, TimeSpan.FromHours(1));
-    // Key login: challenges per address, failures per address, and challenges per account asked about (by anyone).
-    // Each challenge allows one attempt, so the challenge limits bound attempts, and failures, per connection and account too.
+    // Key login: challenges per address; failures per address, where a challenge counts as one from when it is issued
+    // until it is answered correctly (so asking and never answering is limited like failing); and failed answers per
+    // account, by anyone. Each challenge allows one attempt, so these bound attempts per connection and account too.
+    //
+    // Only failed answers count against an account, never challenges or successes: anyone can ask for challenges for
+    // any account, and counting those let one address keep an account's key login locked. The account's allowance is
+    // sized from the per-address one so no single address can empty it (twice as many at once, refilling three times as
+    // fast), so keeping an account locked takes the whole failure allowance of several addresses, each of which is then
+    // blocked from key login itself.
     private readonly WindowCounter _keyLoginsPerIp = new(options.Value.Limits.KeyLoginsPerHourPerIp, TimeSpan.FromHours(1));
     private readonly WindowCounter _keyLoginFailuresPerIp = new(options.Value.Limits.KeyLoginFailuresPerHourPerIp, TimeSpan.FromHours(1));
-    private readonly UserRateLimits _keyLoginsPerUser = new(perSecond: 1.0 / 180, burst: 10);
+    private readonly UserRateLimits _keyLoginFailuresPerUser = new(
+        perSecond: Math.Max(1, options.Value.Limits.KeyLoginFailuresPerHourPerIp) * 3 / 3600.0,
+        burst: Math.Max(1, options.Value.Limits.KeyLoginFailuresPerHourPerIp) * 2);
     private readonly IReadOnlyList<ServerOrigin> _publicOrigins = ParsePublicUrls(options.Value.PublicUrls);
     private readonly KeyLoginOrigins _keyLoginOrigins = ChooseKeyLoginOrigins(ParsePublicUrls(options.Value.PublicUrls), environment?.IsDevelopment() == true);
     private readonly TimeProvider _time = time ?? TimeProvider.System;
@@ -310,16 +319,30 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.RateLimited, "Too many key login attempts on this connection.");
         }
 
-        if (this._keyLoginFailuresPerIp.IsFull(connection.RemoteAddress) || !this._keyLoginsPerIp.TryAdd(connection.RemoteAddress)) {
-            logger.LogDebug("Key login from {Address} refused: too many from this address", connection.RemoteAddress);
+        var address = connection.RemoteAddress;
+        if (this._keyLoginFailuresPerIp.IsFull(address) || this._keyLoginsPerIp.IsFull(address)) {
+            logger.LogDebug("Key login from {Address} refused: too many from this address", address);
             throw new RequestException(ErrorCode.RateLimited, "Too many key login attempts; try again later.");
         }
 
-        if (!this._keyLoginsPerUser.TryTake(request.UserId)) {
-            logger.LogDebug("Key login for {User} from {Address} refused: too many for this account", request.UserId, connection.RemoteAddress);
+        // Checked, not taken: only a failed answer uses up the account's allowance.
+        if (!this._keyLoginFailuresPerUser.HasToken(request.UserId)) {
+            logger.LogDebug("Key login for {User} from {Address} refused: too many failures for this account", request.UserId, address);
             throw new RequestException(ErrorCode.RateLimited, "Too many key login attempts for this account; try again later.");
         }
 
+        // The challenge, and (until it is answered correctly) a failure. Both checked above, but a request on another
+        // connection from the same address may have counted meanwhile.
+        if (!this._keyLoginsPerIp.TryAdd(address)) {
+            throw new RequestException(ErrorCode.RateLimited, "Too many key login attempts; try again later.");
+        }
+
+        if (!this._keyLoginFailuresPerIp.TryAdd(address)) {
+            this._keyLoginsPerIp.Refund(address);
+            throw new RequestException(ErrorCode.RateLimited, "Too many key login attempts; try again later.");
+        }
+
+        // A challenge this one replaces stays counted as a failure for the address: it was never answered.
         connection.KeyLoginChallenges++;
         var challenge = RandomNumberGenerator.GetBytes(KeyLoginProof.ChallengeSize);
         var expires = this._time.GetUtcNow() + KeyLoginChallengeLifetime;
@@ -356,11 +379,20 @@ public sealed class RequestHandler(
         }
 
         if (refusal != null) {
-            this._keyLoginFailuresPerIp.TryAdd(connection.RemoteAddress);
+            if (pending == null) {
+                // An answer without a challenge: nothing was counted for it yet.
+                this._keyLoginFailuresPerIp.TryAdd(connection.RemoteAddress);
+            } else {
+                // The address's failure was counted with the challenge; this is the account's.
+                this._keyLoginFailuresPerUser.TryTake(pending.UserId);
+            }
+
             logger.LogInformation("Key login for {User} from {Address} refused: {Reason}", pending?.UserId, connection.RemoteAddress, refusal);
             throw new RequestException(ErrorCode.NotAuthenticated, KeyLoginFailed);
         }
 
+        // Answered correctly: the failure counted for the address when the challenge was issued didn't happen.
+        this._keyLoginFailuresPerIp.Refund(connection.RemoteAddress);
         logger.LogInformation("Key login for {User} from {Address}: new device", user!.UserId, connection.RemoteAddress);
         return new Response { KeyLoginComplete = new KeyLoginComplete { DeviceToken = token, User = user.ToProto() } };
     }

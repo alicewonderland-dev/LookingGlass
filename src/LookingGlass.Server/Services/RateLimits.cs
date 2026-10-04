@@ -11,9 +11,7 @@ public sealed class TokenBucket(double perSecond, double burst) {
 
     public bool TryTake() {
         lock (this._lock) {
-            var now = DateTimeOffset.UtcNow;
-            this._tokens = Math.Min(this._burst, this._tokens + (now - this._updated).TotalSeconds * perSecond);
-            this._updated = now;
+            this.Refill();
             if (this._tokens < 1) {
                 return false;
             }
@@ -21,6 +19,20 @@ public sealed class TokenBucket(double perSecond, double burst) {
             this._tokens -= 1;
             return true;
         }
+    }
+
+    /// <summary>Whether a token could be taken now, without taking it.</summary>
+    public bool HasToken() {
+        lock (this._lock) {
+            this.Refill();
+            return this._tokens >= 1;
+        }
+    }
+
+    private void Refill() {
+        var now = DateTimeOffset.UtcNow;
+        this._tokens = Math.Min(this._burst, this._tokens + (now - this._updated).TotalSeconds * perSecond);
+        this._updated = now;
     }
 }
 
@@ -49,42 +61,59 @@ public sealed class UserRateLimits(double perSecond, double burst) {
 
         return entry.Bucket.TryTake();
     }
+
+    /// <summary>Whether <see cref="TryTake"/> would succeed now, without taking anything or tracking the user.</summary>
+    public bool HasToken(long userId) {
+        return !this._buckets.TryGetValue(userId, out var entry) || entry.Bucket.HasToken();
+    }
 }
 
 /// <summary>Counts events per key in a sliding window.</summary>
 public sealed class WindowCounter(int limit, TimeSpan window) {
-    private readonly ConcurrentDictionary<string, Queue<DateTimeOffset>> _events = new();
+    private readonly ConcurrentDictionary<string, LinkedList<DateTimeOffset>> _events = new();
 
     public bool TryAdd(string key) {
-        var queue = this._events.GetOrAdd(key, _ => new Queue<DateTimeOffset>());
-        lock (queue) {
+        var events = this._events.GetOrAdd(key, _ => new LinkedList<DateTimeOffset>());
+        lock (events) {
             var now = DateTimeOffset.UtcNow;
-            while (queue.Count > 0 && now - queue.Peek() > window) {
-                queue.Dequeue();
-            }
-
-            if (queue.Count >= limit) {
+            Expire(events, now);
+            if (events.Count >= limit) {
                 return false;
             }
 
-            queue.Enqueue(now);
+            events.AddLast(now);
             return true;
+        }
+    }
+
+    /// <summary>Takes back the newest event counted for the key (one that turned out not to count), if any.</summary>
+    public void Refund(string key) {
+        if (!this._events.TryGetValue(key, out var events)) {
+            return;
+        }
+
+        lock (events) {
+            if (events.Count > 0) {
+                events.RemoveLast();
+            }
         }
     }
 
     /// <summary>Whether the key has reached the limit within the window, without counting anything.</summary>
     public bool IsFull(string key) {
-        if (!this._events.TryGetValue(key, out var queue)) {
+        if (!this._events.TryGetValue(key, out var events)) {
             return limit <= 0;
         }
 
-        lock (queue) {
-            var now = DateTimeOffset.UtcNow;
-            while (queue.Count > 0 && now - queue.Peek() > window) {
-                queue.Dequeue();
-            }
+        lock (events) {
+            Expire(events, DateTimeOffset.UtcNow);
+            return events.Count >= limit;
+        }
+    }
 
-            return queue.Count >= limit;
+    private void Expire(LinkedList<DateTimeOffset> events, DateTimeOffset now) {
+        while (events.First is { } oldest && now - oldest.Value > window) {
+            events.RemoveFirst();
         }
     }
 }
