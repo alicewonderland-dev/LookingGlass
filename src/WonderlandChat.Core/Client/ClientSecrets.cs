@@ -151,8 +151,9 @@ public static class AtomicFile {
 
     /// <summary>
     /// Reads a file written by <see cref="Write"/>. If it is missing, empty or can't be parsed,
-    /// its backup is used instead and <paramref name="warn"/> is told. Errors reading the disk
-    /// aren't covered: loading an older backup then would lose whatever was saved since.
+    /// its backup is used instead and <paramref name="warn"/> is told; if the backup can't be parsed
+    /// either, the error names both files. Errors reading the disk aren't covered: loading an older
+    /// backup then would lose whatever was saved since.
     /// </summary>
     /// <param name="parse">Turns the bytes into the result; throws if they're unusable.</param>
     /// <returns>The parsed file, or null if neither it nor a backup exists.</returns>
@@ -179,10 +180,13 @@ public static class AtomicFile {
             T result;
             try {
                 result = Parse(File.ReadAllBytes(backup), parse);
-            } catch when (failure != null) {
-                // Report what is wrong with the file itself, not its backup.
-                ExceptionDispatchInfo.Throw(failure);
-                throw;
+            } catch (Exception ex) when (ex is not IOException and not UnauthorizedAccessException) {
+                // Name both files: someone who deleted the file to start afresh needs to know the backup is in the way.
+                var fullPath = Path.GetFullPath(path);
+                throw new InvalidDataException(failure == null
+                    ? $"{fullPath} is missing, and its backup {Path.GetFullPath(backup)} couldn't be read ({ex.Message})."
+                    : $"{fullPath} couldn't be read ({failure.Message}), and neither could its backup {Path.GetFullPath(backup)} ({ex.Message}).",
+                    failure ?? ex);
             }
 
             warn?.Invoke(failure == null

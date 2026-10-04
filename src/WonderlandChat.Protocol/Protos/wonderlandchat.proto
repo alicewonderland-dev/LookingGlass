@@ -286,6 +286,10 @@ message ChannelInfo {
   EncryptedName name = 4;
   repeated Member members = 5;
   Rank my_rank = 6;
+  // With rekey_pending: the server asks the viewer to perform the rekey, as RekeyNeeded's
+  // designated_user_id would. Lets a member who wasn't told (because the event came before
+  // they knew the channel, or while they were offline) act on it.
+  bool rekey_designated = 7;
 }
 
 message ListChannels {}

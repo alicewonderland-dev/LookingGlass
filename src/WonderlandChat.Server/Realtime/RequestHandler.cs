@@ -400,8 +400,12 @@ public sealed class RequestHandler(
         }
 
         this.BroadcastMemberChange(channelId, me, MemberChangeKind.Joined, Rank.Member, me, except: me.UserId);
-        this.RequestRekey(channelId, preferred: null, excluding: me.UserId);
-        return new Response { Channel = this.BuildChannelInfo(db.GetChannel(channelId)!, me.UserId) };
+        var designated = this.RequestRekey(channelId, preferred: null, excluding: me.UserId);
+        // The RekeyNeeded event reaches the joiner before this response, while they don't know
+        // the channel yet, so if it's theirs to do (nobody else is online), say so here.
+        var info = this.BuildChannelInfo(db.GetChannel(channelId)!, me.UserId);
+        info.RekeyDesignated = info.RekeyPending && designated == me.UserId;
+        return new Response { Channel = info };
     }
 
     private Response LeaveChannel(ClientConnection connection, LeaveChannel request) {
@@ -666,8 +670,15 @@ public sealed class RequestHandler(
             MyRank = db.GetRank(channel.ChannelId, viewerId) ?? Rank.Unspecified,
         };
 
-        foreach (var member in db.GetMembers(channel.ChannelId).Concat(db.GetInvitees(channel.ChannelId))) {
+        var members = db.GetMembers(channel.ChannelId);
+        foreach (var member in members.Concat(db.GetInvitees(channel.ChannelId))) {
             info.Members.Add(new Member { User = member.User.ToProto(), Rank = member.Rank });
+        }
+
+        // A member coming online may be the one to rekey now; nobody else would ask them.
+        if (channel.RekeyPending) {
+            var online = members.Where(member => registry.IsOnline(member.User.UserId)).ToList();
+            info.RekeyDesignated = ChooseRekeyer(online, preferred: null, excluding: null) == viewerId;
         }
 
         return info;
@@ -678,14 +689,34 @@ public sealed class RequestHandler(
     /// it: <paramref name="preferred"/> if possible, otherwise the
     /// highest-ranked online member. Everyone online is told.
     /// </summary>
-    private void RequestRekey(string channelId, long? preferred, long? excluding) {
+    /// <returns>The member asked, or null if nobody is online.</returns>
+    private long? RequestRekey(string channelId, long? preferred, long? excluding) {
         var channel = db.GetChannel(channelId);
         if (channel == null) {
-            return;
+            return null;
         }
 
         var members = db.GetMembers(channelId);
         var online = members.Where(member => registry.IsOnline(member.User.UserId)).ToList();
+        var designated = ChooseRekeyer(online, preferred, excluding);
+        var ev = new Event {
+            RekeyNeeded = new RekeyNeeded {
+                ChannelId = channelId,
+                CurrentEpoch = channel.Epoch,
+                DesignatedUserId = designated ?? 0,
+            },
+        };
+        ev.RekeyNeeded.MemberIds.AddRange(members.Select(member => member.User.UserId));
+        registry.SendToAll(online.Select(member => member.User.UserId), ev);
+        return designated;
+    }
+
+    /// <summary>
+    /// Which of the <paramref name="online"/> members to ask for a rekey: <paramref name="preferred"/>
+    /// if possible, otherwise the highest-ranked, avoiding <paramref name="excluding"/> unless
+    /// nobody else is online.
+    /// </summary>
+    private static long? ChooseRekeyer(List<MemberRow> online, long? preferred, long? excluding) {
         var candidates = online.Where(member => member.User.UserId != excluding).ToList();
         if (candidates.Count == 0) {
             candidates = online;
@@ -693,16 +724,7 @@ public sealed class RequestHandler(
 
         var designated = candidates.FirstOrDefault(member => member.User.UserId == preferred)
                          ?? candidates.OrderByDescending(member => member.Rank).ThenBy(member => member.User.UserId).FirstOrDefault();
-
-        var ev = new Event {
-            RekeyNeeded = new RekeyNeeded {
-                ChannelId = channelId,
-                CurrentEpoch = channel.Epoch,
-                DesignatedUserId = designated?.User.UserId ?? 0,
-            },
-        };
-        ev.RekeyNeeded.MemberIds.AddRange(members.Select(member => member.User.UserId));
-        registry.SendToAll(online.Select(member => member.User.UserId), ev);
+        return designated?.User.UserId;
     }
 
     private void BroadcastMemberChange(string channelId, UserRow user, MemberChangeKind kind, Rank rank, UserRow actor, long? except = null) {

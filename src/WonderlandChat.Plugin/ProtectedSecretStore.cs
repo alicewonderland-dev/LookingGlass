@@ -20,10 +20,14 @@ public sealed class ProtectedSecretStore : ISecretStore {
 
     private readonly string _path;
     private readonly string _keyFilePath;
+    private readonly Action<string>? _tellUser;
+    private readonly HashSet<string> _told = [];
 
-    public ProtectedSecretStore(string path, string keyFilePath) {
+    /// <param name="tellUser">Shows a warning to the user, such as a backup being loaded. Called on any thread.</param>
+    public ProtectedSecretStore(string path, string keyFilePath, Action<string>? tellUser = null) {
         this._path = path;
         this._keyFilePath = keyFilePath;
+        this._tellUser = tellUser;
     }
 
     /// <summary>How the secrets are protected, for the settings UI.</summary>
@@ -33,7 +37,10 @@ public sealed class ProtectedSecretStore : ISecretStore {
     // the same character use different store objects but the same secrets file.
     public ClientSecrets Load() {
         // A damaged or missing file (say, after a power cut) falls back to the copy kept by the last save.
-        return AtomicFile.Read(this._path, this.Decode, Warn) ?? new ClientSecrets();
+        // Deleting the file is also how people reset their identity, so they're told the backup was used.
+        return AtomicFile.Read(this._path, this.Decode, message =>
+                   this.Warn($"{message} To reset your WonderlandChat identity instead, disconnect, delete both files, then connect again."))
+               ?? new ClientSecrets();
     }
 
     private ClientSecrets Decode(byte[] data) {
@@ -86,7 +93,7 @@ public sealed class ProtectedSecretStore : ISecretStore {
         lock (AtomicFile.LockFor(this._keyFilePath)) {
             var raw = AtomicFile.Read(this._keyFilePath,
                 data => data.Length == Aead.KeySize ? data : throw new CryptographicException("The local key file is damaged."),
-                Warn);
+                this.Warn);
             if (raw == null) {
                 if (!create) {
                     throw new CryptographicException("The local key file is missing.");
@@ -100,14 +107,27 @@ public sealed class ProtectedSecretStore : ISecretStore {
         }
     }
 
-    private static void Warn(string message) => Services.Log.Warning(message);
+    private void Warn(string message) {
+        Services.Log.Warning(message);
+        bool first;
+        lock (this._told) {
+            // The key file is read on every save, so the same warning could otherwise repeat.
+            first = this._told.Add(message);
+        }
+
+        if (first) {
+            this._tellUser?.Invoke(message);
+        }
+    }
 
     /// <summary>One secrets file per character and server.</summary>
-    public static ProtectedSecretStore For(ulong contentId, string serverUrl) {
+    /// <param name="tellUser">Shows a warning to the user. Called on any thread.</param>
+    public static ProtectedSecretStore For(ulong contentId, string serverUrl, Action<string>? tellUser = null) {
         var directory = Services.PluginInterface.ConfigDirectory.FullName;
         var serverHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(serverUrl.Trim().ToLowerInvariant())))[..12];
         return new ProtectedSecretStore(
             Path.Combine(directory, $"secrets-{contentId:X16}-{serverHash}.bin"),
-            Path.Combine(directory, "local.key"));
+            Path.Combine(directory, "local.key"),
+            tellUser);
     }
 }

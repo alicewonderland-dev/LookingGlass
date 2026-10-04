@@ -61,8 +61,10 @@ public sealed class ClientSession : IAsyncDisposable {
     private readonly Dictionary<long, UserIdentity> _identities = new();
     // When each user's identity was last fetched again after a failed check (entries expire).
     private readonly Dictionary<long, DateTimeOffset> _identityRefetchedAt = new();
-    // Authors of names that failed verification against their cached identity; Publish has them fetched again.
-    private readonly HashSet<long> _staleNameAuthors = new();
+    // Those fetches still under way, so another check that fails meanwhile waits for the same one.
+    private readonly Dictionary<long, Task> _identityRefetches = new();
+    // Authors of names that failed verification, and the identity they failed against; Publish has them fetched again.
+    private readonly Dictionary<long, UserIdentity> _staleNameAuthors = new();
     private readonly HashSet<string> _seenMessages = new();
     private readonly Queue<string> _seenOrder = new();
     private long _secretsVersion;
@@ -366,11 +368,13 @@ public sealed class ClientSession : IAsyncDisposable {
             throw;
         }
 
+        var designated = false;
         lock (this._lock) {
             this._invites.Remove(channelId, out var invite);
             if (accept && response.Channel != null && response.Channel.ChannelId == channelId) {
                 var channel = this.ApplyChannelInfo(response.Channel);
                 channel.Name ??= invite?.Name;
+                designated = response.Channel.RekeyDesignated;
             }
         }
 
@@ -378,7 +382,20 @@ public sealed class ClientSession : IAsyncDisposable {
 
         if (accept) {
             await this.EnsureChannelReadyAsync(channelId, ct);
-            if (!this.Read(() => this.HasCurrentKey(channelId))) {
+            var (hasKey, pending, nameKnown) = this.Read(() => {
+                var channel = this._channels.GetValueOrDefault(channelId);
+                return (this.HasCurrentKey(channelId), channel?.RekeyPending == true, channel?.Name != null);
+            });
+            if (designated && pending && nameKnown) {
+                // Nobody else is online to share the key. (The server's RekeyNeeded arrived before
+                // this response, while the channel was unknown, so it was ignored.)
+                if (this._options.AutoRekeyWhenDesignated) {
+                    this.RaiseNotice(NoticeLevel.Info, "Joined. No other member is online, so you're making the channel a new key.", channelId);
+                    this.RunBackground("Rekeying a channel", rekeyCt => this.RekeyAsync(channelId, rekeyCt));
+                } else {
+                    this.RaiseNotice(NoticeLevel.Info, "Joined. No other member is online to share the channel key; rekey the channel, or send a message, to make a new one.", channelId);
+                }
+            } else if (!hasKey) {
                 this.RaiseNotice(NoticeLevel.Info, "Joined. Waiting for a member to share the channel key.", channelId);
             }
         }
@@ -766,11 +783,15 @@ public sealed class ClientSession : IAsyncDisposable {
 
         this.Publish();
         // Identities cached before a disconnect may be stale: someone may have registered again meanwhile.
-        await this.RefreshAsync(connection, ct, refreshIdentities: true);
+        await this.RefreshAsync(connection, ct, refreshIdentities: true, rekeyIfDesignated: true);
     }
 
     /// <param name="refreshIdentities">Fetch every identity again, not only those not cached yet.</param>
-    private async Task RefreshAsync(Connection connection, CancellationToken ct, bool refreshIdentities = false) {
+    /// <param name="rekeyIfDesignated">
+    /// Rekey channels the server asks this client to (see <see cref="ClientSessionOptions.AutoRekeyWhenDesignated"/>): its
+    /// RekeyNeeded only reaches members who are online, so one who just connected wasn't told.
+    /// </param>
+    private async Task RefreshAsync(Connection connection, CancellationToken ct, bool refreshIdentities = false, bool rekeyIfDesignated = false) {
         var response = await this.RequestAsync(connection, new ClientFrame { ListChannels = new ListChannels() }, ct);
         var list = response.ChannelList ?? throw Unexpected(response);
         // Channel IDs are bound into signatures and shown in the UI, so only canonical ones are accepted.
@@ -839,6 +860,17 @@ public sealed class ClientSession : IAsyncDisposable {
 
         this.SaveSecrets();
         this.Publish();
+
+        if (rekeyIfDesignated && this._options.AutoRekeyWhenDesignated) {
+            // Without the name (say, after registering again with new keys) this client can't rekey; another member must.
+            var designated = this.Read(() => channels
+                .Where(info => info.RekeyPending && info.RekeyDesignated && this._channels.GetValueOrDefault(info.ChannelId)?.Name != null)
+                .Select(info => info.ChannelId)
+                .ToList());
+            foreach (var channelId in designated) {
+                this.RunBackground("Rekeying a channel", rekeyCt => this.RekeyAsync(channelId, rekeyCt));
+            }
+        }
     }
 
     // ================================================================ events
@@ -1067,7 +1099,7 @@ public sealed class ClientSession : IAsyncDisposable {
 
         if (advanced.MyKey != null
             && !ChannelCrypto.VerifyEpochKey(advanced.MyKey, advanced.ChannelId, advanced.Epoch, advanced.AuthorId, author.Identity.SigningPublicKey.Span)
-            && await this.RefetchIdentityAsync(advanced.AuthorId, ct) is { } refetched) {
+            && await this.RefetchIdentityAsync(advanced.AuthorId, author, ct) is { } refetched) {
             author = refetched;
         }
 
@@ -1238,7 +1270,7 @@ public sealed class ClientSession : IAsyncDisposable {
 
         var content = ChannelCrypto.DecryptMessage(message, key, sender.Identity.SigningPublicKey.Span);
         if (content == null && !ChannelCrypto.VerifyMessage(message, sender.Identity.SigningPublicKey.Span)
-            && await this.RefetchIdentityAsync(message.SenderId, ct) is { } refetched) {
+            && await this.RefetchIdentityAsync(message.SenderId, sender, ct) is { } refetched) {
             // Awaited here, in the inbox, so later messages still wait their turn.
             sender = refetched;
             content = ChannelCrypto.DecryptMessage(message, key, sender.Identity.SigningPublicKey.Span);
@@ -1358,7 +1390,7 @@ public sealed class ClientSession : IAsyncDisposable {
             .Distinct()
             .ToList();
         foreach (var authorId in unverified) {
-            if (await this.RefetchIdentityAsync(authorId, ct, connection) is { } refetched) {
+            if (await this.RefetchIdentityAsync(authorId, identities[authorId], ct, connection) is { } refetched) {
                 identities[authorId] = refetched;
             }
         }
@@ -1442,42 +1474,62 @@ public sealed class ClientSession : IAsyncDisposable {
     }
 
     /// <summary>
-    /// Something signed by <paramref name="userId"/> didn't verify against their cached identity.
-    /// They may have registered again with new keys, so it is fetched again: at most once a
-    /// minute per user, so a stream of forgeries can't make this client flood the server. The
-    /// result is pinned like any other identity, so a changed key is warned about as usual.
+    /// Something signed by <paramref name="userId"/> didn't verify against <paramref name="checkedAgainst"/>,
+    /// their cached identity at the time. They may have registered again with new keys, so it is
+    /// fetched again: at most once a minute per user, so a stream of forgeries can't make this
+    /// client flood the server. If it has changed since the check (fetched for something else they
+    /// signed), or a fetch is already under way, that is used instead: otherwise a name of theirs
+    /// could use up the fetch a message of theirs needs. The result is pinned like any other
+    /// identity, so a changed key is warned about as usual.
     /// </summary>
-    /// <returns>The fetched identity if it differs from the cached one, otherwise null.</returns>
-    private async Task<UserIdentity?> RefetchIdentityAsync(long userId, CancellationToken ct, Connection? connection = null) {
-        UserIdentity? cached;
+    /// <returns>Their identity if it now differs from <paramref name="checkedAgainst"/>, otherwise null.</returns>
+    private async Task<UserIdentity?> RefetchIdentityAsync(long userId, UserIdentity checkedAgainst, CancellationToken ct, Connection? connection = null) {
+        TaskCompletionSource? fetch = null;
+        Task? running = null;
         lock (this._lock) {
-            var now = this._options.TimeProvider.GetUtcNow();
-            if (!this._identities.TryGetValue(userId, out cached)
-                || (this._identityRefetchedAt.TryGetValue(userId, out var last) && now - last < IdentityRefetchInterval)) {
+            if (!this._identities.TryGetValue(userId, out var cached)) {
                 return null;
             }
 
-            foreach (var expired in this._identityRefetchedAt.Where(entry => now - entry.Value >= IdentityRefetchInterval).Select(entry => entry.Key).ToList()) {
-                this._identityRefetchedAt.Remove(expired);
+            if (cached.Identity.Equals(checkedAgainst.Identity) && !this._identityRefetches.TryGetValue(userId, out running)) {
+                var now = this._options.TimeProvider.GetUtcNow();
+                if (this._identityRefetchedAt.TryGetValue(userId, out var last) && now - last < IdentityRefetchInterval) {
+                    return null;
+                }
+
+                foreach (var expired in this._identityRefetchedAt.Where(entry => now - entry.Value >= IdentityRefetchInterval).Select(entry => entry.Key).ToList()) {
+                    this._identityRefetchedAt.Remove(expired);
+                }
+
+                this._identityRefetchedAt[userId] = now;
+                fetch = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                this._identityRefetches[userId] = fetch.Task;
+            }
+        }
+
+        if (fetch != null) {
+            try {
+                await this.EnsureIdentitiesAsync([userId], ct, connection, refresh: true);
+            } catch (Exception ex) when (ex is ServerErrorException or SessionDisconnectedException or TimeoutException) {
+                this.Log(NoticeLevel.Warning, $"Couldn't fetch user {userId}'s identity again: {ex.Message}");
+            } finally {
+                lock (this._lock) {
+                    this._identityRefetches.Remove(userId);
+                }
+
+                fetch.SetResult();
+            }
+        } else if (running != null) {
+            await running.WaitAsync(ct);
+        }
+
+        UserIdentity? current;
+        lock (this._lock) {
+            if (!this._identities.TryGetValue(userId, out current) || current.Identity.Equals(checkedAgainst.Identity)) {
+                return null;
             }
 
-            this._identityRefetchedAt[userId] = now;
-        }
-
-        UserIdentity? fresh;
-        try {
-            fresh = (await this.EnsureIdentitiesAsync([userId], ct, connection, refresh: true)).GetValueOrDefault(userId);
-        } catch (Exception ex) when (ex is ServerErrorException or SessionDisconnectedException or TimeoutException) {
-            this.Log(NoticeLevel.Warning, $"Couldn't fetch user {userId}'s identity again: {ex.Message}");
-            return null;
-        }
-
-        if (fresh == null || fresh.Identity.Equals(cached.Identity)) {
-            return null;
-        }
-
-        // Names they signed with the new keys can be shown now.
-        lock (this._lock) {
+            // Names they signed with the new keys can be shown now.
             foreach (var channelId in this._channels.Keys.ToList()) {
                 this.TryDecryptName(channelId);
             }
@@ -1485,12 +1537,12 @@ public sealed class ClientSession : IAsyncDisposable {
 
         this.SaveSecrets();
         this.Publish();
-        return fresh;
+        return current;
     }
 
     /// <summary>Fetches again the identities of names' authors that <see cref="TryDecryptName"/> couldn't verify.</summary>
     private void RefetchStaleNameAuthors() {
-        List<long> authors;
+        List<KeyValuePair<long, UserIdentity>> authors;
         lock (this._lock) {
             if (this._staleNameAuthors.Count == 0 || this._connection == null) {
                 return;
@@ -1500,8 +1552,8 @@ public sealed class ClientSession : IAsyncDisposable {
             this._staleNameAuthors.Clear();
         }
 
-        foreach (var authorId in authors) {
-            this.RunBackground("Checking a channel name", ct => this.RefetchIdentityAsync(authorId, ct));
+        foreach (var (authorId, checkedAgainst) in authors) {
+            this.RunBackground("Checking a channel name", ct => this.RefetchIdentityAsync(authorId, checkedAgainst, ct));
         }
     }
 
@@ -1659,7 +1711,7 @@ public sealed class ClientSession : IAsyncDisposable {
         if (name == null) {
             if (!ChannelCrypto.VerifyName(offered, channelId, author.Identity.SigningPublicKey.Span)) {
                 // Perhaps signed with keys they registered since this client cached theirs.
-                this._staleNameAuthors.Add(offered.AuthorId);
+                this._staleNameAuthors[offered.AuthorId] = author;
             }
 
             return;

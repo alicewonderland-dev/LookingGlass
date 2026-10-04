@@ -155,7 +155,7 @@ public sealed class SessionManager : IDisposable {
                         Services.Log.Debug(text);
                     }
                 },
-            }, ProtectedSecretStore.For(player.ContentId, this._config.ServerUrl));
+            }, ProtectedSecretStore.For(player.ContentId, this._config.ServerUrl, warning => this._chat.Notice(NoticeLevel.Warning, warning)));
         } catch (Exception ex) {
             Services.Log.Error(ex, "Couldn't start a WonderlandChat session");
             this._chat.Notice(NoticeLevel.Error, $"Couldn't load your keys: {ex.Message}");

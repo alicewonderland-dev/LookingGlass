@@ -152,9 +152,12 @@ public sealed class MainWindow : Window {
                 }
 
                 ImGui.SameLine();
+                ImGui.BeginDisabled(this._actions.Busy);
                 if (ImGui.SmallButton("Mark verified")) {
-                    session.AcknowledgeKeyChange(invite.Inviter.UserId);
+                    this._actions.Run("Marking verified", () => session.AcknowledgeKeyChange(invite.Inviter.UserId));
                 }
+
+                ImGui.EndDisabled();
             }
 
             ImGui.SameLine();
@@ -170,16 +173,16 @@ public sealed class MainWindow : Window {
                 this._actions.Run("Declining", () => session.RespondToInviteAsync(invite.ChannelId, false));
             }
 
-            ImGui.EndDisabled();
             ImGui.SameLine();
             if (ImGui.Button("Block")) {
-                session.BlockUser(invite.Inviter.UserId);
+                this._actions.Run("Blocking", () => session.BlockUser(invite.Inviter.UserId));
             }
 
             if (ImGui.IsItemHovered()) {
                 ImGui.SetTooltip("Decline, and silently decline their future invites and hide their messages.\nUndo under Settings > Blocked users.");
             }
 
+            ImGui.EndDisabled();
             ImGui.PopID();
         }
 
@@ -278,9 +281,12 @@ public sealed class MainWindow : Window {
                     }
 
                     ImGui.SameLine();
+                    ImGui.BeginDisabled(this._actions.Busy);
                     if (ImGui.SmallButton("Mark verified")) {
-                        session.AcknowledgeKeyChange(member.User.UserId);
+                        this._actions.Run("Marking verified", () => session.AcknowledgeKeyChange(member.User.UserId));
                     }
+
+                    ImGui.EndDisabled();
                 }
 
                 ImGui.TableNextColumn();
@@ -432,10 +438,12 @@ public sealed class MainWindow : Window {
             ImGui.PushID(user.UserId.ToString());
             ImGui.TextUnformatted(string.IsNullOrEmpty(user.WorldName) ? user.Name : $"{user.Name}@{user.WorldName}");
             ImGui.SameLine();
+            ImGui.BeginDisabled(this._actions.Busy);
             if (ImGui.SmallButton("Unblock")) {
-                session.UnblockUser(user.UserId);
+                this._actions.Run("Unblocking", () => session.UnblockUser(user.UserId));
             }
 
+            ImGui.EndDisabled();
             ImGui.PopID();
         }
     }

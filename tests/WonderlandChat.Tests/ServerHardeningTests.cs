@@ -402,6 +402,39 @@ public sealed class SecretFileTests {
         }
     }
 
+    [Theory]
+    [InlineData("missing")]
+    [InlineData("garbled")]
+    public void UnreadableBackupIsNamedInTheError(string damage) {
+        var directory = Path.Combine(Path.GetTempPath(), "wct-files-" + Guid.NewGuid().ToString("N"));
+        try {
+            var path = Path.Combine(directory, "secrets.json");
+            var warnings = new List<string>();
+            var store = new FileSecretStore(path, warnings.Add);
+            store.Save(new ClientSecrets { UserId = 1 });
+            store.Save(new ClientSecrets { UserId = 2 });
+
+            if (damage == "missing") {
+                File.Delete(path);
+            } else {
+                File.WriteAllBytes(path, "not json"u8.ToArray());
+            }
+
+            File.WriteAllBytes(AtomicFile.BackupPath(path), "not json either"u8.ToArray());
+
+            // Someone who deleted the file to start afresh needs to know the backup is in the way.
+            var error = Assert.ThrowsAny<Exception>(() => store.Load());
+            Assert.Contains(AtomicFile.BackupPath(path), error.Message);
+            if (damage == "garbled") {
+                Assert.Contains(path + " ", error.Message);
+            }
+
+            Assert.Empty(warnings);
+        } finally {
+            DeleteDirectory(directory);
+        }
+    }
+
     [Fact]
     public void FileLockIsReentrant() {
         var directory = Path.Combine(Path.GetTempPath(), "wct-files-" + Guid.NewGuid().ToString("N"));

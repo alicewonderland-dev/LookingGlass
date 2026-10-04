@@ -89,6 +89,14 @@ sends a message and waits for the reply.
 Build in Release, then in Dalamud settings → Experimental → Dev Plugin
 Locations add `src/WonderlandChat.Plugin/bin/Release/WonderlandChat.dll`.
 
+Each character's identity and channel keys, per server, are kept encrypted
+in a `secrets-….bin` file in the plugin's config folder (under XIVLauncher's
+`pluginConfigs`). Every save keeps the previous version next to it as
+`secrets-….bin.bak`, and if the file is missing or damaged the plugin loads
+the backup and says so in chat. So to reset a character's identity (you then
+register again, and other members see that your key changed), disconnect,
+delete **both** the secrets file and its `.bak`, then connect again.
+
 ## Server configuration
 
 Settings live in `appsettings.json` next to the server binary, and can be
