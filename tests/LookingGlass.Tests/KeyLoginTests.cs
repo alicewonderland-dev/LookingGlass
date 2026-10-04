@@ -2,6 +2,7 @@ using Google.Protobuf;
 using LookingGlass.Core.Client;
 using LookingGlass.Core.Crypto;
 using LookingGlass.Protocol;
+using LookingGlass.Server.Realtime;
 using static LookingGlass.Tests.Harness;
 
 namespace LookingGlass.Tests;
@@ -469,6 +470,91 @@ public sealed class KeyLoginTests : IAsyncLifetime {
         Assert.NotNull(loggedIn.AuthenticateOk);
         var after = await gate.SendAsync(new ClientFrame { StartKeyLogin = new StartKeyLogin { UserId = alice.UserId } });
         Assert.Equal(ErrorCode.InvalidRequest, after.Error?.Code);
+    }
+
+    // ================================================================ the pieces
+
+    /// <summary>
+    /// The device is added only while the account still has the key that signed: registering again with new keys
+    /// (which revokes every device) can land between the signature check and the insert, and must win.
+    /// </summary>
+    [Fact]
+    public async Task ADeviceIsOnlyAddedForTheAccountsCurrentKey() {
+        var alice = await this._server.RegisterAsync("Alice Raced");
+        var db = this._server.Database;
+        var checkedUser = db.GetUser(alice.UserId)!;
+
+        using var newKeys = IdentityKeys.Generate();
+        db.RegisterUser(alice.UserId, alice.Name, 0, ProtocolInfo.DebugWorldName, newKeys.ToBundle(), true);
+        var token = RandomKey();
+        Assert.False(db.AddDeviceForKey(alice.UserId, checkedUser.SigningKey, checkedUser.KeyVersion, token));
+        Assert.Null(db.FindDevice(token));
+
+        var current = db.GetUser(alice.UserId)!;
+        Assert.True(db.AddDeviceForKey(alice.UserId, current.SigningKey, current.KeyVersion, token));
+        Assert.Equal(alice.UserId, db.FindDevice(token));
+        Assert.False(db.AddDeviceForKey(4242424242, current.SigningKey, current.KeyVersion, RandomKey()));
+    }
+
+    [Theory]
+    [InlineData("ws://LookingGlassChat:5180/ws", false, "lookingglasschat", 5180)]
+    [InlineData("wss://name.tail1234.ts.net/ws", true, "name.tail1234.ts.net", 443)]
+    [InlineData("wss://name.tail1234.ts.net:443/other/path", true, "name.tail1234.ts.net", 443)]
+    [InlineData("https://chat.example.com./ws", true, "chat.example.com", 443)]
+    [InlineData("ws://127.0.0.1:5180/ws", false, "127.0.0.1", 5180)]
+    [InlineData("ws://[::1]:5180/ws", false, "[::1]", 5180)]
+    [InlineData("http://bücher.example/ws", false, "xn--bcher-kva.example", 80)]
+    [InlineData("ws://someone@chat.example.com/ws", false, "chat.example.com", 80)]
+    public void ServerAddressesAreComparedByOrigin(string url, bool secure, string host, int port) {
+        Assert.Equal(new ServerOrigin(secure, host, port), ServerOrigin.FromUrl(url));
+    }
+
+    [Theory]
+    [InlineData("ftp://chat.example.com/ws")]
+    [InlineData("file:///C:/ws")]
+    [InlineData("/ws")]
+    [InlineData("chat.example.com")]
+    [InlineData("")]
+    [InlineData(null)]
+    public void OnlyWebSocketAndHttpAddressesHaveAnOrigin(string? url) {
+        Assert.Null(ServerOrigin.FromUrl(url));
+    }
+
+    [Fact]
+    public void TheRequestOriginComesFromTheSchemeAndHostHeader() {
+        Assert.Equal(new ServerOrigin(false, "lookingglasschat", 5180), ServerOrigin.FromRequest("http", "LookingGlassChat:5180"));
+        Assert.Equal(new ServerOrigin(true, "name.tail1234.ts.net", 443), ServerOrigin.FromRequest("https", "name.tail1234.ts.net"));
+        Assert.Equal(new ServerOrigin(false, "[::1]", 5180), ServerOrigin.FromRequest("http", "[::1]:5180"));
+        Assert.Null(ServerOrigin.FromRequest("http", ""));
+        Assert.Null(ServerOrigin.FromRequest("http", null));
+        Assert.Null(ServerOrigin.FromRequest("http", "evil.example/@chat.example.com"));
+        Assert.Null(ServerOrigin.FromRequest("http", "chat.example.com@evil.example"));
+    }
+
+    [Fact]
+    public void PublicUrlsMustBeServerAddresses() {
+        Assert.Equal([new ServerOrigin(true, "chat.example.com", 443)],
+            RequestHandler.ParsePublicUrls(["wss://chat.example.com/ws", " https://CHAT.example.com:443/ ", ""]));
+        Assert.Throws<InvalidOperationException>(() => RequestHandler.ParsePublicUrls(["chat.example.com"]));
+    }
+
+    [Fact]
+    public void TheKeyLoginSignatureCoversTheChallengeUserAndAddress() {
+        using var keys = IdentityKeys.Generate();
+        var challenge = RandomKey();
+        const string url = "wss://chat.example.com/ws";
+        var signature = KeyLoginProof.Sign(keys, challenge, 1234, url);
+
+        Assert.True(KeyLoginProof.Verify(keys.SigningPublicKey, challenge, 1234, url, signature));
+        Assert.False(KeyLoginProof.Verify(keys.SigningPublicKey, RandomKey(), 1234, url, signature));
+        Assert.False(KeyLoginProof.Verify(keys.SigningPublicKey, challenge, 1235, url, signature));
+        Assert.False(KeyLoginProof.Verify(keys.SigningPublicKey, challenge, 1234, "wss://chat.example.org/ws", signature));
+        Assert.False(KeyLoginProof.Verify(keys.SigningPublicKey, challenge[..16], 1234, url, keys.Sign(KeyLoginProof.Payload(challenge[..16], 1234, url))));
+        using var other = IdentityKeys.Generate();
+        Assert.False(KeyLoginProof.Verify(other.SigningPublicKey, challenge, 1234, url, signature));
+        // Its own domain: the same fields signed for anything else don't count.
+        Assert.False(KeyLoginProof.Verify(keys.SigningPublicKey, challenge, 1234, url,
+            keys.Sign(new SigningPayload(Domains.Message).Add(challenge).Add(1234L).Add(url).ToArray())));
     }
 
     // ================================================================ helpers

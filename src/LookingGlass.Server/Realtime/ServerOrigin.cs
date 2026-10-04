@@ -34,7 +34,15 @@ public sealed record ServerOrigin(bool Secure, string Host, int Port) {
                 return null;
         }
 
-        var host = uri.IdnHost.TrimEnd('.').ToLowerInvariant();
+        string host;
+        try {
+            // Host keeps an IPv6 address's brackets (and Uri normalises its form); IdnHost gives a name's ASCII form.
+            host = (uri.HostNameType == UriHostNameType.IPv6 ? uri.Host : uri.IdnHost).TrimEnd('.').ToLowerInvariant();
+        } catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or UriFormatException) {
+            // A host name IDN can't convert matches nothing.
+            return null;
+        }
+
         if (host.Length == 0) {
             return null;
         }
