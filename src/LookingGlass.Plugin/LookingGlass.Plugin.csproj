@@ -1,0 +1,18 @@
+<Project Sdk="Dalamud.NET.Sdk/15.0.0">
+
+  <PropertyGroup>
+    <AssemblyName>LookingGlass</AssemblyName>
+    <RootNamespace>LookingGlass.Plugin</RootNamespace>
+    <Version>0.2.0</Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.12" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\LookingGlass.Core\LookingGlass.Core.csproj" />
+    <ProjectReference Include="..\LookingGlass.Protocol\LookingGlass.Protocol.csproj" />
+  </ItemGroup>
+
+</Project>

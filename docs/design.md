@@ -1,4 +1,6 @@
-# WonderlandChat — Rewrite Design
+# LookingGlass — Rewrite Design
+
+Renamed from WonderlandChat to LookingGlass on 2026-10-04.
 
 Exported from the working design document. Diagrams are described in text.
 
@@ -6,7 +8,7 @@ This document describes the target design. Not all of it is built yet: see the R
 
 ## Summary
 
-WonderlandChat is a from-scratch rewrite of the ExtraChat plugin and server. It keeps the original's core ideas: a server that only relays ciphertext, Lodestone as the identity root, and native in-game chat. It fixes the original's trust, threading and reliability flaws, and adds a versioned, capability-based protocol so new features can be added without breaking existing clients.
+LookingGlass is a from-scratch rewrite of the ExtraChat plugin and server. It keeps the original's core ideas: a server that only relays ciphertext, Lodestone as the identity root, and native in-game chat. It fixes the original's trust, threading and reliability flaws, and adds a versioned, capability-based protocol so new features can be added without breaking existing clients.
 
 ### Goals
 
@@ -94,7 +96,7 @@ Each character has a long-term identity key that its contacts verify, and each c
 
 - One Ed25519 signing key and one X25519 key per character, the latter vouched for by the former. Generated once and kept across sessions.
 - **Verification:** every member shows a 25-digit fingerprint. Clients trust a key on first use and pin it with the user's name and world. A changed key, or a name now held by a different account, shows a persistent warning until the user marks it verified.
-- Users can compare fingerprints over an in-game /tell, which doesn't pass through the WonderlandChat server.
+- Users can compare fingerprints over an in-game /tell, which doesn't pass through the LookingGlass server.
 
 ### Channel keys (epochs)
 
@@ -197,9 +199,9 @@ The client is a thin Dalamud shell around a core library with no Dalamud depende
 
 - **Game thread:** hooks, chat printing, commands, ImGui, and capturing the player snapshot each frame. Nothing else reads game objects.
 - **Session:** owns the socket and all session state, publishes an immutable snapshot after every change; the UI reads only snapshots. Anything that must touch the game is queued with `Framework.RunOnFrameworkThread`.
-- **Chat:** `/wcl1`–`/wcl8` commands today; a chat-input hook for a sticky channel later. Sending fails closed: an error never falls through to plain game chat. All remote text is sanitised before it reaches the chat log.
+- **Chat:** `/lgc1`–`/lgc8` commands today; a chat-input hook for a sticky channel later. Sending fails closed: an error never falls through to plain game chat. All remote text is sanitised before it reaches the chat log.
 - **Game interop:** signatures live in one module; a missing one disables only its feature.
-- **ChatTwo:** the original exposed `ExtraChat.ChannelNames`, `ExtraChat.ChannelCommandColours` and `ExtraChat.OverrideChannelColour` to ChatTwo, and added an invite item to ChatTwo's context menu via `ChatTwo.Register`/`Invoke`. WonderlandChat keeps equivalent integration (IPC naming is an open question).
+- **ChatTwo:** the original exposed `ExtraChat.ChannelNames`, `ExtraChat.ChannelCommandColours` and `ExtraChat.OverrideChannelColour` to ChatTwo, and added an invite item to ChatTwo's context menu via `ChatTwo.Register`/`Invoke`. LookingGlass keeps equivalent integration (IPC naming is an open question).
 
 ## Server design
 
@@ -230,13 +232,13 @@ Operations: the server runs on Linux and Windows (.NET 10), listens on localhost
 
 ## Migration from the original
 
-WonderlandChat uses a new server and protocol, so users re-register once and channels are rebuilt through a planned import wizard. It has its own internal name and `/wcl` commands, so it can be installed beside the original.
+LookingGlass uses a new server and protocol, so users re-register once and channels are rebuilt through a planned import wizard. It has its own internal name and `/lgc` commands, so it can be installed beside the original.
 
 ## Testing and debug tooling
 
 - **Debug accounts:** with `Dev:AllowDebugAccounts` on, characters on the fake world "Debug" register without Lodestone. Never on a public server.
-- **Echo bot:** a headless client that accepts invites, takes part in rekeys and echoes messages; runs inside the server (`Dev:HostEchoBot`) or via `wcdev bot`.
-- **`/wcdebug`:** connection state, protocol trace, notices, and tools to ping, force a rekey, or simulate an incoming message.
+- **Echo bot:** a headless client that accepts invites, takes part in rekeys and echoes messages; runs inside the server (`Dev:HostEchoBot`) or via `lgdev bot`.
+- **`/lgdebug`:** connection state, protocol trace, notices, and tools to ping, force a rekey, or simulate an incoming message.
 - **Automated tests:** crypto, the policy table, end-to-end flows, and a malicious-server suite that injects forged and replayed events.
 
 ## Milestones
@@ -251,8 +253,8 @@ M0 Foundations (repo, schema, CI, core library) → gate: crypto spec reviewed �
 - [x] **Server language:** C# on .NET 10, sharing the core library with the plugin and the echo bot.
 - [ ] **Secret storage on Wine/Proton:** is the local key-file fallback enough?
 - [ ] **Key-change policy:** warn and continue (current), or block until re-verified?
-- [ ] **ChatTwo IPC names:** reuse `ExtraChat.*` or use `WonderlandChat.*` and ask ChatTwo to support them?
-- [x] **Command prefix and internal name:** `WonderlandChat`, `/wcl1` to `/wcl8`.
+- [ ] **ChatTwo IPC names:** reuse `ExtraChat.*` or use `LookingGlass.*` and ask ChatTwo to support them?
+- [x] **Command prefix and internal name:** `LookingGlass`, `/lgc1` to `/lgc8`.
 - [ ] **Message history:** in 1.0, or later?
 - [ ] **Limits:** confirm after beta load testing.
 - [ ] **Public hosting:** who runs it, cost, privacy note, and acceptable Lodestone volume.

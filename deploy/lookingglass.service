@@ -1,0 +1,38 @@
+# systemd unit for a published server, for example:
+#   dotnet publish src/LookingGlass.Server -c Release -r linux-x64 --self-contained -o /opt/lookingglass
+#   sudo useradd --system --no-create-home lookingglass
+#   sudo cp deploy/lookingglass.service /etc/systemd/system/
+#   sudo systemctl enable --now lookingglass
+#
+# systemd creates /var/lib/lookingglass (StateDirectory) owned by the service user;
+# the database (and the echo bot's keys, on a test server) live there. Only the service
+# user can read it, and files the server creates are private to it (UMask).
+#
+# The server listens on localhost only. Put a TLS reverse proxy (for example Caddy)
+# in front and give clients a wss:// URL. For a private Tailscale test server instead,
+# change --urls to http://0.0.0.0:5180 and enable Development mode below.
+
+[Unit]
+Description=LookingGlass server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=lookingglass
+WorkingDirectory=/opt/lookingglass
+ExecStart=/opt/lookingglass/LookingGlass.Server --urls http://127.0.0.1:5180
+Environment=LookingGlass__DataDirectory=/var/lib/lookingglass
+StateDirectory=lookingglass
+StateDirectoryMode=0700
+UMask=0077
+Restart=on-failure
+RestartSec=5
+# Private test server only (debug accounts + echo bot):
+# Environment=ASPNETCORE_ENVIRONMENT=Development
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -4,4 +4,4 @@
 set -eu
 cd "$(dirname "$0")/.."
 export ASPNETCORE_ENVIRONMENT=Development
-exec dotnet run --project src/WonderlandChat.Server -c Release -- --urls "http://0.0.0.0:${PORT:-5180}" "$@"
+exec dotnet run --project src/LookingGlass.Server -c Release -- --urls "http://0.0.0.0:${PORT:-5180}" "$@"

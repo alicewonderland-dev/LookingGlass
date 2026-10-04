@@ -1,0 +1,14 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/LookingGlass.Protocol/LookingGlass.Protocol.csproj" />
+    <Project Path="src/LookingGlass.Core/LookingGlass.Core.csproj" />
+    <Project Path="src/LookingGlass.Server/LookingGlass.Server.csproj" />
+    <Project Path="src/LookingGlass.Plugin/LookingGlass.Plugin.csproj" />
+  </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/LookingGlass.DevTool/LookingGlass.DevTool.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/LookingGlass.Tests/LookingGlass.Tests.csproj" />
+  </Folder>
+</Solution>

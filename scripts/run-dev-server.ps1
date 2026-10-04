@@ -3,4 +3,4 @@
 param([int]$Port = 5180)
 Set-Location (Join-Path $PSScriptRoot '..')
 $env:ASPNETCORE_ENVIRONMENT = 'Development'
-dotnet run --project src/WonderlandChat.Server -c Release -- --urls "http://0.0.0.0:$Port" @args
+dotnet run --project src/LookingGlass.Server -c Release -- --urls "http://0.0.0.0:$Port" @args

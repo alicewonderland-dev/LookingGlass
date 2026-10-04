@@ -5,7 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Version>0.2.0</Version>
     <Authors>WonderlandDev</Authors>
-    <Product>WonderlandChat</Product>
+    <Product>LookingGlass</Product>
     <PackageLicenseExpression>AGPL-3.0-only</PackageLicenseExpression>
     <Copyright>Copyright (C) 2026 WonderlandDev</Copyright>
   </PropertyGroup>

@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>LookingGlass.Server</RootNamespace>
+    <!-- Lets the server run on a newer .NET runtime if 10 isn't installed. -->
+    <RollForward>LatestMajor</RollForward>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.12" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\LookingGlass.Protocol\LookingGlass.Protocol.csproj" />
+    <ProjectReference Include="..\LookingGlass.Core\LookingGlass.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="LookingGlass.Tests" />
+  </ItemGroup>
+
+</Project>
