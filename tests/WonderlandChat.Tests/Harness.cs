@@ -42,9 +42,16 @@ public sealed class Harness : IAsyncDisposable {
     /// <summary>The server's database, for tests that play a malicious or misbehaving server.</summary>
     public Database Database => this.Factory.Services.GetRequiredService<Database>();
 
-    public ClientSessionOptions Options(bool autoRekey = true, Action<NoticeLevel, string>? log = null, TimeProvider? time = null) => new() {
+    /// <param name="beforeConnect">Awaited before every connection attempt, so a test can keep a client offline.</param>
+    public ClientSessionOptions Options(bool autoRekey = true, Action<NoticeLevel, string>? log = null, TimeProvider? time = null, Func<CancellationToken, Task>? beforeConnect = null) => new() {
         ServerUri = new Uri(this.Factory.Server.BaseAddress, ProtocolInfo.WebSocketPath),
-        Connect = (uri, ct) => this.Factory.Server.CreateWebSocketClient().ConnectAsync(uri, ct),
+        Connect = async (uri, ct) => {
+            if (beforeConnect != null) {
+                await beforeConnect(ct);
+            }
+
+            return await this.Factory.Server.CreateWebSocketClient().ConnectAsync(uri, ct);
+        },
         ReconnectMinDelay = TimeSpan.FromMilliseconds(100),
         AutoRekeyWhenDesignated = autoRekey,
         Log = log,

@@ -321,6 +321,7 @@ public sealed class RequestHandler(
 
         this.ValidateName(request.Name, channelId, 0, me);
         RequireFirstRevision(request.Name);
+        RequireNoSource(request.Name);
         db.CreateChannel(channelId, me.UserId, request.CreatorKey, request.Name);
         logger.LogDebug("User {User} created channel {Channel}", me.UserId, channelId);
         return new Response { Channel = this.BuildChannelInfo(db.GetChannel(channelId)!, me.UserId) };
@@ -518,6 +519,8 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.InvalidRequest, "The name's revision is out of range.");
         }
 
+        RequireNoSource(request.Name);
+
         if (channel.Name is { } current && current.Epoch == request.Name.Epoch && request.Name.Revision <= current.Revision) {
             // Clients refuse a name that isn't newer than theirs, so storing it would hide later renames.
             throw new RequestException(ErrorCode.Conflict, "The name's revision must be newer than the current one; refresh and try again.");
@@ -565,6 +568,9 @@ public sealed class RequestHandler(
 
         this.ValidateName(request.Name, channelId, request.NewEpoch, me);
         RequireFirstRevision(request.Name);
+        if (request.Name.CarriedFrom is { } source && (source.Epoch >= request.NewEpoch || source.Revision > ProtocolInfo.MaxNameRevision)) {
+            throw new RequestException(ErrorCode.InvalidRequest, "A rekey can only carry over a name from an earlier epoch.");
+        }
 
         switch (db.ApplyRekey(channelId, request.NewEpoch, me.UserId, request.Keys, request.Name)) {
             case RekeyResult.EpochStale:
@@ -742,6 +748,13 @@ public sealed class RequestHandler(
     private static void RequireFirstRevision(EncryptedName name) {
         if (name.Revision != 0) {
             throw new RequestException(ErrorCode.InvalidRequest, "A new epoch's name must have revision 0; only a rename can change it.");
+        }
+    }
+
+    /// <summary>Only a rekey carries a name over from an earlier version.</summary>
+    private static void RequireNoSource(EncryptedName name) {
+        if (name.CarriedFrom != null) {
+            throw new RequestException(ErrorCode.InvalidRequest, "Only a rekey's name says which name it carries over.");
         }
     }
 

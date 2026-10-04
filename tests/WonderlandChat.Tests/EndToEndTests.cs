@@ -320,6 +320,33 @@ public sealed class EndToEndTests : IAsyncLifetime {
         await WaitFor(() => carol.Notices.FirstOrDefault(n => n.Level == NoticeLevel.Warning && n.Text.StartsWith($"{alice.Name}@Debug's identity key changed")));
     }
 
+    [Fact]
+    public async Task RenameMissedWhileOfflineIsNotBlamedOnTheNextRekey() {
+        var online = Task.CompletedTask;
+        var alice = await this._server.RegisterAsync("Alice Offline");
+        var bob = await this._server.RegisterAsync("Bob Offline", options: this._server.Options(beforeConnect: ct => online.WaitAsync(ct)));
+        var carol = await this._server.RegisterAsync("Carol Offline");
+        var channelId = await alice.Session.CreateChannelAsync("First Name", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        await AddMemberAsync(alice, channelId, carol);
+        var epoch = carol.Session.Snapshot.FindChannel(channelId)!.Epoch;
+
+        // Bob drops off; meanwhile Alice renames and Carol rekeys, carrying the new name over.
+        var reconnect = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        online = reconnect.Task;
+        bob.Session.Reconnect();
+        await WaitFor(() => this._server.Registry.IsOnline(bob.UserId) ? null : new object());
+        await alice.Session.RenameAsync(channelId, "Second Name", Ct);
+        await WaitFor(() => carol.Session.Snapshot.FindChannel(channelId)?.Name == "Second Name" ? new object() : null);
+        await carol.Session.RekeyAsync(channelId, Ct, force: true);
+
+        // Bob, back online, still holds "First Name" (epoch N, revision 0) but missed revision 1.
+        Assert.Equal("First Name", bob.Session.Snapshot.FindChannel(channelId)!.Name);
+        reconnect.SetResult();
+        await WaitFor(() => bob.Session.Snapshot.FindChannel(channelId) is { Name: "Second Name", HasKey: true } c && c.Epoch == epoch + 1 ? c : null);
+        Assert.DoesNotContain(bob.Notices, n => n.Text.Contains("while rekeying"));
+    }
+
     /// <summary>Alice (admin), Bob and Carol in one channel, all holding its current key.</summary>
     private async Task<(TestClient Alice, TestClient Bob, TestClient Carol, string ChannelId)> ThreeMembersAsync(string suffix) {
         var alice = await this._server.RegisterAsync("Alice " + suffix);

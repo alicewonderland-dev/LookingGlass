@@ -154,6 +154,27 @@ public class CryptoTests {
     }
 
     [Fact]
+    public void CarriedOverNameVersionIsSigned() {
+        using var author = IdentityKeys.Generate();
+        var key = ChannelCrypto.NewEpochKey();
+        var name = ChannelCrypto.EncryptName("Tea Party", key, ChannelId, 3, author, 5, carriedFrom: new NameSource { Epoch = 2, Revision = 4 });
+        Assert.Equal("Tea Party", ChannelCrypto.DecryptName(name, ChannelId, key, author.SigningPublicKey));
+
+        // Claiming another source, or none, breaks the signature.
+        var moved = name.Clone();
+        moved.CarriedFrom.Revision = 3;
+        Assert.False(ChannelCrypto.VerifyName(moved, ChannelId, author.SigningPublicKey));
+        var stripped = name.Clone();
+        stripped.CarriedFrom = null;
+        Assert.False(ChannelCrypto.VerifyName(stripped, ChannelId, author.SigningPublicKey));
+
+        // And one can't be added to a name made without.
+        var plain = ChannelCrypto.EncryptName("Tea Party", key, ChannelId, 3, author, 5);
+        plain.CarriedFrom = new NameSource();
+        Assert.False(ChannelCrypto.VerifyName(plain, ChannelId, author.SigningPublicKey));
+    }
+
+    [Fact]
     public void InviteOpensForInviteeOnly() {
         using var inviter = IdentityKeys.Generate();
         using var invitee = IdentityKeys.Generate();

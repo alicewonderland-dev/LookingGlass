@@ -142,9 +142,11 @@ public sealed class MaliciousMemberTests : IAsyncLifetime {
         var channelId = await alice.Session.CreateChannelAsync("Proper Name", Ct);
         await AddMemberAsync(alice, channelId, bob);
 
-        // Bob isn't allowed to rename, but rekeys with a different name.
+        // Bob isn't allowed to rename, but rekeys with a different name, claiming to carry over
+        // the version Alice holds (epoch 1, revision 0) under the proper name.
         using var bobKeys = bob.LoadIdentity();
-        await bob.Session.SendRawAsync(new ClientFrame { SubmitRekey = this.Rekey(channelId, 2, bob, bobKeys, alice, "Bob's Name", 0) }, Ct);
+        var source = new NameSource { Epoch = 1, Revision = 0 };
+        await bob.Session.SendRawAsync(new ClientFrame { SubmitRekey = this.Rekey(channelId, 2, bob, bobKeys, alice, "Bob's Name", 0, source) }, Ct);
 
         var notice = await WaitFor(() => alice.Notices.FirstOrDefault(n => n.Text.Contains("while rekeying")));
         Assert.Equal(NoticeLevel.Warning, notice.Level);
@@ -156,6 +158,29 @@ public sealed class MaliciousMemberTests : IAsyncLifetime {
         await WaitFor(() => bob.Session.Snapshot.FindChannel(channelId) is { Epoch: 3 } c ? c : null);
         Assert.Single(alice.Notices, n => n.Text.Contains("while rekeying"));
         Assert.DoesNotContain(bob.Notices, n => n.Text.Contains("while rekeying"));
+    }
+
+    [Fact]
+    public async Task OnlyARekeyCarriesANameOverFromAnEarlierEpoch() {
+        var alice = await this._server.RegisterAsync("Alice Source");
+        var bob = await this._server.RegisterAsync("Bob Source");
+        var channelId = await alice.Session.CreateChannelAsync("Sources", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+
+        using var bobKeys = bob.LoadIdentity();
+        var fromTheFuture = this.Rekey(channelId, 2, bob, bobKeys, alice, "Sources", 0, new NameSource { Epoch = 2 });
+        var error = await Assert.ThrowsAsync<ServerErrorException>(() => bob.Session.SendRawAsync(new ClientFrame { SubmitRekey = fromTheFuture }, Ct));
+        Assert.Equal(ErrorCode.InvalidRequest, error.Code);
+
+        using var aliceKeys = alice.LoadIdentity();
+        var renamed = ChannelCrypto.EncryptName("Renamed", alice.LoadEpochKey(channelId, 1), channelId, 1, aliceKeys, alice.UserId, 1, new NameSource { Epoch = 0 });
+        error = await Assert.ThrowsAsync<ServerErrorException>(() => alice.Session.SendRawAsync(new ClientFrame { RenameChannel = new RenameChannel { ChannelId = channelId, Name = renamed } }, Ct));
+        Assert.Equal(ErrorCode.InvalidRequest, error.Code);
+
+        // The client's own rekeys name the version they carry over.
+        await alice.Session.RekeyAsync(channelId, Ct, force: true);
+        var stored = this._server.Database.GetChannel(channelId)!.Name!;
+        Assert.Equal(new NameSource { Epoch = 1, Revision = 0 }, stored.CarriedFrom);
     }
 
     [Fact]
@@ -186,14 +211,14 @@ public sealed class MaliciousMemberTests : IAsyncLifetime {
         Assert.Equal(1UL, this._server.Database.GetChannel(channelId)!.Name!.Revision);
     }
 
-    /// <summary>A correctly sealed and signed rekey by <paramref name="author"/> for the two members, with any name and revision.</summary>
-    private SubmitRekey Rekey(string channelId, ulong epoch, TestClient author, IdentityKeys authorKeys, TestClient other, string name, ulong revision) {
+    /// <summary>A correctly sealed and signed rekey by <paramref name="author"/> for the two members, with any name, revision and source.</summary>
+    private SubmitRekey Rekey(string channelId, ulong epoch, TestClient author, IdentityKeys authorKeys, TestClient other, string name, ulong revision, NameSource? source = null) {
         var key = ChannelCrypto.NewEpochKey();
         var request = new SubmitRekey {
             ChannelId = channelId,
             NewEpoch = epoch,
             KeyCommitment = ByteString.CopyFrom(ChannelCrypto.KeyCommitment(channelId, epoch, key)),
-            Name = ChannelCrypto.EncryptName(name, key, channelId, epoch, authorKeys, author.UserId, revision),
+            Name = ChannelCrypto.EncryptName(name, key, channelId, epoch, authorKeys, author.UserId, revision, source),
         };
         request.Keys.Add(ChannelCrypto.SealEpochKey(key, channelId, epoch, authorKeys, author.UserId, other.UserId, other.LoadIdentity().AgreementPublicKey));
         request.Keys.Add(ChannelCrypto.SealEpochKey(key, channelId, epoch, authorKeys, author.UserId, author.UserId, authorKeys.AgreementPublicKey));

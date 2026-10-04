@@ -87,15 +87,40 @@ public sealed class ServerHardeningTests {
     }
 
     [Fact]
+    public void SchemaTwoDatabaseGainsNameSources() {
+        var (db, directory) = NewDatabase();
+        try {
+            var path = Path.Combine(directory, "test.db");
+            var (channelId, _, _) = CreateChannel(db);
+
+            // As if made before rekeys said which name they carry over.
+            QueryLong(path, """
+                ALTER TABLE channels DROP COLUMN name_source_epoch;
+                ALTER TABLE channels DROP COLUMN name_source_revision;
+                DELETE FROM schema_version WHERE version = 3;
+                SELECT 0;
+                """);
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+
+            var migrated = new Database(path);
+            Assert.Equal(3L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
+            Assert.Null(migrated.GetChannel(channelId)!.Name!.CarriedFrom);
+        } finally {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            DeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
     public void PreReleaseDatabaseWithChannelsIsRefusedAndLeftAlone() {
         var (db, directory) = NewDatabase();
         try {
             var path = Path.Combine(directory, "test.db");
             var (channelId, _, _) = CreateChannel(db);
-            Assert.Equal(2L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
+            Assert.Equal(3L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
 
             // As if the file were left over from the unreleased schema 1.
-            QueryLong(path, "DELETE FROM schema_version WHERE version = 2; SELECT 0;");
+            QueryLong(path, "DELETE FROM schema_version WHERE version >= 2; SELECT 0;");
             var error = Assert.Throws<UnsupportedDatabaseException>(() => new Database(path));
             Assert.Contains(Path.GetFullPath(path), error.Message);
             Assert.Contains("delete or move", error.Message);

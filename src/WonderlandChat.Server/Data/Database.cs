@@ -47,7 +47,7 @@ public sealed class UnsupportedDatabaseException(string message) : Exception(mes
 /// Methods are synchronous (SQLite is in-process) and short.
 /// </summary>
 public sealed class Database {
-    private const int SchemaVersion = 2;
+    private const int SchemaVersion = 3;
     private const int KeptEpochs = 4;
 
     private readonly string _path;
@@ -106,6 +106,15 @@ public sealed class Database {
                 ALTER TABLE channels ADD COLUMN name_revision INTEGER NOT NULL DEFAULT 0;
                 ALTER TABLE epoch_keys ADD COLUMN key_commitment BLOB NOT NULL DEFAULT x'';
                 INSERT INTO schema_version (version) VALUES (2);
+                """);
+        }
+
+        if (current < 3) {
+            // The name version a rekey carried over (NULL for new channels and renames).
+            Execute(connection, tx, """
+                ALTER TABLE channels ADD COLUMN name_source_epoch INTEGER;
+                ALTER TABLE channels ADD COLUMN name_source_revision INTEGER;
+                INSERT INTO schema_version (version) VALUES (3);
                 """);
         }
 
@@ -359,7 +368,8 @@ public sealed class Database {
         using var connection = this.Open();
         return Execute(connection, null, """
             UPDATE channels SET name_epoch = $epoch, name_revision = $revision, name_author = $author,
-                name_ciphertext = $ciphertext, name_signature = $signature
+                name_ciphertext = $ciphertext, name_signature = $signature,
+                name_source_epoch = NULL, name_source_revision = NULL
             WHERE channel_id = $id AND epoch = $epoch AND rekey_pending = 0
                 AND (name_epoch < $epoch OR name_revision < $revision);
             """,
@@ -520,12 +530,15 @@ public sealed class Database {
 
         Execute(connection, tx, """
             UPDATE channels SET epoch = $epoch, rekey_pending = 0, name_epoch = $nameEpoch, name_revision = $nameRevision,
-                name_author = $nameAuthor, name_ciphertext = $nameCiphertext, name_signature = $nameSignature
+                name_author = $nameAuthor, name_ciphertext = $nameCiphertext, name_signature = $nameSignature,
+                name_source_epoch = $sourceEpoch, name_source_revision = $sourceRevision
             WHERE channel_id = $id AND epoch = $oldEpoch;
             """,
             ("$epoch", (long) newEpoch), ("$oldEpoch", (long) channel.Epoch), ("$id", channelId),
             ("$nameEpoch", (long) name.Epoch), ("$nameRevision", (long) name.Revision), ("$nameAuthor", name.AuthorId),
-            ("$nameCiphertext", name.Ciphertext.ToByteArray()), ("$nameSignature", name.Signature.ToByteArray()));
+            ("$nameCiphertext", name.Ciphertext.ToByteArray()), ("$nameSignature", name.Signature.ToByteArray()),
+            ("$sourceEpoch", name.CarriedFrom == null ? DBNull.Value : (object) (long) name.CarriedFrom.Epoch),
+            ("$sourceRevision", name.CarriedFrom == null ? DBNull.Value : (object) (long) name.CarriedFrom.Revision));
 
         foreach (var key in keys) {
             InsertEpochKey(connection, tx, channelId, newEpoch, authorId, key);
@@ -661,6 +674,10 @@ public sealed class Database {
                 AuthorId = reader.GetInt64(reader.GetOrdinal("name_author")),
                 Ciphertext = ByteString.CopyFrom((byte[]) reader["name_ciphertext"]),
                 Signature = ByteString.CopyFrom((byte[]) reader["name_signature"]),
+                CarriedFrom = reader.IsDBNull(reader.GetOrdinal("name_source_epoch")) ? null : new NameSource {
+                    Epoch = (ulong) reader.GetInt64(reader.GetOrdinal("name_source_epoch")),
+                    Revision = (ulong) reader.GetInt64(reader.GetOrdinal("name_source_revision")),
+                },
             });
     }
 

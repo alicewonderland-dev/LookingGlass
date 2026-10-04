@@ -472,10 +472,10 @@ public sealed class ClientSession : IAsyncDisposable {
         try {
             for (var attempt = 0; attempt < 3; attempt++) {
                 var (identity, me) = this.RequireIdentityAndUser();
-                var (serverEpoch, name, members, pending) = this.Read(() => {
+                var (serverEpoch, name, nameVersion, members, pending) = this.Read(() => {
                     var channel = this._channels.GetValueOrDefault(channelId) ?? throw new InvalidOperationException("Unknown channel.");
                     var current = channel.Members.Where(member => member.Rank >= Rank.Member).Select(member => member.User).ToList();
-                    return (channel.ServerEpoch, channel.Name, current, channel.RekeyPending);
+                    return (channel.ServerEpoch, channel.Name, channel.NameVersion, current, channel.RekeyPending);
                 });
                 var memberIds = members.Select(member => member.UserId).ToList();
 
@@ -493,10 +493,13 @@ public sealed class ClientSession : IAsyncDisposable {
                 // The server only accepts its current epoch + 1. If its hint is wrong, it answers EPOCH_STALE.
                 var newEpoch = serverEpoch + 1;
                 var key = ChannelCrypto.NewEpochKey();
+                // Say which name is carried over, so members who know it can tell it wasn't changed.
+                // A name known only from the invite has no version to name.
+                var source = nameVersion == null ? null : new NameSource { Epoch = nameVersion.Epoch, Revision = nameVersion.Revision };
                 var request = new SubmitRekey {
                     ChannelId = channelId,
                     NewEpoch = newEpoch,
-                    Name = ChannelCrypto.EncryptName(name, key, channelId, newEpoch, identity, me.UserId),
+                    Name = ChannelCrypto.EncryptName(name, key, channelId, newEpoch, identity, me.UserId, carriedFrom: source),
                     KeyCommitment = ByteString.CopyFrom(ChannelCrypto.KeyCommitment(channelId, newEpoch, key)),
                 };
 
@@ -1645,9 +1648,12 @@ public sealed class ClientSession : IAsyncDisposable {
             return;
         }
 
-        // A rekey carries the current name into the new epoch as revision 0; only the admin
-        // renames, as later revisions. But any member can rekey, so say who changed it.
-        if (offered.Revision == 0 && held != null && offered.Epoch == held.Epoch + 1 && channel.Name is { } previous && previous != name) {
+        // A rekey carries a name into the new epoch as revision 0, saying which version it carried;
+        // only the admin renames, as later revisions. But any member can rekey, so if this client
+        // knows that version (or a newer one) under another name, say who changed it. If it missed
+        // renames since, it can't tell, and the name is taken as the admin's.
+        if (offered is { Revision: 0, CarriedFrom: { } source } && channel.NameVersion is { } known && channel.Name is { } previous && previous != name
+            && new NameVersion(source.Epoch, source.Revision).CompareTo(known) <= 0) {
             this._pendingNotices.Add(new SessionNotice(NoticeLevel.Warning,
                 $"{author.User.Name}@{author.User.WorldName} changed the channel name from \"{previous}\" to \"{name}\" while rekeying.", channelId));
         }
@@ -1656,7 +1662,12 @@ public sealed class ClientSession : IAsyncDisposable {
         this.SetNameVersion(channelId, version);
     }
 
+    /// <summary>Records the version of the name just accepted for a channel. Call inside the lock.</summary>
     private void SetNameVersion(string channelId, NameVersion version) {
+        if (this._channels.TryGetValue(channelId, out var channel)) {
+            channel.NameVersion = version;
+        }
+
         if (!this._secrets.ChannelNameVersions.TryGetValue(channelId, out var held) || held != version) {
             this._secrets.ChannelNameVersions[channelId] = version;
             this._secretsVersion++;
@@ -1981,6 +1992,9 @@ public sealed class ClientSession : IAsyncDisposable {
         /// <summary>The newest name the server offered. Only shown once <see cref="TryDecryptName"/> accepts it.</summary>
         public EncryptedName? EncryptedName { get; set; }
         public string? Name { get; set; }
+
+        /// <summary>The version <see cref="Name"/> was accepted at; null if it came from an invite.</summary>
+        public NameVersion? NameVersion { get; set; }
 
         /// <summary>The last epoch whose unusable key made this client rekey automatically.</summary>
         public ulong? BadKeyRekeyEpoch { get; set; }
