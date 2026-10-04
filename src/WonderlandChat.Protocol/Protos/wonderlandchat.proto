@@ -128,6 +128,9 @@ message Limits {
   uint32 messages_per_second = 5;
   uint32 message_burst = 6;
   uint32 max_pending_invites_per_channel = 7;
+  // The most user IDs one GetIdentities may ask for; clients split larger lookups.
+  // 0 (an older server) means unknown.
+  uint32 max_identities_per_request = 8;
 }
 
 message Welcome {

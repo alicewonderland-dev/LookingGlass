@@ -21,6 +21,10 @@ namespace WonderlandChat.Core.Client;
 public sealed class ClientSession : IAsyncDisposable {
     private const int KeptEpochsPerChannel = 4;
     private const int SeenMessageCapacity = 2048;
+    // Identities per GetIdentities when the server doesn't say (older servers allow 500),
+    // and the most asked for at once whatever it says.
+    private const int DefaultIdentityBatch = 100;
+    private const int MaxIdentityBatch = 1000;
     private static readonly TimeSpan MaxMessageClockSkew = TimeSpan.FromMinutes(10);
     // How far a sender's messages may arrive out of order before they count as replays.
     private static readonly TimeSpan MessageReorderAllowance = TimeSpan.FromMinutes(2);
@@ -784,11 +788,22 @@ public sealed class ClientSession : IAsyncDisposable {
         }
 
         this.Publish();
-        await this.EnsureIdentitiesAsync(userIds, ct, connection);
+        // Failures here are not worth dropping the connection over (and reconnecting would only
+        // fail the same way): channels whose keys or names can't be verified yet simply wait.
+        try {
+            await this.EnsureIdentitiesAsync(userIds, ct, connection);
+        } catch (ServerErrorException ex) {
+            this.Log(NoticeLevel.Warning, $"Couldn't fetch identities: {ex.Message}");
+            this.RaiseNotice(NoticeLevel.Warning, "The server didn't send some members' identity keys, so some channels may stay unreadable for now.");
+        }
 
         foreach (var channelId in channels.Select(channel => channel.ChannelId)) {
             if (!this.Read(() => this.HasCurrentKey(channelId))) {
-                await this.FetchEpochKeysAsync(channelId, ct, connection);
+                try {
+                    await this.FetchEpochKeysAsync(channelId, ct, connection);
+                } catch (ServerErrorException ex) {
+                    this.Log(NoticeLevel.Warning, $"Couldn't fetch keys for {channelId}: {ex.Message}");
+                }
             }
 
             lock (this._lock) {
@@ -1353,10 +1368,16 @@ public sealed class ClientSession : IAsyncDisposable {
         var missing = refresh ? wanted : this.Read(() => wanted.Where(id => !this._identities.ContainsKey(id)).ToList());
 
         if (missing.Count > 0) {
-            var request = new GetIdentities();
-            request.UserIds.AddRange(missing);
-            var response = await this.RequestAsync(connection ?? this.RequireConnection(), new ClientFrame { GetIdentities = request }, ct);
-            this.AcceptIdentities(response.Identities?.Identities_ ?? []);
+            // The server refuses lookups bigger than it advertises; someone in many big channels needs several.
+            var batch = this.Read(() => this._limits?.MaxIdentitiesPerRequest is > 0 and var advertised
+                ? (int) Math.Min(advertised, MaxIdentityBatch)
+                : DefaultIdentityBatch);
+            foreach (var chunk in missing.Chunk(batch)) {
+                var request = new GetIdentities();
+                request.UserIds.AddRange(chunk);
+                var response = await this.RequestAsync(connection ?? this.RequireConnection(), new ClientFrame { GetIdentities = request }, ct);
+                this.AcceptIdentities(response.Identities?.Identities_ ?? []);
+            }
         }
 
         return this.Read(() => wanted

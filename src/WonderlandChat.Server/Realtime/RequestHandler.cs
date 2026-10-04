@@ -48,7 +48,7 @@ public sealed class RequestHandler(
     // two per channel when it connects, so the burst covers a full channel list.
     private readonly UserRateLimits _reads = new(perSecond: 4, burst: 120);
 
-    public Limits Limits { get; } = ProtocolInfo.DefaultLimits();
+    public Limits Limits { get; } = BuildLimits(options.Value);
 
     public async Task<Response> HandleAsync(ClientConnection connection, ClientFrame frame, CancellationToken ct) {
         try {
@@ -86,6 +86,13 @@ public sealed class RequestHandler(
             logger.LogError(ex, "Request {Kind} failed", frame.BodyCase);
             return Error(ErrorCode.Internal, "Internal server error.");
         }
+    }
+
+    private static Limits BuildLimits(ServerOptions options) {
+        var limits = ProtocolInfo.DefaultLimits();
+        // Advertised so clients split big identity lookups to fit, instead of failing on connect.
+        limits.MaxIdentitiesPerRequest = (uint) Math.Max(0, options.Limits.MaxIdentitiesPerRequest);
+        return limits;
     }
 
     // ================================================================ handshake and identity
