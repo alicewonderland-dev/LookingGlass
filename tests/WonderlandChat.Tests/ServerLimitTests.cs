@@ -1,6 +1,7 @@
 using Google.Protobuf;
 using WonderlandChat.Core.Client;
 using WonderlandChat.Core.Crypto;
+using WonderlandChat.Core.Membership;
 using WonderlandChat.Protocol;
 using WonderlandChat.Server.Realtime;
 using static WonderlandChat.Tests.Harness;
@@ -75,6 +76,21 @@ public sealed class ServerLimitTests : IAsyncLifetime {
         }
     }
 
+    /// <summary>A plugin speaking an older protocol version is turned away at Hello, and the user is told why, once.</summary>
+    [Fact]
+    public async Task APluginSpeakingAnOlderProtocolIsToldToUpdate() {
+        var old = this._server.StartClient("Old Plugin", options: this._server.Options(protocolVersion: 1));
+        var notice = await WaitFor(() => old.Notices.FirstOrDefault(n => n.Text.Contains("different protocol versions")));
+        Assert.Equal(NoticeLevel.Warning, notice.Level);
+        Assert.Contains("Please update the plugin", notice.Text);
+
+        // It keeps trying (the server may be updated), but says so only once, and never gets further.
+        await WaitFor(() => old.Session.GetTrace().Count(entry => entry.Outgoing && entry.Summary.EndsWith(" Hello")) >= 2 ? new object() : null);
+        Assert.Single(old.Notices, n => n.Text.Contains("different protocol versions"));
+        Assert.NotEqual(ConnectionState.Unregistered, old.Session.Snapshot.State);
+        Assert.NotEqual(ConnectionState.Ready, old.Session.Snapshot.State);
+    }
+
     [Fact]
     public async Task InvitesMustBeSmallAndCorrectlySigned() {
         var alice = await this._server.RegisterAsync("Alice Invite Checks");
@@ -83,13 +99,13 @@ public sealed class ServerLimitTests : IAsyncLifetime {
         using var aliceKeys = alice.LoadIdentity();
         var bobAgreement = bob.LoadIdentity().AgreementPublicKey;
 
-        var huge = ChannelCrypto.SealInvite(new string('x', 200), channelId, bob.UserId, bobAgreement, aliceKeys, alice.UserId);
-        var error = await Assert.ThrowsAsync<ServerErrorException>(() => alice.Session.SendRawAsync(Invite(channelId, bob.UserId, huge), Ct));
+        (SealedBox, byte[]) Huge(LogPosition at) => ChannelCrypto.SealInvite(new string('x', 200), channelId, at, bob.UserId, bobAgreement, aliceKeys, alice.UserId);
+        var error = await Assert.ThrowsAsync<ServerErrorException>(() => alice.Session.SendRawAsync(this.Invite(channelId, alice, bob.UserId, bob.Keys(), Huge), Ct));
         Assert.Equal(ErrorCode.TooLarge, error.Code);
 
         using var otherKeys = IdentityKeys.Generate();
-        var forged = ChannelCrypto.SealInvite("Checks", channelId, bob.UserId, bobAgreement, otherKeys, alice.UserId);
-        error = await Assert.ThrowsAsync<ServerErrorException>(() => alice.Session.SendRawAsync(Invite(channelId, bob.UserId, forged), Ct));
+        (SealedBox, byte[]) Forged(LogPosition at) => ChannelCrypto.SealInvite("Checks", channelId, at, bob.UserId, bobAgreement, otherKeys, alice.UserId);
+        error = await Assert.ThrowsAsync<ServerErrorException>(() => alice.Session.SendRawAsync(this.Invite(channelId, alice, bob.UserId, bob.Keys(), Forged), Ct));
         Assert.Equal(ErrorCode.InvalidRequest, error.Code);
 
         Assert.Empty(this._server.Database.GetInvitesForUser(bob.UserId));
@@ -126,7 +142,7 @@ public sealed class ServerLimitTests : IAsyncLifetime {
         var alice = await this._server.RegisterAsync("Alice Invite Rate");
         var bob = await this._server.RegisterAsync("Bob Invite Rate");
         var channels = this.SeedChannels(alice, 12);
-        var invitee = new Invitee(bob.UserId, bob.LoadIdentity().AgreementPublicKey);
+        var invitee = new Invitee(bob.UserId, bob.Keys());
 
         var limited = await this.InviteUntilLimitedAsync(alice, channels.Select(channelId => (channelId, invitee)).ToList());
         Assert.Equal(10, limited);
@@ -153,7 +169,7 @@ public sealed class ServerLimitTests : IAsyncLifetime {
         ServerErrorException? limited = null;
         for (var i = 0; i < 15 && limited == null; i++) {
             try {
-                await alice.Session.SendRawAsync(Invite(channelId, bob.UserId, ChannelCrypto.SealInvite("Loop", channelId, bob.UserId, bobAgreement, aliceKeys, alice.UserId)), Ct);
+                await alice.Session.SendRawAsync(this.Invite(channelId, alice, bob.UserId, bob.Keys(), at => ChannelCrypto.SealInvite("Loop", channelId, at, bob.UserId, bobAgreement, aliceKeys, alice.UserId)), Ct);
             } catch (ServerErrorException ex) {
                 limited = ex;
                 break;
@@ -236,25 +252,26 @@ public sealed class ServerLimitTests : IAsyncLifetime {
 
     // ---------------------------------------------------------------- helpers
 
-    private static ClientFrame Invite(string channelId, long inviteeId, (SealedBox SealedName, byte[] Signature) sealedInvite) => new() {
-        InviteMember = new InviteMember {
-            ChannelId = channelId,
-            UserId = inviteeId,
-            SealedName = sealedInvite.SealedName,
-            Signature = ByteString.CopyFrom(sealedInvite.Signature),
-        },
-    };
+    /// <summary>An invite request whose log entry is correctly made and signed by <paramref name="inviter"/> for the server's log head.</summary>
+    /// <param name="seal">Seals the channel name for the invite entry at the given position.</param>
+    private ClientFrame Invite(string channelId, TestClient inviter, long inviteeId, MemberKeys inviteeKeys, Func<LogPosition, (SealedBox SealedName, byte[] Signature)> seal) {
+        var entry = this._server.NextEntry(channelId, inviter, MembershipEntryKind.Invite, inviteeId, inviteeKeys);
+        var (sealedName, signature) = seal(MembershipEntries.PositionOf(entry));
+        return new ClientFrame {
+            InviteMember = new InviteMember { ChannelId = channelId, Entry = entry, SealedName = sealedName, Signature = ByteString.CopyFrom(signature) },
+        };
+    }
 
-    private sealed record Invitee(long UserId, byte[] AgreementKey);
+    private sealed record Invitee(long UserId, MemberKeys Keys);
 
     /// <returns>How many invites succeeded before the server said RATE_LIMITED.</returns>
     private async Task<int> InviteUntilLimitedAsync(TestClient inviter, List<(string ChannelId, Invitee Invitee)> invites) {
         using var keys = inviter.LoadIdentity();
         var sent = 0;
         foreach (var (channelId, invitee) in invites) {
-            var sealedInvite = ChannelCrypto.SealInvite("Seeded", channelId, invitee.UserId, invitee.AgreementKey, keys, inviter.UserId);
             try {
-                await inviter.Session.SendRawAsync(Invite(channelId, invitee.UserId, sealedInvite), Ct);
+                await inviter.Session.SendRawAsync(this.Invite(channelId, inviter, invitee.UserId, invitee.Keys,
+                    at => ChannelCrypto.SealInvite("Seeded", channelId, at, invitee.UserId, invitee.Keys.AgreementPublicKey, keys, inviter.UserId)), Ct);
             } catch (ServerErrorException ex) when (ex.Code == ErrorCode.RateLimited) {
                 return sent;
             }
@@ -272,25 +289,29 @@ public sealed class ServerLimitTests : IAsyncLifetime {
         for (var i = 0; i < count; i++) {
             var channelId = Guid.NewGuid().ToString("N");
             var key = ChannelCrypto.NewEpochKey();
-            this._server.Database.CreateChannel(channelId, admin.UserId,
-                ChannelCrypto.SealEpochKey(key, channelId, 0, keys, admin.UserId, admin.UserId, keys.AgreementPublicKey),
-                ChannelCrypto.EncryptName($"Seeded {i}", key, channelId, 0, keys, admin.UserId));
+            var genesis = SignedLogMembershipProvider.Instance.CreateGenesis(channelId, keys, admin.UserId, 1);
+            var position = MembershipEntries.PositionOf(genesis);
+            this._server.Database.CreateChannel(channelId, genesis,
+                ChannelCrypto.SealEpochKey(key, channelId, 0, position, keys, admin.UserId, admin.UserId, keys.AgreementPublicKey),
+                ChannelCrypto.EncryptName($"Seeded {i}", key, channelId, 0, position, keys, admin.UserId));
             channels.Add(channelId);
         }
 
         return channels;
     }
 
+    /// <summary>An invite appended straight to the database's log (no caps), validly signed by the inviter.</summary>
     private void SeedInvite(TestClient inviter, string channelId, TestClient invitee) {
         using var keys = inviter.LoadIdentity();
-        var (sealedName, signature) = ChannelCrypto.SealInvite("Seeded", channelId, invitee.UserId, invitee.LoadIdentity().AgreementPublicKey, keys, inviter.UserId);
-        this._server.Database.AddInvite(channelId, invitee.UserId, inviter.UserId, sealedName, signature);
+        var entry = this._server.NextEntry(channelId, inviter, MembershipEntryKind.Invite, invitee.UserId, invitee.Keys());
+        var (sealedName, signature) = ChannelCrypto.SealInvite("Seeded", channelId, MembershipEntries.PositionOf(entry), invitee.UserId, invitee.Keys().AgreementPublicKey, keys, inviter.UserId);
+        Assert.True(this._server.Database.AppendEntry(channelId, entry, sealedName, signature));
     }
 
     /// <summary>A registered user with no client, straight in the database.</summary>
     private Invitee SeedUser(string name) {
         using var keys = IdentityKeys.Generate();
         var (user, _) = this._server.Database.RegisterUser(RequestHandler.DebugUserId(name), name, 0, ProtocolInfo.DebugWorldName, keys.ToBundle(), true);
-        return new Invitee(user.UserId, keys.AgreementPublicKey);
+        return new Invitee(user.UserId, MemberKeys.Of(keys));
     }
 }

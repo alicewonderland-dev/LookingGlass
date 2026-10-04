@@ -3,6 +3,7 @@ using System.Text;
 using Google.Protobuf;
 using Microsoft.Extensions.Options;
 using WonderlandChat.Core.Crypto;
+using WonderlandChat.Core.Membership;
 using WonderlandChat.Protocol;
 using WonderlandChat.Server.Data;
 using WonderlandChat.Server.Services;
@@ -14,13 +15,19 @@ public sealed class RequestException(ErrorCode code, string message) : Exception
     public ErrorCode Code { get; } = code;
 }
 
-/// <summary>Handles every client request. Errors become typed responses; they never drop the connection.</summary>
+/// <summary>
+/// Handles every client request. Errors become typed responses; they never drop the connection.
+/// Membership changes arrive as signed log entries, which are checked with the same rules clients
+/// use (<see cref="IMembershipProvider"/>) before they are stored; clients never rely on that check.
+/// </summary>
 public sealed class RequestHandler(
     Database db,
     ConnectionRegistry registry,
     LodestoneClient lodestone,
     IOptions<ServerOptions> options,
-    ILogger<RequestHandler> logger) {
+    ILogger<RequestHandler> logger,
+    IMembershipProvider membership,
+    IGroupKeyProvider groupKeys) {
     private static readonly string ServerVersion = typeof(RequestHandler).Assembly.GetName().Version?.ToString(3) ?? "0.1.0";
 
     private static readonly TimeSpan VerifyCooldown = TimeSpan.FromSeconds(10);
@@ -50,6 +57,12 @@ public sealed class RequestHandler(
 
     public Limits Limits { get; } = BuildLimits(options.Value);
 
+    /// <summary>
+    /// Runs after a last member's leave has been checked and before their channel is deleted, so tests can
+    /// have someone else's request land in between, as a concurrent one could.
+    /// </summary>
+    internal Action? BeforeAbandonedChannelDeletedForTests { get; set; }
+
     public async Task<Response> HandleAsync(ClientConnection connection, ClientFrame frame, CancellationToken ct) {
         try {
             if (!connection.HelloDone && frame.BodyCase != ClientFrame.BodyOneofCase.Hello) {
@@ -64,7 +77,8 @@ public sealed class RequestHandler(
                 ClientFrame.BodyOneofCase.Authenticate => this.Authenticate(connection, frame.Authenticate),
                 ClientFrame.BodyOneofCase.GetIdentities => this.GetIdentities(connection, frame.GetIdentities),
                 ClientFrame.BodyOneofCase.LookupUser => this.LookupUser(connection, frame.LookupUser),
-                ClientFrame.BodyOneofCase.ListChannels => this.ListChannels(connection),
+                ClientFrame.BodyOneofCase.ListChannels => this.ListChannels(connection, frame.ListChannels),
+                ClientFrame.BodyOneofCase.FetchMembershipLog => this.FetchMembershipLog(connection, frame.FetchMembershipLog),
                 ClientFrame.BodyOneofCase.CreateChannel => this.CreateChannel(connection, frame.CreateChannel),
                 ClientFrame.BodyOneofCase.InviteMember => this.InviteMember(connection, frame.InviteMember),
                 ClientFrame.BodyOneofCase.RespondToInvite => this.RespondToInvite(connection, frame.RespondToInvite),
@@ -216,7 +230,8 @@ public sealed class RequestHandler(
         }
 
         connection.PendingRegistration = null;
-        var (user, keysChanged) = db.RegisterUser(pending.UserId, pending.Name, pending.WorldId, pending.WorldName, pending.Identity, pending.IsDebug);
+        // New keys don't change any channel's members (the log binds them to the old ones), so nothing needs a rekey.
+        var (user, _) = db.RegisterUser(pending.UserId, pending.Name, pending.WorldId, pending.WorldName, pending.Identity, pending.IsDebug);
 
         var token = "wct_" + Base64Url(RandomNumberGenerator.GetBytes(32));
         db.AddDevice(user.UserId, HashToken(token));
@@ -224,13 +239,6 @@ public sealed class RequestHandler(
         // Old devices were revoked; drop any session still using one.
         registry.Disconnect(user.UserId, "This character registered again");
         logger.LogInformation("Registered {User} ({Kind})", user.UserId, pending.IsDebug ? "debug" : "verified");
-
-        if (keysChanged) {
-            foreach (var channel in db.GetChannelsForUser(user.UserId)) {
-                this.RequestRekey(channel.ChannelId, preferred: null, excluding: user.UserId);
-            }
-        }
-
         return new Response { RegistrationComplete = new RegistrationComplete { DeviceToken = token, User = user.ToProto() } };
     }
 
@@ -285,17 +293,37 @@ public sealed class RequestHandler(
 
     // ================================================================ channels
 
-    private Response ListChannels(ClientConnection connection) {
+    private Response ListChannels(ClientConnection connection, ListChannels request) {
         var me = RequireUser(connection);
         this.RequireReadBudget(me);
 
+        // How far each channel's log the client has verified, so only newer entries are sent.
+        var known = new Dictionary<string, ulong>();
+        foreach (var entry in request.Known) {
+            if (ProtocolInfo.NormaliseChannelId(entry.ChannelId) is { } id) {
+                known[id] = entry.NextSeq;
+            }
+        }
+
         // Bounded, so nobody can make this response too big for a client to receive and lock
-        // them out: at most 50 channels of at most 500 members, and 20 small invites (about
-        // 2 MB at worst, where clients accept 4 MB).
+        // them out: at most 50 channels of at most 500 members and 32 log entries, and 20 small
+        // invites (about 3 MB at worst, where clients accept 4 MB).
         var list = new ChannelList();
-        list.Channels.AddRange(db.GetChannelsForUser(me.UserId, (int) this.Limits.MaxChannelsPerUser).Select(channel => this.BuildChannelInfo(channel, me.UserId)));
+        list.Channels.AddRange(db.GetChannelsForUser(me.UserId, (int) this.Limits.MaxChannelsPerUser)
+            .Select(channel => this.BuildChannelInfo(channel, me.UserId, known.TryGetValue(channel.ChannelId, out var next) ? next : 0)));
         list.Invites.AddRange(db.GetInvitesForUser(me.UserId, MaxPendingInvitesPerUser).Select(ToInviteInfo));
         return new Response { ChannelList = list };
+    }
+
+    private Response FetchMembershipLog(ClientConnection connection, FetchMembershipLog request) {
+        var me = RequireUser(connection);
+        var channelId = RequireChannelId(request.ChannelId);
+        this.RequireReadBudget(me);
+        this.RequireAllowed(channelId, me, ChannelAction.FetchLog);
+
+        var log = new MembershipLog { ChannelId = channelId, Head = db.GetChannel(channelId)!.LogHead };
+        log.Entries.AddRange(db.GetLogEntries(channelId, request.FromSeq, ProtocolInfo.MaxLogEntriesPerPage));
+        return new Response { MembershipLog = log };
     }
 
     private Response CreateChannel(ClientConnection connection, CreateChannel request) {
@@ -313,18 +341,27 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.Conflict, "That channel ID is taken.");
         }
 
+        // The log starts with the creator, under their current keys.
+        var genesis = request.Genesis;
+        if (genesis == null || genesis.ActorId != me.UserId || MemberKeys.FromProto(genesis.Subject) != me.Keys
+            || !membership.Empty(channelId).Check(genesis).IsValid) {
+            throw new RequestException(ErrorCode.InvalidRequest, "The channel's first membership entry is missing or invalid.");
+        }
+
+        var position = MembershipEntries.PositionOf(genesis);
         if (request.CreatorKey == null || request.CreatorKey.RecipientId != me.UserId || request.CreatorKey.Box == null
             || request.CreatorKey.KeyCommitment.Length != ChannelCrypto.KeyCommitmentSize
-            || !ChannelCrypto.VerifyEpochKey(request.CreatorKey, channelId, 0, me.UserId, me.SigningKey)) {
+            || !MembershipEntries.SamePosition(request.CreatorKey.LogPosition, position)
+            || !groupKeys.VerifyEpochKey(request.CreatorKey, channelId, 0, me.UserId, me.SigningKey)) {
             throw new RequestException(ErrorCode.InvalidRequest, "The creator's epoch key is missing or wrongly signed.");
         }
 
-        this.ValidateName(request.Name, channelId, 0, me);
+        this.ValidateName(request.Name, channelId, 0, me, position);
         RequireFirstRevision(request.Name);
         RequireNoSource(request.Name);
-        db.CreateChannel(channelId, me.UserId, request.CreatorKey, request.Name);
+        db.CreateChannel(channelId, genesis, request.CreatorKey, request.Name);
         logger.LogDebug("User {User} created channel {Channel}", me.UserId, channelId);
-        return new Response { Channel = this.BuildChannelInfo(db.GetChannel(channelId)!, me.UserId) };
+        return new Response { Channel = this.BuildChannelInfo(db.GetChannel(channelId)!, me.UserId, genesis.Seq + 1) };
     }
 
     private Response InviteMember(ClientConnection connection, InviteMember request) {
@@ -335,7 +372,8 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.RateLimited, "You're sending invites too quickly; try again later.");
         }
 
-        var invitee = db.GetUser(request.UserId) ?? throw new RequestException(ErrorCode.NotFound, "That user isn't registered.");
+        var entry = RequireEntry(request.Entry, channelId, me, MembershipEntryKind.Invite);
+        var invitee = db.GetUser(entry.Subject.UserId) ?? throw new RequestException(ErrorCode.NotFound, "That user isn't registered.");
         if (db.GetRank(channelId, invitee.UserId) != null) {
             throw new RequestException(ErrorCode.Conflict, $"{invitee.Name} is already a member or invited.");
         }
@@ -358,8 +396,13 @@ public sealed class RequestHandler(
         }
 
         // Only the invitee can open the name, but anyone can check who signed it.
-        if (!ChannelCrypto.VerifyInvite(channelId, invitee.UserId, me.UserId, request.SealedName, request.Signature.Span, me.SigningKey)) {
+        if (!groupKeys.VerifyInvite(channelId, MembershipEntries.PositionOf(entry), invitee.UserId, me.UserId, request.SealedName, request.Signature.Span, me.SigningKey)) {
             throw new RequestException(ErrorCode.InvalidRequest, "The invite is wrongly signed.");
+        }
+
+        // An invite for keys that aren't the invitee's could never be accepted.
+        if (MemberKeys.FromProto(entry.Subject) != invitee.Keys) {
+            throw new RequestException(ErrorCode.InvalidRequest, $"The invite isn't for {invitee.Name}'s current identity key.");
         }
 
         if (db.CountInvitesForUser(invitee.UserId) >= MaxPendingInvitesPerUser) {
@@ -370,11 +413,11 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.RateLimited, $"{invitee.Name} has been sent too many invites recently; try again later.");
         }
 
-        db.AddInvite(channelId, invitee.UserId, me.UserId, request.SealedName, request.Signature.ToByteArray());
+        this.AppendEntry(channelId, me, entry, request.SealedName, request.Signature.ToByteArray());
         var invite = db.GetInvite(channelId, invitee.UserId)!;
 
         registry.Send(invitee.UserId, new Event { InviteReceived = new InviteReceived { Invite = ToInviteInfo(invite) } });
-        this.BroadcastMemberChange(channelId, invitee, MemberChangeKind.Invited, Rank.Invited, me);
+        this.BroadcastEntry(channelId, entry, invitee, me);
         return Ack();
     }
 
@@ -385,9 +428,10 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.NotFound, "No such invite.");
         }
 
-        if (!request.Accept) {
-            db.DeleteInvite(channelId, me.UserId);
-            this.BroadcastMemberChange(channelId, me, MemberChangeKind.Declined, Rank.Unspecified, me);
+        var entry = RequireEntry(request.Entry, channelId, me, MembershipEntryKind.Accept, MembershipEntryKind.Decline);
+        if (entry.Kind == MembershipEntryKind.Decline) {
+            this.AppendEntry(channelId, me, entry);
+            this.BroadcastEntry(channelId, entry, me, me);
             return Ack();
         }
 
@@ -395,15 +439,12 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.LimitReached, $"You're already in {this.Limits.MaxChannelsPerUser} channels.");
         }
 
-        if (!db.AcceptInvite(channelId, me.UserId)) {
-            throw new RequestException(ErrorCode.NotFound, "No such invite.");
-        }
-
-        this.BroadcastMemberChange(channelId, me, MemberChangeKind.Joined, Rank.Member, me, except: me.UserId);
+        this.AppendEntry(channelId, me, entry);
+        this.BroadcastEntry(channelId, entry, me, me);
         var designated = this.RequestRekey(channelId, preferred: null, excluding: me.UserId);
         // The RekeyNeeded event reaches the joiner before this response, while they don't know
         // the channel yet, so if it's theirs to do (nobody else is online), say so here.
-        var info = this.BuildChannelInfo(db.GetChannel(channelId)!, me.UserId);
+        var info = this.BuildChannelInfo(db.GetChannel(channelId)!, me.UserId, entry.Seq + 1);
         info.RekeyDesignated = info.RekeyPending && designated == me.UserId;
         return new Response { Channel = info };
     }
@@ -411,23 +452,26 @@ public sealed class RequestHandler(
     private Response LeaveChannel(ClientConnection connection, LeaveChannel request) {
         var me = RequireUser(connection);
         var channelId = RequireChannelId(request.ChannelId);
-        var rank = this.RequireAllowed(channelId, me, ChannelAction.Leave);
-        var members = db.GetMembers(channelId);
+        this.RequireAllowed(channelId, me, ChannelAction.Leave);
+        var entry = RequireEntry(request.Entry, channelId, me, MembershipEntryKind.Leave);
 
-        if (members.Count == 1) {
+        if (db.GetMembers(channelId).Count == 1) {
             // The last member is leaving, so the channel goes, and with it any pending invites.
-            var invitees = db.GetInvitees(channelId).Select(invitee => invitee.User.UserId).ToList();
-            db.DeleteChannel(channelId);
+            this.CheckEntry(channelId, me, entry);
+            if (this.BeforeAbandonedChannelDeletedForTests is { } hook) {
+                this.BeforeAbandonedChannelDeletedForTests = null;
+                hook();
+            }
+
+            // Only if nobody joined meanwhile (an invitee accepting right now, say): checked and deleted in one go.
+            var invitees = db.DeleteAbandonedChannel(channelId, new LogPosition { Seq = entry.Seq - 1, Hash = entry.PreviousHash }, me.UserId)
+                           ?? throw new RequestException(ErrorCode.Conflict, "The channel's membership changed meanwhile; refresh and try again.");
             registry.SendToAll(invitees, new Event { InviteRevoked = new InviteRevoked { ChannelId = channelId } });
             return Ack();
         }
 
-        if (rank == Rank.Admin) {
-            throw new RequestException(ErrorCode.Forbidden, "Make someone else admin before leaving, or disband the channel.");
-        }
-
-        db.RemoveMember(channelId, me.UserId);
-        this.BroadcastMemberChange(channelId, me, MemberChangeKind.Left, Rank.Unspecified, me);
+        this.AppendEntry(channelId, me, entry);
+        this.BroadcastEntry(channelId, entry, me, me);
         this.RequestRekey(channelId, preferred: null, excluding: null);
         return Ack();
     }
@@ -435,24 +479,20 @@ public sealed class RequestHandler(
     private Response KickMember(ClientConnection connection, KickMember request) {
         var me = RequireUser(connection);
         var channelId = RequireChannelId(request.ChannelId);
-        var myRank = this.RequireAllowed(channelId, me, ChannelAction.Kick);
-        var target = db.GetUser(request.UserId) ?? throw new RequestException(ErrorCode.NotFound, "No such user.");
-        var targetRank = db.GetRank(channelId, target.UserId) ?? throw new RequestException(ErrorCode.NotFound, $"{target.Name} isn't in this channel.");
+        this.RequireAllowed(channelId, me, ChannelAction.Kick);
+        var entry = RequireEntry(request.Entry, channelId, me, MembershipEntryKind.Remove, MembershipEntryKind.CancelInvite);
+        var target = db.GetUser(entry.Subject.UserId) ?? throw new RequestException(ErrorCode.NotFound, "No such user.");
 
-        if (!Policy.CanKick(myRank, targetRank)) {
-            throw new RequestException(ErrorCode.Forbidden, "You can only remove members ranked below you.");
-        }
-
-        if (targetRank == Rank.Invited) {
-            db.DeleteInvite(channelId, target.UserId);
+        // The log's rules decide who may remove whom (strictly lower ranks only).
+        this.AppendEntry(channelId, me, entry);
+        if (entry.Kind == MembershipEntryKind.CancelInvite) {
             registry.Send(target.UserId, new Event { InviteRevoked = new InviteRevoked { ChannelId = channelId } });
-            this.BroadcastMemberChange(channelId, target, MemberChangeKind.InviteCancelled, Rank.Unspecified, me);
+            this.BroadcastEntry(channelId, entry, target, me);
             return Ack();
         }
 
-        db.RemoveMember(channelId, target.UserId);
         registry.Send(target.UserId, new Event { ChannelRemoved = new ChannelRemoved { ChannelId = channelId, Reason = RemovalReason.Kicked } });
-        this.BroadcastMemberChange(channelId, target, MemberChangeKind.Kicked, Rank.Unspecified, me);
+        this.BroadcastEntry(channelId, entry, target, me);
         this.RequestRekey(channelId, preferred: me.UserId, excluding: null);
         return Ack();
     }
@@ -461,35 +501,11 @@ public sealed class RequestHandler(
         var me = RequireUser(connection);
         var channelId = RequireChannelId(request.ChannelId);
         this.RequireAllowed(channelId, me, ChannelAction.SetRank);
+        var entry = RequireEntry(request.Entry, channelId, me, MembershipEntryKind.SetRank, MembershipEntryKind.TransferAdmin);
+        var target = db.GetUser(entry.Subject.UserId) ?? throw new RequestException(ErrorCode.NotFound, "No such user.");
 
-        if (request.UserId == me.UserId) {
-            throw new RequestException(ErrorCode.Forbidden, "You can't change your own rank.");
-        }
-
-        if (!Policy.IsAssignableRank(request.Rank)) {
-            throw new RequestException(ErrorCode.InvalidRequest, "Invalid rank.");
-        }
-
-        var target = db.GetUser(request.UserId) ?? throw new RequestException(ErrorCode.NotFound, "No such user.");
-        var targetRank = db.GetRank(channelId, target.UserId);
-        if (targetRank is null or Rank.Invited) {
-            throw new RequestException(ErrorCode.NotFound, $"{target.Name} isn't a member of this channel.");
-        }
-
-        if (request.Rank == Rank.Admin) {
-            if (!db.TransferAdmin(channelId, me.UserId, target.UserId)) {
-                throw new RequestException(ErrorCode.Conflict, "Membership changed; try again.");
-            }
-
-            this.BroadcastMemberChange(channelId, target, MemberChangeKind.RankChanged, Rank.Admin, me);
-            this.BroadcastMemberChange(channelId, me, MemberChangeKind.RankChanged, Rank.Moderator, me);
-        } else if (db.SetRank(channelId, target.UserId, request.Rank)) {
-            this.BroadcastMemberChange(channelId, target, MemberChangeKind.RankChanged, request.Rank, me);
-        } else if (db.GetRank(channelId, target.UserId) != request.Rank) {
-            // Not a no-op: they left (or the admin changed) since the checks above.
-            throw new RequestException(ErrorCode.Conflict, "Membership changed; try again.");
-        }
-
+        this.AppendEntry(channelId, me, entry);
+        this.BroadcastEntry(channelId, entry, target, me);
         return Ack();
     }
 
@@ -521,23 +537,30 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.RekeyRequired, "Membership changed; rekey the channel before renaming it.");
         }
 
-        this.ValidateName(request.Name, channelId, channel.Epoch, me);
-        if (request.Name.Revision > ProtocolInfo.MaxNameRevision) {
+        var name = request.Name ?? throw new RequestException(ErrorCode.InvalidRequest, "The encrypted channel name is missing.");
+
+        // A name made at an older log position is CONFLICT (catch up and retry), not invalid.
+        if (name.LogPosition != null && !MembershipEntries.SamePosition(name.LogPosition, channel.LogHead)) {
+            throw new RequestException(ErrorCode.Conflict, "The channel's membership changed meanwhile; refresh and rename it again.");
+        }
+
+        this.ValidateName(name, channelId, channel.Epoch, me, channel.LogHead);
+        if (name.Revision > ProtocolInfo.MaxNameRevision) {
             throw new RequestException(ErrorCode.InvalidRequest, "The name's revision is out of range.");
         }
 
-        RequireNoSource(request.Name);
+        RequireNoSource(name);
 
-        if (channel.Name is { } current && current.Epoch == request.Name.Epoch && request.Name.Revision <= current.Revision) {
+        if (channel.Name is { } current && current.Epoch == name.Epoch && name.Revision <= current.Revision) {
             // Clients refuse a name that isn't newer than theirs, so storing it would hide later renames.
             throw new RequestException(ErrorCode.Conflict, "The name's revision must be newer than the current one; refresh and try again.");
         }
 
-        if (!db.RenameChannel(channelId, request.Name)) {
+        if (!db.RenameChannel(channelId, name)) {
             throw new RequestException(ErrorCode.Conflict, "The channel changed while renaming; try again.");
         }
         var members = db.GetMembers(channelId).Select(member => member.User.UserId);
-        registry.SendToAll(members, new Event { ChannelRenamed = new ChannelRenamed { ChannelId = channelId, Name = request.Name } }, except: me.UserId);
+        registry.SendToAll(members, new Event { ChannelRenamed = new ChannelRenamed { ChannelId = channelId, Name = name } }, except: me.UserId);
         return Ack();
     }
 
@@ -567,23 +590,29 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.InvalidRequest, "Every key in a rekey must carry the rekey's key commitment.");
         }
 
+        // A rekey is made for one log position, which every copy names, and which must be the head (checked when applied).
+        if (request.LogPosition == null || request.Keys.Any(key => !MembershipEntries.SamePosition(key.LogPosition, request.LogPosition))) {
+            throw new RequestException(ErrorCode.InvalidRequest, "Every key in a rekey must name the rekey's membership log position.");
+        }
+
+        this.RequireMembershipKeys(channelId, me);
         foreach (var key in request.Keys) {
-            if (key.Box == null || !ChannelCrypto.VerifyEpochKey(key, channelId, request.NewEpoch, me.UserId, me.SigningKey)) {
+            if (key.Box == null || !groupKeys.VerifyEpochKey(key, channelId, request.NewEpoch, me.UserId, me.SigningKey)) {
                 throw new RequestException(ErrorCode.InvalidRequest, "A key in the rekey is wrongly signed.");
             }
         }
 
-        this.ValidateName(request.Name, channelId, request.NewEpoch, me);
+        this.ValidateName(request.Name, channelId, request.NewEpoch, me, request.LogPosition);
         RequireFirstRevision(request.Name);
         if (request.Name.CarriedFrom is { } source && (source.Epoch >= request.NewEpoch || source.Revision > ProtocolInfo.MaxNameRevision)) {
             throw new RequestException(ErrorCode.InvalidRequest, "A rekey can only carry over a name from an earlier epoch.");
         }
 
-        switch (db.ApplyRekey(channelId, request.NewEpoch, me.UserId, request.Keys, request.Name)) {
+        switch (db.ApplyRekey(channelId, request.NewEpoch, me.UserId, request.Keys, request.Name, request.LogPosition)) {
             case RekeyResult.EpochStale:
                 throw new RequestException(ErrorCode.EpochStale, "The channel is no longer at that epoch.");
             case RekeyResult.MembershipChanged:
-                throw new RequestException(ErrorCode.Conflict, "Membership changed; rekey for the current members.");
+                throw new RequestException(ErrorCode.Conflict, "Membership changed; rekey for the members at the log's head.");
         }
 
         foreach (var key in request.Keys.Where(key => key.RecipientId != me.UserId)) {
@@ -650,7 +679,7 @@ public sealed class RequestHandler(
         };
 
         // Not needed for secrecy, but rejects garbage before it is fanned out.
-        if (!ChannelCrypto.VerifyMessage(message, me.SigningKey)) {
+        if (!groupKeys.VerifyMessage(message, me.SigningKey)) {
             throw new RequestException(ErrorCode.InvalidRequest, "Message signature is invalid.");
         }
 
@@ -661,18 +690,23 @@ public sealed class RequestHandler(
 
     // ================================================================ helpers
 
-    private ChannelInfo BuildChannelInfo(ChannelRow channel, long viewerId) {
+    /// <param name="knownNext">The first log entry the viewer hasn't verified; later ones (a few) are included.</param>
+    private ChannelInfo BuildChannelInfo(ChannelRow channel, long viewerId, ulong knownNext) {
         var info = new ChannelInfo {
             ChannelId = channel.ChannelId,
             Epoch = channel.Epoch,
             RekeyPending = channel.RekeyPending,
             Name = channel.Name,
-            MyRank = db.GetRank(channel.ChannelId, viewerId) ?? Rank.Unspecified,
+            LogHead = channel.LogHead,
         };
 
         var members = db.GetMembers(channel.ChannelId);
         foreach (var member in members.Concat(db.GetInvitees(channel.ChannelId))) {
             info.Members.Add(new Member { User = member.User.ToProto(), Rank = member.Rank });
+        }
+
+        if (knownNext <= channel.LogHead.Seq) {
+            info.Log.AddRange(db.GetLogEntries(channel.ChannelId, knownNext, ProtocolInfo.MaxLogEntriesInChannelInfo));
         }
 
         // A member coming online may be the one to rekey now; nobody else would ask them.
@@ -699,15 +733,13 @@ public sealed class RequestHandler(
         var members = db.GetMembers(channelId);
         var online = members.Where(member => registry.IsOnline(member.User.UserId)).ToList();
         var designated = ChooseRekeyer(online, preferred, excluding);
-        var ev = new Event {
+        registry.SendToAll(online.Select(member => member.User.UserId), new Event {
             RekeyNeeded = new RekeyNeeded {
                 ChannelId = channelId,
                 CurrentEpoch = channel.Epoch,
                 DesignatedUserId = designated ?? 0,
             },
-        };
-        ev.RekeyNeeded.MemberIds.AddRange(members.Select(member => member.User.UserId));
-        registry.SendToAll(online.Select(member => member.User.UserId), ev);
+        });
         return designated;
     }
 
@@ -727,17 +759,73 @@ public sealed class RequestHandler(
         return designated?.User.UserId;
     }
 
-    private void BroadcastMemberChange(string channelId, UserRow user, MemberChangeKind kind, Rank rank, UserRow actor, long? except = null) {
+    /// <summary>Tells the channel's members (except the actor, who knows) about a new log entry. They check it themselves.</summary>
+    private void BroadcastEntry(string channelId, MembershipEntry entry, UserRow subject, UserRow actor) {
         var recipients = db.GetMembers(channelId).Select(member => member.User.UserId).ToList();
         registry.SendToAll(recipients, new Event {
-            MemberChanged = new MemberChanged {
+            LogEntryAdded = new LogEntryAdded {
                 ChannelId = channelId,
-                User = user.ToProto(),
-                Kind = kind,
-                Rank = rank,
+                Entry = entry,
+                Subject = subject.ToProto(),
                 Actor = actor.ToProto(),
             },
-        }, except);
+        }, except: actor.UserId);
+    }
+
+    private static MembershipEntry RequireEntry(MembershipEntry? entry, string channelId, UserRow me, params MembershipEntryKind[] kinds) {
+        if (entry == null || entry.ChannelId != channelId || entry.ActorId != me.UserId || entry.Subject == null || !kinds.Contains(entry.Kind)) {
+            throw new RequestException(ErrorCode.InvalidRequest, "The request's membership log entry is missing, or isn't the right kind.");
+        }
+
+        return entry;
+    }
+
+    /// <summary>
+    /// Checks an entry with the same rules clients replay the log with, against the membership as
+    /// the server's tables have it. Turns the verdict into the error the client is told.
+    /// </summary>
+    private IChannelMembership CheckEntry(string channelId, UserRow me, MembershipEntry entry) {
+        var state = membership.Restore(db.GetMembershipCheckpoint(channelId) ?? throw new RequestException(ErrorCode.NotFound, "No such channel."));
+
+        // Say why, rather than "wrongly signed", when someone who registered again acts with their new keys.
+        var bound = state.FindMember(me.UserId)?.Keys ?? state.FindInvitee(me.UserId)?.Keys;
+        if (bound != null && bound != me.Keys) {
+            throw new RequestException(ErrorCode.Forbidden,
+                "Your place in this channel belongs to the identity key you had before you registered again. A moderator must remove you and invite you again.");
+        }
+
+        var verdict = state.Check(entry);
+        return verdict.Kind switch {
+            MembershipVerdictKind.Valid => state.Apply(entry),
+            MembershipVerdictKind.NotNext => throw new RequestException(ErrorCode.Conflict, "The channel's membership changed meanwhile; refresh and try again."),
+            MembershipVerdictKind.Forbidden => throw new RequestException(ErrorCode.Forbidden, verdict.Reason),
+            MembershipVerdictKind.Conflict => throw new RequestException(ErrorCode.Conflict, verdict.Reason),
+            _ => throw new RequestException(ErrorCode.InvalidRequest, $"Invalid membership log entry: {verdict.Reason}"),
+        };
+    }
+
+    private void AppendEntry(string channelId, UserRow me, MembershipEntry entry, SealedBox? sealedName = null, byte[]? inviteSignature = null) {
+        var invitedBefore = db.GetInvitees(channelId).Select(invitee => invitee.User.UserId).ToHashSet();
+        var after = this.CheckEntry(channelId, me, entry);
+        if (!db.AppendEntry(channelId, entry, sealedName, inviteSignature)) {
+            throw new RequestException(ErrorCode.Conflict, "The channel's membership changed meanwhile; refresh and try again.");
+        }
+
+        // Invites that went with their inviter's removal or demotion (the subject's own is the caller's to announce).
+        invitedBefore.ExceptWith(after.Invitees.Select(invitee => invitee.UserId));
+        invitedBefore.Remove(entry.Subject.UserId);
+        registry.SendToAll(invitedBefore, new Event { InviteRevoked = new InviteRevoked { ChannelId = channelId } });
+        logger.LogDebug("Channel {Channel} log entry {Seq} ({Kind}) by {User}", channelId, entry.Seq, entry.Kind, me.UserId);
+    }
+
+    /// <summary>Someone who registered again can't rekey for a channel their new key isn't a member of.</summary>
+    private void RequireMembershipKeys(string channelId, UserRow me) {
+        var checkpoint = db.GetMembershipCheckpoint(channelId) ?? throw new RequestException(ErrorCode.NotFound, "No such channel.");
+        var mine = checkpoint.Members.FirstOrDefault(member => member.UserId == me.UserId);
+        if (mine == null || new MemberKeys(mine.SigningPublicKey, mine.AgreementPublicKey) != me.Keys) {
+            throw new RequestException(ErrorCode.Forbidden,
+                "Your place in this channel belongs to the identity key you had before you registered again. A moderator must remove you and invite you again.");
+        }
     }
 
     private Rank RequireAllowed(string channelId, UserRow me, ChannelAction action) {
@@ -757,11 +845,13 @@ public sealed class RequestHandler(
         return rank.Value;
     }
 
-    private void ValidateName(EncryptedName? name, string channelId, ulong epoch, UserRow author) {
+    /// <param name="position">The log position the name must be made at.</param>
+    private void ValidateName(EncryptedName? name, string channelId, ulong epoch, UserRow author, LogPosition position) {
         if (name == null || name.Epoch != epoch || name.AuthorId != author.UserId
             || name.Ciphertext.Length is 0 or > 512
-            || !ChannelCrypto.VerifyName(name, channelId, author.SigningKey)) {
-            throw new RequestException(ErrorCode.InvalidRequest, "The encrypted channel name is missing or wrongly signed.");
+            || !MembershipEntries.SamePosition(name.LogPosition, position)
+            || !groupKeys.VerifyName(name, channelId, author.SigningKey)) {
+            throw new RequestException(ErrorCode.InvalidRequest, "The encrypted channel name is missing, wrongly signed, or not made for the log's head.");
         }
     }
 
@@ -808,6 +898,7 @@ public sealed class RequestHandler(
         SealedName = invite.SealedName,
         Signature = ByteString.CopyFrom(invite.Signature),
         CreatedUnix = invite.CreatedUnix,
+        Entry = invite.Entry,
     };
 
     private static Response Ack() => new() { Ack = new Ack() };

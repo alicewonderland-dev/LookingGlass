@@ -2,7 +2,11 @@ namespace WonderlandChat.Protocol;
 
 /// <summary>Constants shared by client and server.</summary>
 public static class ProtocolInfo {
-    public const uint CurrentVersion = 1;
+    /// <summary>
+    /// The protocol version client and server speak. Version 2 is v0.2's (signed membership log):
+    /// version 1 clients and servers can't talk to it, and are told to update at Hello.
+    /// </summary>
+    public const uint CurrentVersion = 2;
 
     /// <summary>The fake home world used by debug accounts.</summary>
     public const string DebugWorldName = "Debug";
@@ -12,6 +16,12 @@ public static class ProtocolInfo {
 
     /// <summary>The highest channel name revision a server accepts (it stores them as signed 64-bit integers).</summary>
     public const ulong MaxNameRevision = long.MaxValue;
+
+    /// <summary>The most membership log entries one FetchMembershipLog answer carries (about 300 bytes each).</summary>
+    public const int MaxLogEntriesPerPage = 500;
+
+    /// <summary>The most log entries a ChannelInfo carries; a client fetches the rest.</summary>
+    public const int MaxLogEntriesInChannelInfo = 32;
 
     public static class Capabilities {
         public const string Chat = "chat.v1";

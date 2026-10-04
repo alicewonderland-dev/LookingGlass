@@ -1,6 +1,7 @@
 using Google.Protobuf;
 using WonderlandChat.Core.Client;
 using WonderlandChat.Core.Crypto;
+using WonderlandChat.Core.Membership;
 using WonderlandChat.Protocol;
 using static WonderlandChat.Tests.Harness;
 
@@ -9,10 +10,8 @@ namespace WonderlandChat.Tests;
 /// <summary>
 /// The test plays a malicious server: it pushes forged or replayed events
 /// straight to a client through the server's connection registry, and checks
-/// the client refuses them.
-///
-/// Not covered yet: a ghost member inserted into the member list. That needs
-/// authenticated membership (design doc, v0.2).
+/// the client refuses them. Attacks on membership itself (ghost members, forged
+/// or hidden changes, forks) are in <see cref="MembershipLogTests"/>.
 /// </summary>
 public sealed class MaliciousServerTests : IAsyncLifetime {
     private Harness _server = null!;
@@ -42,7 +41,7 @@ public sealed class MaliciousServerTests : IAsyncLifetime {
                 ChannelId = channelId,
                 Epoch = before + 1,
                 AuthorId = ghost.UserId,
-                MyKey = ChannelCrypto.SealEpochKey(forged, channelId, before + 1, ghostKeys, ghost.UserId, alice.UserId, alice.LoadIdentity().AgreementPublicKey),
+                MyKey = ChannelCrypto.SealEpochKey(forged, channelId, before + 1, PositionOf(alice, channelId), ghostKeys, ghost.UserId, alice.UserId, alice.LoadIdentity().AgreementPublicKey),
             },
         });
 
@@ -107,7 +106,7 @@ public sealed class MaliciousServerTests : IAsyncLifetime {
                 ChannelId = channelId,
                 Epoch = current - 1,
                 AuthorId = bob.UserId,
-                MyKey = ChannelCrypto.SealEpochKey(ChannelCrypto.NewEpochKey(), channelId, current - 1, bobKeys, bob.UserId, alice.UserId, aliceAgreement),
+                MyKey = ChannelCrypto.SealEpochKey(ChannelCrypto.NewEpochKey(), channelId, current - 1, PositionOf(alice, channelId), bobKeys, bob.UserId, alice.UserId, aliceAgreement),
             },
         });
 
@@ -277,8 +276,8 @@ public sealed class MaliciousServerTests : IAsyncLifetime {
 
         // Replay names validly signed by Alice: one from an older epoch, and an older rename from this epoch.
         using var aliceKeys = alice.LoadIdentity();
-        var olderEpoch = ChannelCrypto.EncryptName("Original Name", alice.LoadEpochKey(channelId, 0), channelId, 0, aliceKeys, alice.UserId);
-        var olderRevision = ChannelCrypto.EncryptName("Second Name", alice.LoadEpochKey(channelId, epoch), channelId, epoch, aliceKeys, alice.UserId, revision: 1);
+        var olderEpoch = ChannelCrypto.EncryptName("Original Name", alice.LoadEpochKey(channelId, 0), channelId, 0, PositionOf(alice, channelId), aliceKeys, alice.UserId);
+        var olderRevision = ChannelCrypto.EncryptName("Second Name", alice.LoadEpochKey(channelId, epoch), channelId, epoch, PositionOf(alice, channelId), aliceKeys, alice.UserId, revision: 1);
         await this._server.SendAndSettleAsync(bob,
             new Event { ChannelRenamed = new ChannelRenamed { ChannelId = channelId, Name = olderEpoch } },
             new Event { ChannelRenamed = new ChannelRenamed { ChannelId = channelId, Name = olderRevision } });
@@ -303,7 +302,7 @@ public sealed class MaliciousServerTests : IAsyncLifetime {
 
         // The server rolls its stored name back to an older rename from the same epoch...
         using var aliceKeys = alice.LoadIdentity();
-        var olderRevision = ChannelCrypto.EncryptName("Second Name", alice.LoadEpochKey(channelId, epoch), channelId, epoch, aliceKeys, alice.UserId, revision: 1);
+        var olderRevision = ChannelCrypto.EncryptName("Second Name", alice.LoadEpochKey(channelId, epoch), channelId, epoch, PositionOf(alice, channelId), aliceKeys, alice.UserId, revision: 1);
         this.StoreName(channelId, olderRevision);
 
         // ...and Bob restarts, so only what he persisted protects him.
@@ -312,7 +311,7 @@ public sealed class MaliciousServerTests : IAsyncLifetime {
         Assert.NotEqual("Second Name", bobAgain.Session.Snapshot.FindChannel(channelId)!.Name);
 
         // A name from an older epoch, listed to a client that is still running, is refused too.
-        this.StoreName(channelId, ChannelCrypto.EncryptName("Original Name", alice.LoadEpochKey(channelId, 0), channelId, 0, aliceKeys, alice.UserId));
+        this.StoreName(channelId, ChannelCrypto.EncryptName("Original Name", alice.LoadEpochKey(channelId, 0), channelId, 0, PositionOf(alice, channelId), aliceKeys, alice.UserId));
         await alice.Session.RefreshAsync(Ct);
         Assert.Equal("Third Name", alice.Session.Snapshot.FindChannel(channelId)!.Name);
     }
@@ -337,7 +336,7 @@ public sealed class MaliciousServerTests : IAsyncLifetime {
         await this._server.SendAndSettleAsync(bob, new Event { ChannelRemoved = new ChannelRemoved { ChannelId = channelId, Reason = RemovalReason.Kicked } });
         Assert.Null(bob.Session.Snapshot.FindChannel(channelId));
         using var aliceKeys = alice.LoadIdentity();
-        var second = ChannelCrypto.EncryptName("Second", alice.LoadEpochKey(channelId, epoch), channelId, epoch, aliceKeys, alice.UserId, revision: 1);
+        var second = ChannelCrypto.EncryptName("Second", alice.LoadEpochKey(channelId, epoch), channelId, epoch, PositionOf(alice, channelId), aliceKeys, alice.UserId, revision: 1);
         this.StoreName(channelId, second);
         await bob.Session.RefreshAsync(Ct);
         await this._server.SendAndSettleAsync(bob, new Event { ChannelRenamed = new ChannelRenamed { ChannelId = channelId, Name = second } });
@@ -402,7 +401,7 @@ public sealed class MaliciousServerTests : IAsyncLifetime {
                 ChannelId = channelId,
                 Epoch = 1,
                 AuthorId = alice.UserId,
-                MyKey = ChannelCrypto.SealEpochKey(ChannelCrypto.NewEpochKey(), channelId, 1, aliceKeys, alice.UserId, carol.UserId, carolAgreement),
+                MyKey = ChannelCrypto.SealEpochKey(ChannelCrypto.NewEpochKey(), channelId, 1, PositionOf(alice, channelId), aliceKeys, alice.UserId, carol.UserId, carolAgreement),
             },
         });
 
@@ -434,39 +433,66 @@ public sealed class MaliciousServerTests : IAsyncLifetime {
         Assert.Equal("(encrypted channel abc)", new ChannelView("abc", null, 0, 0, false, false, Rank.Member, []).DisplayName);
     }
 
+    /// <summary>
+    /// Replaces "UnusableAgreementKeyFromTheServerIsRejectedAndNamedInTheRekeyError". In 0.1 a rekey sealed
+    /// to whatever agreement key the server returned for a member, so a server handing out an all-zero
+    /// key could stall the channel, and the error had to name the member. Now a rekey seals to the
+    /// keys in the signed log, which the server can't change, and an invite naming an unusable key
+    /// can't enter the log at all. The identity is still rejected, and the rekey still names any
+    /// member whose key can't be sealed to (unreachable through the log's rules).
+    /// </summary>
     [Fact]
-    public async Task UnusableAgreementKeyFromTheServerIsRejectedAndNamedInTheRekeyError() {
+    public async Task UnusableAgreementKeyFromTheServerIsRejectedAndCannotReachARekey() {
         var alice = await this._server.RegisterAsync("Alice Zero");
         var bob = await this._server.RegisterAsync("Bob Zero");
+        var carol = await this._server.RegisterAsync("Carol Zero");
         var channelId = await alice.Session.CreateChannelAsync("Zero", Ct);
         await AddMemberAsync(alice, channelId, bob);
+        var bobsFingerprint = bob.Session.Snapshot.MyFingerprint;
 
-        // The server hands out an all-zero agreement key for Bob, validly bound to his signing key.
-        using var bobKeys = bob.LoadIdentity();
-        var bundle = CryptoTests.BundleWithAgreementKey(bobKeys, new byte[32]);
-        this._server.ExecuteSql("UPDATE users SET agreement_key = $key, binding_signature = $signature WHERE user_id = $id;",
-            ("$key", bundle.AgreementPublicKey.ToByteArray()), ("$signature", bundle.BindingSignature.ToByteArray()), ("$id", bob.UserId));
+        // The server hands out all-zero agreement keys for Bob and Carol, validly bound to their signing keys.
+        foreach (var user in new[] { bob, carol }) {
+            using var keys = user.LoadIdentity();
+            var bundle = CryptoTests.BundleWithAgreementKey(keys, new byte[32]);
+            this._server.ExecuteSql("UPDATE users SET agreement_key = $key, binding_signature = $signature WHERE user_id = $id;",
+                ("$key", bundle.AgreementPublicKey.ToByteArray()), ("$signature", bundle.BindingSignature.ToByteArray()), ("$id", user.UserId));
+        }
 
         // Alice restarts, so she only has what GetIdentities returns now.
         var log = new System.Collections.Concurrent.ConcurrentQueue<string>();
         await alice.Session.DisposeAsync();
         var aliceAgain = await this._server.RestartAsync(alice, this._server.Options(log: (_, text) => log.Enqueue(text)));
         Assert.Contains(log, line => line.Contains($"Rejected an invalid identity for user {bob.UserId}"));
-        Assert.Null(aliceAgain.Session.Snapshot.FindChannel(channelId)!.Members.Single(m => m.User.UserId == bob.UserId).Fingerprint);
+        Assert.Equal(bobsFingerprint, aliceAgain.Session.Snapshot.FindChannel(channelId)!.Members.Single(m => m.User.UserId == bob.UserId).Fingerprint);
 
-        // Rekeying fails, and says whose key is the problem.
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => aliceAgain.Session.RekeyAsync(channelId, Ct, force: true));
-        Assert.Contains("Bob Zero@Debug", error.Message);
+        // Rekeying still seals to Bob's key from the log, so he still gets the new key.
+        var epoch = bob.Session.Snapshot.FindChannel(channelId)!.Epoch;
+        await aliceAgain.Session.RekeyAsync(channelId, Ct, force: true);
+        await WaitFor(() => bob.Session.Snapshot.FindChannel(channelId) is { HasKey: true, Epoch: var e } c && e > epoch ? c : null);
+
+        // Carol can't be invited under the unusable key, by Alice's client or by a forged entry.
+        var refused = await Assert.ThrowsAsync<InvalidOperationException>(() => aliceAgain.Session.InviteAsync(channelId, carol.Name, ProtocolInfo.DebugWorldName, Ct));
+        Assert.Contains("invalid identity key", refused.Message);
+        using var carolKeys = carol.LoadIdentity();
+        var forged = this._server.ForgeEntry(channelId, aliceAgain, MembershipEntryKind.Invite, carol.UserId, new MemberKeys(carolKeys.SigningPublicKey, new byte[32]));
+        using var aliceKeys = aliceAgain.LoadIdentity();
+        var (sealedName, signature) = ChannelCrypto.SealInvite("Zero", channelId, MembershipEntries.PositionOf(forged), carol.UserId, carolKeys.AgreementPublicKey, aliceKeys, aliceAgain.UserId);
+        var error = await Assert.ThrowsAsync<ServerErrorException>(() => aliceAgain.Session.SendRawAsync(new ClientFrame {
+            InviteMember = new InviteMember { ChannelId = channelId, Entry = forged, SealedName = sealedName, Signature = ByteString.CopyFrom(signature) },
+        }, Ct));
+        Assert.Equal(ErrorCode.InvalidRequest, error.Code);
+        Assert.Null(this._server.Database.GetInvite(channelId, carol.UserId));
     }
 
     private void StoreName(string channelId, EncryptedName name) {
         this._server.ExecuteSql("""
             UPDATE channels SET name_epoch = $epoch, name_revision = $revision, name_author = $author,
-                name_ciphertext = $ciphertext, name_signature = $signature
+                name_ciphertext = $ciphertext, name_signature = $signature, name_log_seq = $logSeq, name_log_hash = $logHash
             WHERE channel_id = $id;
             """,
             ("$id", channelId), ("$epoch", (long) name.Epoch), ("$revision", (long) name.Revision), ("$author", name.AuthorId),
-            ("$ciphertext", name.Ciphertext.ToByteArray()), ("$signature", name.Signature.ToByteArray()));
+            ("$ciphertext", name.Ciphertext.ToByteArray()), ("$signature", name.Signature.ToByteArray()),
+            ("$logSeq", (long) name.LogPosition.Seq), ("$logHash", name.LogPosition.Hash.ToByteArray()));
     }
 
     [Fact]

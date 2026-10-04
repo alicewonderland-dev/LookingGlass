@@ -116,7 +116,7 @@ Each character has a long-term identity key that its contacts verify, and each c
 
 ## Authenticated membership (v0.2, revised)
 
-Every membership change becomes a signed entry in a hash-chained log for the channel, and clients replay that log to work out who the members are. Every epoch key commits to the log position it was made for. The second code review showed the first version of this design was unsound: trust only ever grew, and ranks and removals weren't signed, so a removed member's key could keep vouching for new ghosts, and any member could add one. **Status: revised design approved on 2026-10-03, as an interim step before MLS (see below).**
+Every membership change becomes a signed entry in a hash-chained log for the channel, and clients replay that log to work out who the members are. Every epoch key commits to the log position it was made for. The second code review showed the first version of this design was unsound: trust only ever grew, and ranks and removals weren't signed, so a removed member's key could keep vouching for new ghosts, and any member could add one. **Status: implemented on 2026-10-04 (revised design approved on 2026-10-03), as an interim step before MLS (see below).**
 
 ### The membership log
 

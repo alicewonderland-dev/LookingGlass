@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Google.Protobuf;
 using NSec.Cryptography;
+using WonderlandChat.Core.Membership;
 using WonderlandChat.Protocol;
 
 namespace WonderlandChat.Core.Crypto;
@@ -9,7 +10,9 @@ namespace WonderlandChat.Core.Crypto;
 /// <summary>
 /// Everything encrypted or signed inside a channel: epoch keys, channel names,
 /// invites and messages. Payload layouts here are part of the protocol; the
-/// server uses the same functions to verify signatures.
+/// server uses the same functions to verify signatures. Clients and the server
+/// reach these through <see cref="IGroupKeyProvider"/>; tests call them directly
+/// to forge what a dishonest member could make.
 /// </summary>
 public static class ChannelCrypto {
     public const int EpochKeySize = 32;
@@ -32,6 +35,7 @@ public static class ChannelCrypto {
             .Add(key.Box == null ? ReadOnlySpan<byte>.Empty : key.Box.EphemeralPublicKey.Span)
             .Add(key.Box == null ? ReadOnlySpan<byte>.Empty : key.Box.Ciphertext.Span)
             .Add(key.KeyCommitment.Span)
+            .Add(key.LogPosition)
             .ToArray();
     }
 
@@ -44,9 +48,11 @@ public static class ChannelCrypto {
         return SHA256.HashData(new SigningPayload(Domains.EpochKeyCommitment).Add(channelId).Add(epoch).Add(epochKey).ToArray());
     }
 
-    public static SealedEpochKey SealEpochKey(byte[] epochKey, string channelId, ulong epoch, IdentityKeys author, long authorId, long recipientId, ReadOnlySpan<byte> recipientAgreementKey) {
+    /// <param name="position">The membership log position the key is made for: it goes to exactly the members there.</param>
+    public static SealedEpochKey SealEpochKey(byte[] epochKey, string channelId, ulong epoch, LogPosition position, IdentityKeys author, long authorId, long recipientId, ReadOnlySpan<byte> recipientAgreementKey) {
         var sealedKey = new SealedEpochKey {
             RecipientId = recipientId,
+            LogPosition = position.Clone(),
             Box = SealedBoxes.Seal(epochKey, recipientAgreementKey, EpochKeyContext(channelId, epoch, recipientId, authorId)),
             KeyCommitment = ByteString.CopyFrom(KeyCommitment(channelId, epoch, epochKey)),
         };
@@ -94,8 +100,8 @@ public static class ChannelCrypto {
 
     // ------------------------------------------------------------ channel names
 
-    private static byte[] NameAssociatedData(string channelId, ulong epoch, ulong revision, long authorId, NameSource? carriedFrom) {
-        var payload = new SigningPayload(Domains.ChannelName).Add(channelId).Add(epoch).Add(revision).Add(authorId);
+    private static byte[] NameAssociatedData(string channelId, ulong epoch, ulong revision, long authorId, LogPosition? position, NameSource? carriedFrom) {
+        var payload = new SigningPayload(Domains.ChannelName).Add(channelId).Add(epoch).Add(revision).Add(authorId).Add(position);
         // Fields are length-prefixed, so a name with a source can't pass for one without.
         if (carriedFrom != null) {
             payload.Add(carriedFrom.Epoch).Add(carriedFrom.Revision);
@@ -106,20 +112,22 @@ public static class ChannelCrypto {
 
     private static byte[] NameSignaturePayload(string channelId, EncryptedName name) {
         return new SigningPayload(Domains.ChannelName)
-            .Add(NameAssociatedData(channelId, name.Epoch, name.Revision, name.AuthorId, name.CarriedFrom))
+            .Add(NameAssociatedData(channelId, name.Epoch, name.Revision, name.AuthorId, name.LogPosition, name.CarriedFrom))
             .Add(name.Ciphertext.Span)
             .ToArray();
     }
 
     /// <param name="revision">Incremented by every rename within the epoch; 0 for a new channel or a rekey.</param>
+    /// <param name="position">The membership log position the name is made at. Signed, so a name can't outlive a change of members.</param>
     /// <param name="carriedFrom">For a rekey: the version of the name being carried into the new epoch.</param>
-    public static EncryptedName EncryptName(string name, byte[] epochKey, string channelId, ulong epoch, IdentityKeys author, long authorId, ulong revision = 0, NameSource? carriedFrom = null) {
+    public static EncryptedName EncryptName(string name, byte[] epochKey, string channelId, ulong epoch, LogPosition position, IdentityKeys author, long authorId, ulong revision = 0, NameSource? carriedFrom = null) {
         var encrypted = new EncryptedName {
             Epoch = epoch,
             Revision = revision,
             AuthorId = authorId,
             CarriedFrom = carriedFrom,
-            Ciphertext = ByteString.CopyFrom(EncryptWithNonce(epochKey, NameAssociatedData(channelId, epoch, revision, authorId, carriedFrom), Encoding.UTF8.GetBytes(name))),
+            LogPosition = position.Clone(),
+            Ciphertext = ByteString.CopyFrom(EncryptWithNonce(epochKey, NameAssociatedData(channelId, epoch, revision, authorId, position, carriedFrom), Encoding.UTF8.GetBytes(name))),
         };
         encrypted.Signature = ByteString.CopyFrom(author.Sign(NameSignaturePayload(channelId, encrypted)));
         return encrypted;
@@ -134,45 +142,47 @@ public static class ChannelCrypto {
             return null;
         }
 
-        var plaintext = DecryptWithNonce(epochKey, NameAssociatedData(channelId, name.Epoch, name.Revision, name.AuthorId, name.CarriedFrom), name.Ciphertext.Span);
+        var plaintext = DecryptWithNonce(epochKey, NameAssociatedData(channelId, name.Epoch, name.Revision, name.AuthorId, name.LogPosition, name.CarriedFrom), name.Ciphertext.Span);
         return plaintext == null ? null : Encoding.UTF8.GetString(plaintext);
     }
 
     // ------------------------------------------------------------ invites
 
-    private static byte[] InviteContext(string channelId, long inviteeId, long inviterId) {
-        return new SigningPayload(Domains.Invite).Add(channelId).Add(inviteeId).Add(inviterId).ToArray();
+    /// <param name="invite">The invite's entry in the membership log, so a sealed name can't be moved to another invite.</param>
+    private static byte[] InviteContext(string channelId, long inviteeId, long inviterId, LogPosition? invite) {
+        return new SigningPayload(Domains.Invite).Add(channelId).Add(inviteeId).Add(inviterId).Add(invite).ToArray();
     }
 
-    private static byte[] InviteSignaturePayload(string channelId, long inviteeId, long inviterId, SealedBox sealedName) {
+    private static byte[] InviteSignaturePayload(string channelId, long inviteeId, long inviterId, LogPosition? invite, SealedBox sealedName) {
         return new SigningPayload(Domains.Invite)
-            .Add(InviteContext(channelId, inviteeId, inviterId))
+            .Add(InviteContext(channelId, inviteeId, inviterId, invite))
             .Add(sealedName.EphemeralPublicKey.Span)
             .Add(sealedName.Ciphertext.Span)
             .ToArray();
     }
 
-    public static (SealedBox SealedName, byte[] Signature) SealInvite(string channelName, string channelId, long inviteeId, ReadOnlySpan<byte> inviteeAgreementKey, IdentityKeys inviter, long inviterId) {
-        var box = SealedBoxes.Seal(Encoding.UTF8.GetBytes(channelName), inviteeAgreementKey, InviteContext(channelId, inviteeId, inviterId));
-        return (box, inviter.Sign(InviteSignaturePayload(channelId, inviteeId, inviterId, box)));
+    public static (SealedBox SealedName, byte[] Signature) SealInvite(string channelName, string channelId, LogPosition invite, long inviteeId, ReadOnlySpan<byte> inviteeAgreementKey, IdentityKeys inviter, long inviterId) {
+        var box = SealedBoxes.Seal(Encoding.UTF8.GetBytes(channelName), inviteeAgreementKey, InviteContext(channelId, inviteeId, inviterId, invite));
+        return (box, inviter.Sign(InviteSignaturePayload(channelId, inviteeId, inviterId, invite, box)));
     }
 
     /// <summary>Checks the inviter's signature over an invite. The server uses this before storing one.</summary>
-    public static bool VerifyInvite(string channelId, long inviteeId, long inviterId, SealedBox sealedName, ReadOnlySpan<byte> signature, ReadOnlySpan<byte> inviterSigningKey) {
-        return IdentityKeys.Verify(inviterSigningKey, InviteSignaturePayload(channelId, inviteeId, inviterId, sealedName), signature);
+    public static bool VerifyInvite(string channelId, LogPosition invite, long inviteeId, long inviterId, SealedBox sealedName, ReadOnlySpan<byte> signature, ReadOnlySpan<byte> inviterSigningKey) {
+        return IdentityKeys.Verify(inviterSigningKey, InviteSignaturePayload(channelId, inviteeId, inviterId, invite, sealedName), signature);
     }
 
     public static string? OpenInvite(InviteInfo invite, ReadOnlySpan<byte> inviterSigningKey, IdentityKeys me, long myId) {
-        if (invite.SealedName == null || invite.Inviter == null) {
+        if (invite.SealedName == null || invite.Inviter == null || invite.Entry == null) {
             return null;
         }
 
         var inviterId = invite.Inviter.UserId;
-        if (!VerifyInvite(invite.ChannelId, myId, inviterId, invite.SealedName, invite.Signature.Span, inviterSigningKey)) {
+        var position = MembershipEntries.PositionOf(invite.Entry);
+        if (!VerifyInvite(invite.ChannelId, position, myId, inviterId, invite.SealedName, invite.Signature.Span, inviterSigningKey)) {
             return null;
         }
 
-        var plaintext = SealedBoxes.Open(invite.SealedName, me, InviteContext(invite.ChannelId, myId, inviterId));
+        var plaintext = SealedBoxes.Open(invite.SealedName, me, InviteContext(invite.ChannelId, myId, inviterId, position));
         return plaintext == null ? null : Encoding.UTF8.GetString(plaintext);
     }
 

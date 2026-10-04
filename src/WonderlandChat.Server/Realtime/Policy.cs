@@ -12,6 +12,9 @@ public enum ChannelAction {
     SetRank,
     Rename,
     Disband,
+
+    /// <summary>Read the channel's membership log. Invitees may, to check an invite before answering it.</summary>
+    FetchLog,
 }
 
 /// <summary>
@@ -27,6 +30,7 @@ public static class Policy {
         return action switch {
             ChannelAction.Send or ChannelAction.Rekey or ChannelAction.FetchKeys or ChannelAction.Leave => rank >= Rank.Member,
             ChannelAction.Invite or ChannelAction.Kick => rank >= Rank.Moderator,
+            ChannelAction.FetchLog => rank >= Rank.Invited,
             ChannelAction.SetRank or ChannelAction.Rename or ChannelAction.Disband => rank == Rank.Admin,
             _ => false,
         };

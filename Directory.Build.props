@@ -3,7 +3,7 @@
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
     <Authors>WonderlandDev</Authors>
     <Product>WonderlandChat</Product>
     <PackageLicenseExpression>AGPL-3.0-only</PackageLicenseExpression>

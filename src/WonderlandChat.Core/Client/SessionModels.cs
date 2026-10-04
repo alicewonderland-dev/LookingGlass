@@ -1,5 +1,7 @@
 using System.Collections.Immutable;
 using System.Net.WebSockets;
+using WonderlandChat.Core.Crypto;
+using WonderlandChat.Core.Membership;
 using WonderlandChat.Protocol;
 
 namespace WonderlandChat.Core.Client;
@@ -55,6 +57,10 @@ public sealed record SessionSnapshot(
 /// <param name="Epoch">The newest epoch this client holds a key for (what it sends with), or the server's epoch if it holds none.</param>
 /// <param name="ServerEpoch">The epoch the server last reported. Only a hint: the server can claim anything.</param>
 /// <param name="HasKey">The client holds a key for the server's current epoch.</param>
+/// <param name="MyRank">This user's rank in the verified membership log; Unspecified if not a member under their current keys.</param>
+/// <param name="Members">Members and invitees according to the verified membership log, never the server's list.</param>
+/// <param name="LogHead">The newest membership log entry this client has verified.</param>
+/// <param name="MembershipWarning">Something wrong with the channel's membership the user should know about (a fork, a hidden change).</param>
 public sealed record ChannelView(
     string Id,
     string? Name,
@@ -63,14 +69,31 @@ public sealed record ChannelView(
     bool HasKey,
     bool RekeyPending,
     Rank MyRank,
-    ImmutableArray<MemberView> Members) {
+    ImmutableArray<MemberView> Members,
+    LogPosition? LogHead = null,
+    string? MembershipWarning = null) {
     public string DisplayName => this.Name ?? PlaceholderName(this.Id);
 
     /// <summary>What to show before a channel's name has been decrypted. Safe for IDs of any length.</summary>
     public static string PlaceholderName(string id) => $"(encrypted channel {(id.Length > 8 ? id[..8] : id)})";
 }
 
-public sealed record MemberView(User User, Rank Rank, string? Fingerprint, bool KeyChanged);
+/// <param name="Fingerprint">Of the keys the membership log binds them to.</param>
+/// <param name="KeyChanged">Their keys changed since this client first saw them, and the user hasn't marked the new ones verified.</param>
+/// <param name="FingerprintCompared">
+/// The user marked these keys verified (compared fingerprints over /tell). Until then their keys
+/// are trusted on first use: whoever invited them took them from the server.
+/// </param>
+/// <param name="KeyReplaced">
+/// They registered again: the server has other keys for them now, which aren't a member until
+/// someone removes them and invites them again.
+/// </param>
+/// <param name="NewFingerprint">
+/// If <paramref name="KeyReplaced"/>, the fingerprint of the keys they registered again with. <see cref="KeyChanged"/>
+/// is about those keys, so it is this fingerprint, not <paramref name="Fingerprint"/>, that is shown and marked verified.
+/// </param>
+public sealed record MemberView(User User, Rank Rank, string? Fingerprint, bool KeyChanged, bool FingerprintCompared = false, bool KeyReplaced = false,
+    string? NewFingerprint = null);
 
 /// <param name="Verified">The invite is signed by the inviter's current identity key.</param>
 /// <param name="InviterKeyChanged">
@@ -141,4 +164,16 @@ public sealed class ClientSessionOptions {
 
     /// <summary>The clock used to judge message ages. Tests replace it.</summary>
     public TimeProvider TimeProvider { get; init; } = TimeProvider.System;
+
+    /// <summary>The membership layer (who is in a channel). The signed log in v0.2.</summary>
+    public IMembershipProvider Membership { get; init; } = SignedLogMembershipProvider.Instance;
+
+    /// <summary>The group-key layer (channel keys and what they encrypt). Sealed epoch keys in v0.2.</summary>
+    public IGroupKeyProvider GroupKeys { get; init; } = SealedEpochKeyProvider.Instance;
+
+    /// <summary>The protocol version offered in Hello. Only tests change it, to play an older plugin.</summary>
+    internal uint ProtocolVersion { get; init; } = ProtocolInfo.CurrentVersion;
+
+    /// <summary>How often a channel's whole log may be fetched again to look into a possible fork. Only tests change it.</summary>
+    internal TimeSpan ForkCheckInterval { get; init; } = TimeSpan.FromMinutes(1);
 }

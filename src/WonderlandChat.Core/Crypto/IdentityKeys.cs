@@ -88,7 +88,7 @@ public sealed class IdentityKeys : IDisposable {
     /// it yields no secret, so nothing could be sealed to its owner and every rekey
     /// of their channels would fail.
     /// </summary>
-    private static bool IsUsableAgreementKey(ReadOnlySpan<byte> agreementPublicKey) {
+    public static bool IsUsableAgreementKey(ReadOnlySpan<byte> agreementPublicKey) {
         if (!PublicKey.TryImport(KeyAgreementAlgorithm.X25519, agreementPublicKey, KeyBlobFormat.RawPublicKey, out var publicKey)) {
             return false;
         }
@@ -117,11 +117,7 @@ public sealed class IdentityKeys : IDisposable {
     /// confirm they see the same identity keys.
     /// </summary>
     public static string FingerprintOf(ReadOnlySpan<byte> signingPublicKey, ReadOnlySpan<byte> agreementPublicKey) {
-        var hash = SHA256.HashData(new SigningPayload(Domains.Fingerprint)
-            .Add(signingPublicKey)
-            .Add(agreementPublicKey)
-            .ToArray());
-
+        var hash = KeyHash(signingPublicKey, agreementPublicKey);
         var groups = new string[5];
         for (var i = 0; i < groups.Length; i++) {
             var value = BitConverter.ToUInt32(hash, i * 4) % 100_000;
@@ -129,5 +125,13 @@ public sealed class IdentityKeys : IDisposable {
         }
 
         return string.Join(' ', groups);
+    }
+
+    /// <summary>The full hash a fingerprint is cut from. Membership log entries name their signer's keys by it.</summary>
+    public static byte[] KeyHash(ReadOnlySpan<byte> signingPublicKey, ReadOnlySpan<byte> agreementPublicKey) {
+        return SHA256.HashData(new SigningPayload(Domains.Fingerprint)
+            .Add(signingPublicKey)
+            .Add(agreementPublicKey)
+            .ToArray());
     }
 }

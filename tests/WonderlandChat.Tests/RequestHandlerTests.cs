@@ -3,6 +3,7 @@ using System.Net.WebSockets;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using WonderlandChat.Core.Crypto;
+using WonderlandChat.Core.Membership;
 using WonderlandChat.Protocol;
 using WonderlandChat.Server;
 using WonderlandChat.Server.Data;
@@ -35,7 +36,8 @@ public sealed class RequestHandlerTests : IDisposable {
             Limits = { RegistrationsPerHourPerIp = 3 },
         });
         var lodestone = new LodestoneClient(new HttpClient(new StubLodestone()), options, NullLogger<LodestoneClient>.Instance);
-        this._handler = new RequestHandler(this._db, this._registry, lodestone, options, NullLogger<RequestHandler>.Instance);
+        this._handler = new RequestHandler(this._db, this._registry, lodestone, options, NullLogger<RequestHandler>.Instance,
+            SignedLogMembershipProvider.Instance, SealedEpochKeyProvider.Instance);
     }
 
     public void Dispose() => DeleteDirectory(this._directory);
@@ -104,6 +106,25 @@ public sealed class RequestHandlerTests : IDisposable {
         Assert.Equal(ErrorCode.InvalidRequest, response.Error?.Code);
         Assert.Null(connection.PendingRegistration);
         Assert.Null(this._db.GetUser(RequestHandler.DebugUserId("Zero Key")));
+    }
+
+    /// <summary>
+    /// v0.2 changed the wire protocol (log positions in signatures, entries on membership requests), so a
+    /// 0.1 plugin, which only offers protocol version 1, must be turned away at Hello with a clear message,
+    /// not let in to fail confusingly later.
+    /// </summary>
+    [Fact]
+    public async Task HelloOfferingOnlyProtocolVersion1IsAskedToUpdate() {
+        var connection = new ClientConnection(new ClosedWebSocket(), "203.0.113.50", 128 * 1024, 64, NullLogger.Instance);
+        var hello = new Hello { ClientVersion = "0.1.0" };
+        hello.ProtocolVersions.Add(1);
+
+        var response = await this.SendAsync(connection, new ClientFrame { Hello = hello });
+
+        Assert.Null(response.Welcome);
+        Assert.Equal(ErrorCode.UnsupportedVersion, response.Error?.Code);
+        Assert.Contains("Please update the plugin", response.Error!.Message);
+        Assert.False(connection.HelloDone);
     }
 
     // ---------------------------------------------------------------- helpers

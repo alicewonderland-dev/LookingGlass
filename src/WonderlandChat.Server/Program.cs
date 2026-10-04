@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Extensions.Options;
+using WonderlandChat.Core.Crypto;
+using WonderlandChat.Core.Membership;
 using WonderlandChat.Protocol;
 using WonderlandChat.Server;
 using WonderlandChat.Server.Data;
@@ -25,6 +27,9 @@ builder.Services.AddSingleton(services => {
     Directory.CreateDirectory(options.DataDirectory);
     return new Database(Path.Combine(options.DataDirectory, "wonderlandchat.db"));
 });
+// The membership and group-key layers, behind interfaces so MLS can replace them later.
+builder.Services.AddSingleton<IMembershipProvider>(SignedLogMembershipProvider.Instance);
+builder.Services.AddSingleton<IGroupKeyProvider>(SealedEpochKeyProvider.Instance);
 builder.Services.AddSingleton<ConnectionRegistry>();
 builder.Services.AddSingleton<RequestHandler>();
 builder.Services.AddHttpClient<LodestoneClient>(client => {
