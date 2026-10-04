@@ -27,7 +27,10 @@ public sealed class Plugin : IDalamudPlugin {
         var actions = new UiActions();
         this._fonts = new UiFonts(pluginInterface.UiBuilder);
         this._settingsWindow = new SettingsWindow(this._config, this._sessions, actions);
-        this._mainWindow = new MainWindow(this._config, this._sessions, actions, this._fonts, this._settingsWindow.Toggle);
+        this._mainWindow = new MainWindow(this._config, this._sessions, actions, this._fonts, this._settingsWindow.Toggle, () => {
+            this._settingsWindow.IsOpen = true;
+            this._settingsWindow.BringToFront();
+        });
         this._debugWindow = new DebugWindow(this._sessions);
         this._windows.AddWindow(this._mainWindow);
         this._windows.AddWindow(this._settingsWindow);
