@@ -169,6 +169,18 @@ public sealed class ServerSecretFileTests : IDisposable {
     }
 
     /// <summary>
+    /// Looking for a backup only reads, since Settings does it alongside a running session: an old file never moved
+    /// isn't offered, and isn't moved either (a session using the address moves it).
+    /// </summary>
+    [Fact]
+    public void LookingForABackupChangesNothing() {
+        new FileSecretStore(this.LegacyPathFor(Url)).Save(Registered("never moved"));
+        Assert.Null(ServerSecretFiles.FindBackup(this._directory, ContentId, Url, path => new FileSecretStore(path)));
+        Assert.False(File.Exists(this.PathFor(Url)));
+        Assert.Null(new FileSecretStore(this.LegacyPathFor(Url)).Load().ServerUrl);
+    }
+
+    /// <summary>
     /// A backup is only offered (or restored) for an address with no identity and no login of its own, and only if it
     /// holds an identity: it never replaces one, and one with nothing in it (say, scrubbed by a reset) isn't worth it.
     /// </summary>
