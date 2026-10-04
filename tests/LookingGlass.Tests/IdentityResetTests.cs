@@ -143,6 +143,169 @@ public sealed class IdentityResetTests : IAsyncLifetime {
         await WaitFor(() => bob.Session.Snapshot.FindChannel(channelId)?.Members.FirstOrDefault(m => m.User.UserId == alice.UserId) is { KeyReplaced: true } m ? m : null);
     }
 
+    /// <summary>
+    /// A key the account has replaced (here by registering again with new keys, as after "Reset my identity") is never
+    /// registered again: a copy of the old identity left anywhere ("Register again" keeps the key) would otherwise take
+    /// the account back and revoke the new identity's logins. Refused when registering starts, and when it completes
+    /// for one that started before the key was replaced.
+    /// </summary>
+    [Fact]
+    public async Task AReplacedKeyCannotBeRegisteredAgain() {
+        var oldStore = new InMemorySecretStore();
+        var alice = await this._server.RegisterAsync("Alice Replaced", oldStore);
+        await alice.Session.DisposeAsync();
+        using var oldKeys = alice.LoadIdentity();
+        var character = new Character { Name = alice.Name, WorldName = ProtocolInfo.DebugWorldName };
+
+        // Registering again with the key it has is fine while that key is the account's...
+        await using var early = await this._server.ConnectRawAsync();
+        Assert.NotNull((await early.SendAsync(new ClientFrame { StartRegistration = new StartRegistration { Character = character, Identity = oldKeys.ToBundle() } }))
+            .RegistrationChallenge);
+
+        // ...but then the account registers new keys (a reset elsewhere).
+        var renewed = await this._server.RegisterAsync(alice.Name, new InMemorySecretStore());
+        Assert.NotEqual(alice.Keys(), renewed.Keys());
+
+        // A registration of the old key, started before or after, is refused, and says what to do.
+        var late = await early.SendAsync(new ClientFrame { CompleteRegistration = new CompleteRegistration() });
+        Assert.Equal(ErrorCode.RegistrationFailed, late.Error?.Code);
+        await using var again = await this._server.ConnectRawAsync();
+        var refused = await again.SendAsync(new ClientFrame { StartRegistration = new StartRegistration { Character = character, Identity = oldKeys.ToBundle() } });
+        Assert.Equal(ErrorCode.RegistrationFailed, refused.Error?.Code);
+        Assert.Contains("Reset my identity", refused.Error!.Message);
+
+        // The new identity keeps its login and its key.
+        Assert.Equal(renewed.Keys().SigningKeyArray(), this._server.Database.GetUser(alice.UserId)!.SigningKey);
+        await using var check = await this._server.ConnectRawAsync();
+        Assert.NotNull((await check.SendAsync(new ClientFrame { Authenticate = new Authenticate { DeviceToken = renewed.Store.Load().DeviceToken } })).AuthenticateOk);
+
+        // The plugin's own path: a client holding the old key registers again, and is told why it can't.
+        var stale = this._server.StartClient(alice.Name, oldStore);
+        await WaitFor(() => stale.Session.Snapshot.State == ConnectionState.LoginNotRecognized ? new object() : null);
+        var error = await Assert.ThrowsAsync<ServerErrorException>(() => stale.Session.StartRegistrationAsync(character, Ct));
+        Assert.Contains("Reset my identity", error.ServerMessage);
+    }
+
+    /// <summary>
+    /// "Reset my identity", first step, while connected: the client asks the server to retire the current key. Every
+    /// login of the account is revoked at once (this connection's too), the key can't sign in or be registered again, and
+    /// the account waits for the new keys' registration through the Lodestone, as one with no valid login does. Until
+    /// then others still see the old key, as they would until anyone registers again.
+    /// </summary>
+    [Fact]
+    public async Task RetiringTheIdentityShutsTheOldKeyAndLoginsOutAtOnce() {
+        var store = new InMemorySecretStore();
+        var alice = await this._server.RegisterAsync("Alice Retires", store);
+        var bob = await this._server.RegisterAsync("Bob Sees Old Key");
+        var channelId = await alice.Session.CreateChannelAsync("Still Listed", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        var token = store.Load().DeviceToken!;
+        using var oldKeys = alice.LoadIdentity();
+        var url = this._server.ServerUri.AbsoluteUri;
+
+        // A second device, signed in with the key.
+        await using var second = await this._server.ConnectRawAsync();
+        var otherToken = (await KeyLoginAsync(second, oldKeys, alice.UserId, url)).KeyLoginComplete.DeviceToken;
+
+        await alice.Session.RetireIdentityAsync(Ct);
+        Assert.Equal(0, this._server.Database.CountDevices(alice.UserId));
+
+        // Both logins are gone, the key can't sign in or register, and this connection is logged out.
+        await using var raw = await this._server.ConnectRawAsync();
+        Assert.Equal(ErrorCode.NotAuthenticated, (await raw.SendAsync(new ClientFrame { Authenticate = new Authenticate { DeviceToken = token } })).Error?.Code);
+        Assert.Equal(ErrorCode.NotAuthenticated, (await raw.SendAsync(new ClientFrame { Authenticate = new Authenticate { DeviceToken = otherToken } })).Error?.Code);
+        Assert.Equal(ErrorCode.NotAuthenticated, (await KeyLoginAsync(raw, oldKeys, alice.UserId, url)).Error?.Code);
+        var register = await raw.SendAsync(new ClientFrame {
+            StartRegistration = new StartRegistration { Character = new Character { Name = alice.Name, WorldName = ProtocolInfo.DebugWorldName }, Identity = oldKeys.ToBundle() },
+        });
+        Assert.Equal(ErrorCode.RegistrationFailed, register.Error?.Code);
+        await Assert.ThrowsAsync<ServerErrorException>(() => alice.Session.RefreshAsync(Ct));
+
+        // Bob still sees the key the channel's log admitted Alice with: nothing changes for others until she registers again.
+        await bob.Session.RefreshAsync(Ct);
+        Assert.False(bob.Session.Snapshot.FindChannel(channelId)!.Members.Single(m => m.User.UserId == alice.UserId).KeyReplaced);
+        Assert.Equal(oldKeys.SigningPublicKey, this._server.Database.GetUser(alice.UserId)!.SigningKey);
+        await alice.Session.DisposeAsync();
+
+        // New keys register through the Lodestone as usual, and sign in.
+        var secrets = store.Load();
+        secrets.ResetIdentity();
+        store.Save(secrets);
+        var reset = this._server.StartClient(alice.Name, store);
+        await WaitFor(() => reset.Session.Snapshot.State == ConnectionState.Unregistered ? new object() : null);
+        await reset.Session.StartRegistrationAsync(new Character { Name = alice.Name, WorldName = ProtocolInfo.DebugWorldName }, Ct);
+        await reset.Session.CompleteRegistrationAsync(Ct);
+        await WaitFor(() => reset.Session.Snapshot.State == ConnectionState.Ready ? new object() : null);
+        using var newKeys = reset.LoadIdentity();
+        await using var after = await this._server.ConnectRawAsync();
+        Assert.NotNull((await KeyLoginAsync(after, newKeys, alice.UserId, url)).KeyLoginComplete);
+    }
+
+    /// <summary>
+    /// Retiring needs the identity key, not just a login: a stolen device token alone mustn't be enough to wreck the
+    /// owner's identity. The signature covers the login the connection used, so one made for another login (or by
+    /// another key) is refused, and nothing changes.
+    /// </summary>
+    [Fact]
+    public async Task RetiringNeedsTheKeyForThisLogin() {
+        var alice = await this._server.RegisterAsync("Alice Guarded");
+        using var keys = alice.LoadIdentity();
+        var token = alice.Store.Load().DeviceToken!;
+        var url = this._server.ServerUri.AbsoluteUri;
+        await alice.Session.DisposeAsync();
+
+        await using var second = await this._server.ConnectRawAsync();
+        var otherToken = (await KeyLoginAsync(second, keys, alice.UserId, url)).KeyLoginComplete.DeviceToken;
+
+        await using var thief = await this._server.ConnectRawAsync();
+        Assert.NotNull((await thief.SendAsync(new ClientFrame { Authenticate = new Authenticate { DeviceToken = token } })).AuthenticateOk);
+        using var otherKeys = IdentityKeys.Generate();
+        foreach (var signature in new[] {
+                     RetireIdentityProof.Sign(otherKeys, alice.UserId, token),
+                     RetireIdentityProof.Sign(keys, alice.UserId, otherToken),
+                     RetireIdentityProof.Sign(keys, alice.UserId + 1, token),
+                     new byte[64],
+                 }) {
+            var refused = await thief.SendAsync(new ClientFrame { RetireIdentity = new RetireIdentity { Signature = ByteString.CopyFrom(signature) } });
+            Assert.Equal(ErrorCode.Forbidden, refused.Error?.Code);
+        }
+
+        // Nothing was retired: the logins and the key still work.
+        Assert.Equal(2, this._server.Database.CountDevices(alice.UserId));
+        await using var raw = await this._server.ConnectRawAsync();
+        Assert.NotNull((await KeyLoginAsync(raw, keys, alice.UserId, url)).KeyLoginComplete);
+
+        // Not before logging in either.
+        await using var anonymous = await this._server.ConnectRawAsync();
+        var early = await anonymous.SendAsync(new ClientFrame { RetireIdentity = new RetireIdentity { Signature = ByteString.CopyFrom(RetireIdentityProof.Sign(keys, alice.UserId, token)) } });
+        Assert.Equal(ErrorCode.NotAuthenticated, early.Error?.Code);
+    }
+
+    /// <summary>
+    /// A retirement that lands after a key login was checked and before its device is added wins: no device for a
+    /// retired key. (As registering again with new keys does: see KeyLoginTests.RegisteringAgainDuringAKeyLoginWins.)
+    /// </summary>
+    [Fact]
+    public async Task RetiringDuringAKeyLoginWins() {
+        var alice = await this._server.RegisterAsync("Alice Retired Mid Login");
+        using var keys = alice.LoadIdentity();
+        var url = this._server.ServerUri.AbsoluteUri;
+        var user = this._server.Database.GetUser(alice.UserId)!;
+        await alice.Session.DisposeAsync();
+
+        await using var raw = await this._server.ConnectRawAsync();
+        var challenge = (await raw.SendAsync(new ClientFrame { StartKeyLogin = new StartKeyLogin { UserId = alice.UserId } })).KeyLoginChallenge!.Challenge.ToByteArray();
+        this._server.Handler.BeforeKeyLoginDeviceAddedForTests = () => Assert.True(this._server.Database.RetireIdentity(alice.UserId, user.SigningKey, user.KeyVersion));
+        var response = await raw.SendAsync(new ClientFrame {
+            CompleteKeyLogin = new CompleteKeyLogin {
+                Challenge = ByteString.CopyFrom(challenge), ServerUrl = url, Signature = ByteString.CopyFrom(KeyLoginProof.Sign(keys, challenge, alice.UserId, url)),
+            },
+        });
+
+        Assert.Equal(ErrorCode.NotAuthenticated, response.Error?.Code);
+        Assert.Equal(0, this._server.Database.CountDevices(alice.UserId));
+    }
+
     private static async Task<Response> KeyLoginAsync(RawConnection raw, IdentityKeys keys, long userId, string url) {
         var challenge = (await raw.SendAsync(new ClientFrame { StartKeyLogin = new StartKeyLogin { UserId = userId } })).KeyLoginChallenge!.Challenge.ToByteArray();
         return await raw.SendAsync(new ClientFrame {
