@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Net;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Extensions.Options;
 using WonderlandChat.Protocol;
@@ -36,12 +35,11 @@ builder.Services.AddHostedService<EchoBotHost>();
 
 // Behind a reverse proxy, take the client address from X-Forwarded-For so
 // per-IP limits apply to real clients. Only proxies on this machine are
-// trusted by default; add others under WonderlandChat:TrustedProxies.
+// trusted by default; add others (addresses or CIDR networks) under
+// WonderlandChat:TrustedProxies.
 builder.Services.Configure<ForwardedHeadersOptions>(forwarded => {
     forwarded.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
-    foreach (var proxy in builder.Configuration.GetSection("WonderlandChat:TrustedProxies").Get<string[]>() ?? []) {
-        forwarded.KnownProxies.Add(IPAddress.Parse(proxy));
-    }
+    ClientAddresses.AddTrustedProxies(forwarded, builder.Configuration.GetSection("WonderlandChat:TrustedProxies").Get<string[]>() ?? []);
 });
 
 var app = builder.Build();
@@ -68,7 +66,7 @@ app.Map(ProtocolInfo.WebSocketPath, async (HttpContext context, RequestHandler h
         return;
     }
 
-    var address = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+    var address = ClientAddresses.LimitKey(context.Connection.RemoteIpAddress);
     if (connectionsPerAddress.AddOrUpdate(address, 1, (_, count) => count + 1) > options.Limits.ConnectionsPerIp) {
         connectionsPerAddress.AddOrUpdate(address, 0, (_, count) => count - 1);
         context.Response.StatusCode = StatusCodes.Status429TooManyRequests;

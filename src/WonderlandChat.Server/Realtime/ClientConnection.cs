@@ -56,11 +56,12 @@ public sealed class ClientConnection {
 
     public async Task RunAsync(Func<ClientConnection, ClientFrame, CancellationToken, Task<Response>> handle) {
         var sendLoop = Task.Run(this.SendLoop);
-        _ = Task.Delay(UnauthenticatedLifetime, this._cts.Token).ContinueWith(task => {
-            if (!task.IsCanceled && this.User == null) {
+        // Disposed when the connection ends, so a closed connection isn't kept alive for the full lifetime.
+        var loginDeadline = new Timer(_ => {
+            if (this.User == null) {
                 this.Abort("Not logged in");
             }
-        }, TaskScheduler.Default);
+        }, null, UnauthenticatedLifetime, Timeout.InfiniteTimeSpan);
         var buffer = new byte[16 * 1024];
         using var frame = new MemoryStream();
 
@@ -98,6 +99,7 @@ public sealed class ClientConnection {
         } catch (Exception ex) when (ex is OperationCanceledException or WebSocketException) {
             // Client went away or we aborted.
         } finally {
+            await loginDeadline.DisposeAsync();
             this._outbound.Writer.TryComplete();
             await sendLoop;
             await this.CloseAsync(this._abortStatus, this._abortReason);

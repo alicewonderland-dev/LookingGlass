@@ -149,13 +149,18 @@ public static class ChannelCrypto {
         return (box, inviter.Sign(InviteSignaturePayload(channelId, inviteeId, inviterId, box)));
     }
 
+    /// <summary>Checks the inviter's signature over an invite. The server uses this before storing one.</summary>
+    public static bool VerifyInvite(string channelId, long inviteeId, long inviterId, SealedBox sealedName, ReadOnlySpan<byte> signature, ReadOnlySpan<byte> inviterSigningKey) {
+        return IdentityKeys.Verify(inviterSigningKey, InviteSignaturePayload(channelId, inviteeId, inviterId, sealedName), signature);
+    }
+
     public static string? OpenInvite(InviteInfo invite, ReadOnlySpan<byte> inviterSigningKey, IdentityKeys me, long myId) {
         if (invite.SealedName == null || invite.Inviter == null) {
             return null;
         }
 
         var inviterId = invite.Inviter.UserId;
-        if (!IdentityKeys.Verify(inviterSigningKey, InviteSignaturePayload(invite.ChannelId, myId, inviterId, invite.SealedName), invite.Signature.Span)) {
+        if (!VerifyInvite(invite.ChannelId, myId, inviterId, invite.SealedName, invite.Signature.Span, inviterSigningKey)) {
             return null;
         }
 

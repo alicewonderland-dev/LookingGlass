@@ -212,9 +212,11 @@ public sealed class Database {
         var keyVersion = existing == null ? 1u : keysChanged ? existing.KeyVersion + 1 : existing.KeyVersion;
 
         // Another character may previously have held this name on this world (renames). Free the
-        // name without deleting that account, which would silently cascade away its memberships.
+        // name without deleting that account, which would silently cascade away its memberships,
+        // and mark its display name so two members never show as the same Name@World.
         Execute(connection, tx, """
-            UPDATE users SET name_key = name_key || '#stale-' || user_id, world_key = world_key || '#stale-' || user_id
+            UPDATE users SET name = name || ' (former)',
+                name_key = name_key || '#stale-' || user_id, world_key = world_key || '#stale-' || user_id
             WHERE name_key = $name AND world_key = $world AND user_id <> $id;
             """,
             ("$name", Key(name)), ("$world", Key(worldName)), ("$id", userId));
@@ -273,10 +275,12 @@ public sealed class Database {
         return GetChannel(connection, null, channelId);
     }
 
-    public List<ChannelRow> GetChannelsForUser(long userId) {
+    /// <param name="limit">At most this many, oldest memberships first.</param>
+    public List<ChannelRow> GetChannelsForUser(long userId, int limit = int.MaxValue) {
         using var connection = this.Open();
         using var command = Command(connection, null,
-            "SELECT c.* FROM channels c JOIN members m ON m.channel_id = c.channel_id WHERE m.user_id = $id;", ("$id", userId));
+            "SELECT c.* FROM channels c JOIN members m ON m.channel_id = c.channel_id WHERE m.user_id = $id ORDER BY m.joined_at, c.channel_id LIMIT $limit;",
+            ("$id", userId), ("$limit", limit));
         using var reader = command.ExecuteReader();
         var channels = new List<ChannelRow>();
         while (reader.Read()) {
@@ -378,9 +382,15 @@ public sealed class Database {
         return this.QueryInvites(connection, "WHERE i.channel_id = $channel AND i.user_id = $user", ("$channel", channelId), ("$user", userId)).FirstOrDefault();
     }
 
-    public List<InviteRow> GetInvitesForUser(long userId) {
+    /// <param name="limit">At most this many, newest first.</param>
+    public List<InviteRow> GetInvitesForUser(long userId, int limit = int.MaxValue) {
         using var connection = this.Open();
-        return this.QueryInvites(connection, "WHERE i.user_id = $user", ("$user", userId));
+        return this.QueryInvites(connection, "WHERE i.user_id = $user ORDER BY i.created_at DESC, i.channel_id LIMIT $limit", ("$user", userId), ("$limit", limit));
+    }
+
+    public int CountInvitesForUser(long userId) {
+        using var connection = this.Open();
+        return Convert.ToInt32(Scalar(connection, null, "SELECT COUNT(*) FROM invites WHERE user_id = $user;", ("$user", userId)));
     }
 
     public bool DeleteInvite(string channelId, long userId) {
@@ -417,10 +427,19 @@ public sealed class Database {
         return true;
     }
 
-    public void SetRank(string channelId, long userId, Rank rank) {
+    /// <summary>
+    /// Sets a member's or moderator's rank. Admin is never set or taken away
+    /// here (see <see cref="TransferAdmin"/>).
+    /// </summary>
+    /// <returns>False if nothing changed: they left, are the admin, or already have that rank.</returns>
+    public bool SetRank(string channelId, long userId, Rank rank) {
         using var connection = this.Open();
-        Execute(connection, null, "UPDATE members SET rank = $rank WHERE channel_id = $channel AND user_id = $user;",
-            ("$rank", (long) rank), ("$channel", channelId), ("$user", userId));
+        return Execute(connection, null, """
+            UPDATE members SET rank = $rank
+            WHERE channel_id = $channel AND user_id = $user AND rank IN ($member, $moderator) AND rank <> $rank;
+            """,
+            ("$rank", (long) rank), ("$channel", channelId), ("$user", userId),
+            ("$member", (long) Rank.Member), ("$moderator", (long) Rank.Moderator)) == 1;
     }
 
     /// <summary>Makes <paramref name="newAdminId"/> the admin and demotes the old admin to moderator, atomically.</summary>

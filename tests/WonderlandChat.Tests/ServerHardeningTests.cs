@@ -1,10 +1,16 @@
+using System.Net;
 using System.Net.WebSockets;
+using System.Runtime.CompilerServices;
 using Google.Protobuf;
 using WonderlandChat.Core.Client;
 using WonderlandChat.Core.Crypto;
 using WonderlandChat.Core.Util;
 using WonderlandChat.Protocol;
+using WonderlandChat.Server;
 using WonderlandChat.Server.Data;
+using WonderlandChat.Server.Hosting;
+using WonderlandChat.Server.Realtime;
+using WonderlandChat.Server.Services;
 using static WonderlandChat.Tests.Harness;
 
 namespace WonderlandChat.Tests;
@@ -131,8 +137,102 @@ public sealed class ServerHardeningTests {
 
             Assert.Equal(Rank.Admin, db.GetRank(channelId, admin));
             Assert.Equal(admin + 1000, db.FindUser(adminRow.Name, adminRow.WorldName)!.UserId);
+
+            // The old account no longer shows as the same Name@World as the new one.
+            Assert.Equal(adminRow.Name + " (former)", db.GetUser(admin)!.Name);
+            Assert.Equal(adminRow.Name, db.GetUser(admin + 1000)!.Name);
         } finally {
             DeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
+    public void SetRankOnlyChangesCurrentNonAdminMembers() {
+        var (db, directory) = NewDatabase();
+        try {
+            var (channelId, admin, _) = CreateChannel(db);
+            var member = RegisterUser(db, "Ranked Member");
+            db.AddInvite(channelId, member, admin, new SealedBox { EphemeralPublicKey = ByteString.CopyFrom(new byte[32]), Ciphertext = ByteString.CopyFrom(new byte[48]) }, new byte[64]);
+            Assert.False(db.SetRank(channelId, member, Rank.Moderator));
+            db.AcceptInvite(channelId, member);
+
+            Assert.True(db.SetRank(channelId, member, Rank.Moderator));
+            Assert.False(db.SetRank(channelId, member, Rank.Moderator));
+            Assert.False(db.SetRank(channelId, admin, Rank.Member));
+            Assert.Equal(Rank.Admin, db.GetRank(channelId, admin));
+
+            db.RemoveMember(channelId, member);
+            Assert.False(db.SetRank(channelId, member, Rank.Member));
+            Assert.Null(db.GetRank(channelId, member));
+        } finally {
+            DeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
+    public void TrustedProxiesAcceptAddressesAndNetworks() {
+        var options = new Microsoft.AspNetCore.Builder.ForwardedHeadersOptions();
+        ClientAddresses.AddTrustedProxies(options, ["172.17.0.0/16", "192.0.2.5", "fd00:1::/64"]);
+
+        Assert.Contains(options.KnownIPNetworks, network => network.Contains(IPAddress.Parse("172.17.0.1")));
+        Assert.Contains(options.KnownIPNetworks, network => network.Contains(IPAddress.Parse("fd00:1::5")));
+        Assert.Contains(IPAddress.Parse("192.0.2.5"), options.KnownProxies);
+        Assert.Throws<InvalidOperationException>(() => ClientAddresses.AddTrustedProxies(options, ["not-an-address"]));
+        Assert.Throws<InvalidOperationException>(() => ClientAddresses.AddTrustedProxies(options, ["10.0.0.0/99"]));
+    }
+
+    [Theory]
+    [InlineData("203.0.113.5", "203.0.113.5")]
+    [InlineData("::ffff:203.0.113.5", "203.0.113.5")]
+    [InlineData("2001:db8:1:2:aaaa:bbbb:cccc:dddd", "2001:db8:1:2::/64")]
+    [InlineData("2001:db8:1:2::1", "2001:db8:1:2::/64")]
+    [InlineData("2001:db8:1:3::1", "2001:db8:1:3::/64")]
+    public void PerIpLimitsGroupIpv6BySlash64(string address, string key) {
+        Assert.Equal(key, ClientAddresses.LimitKey(IPAddress.Parse(address)));
+    }
+
+    [Fact]
+    public async Task LodestoneQueueRejectsWhenFull() {
+        var handler = new BlockingHandler();
+        var options = Microsoft.Extensions.Options.Options.Create(new ServerOptions { Lodestone = { BaseUrl = "https://lodestone.test", MinDelaySeconds = 0 } });
+        var lodestone = new LodestoneClient(new HttpClient(handler), options, Microsoft.Extensions.Logging.Abstractions.NullLogger<LodestoneClient>.Instance);
+
+        // One request holds the queue; the rest wait (each name is new, so nothing is cached).
+        var queued = Enumerable.Range(0, LodestoneClient.MaxWaitingRequests + 1)
+            .Select(i => lodestone.FindCharacterAsync($"Queued {i}", "Gilgamesh", Ct))
+            .ToList();
+        await Assert.ThrowsAsync<LodestoneBusyException>(() => lodestone.FindCharacterAsync("One Too Many", "Gilgamesh", Ct));
+
+        handler.Release.SetResult();
+        await Task.WhenAll(queued).WaitAsync(Harness.Timeout, Ct);
+        Assert.Null(await lodestone.FindCharacterAsync("After The Rush", "Gilgamesh", Ct));
+    }
+
+    [Fact]
+    public void ClosedConnectionIsNotKeptAliveByItsLoginTimer() {
+        var connection = RunConnectionToCompletion();
+        for (var i = 0; i < 10 && connection.IsAlive; i++) {
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+        }
+
+        Assert.False(connection.IsAlive);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static WeakReference RunConnectionToCompletion() {
+        var connection = new ClientConnection(new ClosedWebSocket(), "203.0.113.1", 1024, 4, Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
+        connection.RunAsync((_, _, _) => Task.FromResult(new Response())).GetAwaiter().GetResult();
+        return new WeakReference(connection);
+    }
+
+    /// <summary>Holds every request until released, then answers with an empty page.</summary>
+    private sealed class BlockingHandler : HttpMessageHandler {
+        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) {
+            await this.Release.Task.WaitAsync(ct);
+            return new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent("<html></html>") };
         }
     }
 

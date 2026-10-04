@@ -313,7 +313,9 @@ public sealed class ClientSession : IAsyncDisposable {
     }
 
     public async Task KickAsync(string channelId, long userId, CancellationToken ct = default) {
-        var epochBefore = this.Read(() => this.NewestEpochOf(channelId));
+        var (epochBefore, wasMember) = this.Read(() => (
+            this.NewestEpochOf(channelId),
+            this._channels.GetValueOrDefault(channelId)?.Members.Any(member => member.User.UserId == userId && member.Rank >= Rank.Member) == true));
         await this.RequestAsync(new ClientFrame { KickMember = new KickMember { ChannelId = channelId, UserId = userId } }, ct);
         if (this.AfterKickRequestForTests is { } hook) {
             await hook();
@@ -322,9 +324,10 @@ public sealed class ClientSession : IAsyncDisposable {
         lock (this._lock) {
             if (this._channels.TryGetValue(channelId, out var channel)) {
                 channel.Members.RemoveAll(member => member.User.UserId == userId);
-                // The server asks a member to rekey before it answers, so a background rekey
-                // may already be done. Asking again would rekey a second time for nothing.
-                if (this.NewestEpochOf(channelId) == epochBefore) {
+                // Cancelling an invite needs no rekey: the invitee never had a key. And the server
+                // asks a member to rekey before it answers, so a background rekey may already be
+                // done; asking again would rekey a second time for nothing.
+                if (wasMember && this.NewestEpochOf(channelId) == epochBefore) {
                     channel.RekeyPending = true;
                 }
             }
