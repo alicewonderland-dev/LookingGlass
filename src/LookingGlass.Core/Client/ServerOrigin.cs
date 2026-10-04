@@ -1,9 +1,9 @@
-namespace LookingGlass.Server.Realtime;
+namespace LookingGlass.Core.Client;
 
 /// <summary>
 /// Where a client reached the server: whether over TLS, the host name and the port. Key login signatures name the
 /// server's address, and the server only accepts one whose origin is one of its configured public addresses, so a
-/// signature a malicious server relays from its own users is refused (see <see cref="Core.Crypto.KeyLoginProof"/>).
+/// signature a malicious server relays from its own users is refused (see <see cref="Crypto.KeyLoginProof"/>).
 /// <see cref="FromRequest"/> (the Host header) proves nothing against a relay, which sets it; it is only used, in
 /// Development, when no public addresses are configured.
 ///

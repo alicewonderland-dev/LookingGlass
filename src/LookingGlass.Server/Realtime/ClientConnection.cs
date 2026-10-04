@@ -1,6 +1,7 @@
 using System.Net.WebSockets;
 using System.Threading.Channels;
 using Google.Protobuf;
+using LookingGlass.Core.Client;
 using LookingGlass.Protocol;
 using LookingGlass.Server.Data;
 
