@@ -351,9 +351,20 @@ public sealed class ClientSession : IAsyncDisposable {
     }
 
     public async Task RespondToInviteAsync(string channelId, bool accept, CancellationToken ct = default) {
-        var response = await this.RequestAsync(new ClientFrame {
-            RespondToInvite = new RespondToInvite { ChannelId = channelId, Accept = accept },
-        }, ct);
+        Response response;
+        try {
+            response = await this.RequestAsync(new ClientFrame {
+                RespondToInvite = new RespondToInvite { ChannelId = channelId, Accept = accept },
+            }, ct);
+        } catch (ServerErrorException ex) when (ex.Code == ErrorCode.NotFound) {
+            // The invite (or its channel) is gone: stop offering it.
+            lock (this._lock) {
+                this._invites.Remove(channelId);
+            }
+
+            this.Publish();
+            throw;
+        }
 
         lock (this._lock) {
             this._invites.Remove(channelId, out var invite);
@@ -873,7 +884,13 @@ public sealed class ClientSession : IAsyncDisposable {
                     this.Publish();
                     break;
                 case Event.KindOneofCase.ChannelRemoved: {
-                    var name = this.Read(() => this._channels.GetValueOrDefault(ev.ChannelRemoved.ChannelId)?.DisplayName);
+                    var name = this.Read(() => this._channels.GetValueOrDefault(ev.ChannelRemoved.ChannelId)?.DisplayName
+                                               ?? this._invites.GetValueOrDefault(ev.ChannelRemoved.ChannelId)?.Name);
+                    // Invitees are told too, when the channel they're invited to is disbanded.
+                    lock (this._lock) {
+                        this._invites.Remove(ev.ChannelRemoved.ChannelId);
+                    }
+
                     this.RemoveChannel(ev.ChannelRemoved.ChannelId);
                     var why = ev.ChannelRemoved.Reason switch {
                         RemovalReason.Kicked => "You were removed from",

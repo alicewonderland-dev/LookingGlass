@@ -411,7 +411,10 @@ public sealed class RequestHandler(
         var members = db.GetMembers(channelId);
 
         if (members.Count == 1) {
+            // The last member is leaving, so the channel goes, and with it any pending invites.
+            var invitees = db.GetInvitees(channelId).Select(invitee => invitee.User.UserId).ToList();
             db.DeleteChannel(channelId);
+            registry.SendToAll(invitees, new Event { InviteRevoked = new InviteRevoked { ChannelId = channelId } });
             return Ack();
         }
 

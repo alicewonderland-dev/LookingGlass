@@ -194,6 +194,50 @@ public sealed class EndToEndTests : IAsyncLifetime {
     }
 
     [Fact]
+    public async Task InvitesDisappearWhenTheirChannelIsDeleted() {
+        var alice = await this._server.RegisterAsync("Alice Deletes");
+        var bob = await this._server.RegisterAsync("Bob Invited");
+
+        // Disbanded by the admin: the invitee is told.
+        var disbanded = await this.InviteAsync(alice, bob, "Disbanded");
+        await alice.Session.DisbandAsync(disbanded, Ct);
+        await WaitFor(() => bob.Session.Snapshot.Invites.Any(i => i.ChannelId == disbanded) ? null : new object());
+        await WaitFor(() => bob.Notices.FirstOrDefault(n => n.Text == "The admin disbanded Disbanded."));
+
+        // Deleted because its last member left.
+        var abandoned = await this.InviteAsync(alice, bob, "Abandoned");
+        await alice.Session.LeaveAsync(abandoned, Ct);
+        await WaitFor(() => bob.Session.Snapshot.Invites.Any(i => i.ChannelId == abandoned) ? null : new object());
+        Assert.Null(this._server.Database.GetChannel(abandoned));
+    }
+
+    [Fact]
+    public async Task AnsweringAnInviteThatNoLongerExistsRemovesIt() {
+        var alice = await this._server.RegisterAsync("Alice Vanishes");
+        var bob = await this._server.RegisterAsync("Bob Too Late");
+        var accepted = await this.InviteAsync(alice, bob, "Vanished");
+        var declined = await this.InviteAsync(alice, bob, "Also Vanished");
+
+        // Gone without the invitee being told (as an older server would do).
+        this._server.Database.DeleteChannel(accepted);
+        this._server.Database.DeleteChannel(declined);
+
+        var error = await Assert.ThrowsAsync<ServerErrorException>(() => bob.Session.RespondToInviteAsync(accepted, true, Ct));
+        Assert.Equal(ErrorCode.NotFound, error.Code);
+        error = await Assert.ThrowsAsync<ServerErrorException>(() => bob.Session.RespondToInviteAsync(declined, false, Ct));
+        Assert.Equal(ErrorCode.NotFound, error.Code);
+        Assert.Empty(bob.Session.Snapshot.Invites);
+    }
+
+    /// <summary>Creates a channel and invites <paramref name="invitee"/>, waiting until they can read the invite.</summary>
+    private async Task<string> InviteAsync(TestClient admin, TestClient invitee, string channelName) {
+        var channelId = await admin.Session.CreateChannelAsync(channelName, Ct);
+        await admin.Session.InviteAsync(channelId, invitee.Name, ProtocolInfo.DebugWorldName, Ct);
+        await WaitFor(() => invitee.Session.Snapshot.Invites.FirstOrDefault(i => i.ChannelId == channelId && i.ChannelName != null));
+        return channelId;
+    }
+
+    [Fact]
     public async Task MemberCannotKickModerator() {
         var alice = await this._server.RegisterAsync("Alice Rank");
         var bob = await this._server.RegisterAsync("Bob Rank");
