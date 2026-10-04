@@ -304,7 +304,6 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
         }
     }
 
-
     private void DrawColour(ChannelView channel) {
         var row = sessions.ColourOf(channel.Id);
         var size = ImGui.GetFrameHeight();
@@ -361,13 +360,13 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
     private void DrawKeyState(ChannelView channel) {
         if (channel.RekeyPending) {
             Widgets.IconText(FontAwesomeIcon.HourglassHalf, "A new channel key is pending.", Widgets.Warning);
-            Widgets.Tooltip("Someone's membership changed and a new key is being made. Messages wait until it's ready.");
+            Widgets.Tooltip("Someone joined or left since the key in use was made, so the channel needs a new one before anyone sends. A member makes it automatically.");
         } else if (!channel.HasKey) {
             Widgets.IconText(FontAwesomeIcon.HourglassHalf, "Waiting for the channel key.", Widgets.Warning);
             Widgets.Tooltip("Messages can't be read or sent here until a member shares the key with you.");
         } else {
             Widgets.IconText(FontAwesomeIcon.Lock, $"End-to-end encrypted · key {channel.Epoch}", Widgets.Muted);
-            Widgets.Tooltip("Only the members below can read this channel. The key changes whenever someone leaves or is removed.");
+            Widgets.Tooltip("Only the members below hold this channel's key. A new key is made when someone joins or leaves.");
         }
     }
 
