@@ -215,7 +215,7 @@ public sealed class ServerMoveTests : IDisposable {
     [InlineData("wss://CHAT-NEW.example:443/ws", ServerMoveVerdict.SameServer)]
     [InlineData("wss://chat-new.example/elsewhere", ServerMoveVerdict.Unreachable)]
     [InlineData("wss://chat-new.example:8443/ws", ServerMoveVerdict.NotListed)]
-    [InlineData("ws://chat-new.example/ws", ServerMoveVerdict.NotListed)]
+    [InlineData("ws://chat-new.example/ws", ServerMoveVerdict.NotSecure)]
     [InlineData("wss://chat-new.example.evil.example/ws", ServerMoveVerdict.NotListed)]
     [InlineData("https://chat-new.example/ws", ServerMoveVerdict.InvalidAddress)]
     [InlineData("chat-new.example", ServerMoveVerdict.InvalidAddress)]
@@ -223,6 +223,76 @@ public sealed class ServerMoveTests : IDisposable {
         await using var server = Server(OldUrl, NewUrl);
         try {
             Assert.Equal(verdict, (await ServerMove.CheckAsync(OldUrl, newUrl, server.ConnectAsync, Ct)).Verdict);
+        } finally {
+            DeleteDirectory(server.DataDirectory);
+        }
+    }
+
+    /// <summary>
+    /// A move only goes to a wss:// address. Over plain ws:// (or a short name the local network resolves), whoever
+    /// answers at the new name could confirm the old address, then receive the copied login in the clear and relay key
+    /// login challenges; TLS is what proves the new name's server is the one the operator named. So even when both
+    /// servers list each other, a plain ws:// address counts as a different server, and neither server is asked.
+    /// </summary>
+    [Fact]
+    public async Task APlainWsAddressIsNeverAMoveTarget() {
+        const string plainUrl = "ws://lookingglasschat:5180/ws";
+        await using var server = Server(OldUrl, plainUrl);
+        try {
+            var oldStore = this.Store(OldUrl);
+            var alice = await server.RegisterAsync("Alice Unencrypted", oldStore, server.Options(serverUri: new Uri(OldUrl)));
+            await alice.Session.DisposeAsync();
+
+            var dialled = new ConcurrentQueue<Uri>();
+            var check = await ServerMove.CheckAsync(OldUrl, plainUrl, (uri, ct) => {
+                dialled.Enqueue(uri);
+                return server.ConnectAsync(uri, ct);
+            }, Ct);
+            Assert.Equal(ServerMoveVerdict.NotSecure, check.Verdict);
+            Assert.Empty(dialled);
+            Assert.Contains("wss://", check.Message);
+
+            Assert.Throws<InvalidOperationException>(() => ServerMove.CopyIdentity(check, oldStore, this.Store(plainUrl)));
+            Assert.False(File.Exists(Path.Combine(this._directory, ServerSecretFiles.FileName(ContentId, plainUrl))));
+        } finally {
+            DeleteDirectory(server.DataDirectory);
+        }
+    }
+
+    /// <summary>
+    /// A check is evidence about the moment it was made: one older than <see cref="ServerMove.MaxCheckAge"/> (say, from a
+    /// dialog left open) copies nothing, and the servers must be asked again.
+    /// </summary>
+    [Fact]
+    public async Task AStaleCheckCopiesNothing() {
+        await using var server = Server(OldUrl, NewUrl);
+        try {
+            var oldStore = this.Store(OldUrl);
+            var alice = await server.RegisterAsync("Alice Hesitant", oldStore, server.Options(serverUri: new Uri(OldUrl)));
+            await alice.Session.DisposeAsync();
+
+            var clock = new ManualClock();
+            var check = await ServerMove.CheckAsync(OldUrl, NewUrl, server.ConnectAsync, Ct, clock);
+            Assert.Equal(ServerMoveVerdict.SameServer, check.Verdict);
+            Assert.True(check.IsFresh(clock));
+
+            clock.Offset = ServerMove.MaxCheckAge + TimeSpan.FromSeconds(1);
+            Assert.False(check.IsFresh(clock));
+            var newStore = this.Store(NewUrl);
+            var error = Assert.Throws<InvalidOperationException>(() => ServerMove.CopyIdentity(check, oldStore, newStore, clock));
+            Assert.Contains("again", error.Message);
+            Assert.False(File.Exists(Path.Combine(this._directory, ServerSecretFiles.FileName(ContentId, NewUrl))));
+
+            // A check from the future (the clock was set back) isn't trusted either.
+            clock.Offset = -TimeSpan.FromMinutes(5);
+            Assert.False(check.IsFresh(clock));
+
+            // Asked again, the servers still agree, and the identity is copied.
+            clock.Offset = TimeSpan.Zero;
+            var again = await ServerMove.CheckAsync(OldUrl, NewUrl, server.ConnectAsync, Ct, clock);
+            clock.Offset = ServerMove.MaxCheckAge - TimeSpan.FromSeconds(5);
+            ServerMove.CopyIdentity(again, oldStore, newStore, clock);
+            Assert.NotNull(newStore.Load().SigningPrivateKey);
         } finally {
             DeleteDirectory(server.DataDirectory);
         }
