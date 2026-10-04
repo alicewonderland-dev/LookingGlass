@@ -49,6 +49,8 @@ public sealed class ClientSession : IAsyncDisposable {
     private bool _debugAccountsEnabled;
     private RegistrationChallenge? _challenge;
     private readonly Dictionary<string, ChannelState> _channels = new();
+    // _channels holds the server's complete list, fetched on the current connection.
+    private bool _channelsLoaded;
     private readonly Dictionary<string, InviteState> _invites = new();
     private readonly Dictionary<long, UserIdentity> _identities = new();
     private readonly HashSet<string> _seenMessages = new();
@@ -719,6 +721,8 @@ public sealed class ClientSession : IAsyncDisposable {
             this._me = ok.User;
             this._secrets.UserId = ok.User.UserId;
             this._state = ConnectionState.Ready;
+            // Ready, but the channel list is only complete once RefreshAsync has fetched it.
+            this._channelsLoaded = false;
             this._status = $"Connected as {ok.User.Name}@{ok.User.WorldName}";
         }
 
@@ -740,6 +744,8 @@ public sealed class ClientSession : IAsyncDisposable {
 
         var userIds = new HashSet<long>();
         lock (this._lock) {
+            // A list fetched on a connection that has since dropped says nothing about the next one.
+            this._channelsLoaded = connection == this._connection && this._state == ConnectionState.Ready;
             var listed = channels.Select(channel => channel.ChannelId).ToHashSet();
             foreach (var stale in this._channels.Keys.Where(id => !listed.Contains(id)).ToList()) {
                 this._channels.Remove(stale);
@@ -1612,6 +1618,10 @@ public sealed class ClientSession : IAsyncDisposable {
         lock (this._lock) {
             this._state = state;
             this._status = status;
+            if (state != ConnectionState.Ready) {
+                this._channelsLoaded = false;
+            }
+
             if (state is ConnectionState.Connecting or ConnectionState.Reconnecting or ConnectionState.Stopped) {
                 this._challenge = null;
             }
@@ -1641,7 +1651,8 @@ public sealed class ClientSession : IAsyncDisposable {
                         ? new User { UserId = id, Name = pinned.Name, WorldName = pinned.WorldName }
                         : new User { UserId = id, Name = $"user {id}" })
                     .OrderBy(user => user.Name, StringComparer.OrdinalIgnoreCase)
-                    .ToImmutableArray());
+                    .ToImmutableArray(),
+                this._channelsLoaded && this._state == ConnectionState.Ready);
             this._snapshot = snapshot;
         }
 
