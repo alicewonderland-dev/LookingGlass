@@ -22,22 +22,31 @@ public sealed class RequestHandlerTests : IDisposable {
     private const string World = "Gilgamesh";
     private const long LodestoneId = 31337;
 
+    // The address the clients here sign for: any will do on a server with no PublicUrls outside Development.
+    private const string Url = "ws://localhost/ws";
+
     private readonly string _directory = Path.Combine(Path.GetTempPath(), "lgt-handler-" + Guid.NewGuid().ToString("N"));
     private readonly Database _db;
     private readonly ConnectionRegistry _registry;
-    private readonly RequestHandler _handler;
+    private readonly StubLodestone _lodestone = new();
+    private RequestHandler _handler;
 
     public RequestHandlerTests() {
         Directory.CreateDirectory(this._directory);
         this._db = new Database(Path.Combine(this._directory, "test.db"));
         this._registry = new ConnectionRegistry(this._db, NullLogger<ConnectionRegistry>.Instance);
+        this._handler = this.NewHandler();
+    }
+
+    private RequestHandler NewHandler(params string[] publicUrls) {
         var options = Options.Create(new ServerOptions {
             Dev = { AllowDebugAccounts = true },
             Lodestone = { BaseUrl = "https://lodestone.test", MinDelaySeconds = 0 },
             Limits = { RegistrationsPerHourPerIp = 3 },
+            PublicUrls = publicUrls,
         });
-        var lodestone = new LodestoneClient(new HttpClient(new StubLodestone()), options, NullLogger<LodestoneClient>.Instance);
-        this._handler = new RequestHandler(this._db, this._registry, lodestone, options, NullLogger<RequestHandler>.Instance,
+        var lodestone = new LodestoneClient(new HttpClient(this._lodestone), options, NullLogger<LodestoneClient>.Instance);
+        return new RequestHandler(this._db, this._registry, lodestone, options, NullLogger<RequestHandler>.Instance,
             SignedLogMembershipProvider.Instance, SealedEpochKeyProvider.Instance);
     }
 
@@ -63,17 +72,62 @@ public sealed class RequestHandlerTests : IDisposable {
     [Fact]
     public async Task VerifyingHasACooldown() {
         var connection = await this.HelloAsync("203.0.113.10");
-        Assert.NotNull((await this.StartRegistrationAsync(connection)).RegistrationChallenge);
+        using var keys = IdentityKeys.Generate();
+        var challenge = (await this.StartRegistrationAsync(connection, keys: keys)).RegistrationChallenge!;
 
-        // The stub profile never contains the code, so the first attempt fails normally...
-        var first = await this.SendAsync(connection, new ClientFrame { CompleteRegistration = new CompleteRegistration() });
+        // The stub profile doesn't contain the code, so the first attempt fails normally...
+        var first = await this.CompleteRegistrationAsync(connection, keys, challenge);
         Assert.Equal(ErrorCode.RegistrationFailed, first.Error?.Code);
+        Assert.Contains("isn't in your Lodestone profile", first.Error!.Message);
 
         // ...and an immediate retry is refused without asking the Lodestone again.
-        var second = await this.SendAsync(connection, new ClientFrame { CompleteRegistration = new CompleteRegistration() });
+        var second = await this.CompleteRegistrationAsync(connection, keys, challenge);
         Assert.Equal(ErrorCode.RateLimited, second.Error?.Code);
         Assert.Contains("Wait", second.Error!.Message);
         Assert.Equal(1, connection.VerifyAttempts);
+    }
+
+    /// <summary>
+    /// A registration through the Lodestone is signed for the address the client connected to, which is checked against
+    /// the server's own addresses as for key login: a malicious server the user registers with can't relay this server's
+    /// challenge (code and nonce) to the user and register the user's key here. Checked before asking the Lodestone.
+    /// </summary>
+    [Fact]
+    public async Task ARegistrationSignedForAnotherServerIsRefused() {
+        this._handler = this.NewHandler("wss://chat.example.com/ws");
+        var connection = await this.HelloAsync("203.0.113.60");
+        using var keys = IdentityKeys.Generate();
+        var challenge = (await this.StartRegistrationAsync(connection, keys: keys)).RegistrationChallenge!;
+        this._lodestone.Profile = $"My code: {challenge.Code}";
+
+        foreach (var url in new[] { "wss://evil.example/ws", "ws://localhost/ws", "wss://chat.example.com.evil.example/ws" }) {
+            var refused = await this.CompleteRegistrationAsync(connection, keys, challenge, url);
+            Assert.Equal(ErrorCode.RegistrationFailed, refused.Error?.Code);
+        }
+
+        Assert.Equal(0, connection.VerifyAttempts);
+        Assert.Null(this._db.GetUser(LodestoneId));
+
+        var registered = await this.CompleteRegistrationAsync(connection, keys, challenge, "wss://chat.example.com/ws");
+        Assert.NotNull(registered.RegistrationComplete);
+        Assert.Equal(keys.SigningPublicKey, this._db.GetUser(LodestoneId)!.SigningKey);
+    }
+
+    /// <summary>A registration through the Lodestone is signed by the key being registered, like a debug one.</summary>
+    [Fact]
+    public async Task ALodestoneRegistrationNeedsASignatureByTheKey() {
+        var connection = await this.HelloAsync("203.0.113.61");
+        using var keys = IdentityKeys.Generate();
+        using var otherKeys = IdentityKeys.Generate();
+        var challenge = (await this.StartRegistrationAsync(connection, keys: keys)).RegistrationChallenge!;
+        this._lodestone.Profile = $"My code: {challenge.Code}";
+
+        Assert.Equal(ErrorCode.RegistrationFailed, (await this.SendAsync(connection, new ClientFrame { CompleteRegistration = new CompleteRegistration() })).Error?.Code);
+        Assert.Equal(ErrorCode.RegistrationFailed, (await this.CompleteRegistrationAsync(connection, otherKeys, challenge)).Error?.Code);
+        Assert.Equal(0, connection.VerifyAttempts);
+        Assert.Null(this._db.GetUser(LodestoneId));
+
+        Assert.NotNull((await this.CompleteRegistrationAsync(connection, keys, challenge)).RegistrationComplete);
     }
 
     [Fact]
@@ -140,27 +194,42 @@ public sealed class RequestHandlerTests : IDisposable {
         return connection;
     }
 
-    private Task<Response> StartRegistrationAsync(ClientConnection connection, string name = "Test Person", string world = World) {
-        using var keys = IdentityKeys.Generate();
+    /// <param name="keys">The identity to register (by default new keys, thrown away).</param>
+    private Task<Response> StartRegistrationAsync(ClientConnection connection, string name = "Test Person", string world = World, IdentityKeys? keys = null) {
+        using var generated = keys == null ? IdentityKeys.Generate() : null;
         return this.SendAsync(connection, new ClientFrame {
-            StartRegistration = new StartRegistration { Character = new Character { Name = name, WorldName = world }, Identity = keys.ToBundle() },
+            StartRegistration = new StartRegistration { Character = new Character { Name = name, WorldName = world }, Identity = (keys ?? generated!).ToBundle() },
+        });
+    }
+
+    /// <summary>Completes a registration as an honest client does: signed by <paramref name="keys"/>, for <paramref name="url"/>.</summary>
+    private Task<Response> CompleteRegistrationAsync(ClientConnection connection, IdentityKeys keys, RegistrationChallenge challenge, string url = Url) {
+        return this.SendAsync(connection, new ClientFrame {
+            CompleteRegistration = new CompleteRegistration {
+                ServerUrl = url,
+                Signature = Google.Protobuf.ByteString.CopyFrom(RegistrationProof.Sign(keys, challenge.Nonce.Span, challenge.LodestoneId, url)),
+            },
         });
     }
 
     /// <returns>A device token for a new debug account.</returns>
     private async Task<string> RegisterDebugAsync(string name) {
         var connection = await this.HelloAsync("203.0.113.30");
-        Assert.NotNull((await this.StartRegistrationAsync(connection, name, ProtocolInfo.DebugWorldName)).RegistrationChallenge);
-        var complete = await this.SendAsync(connection, new ClientFrame { CompleteRegistration = new CompleteRegistration() });
+        using var keys = IdentityKeys.Generate();
+        var challenge = (await this.StartRegistrationAsync(connection, name, ProtocolInfo.DebugWorldName, keys)).RegistrationChallenge!;
+        var complete = await this.CompleteRegistrationAsync(connection, keys, challenge);
         return complete.RegistrationComplete!.DeviceToken;
     }
 
-    /// <summary>Answers every search with "Test Person" on Gilgamesh, and every profile without the code.</summary>
+    /// <summary>Answers every search with "Test Person" on Gilgamesh, and every profile with <see cref="Profile"/>.</summary>
     private sealed class StubLodestone : HttpMessageHandler {
+        /// <summary>The profile's text (by default without any code).</summary>
+        public string Profile { get; set; } = "Nothing to see here.";
+
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) {
             var html = request.RequestUri!.AbsolutePath.TrimEnd('/') == "/lodestone/character"
                 ? $"""<a href="/lodestone/character/{LodestoneId}/" class="entry__link"><p class="entry__name">Test Person</p><p class="entry__world">{World} [Aether]</p></a>"""
-                : """<div class="character__selfintroduction">Nothing to see here.</div>""";
+                : $"""<div class="character__selfintroduction">{this.Profile}</div>""";
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(html) });
         }
     }

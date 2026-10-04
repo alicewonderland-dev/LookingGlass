@@ -159,16 +159,22 @@ public sealed class IdentityResetTests : IAsyncLifetime {
 
         // Registering again with the key it has is fine while that key is the account's...
         await using var early = await this._server.ConnectRawAsync();
-        Assert.NotNull((await early.SendAsync(new ClientFrame { StartRegistration = new StartRegistration { Character = character, Identity = oldKeys.ToBundle() } }))
-            .RegistrationChallenge);
+        var challenge = (await early.SendAsync(new ClientFrame { StartRegistration = new StartRegistration { Character = character, Identity = oldKeys.ToBundle() } }))
+            .RegistrationChallenge!;
 
         // ...but then the account registers new keys (a reset elsewhere).
         var renewed = await this._server.RegisterAsync(alice.Name, new InMemorySecretStore());
         Assert.NotEqual(alice.Keys(), renewed.Keys());
 
         // A registration of the old key, started before or after, is refused, and says what to do.
-        var late = await early.SendAsync(new ClientFrame { CompleteRegistration = new CompleteRegistration() });
+        var url = this._server.ServerUri.AbsoluteUri;
+        var late = await early.SendAsync(new ClientFrame {
+            CompleteRegistration = new CompleteRegistration {
+                ServerUrl = url, Signature = ByteString.CopyFrom(RegistrationProof.Sign(oldKeys, challenge.Nonce.Span, challenge.LodestoneId, url)),
+            },
+        });
         Assert.Equal(ErrorCode.RegistrationFailed, late.Error?.Code);
+        Assert.Contains("Reset my identity", late.Error!.Message);
         await using var again = await this._server.ConnectRawAsync();
         var refused = await again.SendAsync(new ClientFrame { StartRegistration = new StartRegistration { Character = character, Identity = oldKeys.ToBundle() } });
         Assert.Equal(ErrorCode.RegistrationFailed, refused.Error?.Code);
