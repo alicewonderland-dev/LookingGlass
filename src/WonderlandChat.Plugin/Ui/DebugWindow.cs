@@ -115,7 +115,7 @@ public sealed class DebugWindow : Window {
         ImGui.SameLine();
         if (ImGui.Button("Force rekey") && session != null) {
             var id = selected.Id;
-            this._actions.Run("Rekeying", () => session.RekeyAsync(id));
+            this._actions.Run("Rekeying", () => session.RekeyAsync(id, force: true));
         }
 
         ImGui.EndDisabled();

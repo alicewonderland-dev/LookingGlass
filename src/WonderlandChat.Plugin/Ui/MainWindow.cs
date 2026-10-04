@@ -248,6 +248,14 @@ public sealed class MainWindow : Window {
                 if (member.KeyChanged) {
                     ImGui.SameLine();
                     ImGui.TextColored(new Vector4(1f, 0.7f, 0.2f, 1f), "key changed!");
+                    if (ImGui.IsItemHovered()) {
+                        ImGui.SetTooltip("Their identity key changed, or this name now belongs to a different account.\nCompare fingerprints with them over /tell, then mark it verified.");
+                    }
+
+                    ImGui.SameLine();
+                    if (ImGui.SmallButton("Mark verified")) {
+                        session.AcknowledgeKeyChange(member.User.UserId);
+                    }
                 }
 
                 ImGui.TableNextColumn();

@@ -21,6 +21,8 @@ namespace WonderlandChat.Core.Client;
 public sealed class ClientSession : IAsyncDisposable {
     private const int KeptEpochsPerChannel = 4;
     private const int SeenMessageCapacity = 2048;
+    private static readonly TimeSpan MaxMessageClockSkew = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan RegistrationRequestTimeout = TimeSpan.FromSeconds(60);
 
     private readonly ClientSessionOptions _options;
     private readonly ISecretStore _store;
@@ -29,6 +31,7 @@ public sealed class ClientSession : IAsyncDisposable {
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _channelLocks = new();
     private readonly Channel<Event> _inbox = Channel.CreateUnbounded<Event>(new UnboundedChannelOptions { SingleReader = true });
     private readonly ConcurrentQueue<TraceEntry> _trace = new();
+    private readonly ConcurrentDictionary<Task, byte> _background = new();
 
     // ---- state guarded by _lock
     private readonly ClientSecrets _secrets;
@@ -42,7 +45,6 @@ public sealed class ClientSession : IAsyncDisposable {
     private readonly Dictionary<string, ChannelState> _channels = new();
     private readonly Dictionary<string, InviteState> _invites = new();
     private readonly Dictionary<long, UserIdentity> _identities = new();
-    private readonly HashSet<long> _keyChanged = new();
     private readonly HashSet<string> _seenMessages = new();
     private readonly Queue<string> _seenOrder = new();
     private long _secretsVersion;
@@ -122,8 +124,12 @@ public sealed class ClientSession : IAsyncDisposable {
             if (this._inboxTask != null) {
                 await this._inboxTask;
             }
-        } catch (OperationCanceledException) {
-            // Expected.
+
+            // Background work was cancelled above; wait briefly so none of it
+            // touches the identity or secrets after they're released.
+            await Task.WhenAll(this._background.Keys).WaitAsync(TimeSpan.FromSeconds(5));
+        } catch (Exception ex) when (ex is OperationCanceledException or TimeoutException) {
+            // Expected while stopping.
         }
 
         this.SaveSecrets();
@@ -147,9 +153,10 @@ public sealed class ClientSession : IAsyncDisposable {
 
     public async Task<RegistrationChallenge> StartRegistrationAsync(Character character, CancellationToken ct = default) {
         var identity = this.EnsureIdentity();
-        var response = await this.RequestAsync(new ClientFrame {
+        // Lodestone lookups are queued server-side, so allow more time than usual.
+        var response = await this.RequestAsync(this.RequireConnection(), new ClientFrame {
             StartRegistration = new StartRegistration { Character = character, Identity = identity.ToBundle() },
-        }, ct);
+        }, ct, RegistrationRequestTimeout);
 
         var challenge = response.RegistrationChallenge ?? throw Unexpected(response);
         lock (this._lock) {
@@ -166,7 +173,7 @@ public sealed class ClientSession : IAsyncDisposable {
 
     public async Task CompleteRegistrationAsync(CancellationToken ct = default) {
         var connection = this.RequireConnection();
-        var response = await this.RequestAsync(connection, new ClientFrame { CompleteRegistration = new CompleteRegistration() }, ct);
+        var response = await this.RequestAsync(connection, new ClientFrame { CompleteRegistration = new CompleteRegistration() }, ct, RegistrationRequestTimeout);
         var complete = response.RegistrationComplete ?? throw Unexpected(response);
 
         lock (this._lock) {
@@ -178,6 +185,19 @@ public sealed class ClientSession : IAsyncDisposable {
 
         this.SaveSecrets();
         await this.AuthenticateAsync(connection, ct);
+    }
+
+    /// <summary>Clears the "key changed" warning for a user after their new fingerprint has been checked.</summary>
+    public void AcknowledgeKeyChange(long userId) {
+        lock (this._lock) {
+            if (this._secrets.PinnedIdentities.TryGetValue(userId, out var pinned) && pinned.KeyChangeUnacknowledged) {
+                pinned.KeyChangeUnacknowledged = false;
+                this._secretsVersion++;
+            }
+        }
+
+        this.SaveSecrets();
+        this.Publish();
     }
 
     /// <summary>Forgets the device token, for example to register again.</summary>
@@ -329,23 +349,30 @@ public sealed class ClientSession : IAsyncDisposable {
     /// Moves the channel to a new epoch: a fresh key sealed to every current
     /// member. Safe to call concurrently; the server accepts one rekey per epoch.
     /// </summary>
-    public async Task RekeyAsync(string channelId, CancellationToken ct = default) {
+    /// <param name="force">Rekey even if no membership change is pending (debug tool).</param>
+    public async Task RekeyAsync(string channelId, CancellationToken ct = default, bool force = false) {
         var gate = this._channelLocks.GetOrAdd(channelId, _ => new SemaphoreSlim(1, 1));
         await gate.WaitAsync(ct);
         try {
             for (var attempt = 0; attempt < 3; attempt++) {
                 var (identity, me) = this.RequireIdentityAndUser();
-                var (epoch, name, memberIds) = this.Read(() => {
+                var (epoch, name, memberIds, pending) = this.Read(() => {
                     var channel = this._channels.GetValueOrDefault(channelId) ?? throw new InvalidOperationException("Unknown channel.");
                     var ids = channel.Members.Where(member => member.Rank >= Rank.Member).Select(member => member.User.UserId).ToList();
-                    return (channel.Epoch, channel.Name, ids);
+                    return (channel.Epoch, channel.Name, ids, channel.RekeyPending);
                 });
 
-                if (name == null) {
-                    throw new InvalidOperationException("Can't rekey a channel whose name isn't known yet.");
+                // Someone else (or an earlier call) may have rekeyed while we waited for the gate.
+                if (!pending && !force) {
+                    return;
                 }
 
-                var identities = await this.EnsureIdentitiesAsync(memberIds, ct);
+                if (name == null) {
+                    throw new InvalidOperationException("You don't have this channel's key yet, so you can't rekey it. Another member needs to.");
+                }
+
+                // Always seal to fresh identities: a member may have re-registered with new keys.
+                var identities = await this.EnsureIdentitiesAsync(memberIds, ct, refresh: true);
                 var newEpoch = epoch + 1;
                 var key = ChannelCrypto.NewEpochKey();
                 var request = new SubmitRekey {
@@ -367,10 +394,7 @@ public sealed class ClientSession : IAsyncDisposable {
                 } catch (ServerErrorException ex) when (ex.Code is ErrorCode.Conflict or ErrorCode.EpochStale) {
                     // Someone else rekeyed first, or membership changed meanwhile.
                     await this.RefreshAsync(ct);
-                    if (!this.Read(() => this._channels.GetValueOrDefault(channelId)?.RekeyPending ?? false)) {
-                        return;
-                    }
-
+                    force = false;
                     continue;
                 }
 
@@ -659,8 +683,11 @@ public sealed class ClientSession : IAsyncDisposable {
                     break;
                 case Event.KindOneofCase.ChannelRenamed:
                     lock (this._lock) {
-                        if (this._channels.TryGetValue(ev.ChannelRenamed.ChannelId, out var channel)) {
-                            channel.EncryptedName = ev.ChannelRenamed.Name;
+                        // Only a name under the current epoch: an old, validly signed name can't be replayed.
+                        if (this._channels.TryGetValue(ev.ChannelRenamed.ChannelId, out var channel)
+                            && ev.ChannelRenamed.Name is { } renamed
+                            && renamed.Epoch == channel.Epoch) {
+                            channel.EncryptedName = renamed;
                             this.TryDecryptName(channel.Id);
                         }
                     }
@@ -773,10 +800,12 @@ public sealed class ClientSession : IAsyncDisposable {
     private void OnRekeyNeeded(RekeyNeeded rekey) {
         bool designated;
         lock (this._lock) {
-            if (this._channels.TryGetValue(rekey.ChannelId, out var channel)) {
-                channel.RekeyPending = true;
+            if (!this._channels.TryGetValue(rekey.ChannelId, out var channel) || rekey.CurrentEpoch < channel.Epoch) {
+                // Unknown channel, or a request that a newer epoch has already answered.
+                return;
             }
 
+            channel.RekeyPending = true;
             designated = rekey.DesignatedUserId == this._me?.UserId;
         }
 
@@ -809,38 +838,60 @@ public sealed class ClientSession : IAsyncDisposable {
     private async Task ProcessEpochAdvancedAsync(EpochAdvanced advanced, CancellationToken ct) {
         var identities = await this.EnsureIdentitiesAsync([advanced.AuthorId], ct);
         if (!identities.TryGetValue(advanced.AuthorId, out var author)) {
-            this.Log(NoticeLevel.Warning, $"Unknown rekey author {advanced.AuthorId}");
+            this.RaiseNotice(NoticeLevel.Warning, "Rejected a new key for a channel: its author isn't anyone you share a channel with.", advanced.ChannelId);
             return;
         }
 
+        string? rejected = null;
         lock (this._lock) {
-            if (this._identity == null || this._me == null) {
+            if (this._identity == null || this._me == null || !this._channels.TryGetValue(advanced.ChannelId, out var channel)) {
                 return;
             }
 
-            var key = advanced.MyKey == null
+            rejected = this.CheckEpochKeyAuthor(channel, advanced.Epoch, advanced.AuthorId);
+            var key = rejected != null || advanced.MyKey == null
                 ? null
                 : ChannelCrypto.OpenEpochKey(advanced.MyKey, advanced.ChannelId, advanced.Epoch, advanced.AuthorId, author.Identity.SigningPublicKey.Span, this._identity, this._me.UserId);
 
             if (key == null) {
-                this.Log(NoticeLevel.Warning, $"Epoch {advanced.Epoch} key for {advanced.ChannelId} failed verification");
-                return;
-            }
-
-            this.StoreEpochKey(advanced.ChannelId, advanced.Epoch, key);
-            if (this._channels.TryGetValue(advanced.ChannelId, out var channel) && channel.Epoch <= advanced.Epoch) {
-                channel.Epoch = advanced.Epoch;
+                rejected ??= "it failed signature or decryption checks";
+            } else {
+                this.StoreEpochKey(advanced.ChannelId, advanced.Epoch, key);
+                channel.Epoch = Math.Max(channel.Epoch, advanced.Epoch);
                 channel.RekeyPending = false;
-                if (advanced.Name != null) {
-                    channel.EncryptedName = advanced.Name;
+                if (advanced.Name is { } name && name.Epoch == advanced.Epoch) {
+                    channel.EncryptedName = name;
                 }
 
                 this.TryDecryptName(channel.Id);
             }
         }
 
+        if (rejected != null) {
+            this.RaiseNotice(NoticeLevel.Warning, $"Rejected a new key for a channel: {rejected}.", advanced.ChannelId);
+            return;
+        }
+
         this.SaveSecrets();
         this.Publish();
+    }
+
+    /// <summary>
+    /// An epoch key is only acceptable from a current member, and only for an
+    /// epoch newer than any key already held. Call inside the lock.
+    /// </summary>
+    /// <returns>Null if acceptable, otherwise the reason it isn't.</returns>
+    private string? CheckEpochKeyAuthor(ChannelState channel, ulong epoch, long authorId) {
+        if (!channel.Members.Any(member => member.User.UserId == authorId && member.Rank >= Rank.Member)) {
+            return "its author isn't a member of the channel";
+        }
+
+        var newest = this._secrets.EpochKeys.TryGetValue(channel.Id, out var keys) && keys.Count > 0 ? keys.Keys.Max() : (ulong?) null;
+        if (newest is { } held && epoch <= held) {
+            return $"it's for epoch {epoch}, but you already have epoch {held}";
+        }
+
+        return null;
     }
 
     private async Task ProcessChatMessageAsync(ChatMessage message, CancellationToken ct) {
@@ -871,8 +922,15 @@ public sealed class ClientSession : IAsyncDisposable {
             return;
         }
 
-        var channelName = this.Read(() => this._channels.GetValueOrDefault(message.ChannelId)?.Name);
+        // The timestamp is signed, so an old message can't be replayed as new
+        // once it falls outside this window (the seen-set covers the window itself).
         var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(message.TimestampUnixMs);
+        if ((DateTimeOffset.UtcNow - timestamp).Duration() > MaxMessageClockSkew) {
+            this.RaiseNotice(NoticeLevel.Warning, $"Dropped a message from {sender.User.Name} dated {timestamp.ToLocalTime():g}: too far from the current time (replayed, or a wrong clock).", message.ChannelId);
+            return;
+        }
+
+        var channelName = this.Read(() => this._channels.GetValueOrDefault(message.ChannelId)?.Name);
         var isOwn = message.SenderId == this.Read(() => this._me?.UserId);
         this.RaiseMessage(content.KindCase == Content.KindOneofCase.Text
             ? new IncomingMessage(message.ChannelId, channelName, sender.User, isOwn, content.Text.Text, false, timestamp)
@@ -918,12 +976,18 @@ public sealed class ClientSession : IAsyncDisposable {
         var identities = await this.EnsureIdentitiesAsync(authors, ct, connection);
 
         lock (this._lock) {
-            if (this._identity == null || this._me == null) {
+            if (this._identity == null || this._me == null || !this._channels.TryGetValue(channelId, out var channel)) {
                 return;
             }
 
-            foreach (var entry in keys.Keys) {
-                if (!identities.TryGetValue(entry.AuthorId, out var author) || entry.Key == null) {
+            foreach (var entry in keys.Keys.OrderBy(entry => entry.Epoch)) {
+                if (!identities.TryGetValue(entry.AuthorId, out var author) || entry.Key == null
+                    || this.GetEpochKey(channelId, entry.Epoch) != null) {
+                    continue;
+                }
+
+                if (this.CheckEpochKeyAuthor(channel, entry.Epoch, entry.AuthorId) is { } reason) {
+                    this.Log(NoticeLevel.Warning, $"Ignored epoch {entry.Epoch} key for {channelId}: {reason}");
                     continue;
                 }
 
@@ -935,7 +999,8 @@ public sealed class ClientSession : IAsyncDisposable {
                 }
             }
 
-            if (keys.Name != null && this._channels.TryGetValue(channelId, out var channel)) {
+            // Only accept a name encrypted under the current epoch, so old names can't be replayed.
+            if (keys.Name != null && keys.Name.Epoch == channel.Epoch) {
                 channel.EncryptedName = keys.Name;
                 this.TryDecryptName(channelId);
             }
@@ -945,10 +1010,10 @@ public sealed class ClientSession : IAsyncDisposable {
         this.Publish();
     }
 
-    /// <summary>Returns verified identities for the given users, fetching any that aren't cached.</summary>
-    private async Task<Dictionary<long, UserIdentity>> EnsureIdentitiesAsync(IEnumerable<long> userIds, CancellationToken ct, Connection? connection = null) {
+    /// <summary>Returns verified identities for the given users, fetching any that aren't cached (or all of them, with <paramref name="refresh"/>).</summary>
+    private async Task<Dictionary<long, UserIdentity>> EnsureIdentitiesAsync(IEnumerable<long> userIds, CancellationToken ct, Connection? connection = null, bool refresh = false) {
         var wanted = userIds.Distinct().ToList();
-        var missing = this.Read(() => wanted.Where(id => !this._identities.ContainsKey(id)).ToList());
+        var missing = refresh ? wanted : this.Read(() => wanted.Where(id => !this._identities.ContainsKey(id)).ToList());
 
         if (missing.Count > 0) {
             var request = new GetIdentities();
@@ -962,7 +1027,11 @@ public sealed class ClientSession : IAsyncDisposable {
             .ToDictionary(id => id, id => this._identities[id]));
     }
 
-    /// <summary>Validates identities from the server and pins them (trust on first use, warn on change).</summary>
+    /// <summary>
+    /// Validates identities from the server and pins them: trust on first
+    /// use, a persistent warning when a user's keys change, and a warning
+    /// when a name@world moves to a different account.
+    /// </summary>
     private List<UserIdentity> AcceptIdentities(IEnumerable<UserIdentity> identities) {
         var accepted = new List<UserIdentity>();
         var warnings = new List<string>();
@@ -974,25 +1043,60 @@ public sealed class ClientSession : IAsyncDisposable {
                     continue;
                 }
 
-                var userId = identity.User.UserId;
+                var user = identity.User;
+                var who = $"{user.Name}@{user.WorldName}";
                 var signing = identity.Identity.SigningPublicKey.ToByteArray();
                 var agreement = identity.Identity.AgreementPublicKey.ToByteArray();
+                var fingerprint = IdentityKeys.FingerprintOf(signing, agreement);
+                var changed = false;
 
-                if (this._secrets.PinnedIdentities.TryGetValue(userId, out var pinned)) {
+                if (this._secrets.PinnedIdentities.TryGetValue(user.UserId, out var pinned)) {
                     if (!pinned.SigningPublicKey.AsSpan().SequenceEqual(signing) || !pinned.AgreementPublicKey.AsSpan().SequenceEqual(agreement)) {
-                        this._keyChanged.Add(userId);
-                        warnings.Add($"{identity.User.Name}@{identity.User.WorldName}'s identity key changed (they may have re-registered). " +
-                                     $"Compare fingerprints over /tell before trusting it: {IdentityKeys.FingerprintOf(signing, agreement)}");
+                        pinned.SigningPublicKey = signing;
+                        pinned.AgreementPublicKey = agreement;
+                        pinned.KeyChangeUnacknowledged = true;
+                        changed = true;
+                        warnings.Add($"{who}'s identity key changed (they may have re-registered). Compare fingerprints over /tell before trusting it: {fingerprint}");
                     }
+
+                    if (pinned.Name != user.Name || pinned.WorldName != user.WorldName) {
+                        if (pinned.Name.Length > 0) {
+                            warnings.Add($"{pinned.Name}@{pinned.WorldName} is now shown as {who} (a rename or world transfer). Their keys are unchanged.");
+                        }
+
+                        pinned.Name = user.Name;
+                        pinned.WorldName = user.WorldName;
+                        changed = true;
+                    }
+
+                    if (pinned.KeyVersion != identity.KeyVersion) {
+                        pinned.KeyVersion = identity.KeyVersion;
+                        changed = true;
+                    }
+                } else {
+                    var previousOwner = this._secrets.PinnedIdentities.FirstOrDefault(pair =>
+                        string.Equals(pair.Value.Name, user.Name, StringComparison.OrdinalIgnoreCase)
+                        && string.Equals(pair.Value.WorldName, user.WorldName, StringComparison.OrdinalIgnoreCase));
+                    if (previousOwner.Value != null) {
+                        warnings.Add($"{who} now belongs to a different account than the one you saw before. Compare fingerprints over /tell before trusting it: {fingerprint}");
+                    }
+
+                    this._secrets.PinnedIdentities[user.UserId] = new PinnedIdentity {
+                        SigningPublicKey = signing,
+                        AgreementPublicKey = agreement,
+                        KeyVersion = identity.KeyVersion,
+                        Name = user.Name,
+                        WorldName = user.WorldName,
+                        KeyChangeUnacknowledged = previousOwner.Value != null,
+                    };
+                    changed = true;
                 }
 
-                this._secrets.PinnedIdentities[userId] = new PinnedIdentity {
-                    SigningPublicKey = signing,
-                    AgreementPublicKey = agreement,
-                    KeyVersion = identity.KeyVersion,
-                };
-                this._secretsVersion++;
-                this._identities[userId] = identity;
+                if (changed) {
+                    this._secretsVersion++;
+                }
+
+                this._identities[user.UserId] = identity;
                 accepted.Add(identity);
             }
         }
@@ -1183,7 +1287,8 @@ public sealed class ClientSession : IAsyncDisposable {
                 var fingerprint = this._identities.TryGetValue(member.User.UserId, out var identity)
                     ? IdentityKeys.FingerprintOf(identity.Identity.SigningPublicKey.Span, identity.Identity.AgreementPublicKey.Span)
                     : null;
-                return new MemberView(member.User, member.Rank, fingerprint, this._keyChanged.Contains(member.User.UserId));
+                var keyChanged = this._secrets.PinnedIdentities.TryGetValue(member.User.UserId, out var pinned) && pinned.KeyChangeUnacknowledged;
+                return new MemberView(member.User, member.Rank, fingerprint, keyChanged);
             })
             .ToImmutableArray();
 
@@ -1200,8 +1305,8 @@ public sealed class ClientSession : IAsyncDisposable {
         return this.RequestAsync(this.RequireConnection(), frame, ct);
     }
 
-    private async Task<Response> RequestAsync(Connection connection, ClientFrame frame, CancellationToken ct) {
-        var response = await connection.RequestAsync(frame, ct);
+    private async Task<Response> RequestAsync(Connection connection, ClientFrame frame, CancellationToken ct, TimeSpan? timeout = null) {
+        var response = await connection.RequestAsync(frame, ct, timeout);
         if (response.Error != null) {
             throw new ServerErrorException(response.Error.Code, response.Error.Message);
         }
@@ -1235,17 +1340,27 @@ public sealed class ClientSession : IAsyncDisposable {
         }
     }
 
+    /// <summary>Runs work in the background; <see cref="DisposeAsync"/> waits for it to finish.</summary>
     private void RunBackground(string what, Func<CancellationToken, Task> work) {
+        if (Volatile.Read(ref this._disposed) == 1) {
+            return;
+        }
+
         var ct = this._runCts?.Token ?? CancellationToken.None;
-        _ = Task.Run(async () => {
+        var task = Task.Run(async () => {
             try {
                 await work(ct);
             } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
                 // Stopping.
-            } catch (Exception ex) {
+            } catch (Exception ex) when (Volatile.Read(ref this._disposed) == 0) {
                 this.RaiseNotice(NoticeLevel.Warning, $"{what} failed: {ex.Message}");
+            } catch {
+                // Shutting down; nobody to tell.
             }
         }, ct);
+
+        this._background[task] = 0;
+        task.ContinueWith(done => this._background.TryRemove(done, out _), TaskScheduler.Default);
     }
 
     private void AddTrace(bool outgoing, string summary) {

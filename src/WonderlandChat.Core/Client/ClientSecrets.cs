@@ -34,6 +34,11 @@ public sealed class PinnedIdentity {
     public byte[] SigningPublicKey { get; set; } = [];
     public byte[] AgreementPublicKey { get; set; } = [];
     public uint KeyVersion { get; set; }
+    public string Name { get; set; } = "";
+    public string WorldName { get; set; } = "";
+
+    /// <summary>The keys changed since they were first seen, and the user hasn't confirmed the new ones yet.</summary>
+    public bool KeyChangeUnacknowledged { get; set; }
 }
 
 /// <summary>Where a client keeps its <see cref="ClientSecrets"/>.</summary>

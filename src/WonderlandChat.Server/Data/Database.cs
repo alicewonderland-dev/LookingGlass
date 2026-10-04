@@ -194,8 +194,12 @@ public sealed class Database {
                           && (!existing.SigningKey.AsSpan().SequenceEqual(signing) || !existing.AgreementKey.AsSpan().SequenceEqual(agreement));
         var keyVersion = existing == null ? 1u : keysChanged ? existing.KeyVersion + 1 : existing.KeyVersion;
 
-        // Another character may previously have held this name on this world (renames).
-        Execute(connection, tx, "DELETE FROM users WHERE name_key = $name AND world_key = $world AND user_id <> $id;",
+        // Another character may previously have held this name on this world (renames). Free the
+        // name without deleting that account, which would silently cascade away its memberships.
+        Execute(connection, tx, """
+            UPDATE users SET name_key = name_key || '#stale-' || user_id, world_key = world_key || '#stale-' || user_id
+            WHERE name_key = $name AND world_key = $world AND user_id <> $id;
+            """,
             ("$name", Key(name)), ("$world", Key(worldName)), ("$id", userId));
 
         Execute(connection, tx, """
@@ -309,14 +313,16 @@ public sealed class Database {
         Execute(connection, null, "DELETE FROM channels WHERE channel_id = $id;", ("$id", channelId));
     }
 
-    public void RenameChannel(string channelId, EncryptedName name) {
+    /// <summary>Renames only if the channel is still at the name's epoch and not awaiting a rekey.</summary>
+    /// <returns>False if the channel changed meanwhile.</returns>
+    public bool RenameChannel(string channelId, EncryptedName name) {
         using var connection = this.Open();
-        Execute(connection, null, """
+        return Execute(connection, null, """
             UPDATE channels SET name_epoch = $epoch, name_author = $author, name_ciphertext = $ciphertext, name_signature = $signature
-            WHERE channel_id = $id;
+            WHERE channel_id = $id AND epoch = $epoch AND rekey_pending = 0;
             """,
             ("$id", channelId), ("$epoch", (long) name.Epoch), ("$author", name.AuthorId),
-            ("$ciphertext", name.Ciphertext.ToByteArray()), ("$signature", name.Signature.ToByteArray()));
+            ("$ciphertext", name.Ciphertext.ToByteArray()), ("$signature", name.Signature.ToByteArray())) == 1;
     }
 
     // ================================================================ invites and membership
@@ -396,14 +402,42 @@ public sealed class Database {
     }
 
     /// <summary>Makes <paramref name="newAdminId"/> the admin and demotes the old admin to moderator, atomically.</summary>
-    public void TransferAdmin(string channelId, long oldAdminId, long newAdminId) {
+    /// <returns>False (and nothing changes) if either is no longer in the expected role.</returns>
+    public bool TransferAdmin(string channelId, long oldAdminId, long newAdminId) {
         using var connection = this.Open();
         using var tx = connection.BeginTransaction();
-        Execute(connection, tx, "UPDATE members SET rank = $rank WHERE channel_id = $channel AND user_id = $user;",
-            ("$rank", (long) Rank.Moderator), ("$channel", channelId), ("$user", oldAdminId));
-        Execute(connection, tx, "UPDATE members SET rank = $rank WHERE channel_id = $channel AND user_id = $user;",
-            ("$rank", (long) Rank.Admin), ("$channel", channelId), ("$user", newAdminId));
+        var demoted = Execute(connection, tx, "UPDATE members SET rank = $new WHERE channel_id = $channel AND user_id = $user AND rank = $old;",
+            ("$new", (long) Rank.Moderator), ("$old", (long) Rank.Admin), ("$channel", channelId), ("$user", oldAdminId));
+        var promoted = Execute(connection, tx, "UPDATE members SET rank = $new WHERE channel_id = $channel AND user_id = $user AND rank IN ($member, $moderator);",
+            ("$new", (long) Rank.Admin), ("$member", (long) Rank.Member), ("$moderator", (long) Rank.Moderator),
+            ("$channel", channelId), ("$user", newAdminId));
+
+        if (demoted != 1 || promoted != 1) {
+            tx.Rollback();
+            return false;
+        }
+
         tx.Commit();
+        return true;
+    }
+
+    /// <summary>Users whose identities a user may fetch: themselves, people in their channels, and their inviters.</summary>
+    public HashSet<long> GetVisibleUserIds(long userId) {
+        using var connection = this.Open();
+        using var command = Command(connection, null, """
+            SELECT $me
+            UNION SELECT m.user_id FROM members m WHERE m.channel_id IN (SELECT channel_id FROM members WHERE user_id = $me)
+            UNION SELECT i.user_id FROM invites i WHERE i.channel_id IN (SELECT channel_id FROM members WHERE user_id = $me)
+            UNION SELECT i.inviter_id FROM invites i WHERE i.user_id = $me
+            UNION SELECT m.user_id FROM members m WHERE m.channel_id IN (SELECT channel_id FROM invites WHERE user_id = $me);
+            """, ("$me", userId));
+        using var reader = command.ExecuteReader();
+        var ids = new HashSet<long>();
+        while (reader.Read()) {
+            ids.Add(reader.GetInt64(0));
+        }
+
+        return ids;
     }
 
     // ================================================================ epochs

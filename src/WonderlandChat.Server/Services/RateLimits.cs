@@ -24,6 +24,33 @@ public sealed class TokenBucket(double perSecond, double burst) {
     }
 }
 
+/// <summary>
+/// Per-user limits. Keyed by user, not connection, so reconnecting doesn't
+/// reset them. Entries for users who have gone quiet are dropped periodically.
+/// </summary>
+public sealed class UserRateLimits(double perSecond, double burst) {
+    private readonly ConcurrentDictionary<long, (TokenBucket Bucket, DateTimeOffset LastUsed)> _buckets = new();
+    private DateTimeOffset _lastSweep = DateTimeOffset.UtcNow;
+
+    public bool TryTake(long userId) {
+        var now = DateTimeOffset.UtcNow;
+        var entry = this._buckets.AddOrUpdate(userId,
+            _ => (new TokenBucket(perSecond, burst), now),
+            (_, existing) => (existing.Bucket, now));
+
+        if (now - this._lastSweep > TimeSpan.FromMinutes(10)) {
+            this._lastSweep = now;
+            foreach (var (id, value) in this._buckets) {
+                if (now - value.LastUsed > TimeSpan.FromHours(1)) {
+                    this._buckets.TryRemove(id, out _);
+                }
+            }
+        }
+
+        return entry.Bucket.TryTake();
+    }
+}
+
 /// <summary>Counts events per key in a sliding window.</summary>
 public sealed class WindowCounter(int limit, TimeSpan window) {
     private readonly ConcurrentDictionary<string, Queue<DateTimeOffset>> _events = new();

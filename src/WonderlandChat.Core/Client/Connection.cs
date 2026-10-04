@@ -46,11 +46,16 @@ internal sealed class Connection : IAsyncDisposable {
         _ = Task.Run(this.ReceiveLoop);
     }
 
-    public async Task<Response> RequestAsync(ClientFrame frame, CancellationToken ct) {
+    public async Task<Response> RequestAsync(ClientFrame frame, CancellationToken ct, TimeSpan? timeout = null) {
         var id = (uint) Interlocked.Increment(ref this._nextRequestId);
         frame.RequestId = id;
         var tcs = new TaskCompletionSource<Response>(TaskCreationOptions.RunContinuationsAsynchronously);
         this._pending[id] = tcs;
+        var limit = timeout ?? this._requestTimeout;
+
+        // The timeout covers the whole request, including waiting for room in the send queue.
+        using var timer = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timer.CancelAfter(limit);
 
         try {
             if (Volatile.Read(ref this._closing) == 1) {
@@ -58,10 +63,10 @@ internal sealed class Connection : IAsyncDisposable {
             }
 
             this._trace(true, $"#{id} {frame.BodyCase}");
-            await this._outbound.Writer.WriteAsync(frame.ToByteArray(), ct);
-            return await tcs.Task.WaitAsync(this._requestTimeout, ct);
-        } catch (TimeoutException) {
-            throw new TimeoutException($"The server did not answer {frame.BodyCase} within {this._requestTimeout.TotalSeconds:0} seconds.");
+            await this._outbound.Writer.WriteAsync(frame.ToByteArray(), timer.Token);
+            return await tcs.Task.WaitAsync(timer.Token);
+        } catch (OperationCanceledException) when (!ct.IsCancellationRequested) {
+            throw new TimeoutException($"The server did not answer {frame.BodyCase} within {limit.TotalSeconds:0} seconds.");
         } catch (ChannelClosedException) {
             throw new SessionDisconnectedException(this._closeReason);
         } finally {
@@ -123,6 +128,9 @@ internal sealed class Connection : IAsyncDisposable {
             }
         } catch (Exception ex) when (ex is OperationCanceledException or WebSocketException or ObjectDisposedException) {
             this.Close(ex is WebSocketException ? $"Connection lost: {ex.Message}" : "Connection closed");
+        } catch (Exception ex) {
+            // Never leave the connection half-alive: callers wait on Closed.
+            this.Close($"Connection failed: {ex.Message}");
         }
     }
 

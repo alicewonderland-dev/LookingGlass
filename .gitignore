@@ -8,3 +8,8 @@ obj/
 *.db-wal
 /data/
 TestResults/
+
+# Never commit keys: the dev tool and echo bot write private keys in plain JSON.
+*-secrets.json
+*.key
+*.tmp

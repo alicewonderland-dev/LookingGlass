@@ -94,7 +94,7 @@ public sealed class EchoBot : IAsyncDisposable {
                     await this._session.SendTextAsync(message.ChannelId, $"{EchoPrefix}pong ({(DateTimeOffset.UtcNow - message.Timestamp).TotalMilliseconds:0} ms since you sent it)", ct);
                     break;
                 case "!rekey":
-                    await this._session.RekeyAsync(message.ChannelId, ct);
+                    await this._session.RekeyAsync(message.ChannelId, ct, force: true);
                     var epoch = this._session.Snapshot.FindChannel(message.ChannelId)?.Epoch;
                     await this._session.SendTextAsync(message.ChannelId, $"{EchoPrefix}rekeyed to epoch {epoch}", ct);
                     break;

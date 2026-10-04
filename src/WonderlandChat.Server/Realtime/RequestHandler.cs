@@ -23,7 +23,13 @@ public sealed class RequestHandler(
     ILogger<RequestHandler> logger) {
     private static readonly string ServerVersion = typeof(RequestHandler).Assembly.GetName().Version?.ToString(3) ?? "0.1.0";
 
+    private static readonly TimeSpan VerifyCooldown = TimeSpan.FromSeconds(10);
+    private const int MaxVerifyAttempts = 10;
+
     private readonly WindowCounter _registrations = new(options.Value.Limits.RegistrationsPerHourPerIp, TimeSpan.FromHours(1));
+    private readonly UserRateLimits _rekeys = new(perSecond: 0.5, burst: 5);
+    private readonly UserRateLimits _lookups = new(perSecond: 0.5, burst: 10);
+    private readonly UserRateLimits _messages = new(ProtocolInfo.DefaultLimits().MessagesPerSecond, ProtocolInfo.DefaultLimits().MessageBurst);
 
     public Limits Limits { get; } = ProtocolInfo.DefaultLimits();
 
@@ -118,12 +124,21 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.RateLimited, "Too many registration attempts; try again later.");
         }
 
-        var found = await lodestone.FindCharacterAsync(name, worldName, ct)
-            ?? throw new RequestException(ErrorCode.RegistrationFailed, $"Couldn't find {name} on {worldName} in the Lodestone.");
+        LodestoneCharacter? found;
+        try {
+            found = await lodestone.FindCharacterAsync(name, worldName, ct);
+        } catch (LodestoneUnavailableException) {
+            throw new RequestException(ErrorCode.RegistrationFailed, "The Lodestone isn't responding right now; try again in a few minutes.");
+        }
+
+        if (found == null) {
+            throw new RequestException(ErrorCode.RegistrationFailed, $"Couldn't find {name} on {worldName} in the Lodestone.");
+        }
 
         var code = "WCL-" + RandomCode(8);
         connection.PendingRegistration = new PendingRegistration(
             found.Id, found.Name, character.WorldId, found.WorldName, request.Identity, code, DateTimeOffset.UtcNow.AddMinutes(minutes), false);
+        connection.VerifyAttempts = 0;
 
         return new Response {
             RegistrationChallenge = new RegistrationChallenge {
@@ -144,6 +159,19 @@ public sealed class RequestHandler(
         }
 
         if (!pending.IsDebug) {
+            // Each attempt costs a Lodestone request, which is shared by the whole server.
+            var sinceLast = DateTimeOffset.UtcNow - connection.LastVerifyAttempt;
+            if (sinceLast < VerifyCooldown) {
+                throw new RequestException(ErrorCode.RateLimited, $"Wait {Math.Ceiling((VerifyCooldown - sinceLast).TotalSeconds):0} seconds before verifying again.");
+            }
+
+            if (connection.VerifyAttempts >= MaxVerifyAttempts) {
+                connection.PendingRegistration = null;
+                throw new RequestException(ErrorCode.RateLimited, "Too many verification attempts; start registration again.");
+            }
+
+            connection.VerifyAttempts++;
+            connection.LastVerifyAttempt = DateTimeOffset.UtcNow;
             var check = await lodestone.ProfileContainsAsync(pending.UserId, pending.Code, ct);
             switch (check) {
                 case ProfileCheck.ProfileUnavailable:
@@ -189,18 +217,24 @@ public sealed class RequestHandler(
     }
 
     private Response GetIdentities(ClientConnection connection, GetIdentities request) {
-        RequireUser(connection);
+        var me = RequireUser(connection);
         if (request.UserIds.Count > options.Value.Limits.MaxIdentitiesPerRequest) {
             throw new RequestException(ErrorCode.TooLarge, "Too many identities requested at once.");
         }
 
+        // Only people you share a channel or invite with, so this can't be used to list who uses the plugin.
+        var visible = db.GetVisibleUserIds(me.UserId);
         var identities = new Identities();
-        identities.Identities_.AddRange(db.GetUsers(request.UserIds).Select(user => user.ToIdentity()));
+        identities.Identities_.AddRange(db.GetUsers(request.UserIds.Where(visible.Contains)).Select(user => user.ToIdentity()));
         return new Response { Identities = identities };
     }
 
     private Response LookupUser(ClientConnection connection, LookupUser request) {
-        RequireUser(connection);
+        var me = RequireUser(connection);
+        if (!this._lookups.TryTake(me.UserId)) {
+            throw new RequestException(ErrorCode.RateLimited, "Too many lookups; slow down.");
+        }
+
         var user = db.FindUser(request.Name, request.WorldName)
             ?? throw new RequestException(ErrorCode.NotFound, $"{request.Name}@{request.WorldName} isn't registered.");
 
@@ -364,7 +398,10 @@ public sealed class RequestHandler(
         }
 
         if (request.Rank == Rank.Admin) {
-            db.TransferAdmin(channelId, me.UserId, target.UserId);
+            if (!db.TransferAdmin(channelId, me.UserId, target.UserId)) {
+                throw new RequestException(ErrorCode.Conflict, "Membership changed; try again.");
+            }
+
             this.BroadcastMemberChange(channelId, target, MemberChangeKind.RankChanged, Rank.Admin, me);
             this.BroadcastMemberChange(channelId, me, MemberChangeKind.RankChanged, Rank.Moderator, me);
         } else {
@@ -391,9 +428,15 @@ public sealed class RequestHandler(
         var channelId = RequireChannelId(request.ChannelId);
         this.RequireAllowed(channelId, me, ChannelAction.Rename);
         var channel = db.GetChannel(channelId)!;
+        if (channel.RekeyPending) {
+            // The current key may still be held by someone who just left.
+            throw new RequestException(ErrorCode.RekeyRequired, "Membership changed; rekey the channel before renaming it.");
+        }
 
         this.ValidateName(request.Name, channelId, channel.Epoch, me);
-        db.RenameChannel(channelId, request.Name);
+        if (!db.RenameChannel(channelId, request.Name)) {
+            throw new RequestException(ErrorCode.Conflict, "The channel changed while renaming; try again.");
+        }
         var members = db.GetMembers(channelId).Select(member => member.User.UserId);
         registry.SendToAll(members, new Event { ChannelRenamed = new ChannelRenamed { ChannelId = channelId, Name = request.Name } }, except: me.UserId);
         return Ack();
@@ -405,6 +448,11 @@ public sealed class RequestHandler(
         var me = RequireUser(connection);
         var channelId = RequireChannelId(request.ChannelId);
         this.RequireAllowed(channelId, me, ChannelAction.Rekey);
+
+        // Each rekey makes every member's client decrypt and save a key, so they're rate-limited.
+        if (!this._rekeys.TryTake(me.UserId)) {
+            throw new RequestException(ErrorCode.RateLimited, "Too many rekeys; slow down.");
+        }
 
         if (request.Keys.Count == 0 || request.Keys.Count > this.Limits.MaxMembersPerChannel) {
             throw new RequestException(ErrorCode.InvalidRequest, "A rekey needs one key per member.");
@@ -460,7 +508,7 @@ public sealed class RequestHandler(
         var channelId = RequireChannelId(request.ChannelId);
         this.RequireAllowed(channelId, me, ChannelAction.Send);
 
-        if (!connection.MessageBucket.TryTake()) {
+        if (!this._messages.TryTake(me.UserId)) {
             throw new RequestException(ErrorCode.RateLimited, "You're sending messages too quickly.");
         }
 

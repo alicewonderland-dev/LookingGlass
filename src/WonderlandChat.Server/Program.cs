@@ -1,3 +1,6 @@
+using System.Collections.Concurrent;
+using System.Net;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Extensions.Options;
 using WonderlandChat.Protocol;
 using WonderlandChat.Server;
@@ -31,6 +34,16 @@ builder.Services.AddHttpClient<LodestoneClient>(client => {
 });
 builder.Services.AddHostedService<EchoBotHost>();
 
+// Behind a reverse proxy, take the client address from X-Forwarded-For so
+// per-IP limits apply to real clients. Only proxies on this machine are
+// trusted by default; add others under WonderlandChat:TrustedProxies.
+builder.Services.Configure<ForwardedHeadersOptions>(forwarded => {
+    forwarded.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+    foreach (var proxy in builder.Configuration.GetSection("WonderlandChat:TrustedProxies").Get<string[]>() ?? []) {
+        forwarded.KnownProxies.Add(IPAddress.Parse(proxy));
+    }
+});
+
 var app = builder.Build();
 var options = app.Services.GetRequiredService<IOptions<ServerOptions>>().Value;
 
@@ -41,7 +54,10 @@ if (options.Dev.AllowDebugAccounts) {
     app.Logger.LogWarning("Debug accounts are ENABLED. Anyone can register a fake character on world \"{World}\". Never do this on a public server.", ProtocolInfo.DebugWorldName);
 }
 
+app.UseForwardedHeaders();
 app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(30) });
+
+var connectionsPerAddress = new ConcurrentDictionary<string, int>();
 
 app.MapGet("/health", (ConnectionRegistry registry) => Results.Ok(new { status = "ok", online = registry.OnlineCount }));
 
@@ -52,16 +68,28 @@ app.Map(ProtocolInfo.WebSocketPath, async (HttpContext context, RequestHandler h
         return;
     }
 
-    using var socket = await context.WebSockets.AcceptWebSocketAsync();
     var address = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-    var connection = new ClientConnection(socket, address, (int) handler.Limits.MaxFrameBytes, options.Limits.SendQueueLength,
-        handler.Limits, loggers.CreateLogger<ClientConnection>());
+    if (connectionsPerAddress.AddOrUpdate(address, 1, (_, count) => count + 1) > options.Limits.ConnectionsPerIp) {
+        connectionsPerAddress.AddOrUpdate(address, 0, (_, count) => count - 1);
+        context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+        return;
+    }
 
     try {
-        await connection.RunAsync(handler.HandleAsync);
+        using var socket = await context.WebSockets.AcceptWebSocketAsync();
+        var connection = new ClientConnection(socket, address, (int) handler.Limits.MaxFrameBytes, options.Limits.SendQueueLength,
+            loggers.CreateLogger<ClientConnection>());
+
+        try {
+            await connection.RunAsync(handler.HandleAsync);
+        } finally {
+            if (connection.User != null) {
+                registry.SetOffline(connection.User.UserId, connection);
+            }
+        }
     } finally {
-        if (connection.User != null) {
-            registry.SetOffline(connection.User.UserId, connection);
+        if (connectionsPerAddress.AddOrUpdate(address, 0, (_, count) => count - 1) <= 0) {
+            connectionsPerAddress.TryRemove(new KeyValuePair<string, int>(address, 0));
         }
     }
 });

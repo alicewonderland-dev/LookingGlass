@@ -42,6 +42,9 @@ public sealed class DevOptions {
 
 public sealed class LimitOptions {
     public int RegistrationsPerHourPerIp { get; set; } = 5;
+
+    /// <summary>Concurrent WebSocket connections allowed from one IP address.</summary>
+    public int ConnectionsPerIp { get; set; } = 20;
     public int MaxIdentitiesPerRequest { get; set; } = 500;
     public int SendQueueLength { get; set; } = 256;
 }

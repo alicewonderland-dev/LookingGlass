@@ -19,6 +19,7 @@ public sealed class SessionManager : IDisposable {
     private ClientSession? _session;
     private PlayerInfo? _sessionPlayer;
     private volatile ImmutableDictionary<string, int> _slots = ImmutableDictionary<string, int>.Empty;
+    private Task? _closing;
 
     public SessionManager(Configuration config, PlayerTracker player, ChatOutput chat) {
         this._config = config;
@@ -121,6 +122,9 @@ public sealed class SessionManager : IDisposable {
             return;
         }
 
+        // Usually finished long ago; only a quick relog has to wait for the old session's final save.
+        this.WaitForPreviousSession();
+
         ClientSession session;
         try {
             session = new ClientSession(new ClientSessionOptions {
@@ -140,9 +144,23 @@ public sealed class SessionManager : IDisposable {
             return;
         }
 
-        session.MessageReceived += message => this._chat.Message(message, this.SlotOf(message.ChannelId));
-        session.Notice += this.OnNotice;
-        session.SnapshotChanged += snapshot => Services.Framework.RunOnFrameworkThread(() => this.SyncSlots(snapshot));
+        // Events from a session that has since been replaced are ignored.
+        session.MessageReceived += message => {
+            if (this.Session == session) {
+                this._chat.Message(message, this.SlotOf(message.ChannelId));
+            }
+        };
+        session.Notice += notice => {
+            if (this.Session == session) {
+                this.OnNotice(notice);
+            }
+        };
+        // Snapshots can arrive out of order; always sync against the latest one of the current session.
+        session.SnapshotChanged += _ => Services.Framework.RunOnFrameworkThread(() => {
+            if (this.Session == session) {
+                this.SyncSlots(session.Snapshot);
+            }
+        });
 
         this._sessionPlayer = player;
         this.RefreshSlotCache();
@@ -172,6 +190,12 @@ public sealed class SessionManager : IDisposable {
         }
     }
 
+    /// <summary>
+    /// Stops the current session. Closing happens in the background so logging
+    /// out never stalls the game; the next session waits for it (see
+    /// <see cref="WaitForPreviousSession"/>) so the two never write the same
+    /// secrets file at once.
+    /// </summary>
     private void Stop() {
         var session = Interlocked.Exchange(ref this._session, null);
         this._sessionPlayer = null;
@@ -180,14 +204,24 @@ public sealed class SessionManager : IDisposable {
             return;
         }
 
-        // Disposing closes the socket; don't block the game on a slow network.
-        if (!Task.Run(() => session.DisposeAsync().AsTask()).Wait(TimeSpan.FromSeconds(3))) {
-            Services.Log.Warning("WonderlandChat session took too long to close");
+        this._closing = Task.Run(async () => {
+            try {
+                await session.DisposeAsync();
+            } catch (Exception ex) {
+                Services.Log.Warning(ex, "Error closing WonderlandChat session");
+            }
+        });
+    }
+
+    private void WaitForPreviousSession() {
+        if (this._closing is { IsCompleted: false } closing && !closing.Wait(TimeSpan.FromSeconds(5))) {
+            Services.Log.Warning("Previous WonderlandChat session is still closing");
         }
     }
 
     public void Dispose() {
         this._player.Changed -= this.OnPlayerChanged;
         this.Stop();
+        this.WaitForPreviousSession();
     }
 }

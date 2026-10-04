@@ -3,7 +3,6 @@ using System.Threading.Channels;
 using Google.Protobuf;
 using WonderlandChat.Protocol;
 using WonderlandChat.Server.Data;
-using WonderlandChat.Server.Services;
 
 namespace WonderlandChat.Server.Realtime;
 
@@ -33,7 +32,7 @@ public sealed class ClientConnection {
     private string? _abortReason;
     private WebSocketCloseStatus _abortStatus = WebSocketCloseStatus.NormalClosure;
 
-    public ClientConnection(WebSocket socket, string remoteAddress, int maxFrameBytes, int queueLength, Limits limits, ILogger logger) {
+    public ClientConnection(WebSocket socket, string remoteAddress, int maxFrameBytes, int queueLength, ILogger logger) {
         this._socket = socket;
         this.RemoteAddress = remoteAddress;
         this._maxFrameBytes = maxFrameBytes;
@@ -42,18 +41,26 @@ public sealed class ClientConnection {
             SingleReader = true,
             FullMode = BoundedChannelFullMode.Wait,
         });
-        this.MessageBucket = new TokenBucket(limits.MessagesPerSecond, limits.MessageBurst);
     }
+
+    /// <summary>How long a connection may stay without logging in (registration included).</summary>
+    public static readonly TimeSpan UnauthenticatedLifetime = TimeSpan.FromMinutes(20);
 
     public string RemoteAddress { get; }
     public bool HelloDone { get; set; }
     public UserRow? User { get; set; }
     public PendingRegistration? PendingRegistration { get; set; }
-    public TokenBucket MessageBucket { get; }
+    public int VerifyAttempts { get; set; }
+    public DateTimeOffset LastVerifyAttempt { get; set; } = DateTimeOffset.MinValue;
     public CancellationToken Aborted => this._cts.Token;
 
     public async Task RunAsync(Func<ClientConnection, ClientFrame, CancellationToken, Task<Response>> handle) {
         var sendLoop = Task.Run(this.SendLoop);
+        _ = Task.Delay(UnauthenticatedLifetime, this._cts.Token).ContinueWith(task => {
+            if (!task.IsCanceled && this.User == null) {
+                this.Abort("Not logged in");
+            }
+        }, TaskScheduler.Default);
         var buffer = new byte[16 * 1024];
         using var frame = new MemoryStream();
 

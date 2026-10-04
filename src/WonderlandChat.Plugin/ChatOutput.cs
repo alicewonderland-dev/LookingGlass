@@ -1,6 +1,7 @@
 using Dalamud.Game.Text;
 using Dalamud.Game.Text.SeStringHandling;
 using WonderlandChat.Core.Client;
+using WonderlandChat.Core.Util;
 
 namespace WonderlandChat.Plugin;
 
@@ -14,14 +15,15 @@ public sealed class ChatOutput(Configuration config) {
     public void Message(IncomingMessage message, int? slot) {
         RunOnFramework(() => {
             var tag = slot is { } s ? $"WCL{s}" : "WCL?";
+            // Everything from other users is sanitised: raw control bytes would become live game formatting.
             var builder = new SeStringBuilder()
                 .AddUiForeground($"[{tag}]", TagColour)
-                .AddText($"<{message.Sender.Name}@{message.Sender.WorldName}> ");
+                .AddText($"<{TextSanitizer.Name(message.Sender.Name)}@{TextSanitizer.Name(message.Sender.WorldName)}> ");
 
             if (message.Unsupported) {
                 builder.AddItalics("(a message type this version can't show)");
             } else {
-                builder.AddText(message.Text ?? "");
+                builder.AddText(TextSanitizer.Clean(message.Text));
             }
 
             Services.Chat.Print(new XivChatEntry { Type = config.ChatType, Message = builder.Build() });
@@ -34,6 +36,8 @@ public sealed class ChatOutput(Configuration config) {
             return;
         }
 
+        // Notices embed remote text (names, channel names, server errors and announcements).
+        text = TextSanitizer.Clean(text);
         RunOnFramework(() => {
             var builder = new SeStringBuilder().AddUiForeground("[WonderlandChat] ", TagColour);
             switch (level) {

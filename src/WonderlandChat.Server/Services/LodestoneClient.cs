@@ -7,6 +7,8 @@ namespace WonderlandChat.Server.Services;
 
 public sealed record LodestoneCharacter(long Id, string Name, string WorldName);
 
+public sealed class LodestoneUnavailableException() : Exception("The Lodestone couldn't be reached.");
+
 public enum ProfileCheck {
     CodeFound,
     CodeNotFound,
@@ -20,6 +22,7 @@ public enum ProfileCheck {
 /// </summary>
 public sealed partial class LodestoneClient(HttpClient http, IOptions<ServerOptions> options, ILogger<LodestoneClient> logger) {
     private static readonly TimeSpan SearchCacheTime = TimeSpan.FromHours(1);
+    private static readonly TimeSpan MissCacheTime = TimeSpan.FromMinutes(10);
     private const int MaxSearchPages = 10;
 
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -29,6 +32,7 @@ public sealed partial class LodestoneClient(HttpClient http, IOptions<ServerOpti
     private LodestoneOptions Options => options.Value.Lodestone;
 
     /// <summary>Finds the character with exactly this name on this home world.</summary>
+    /// <exception cref="LodestoneUnavailableException">The Lodestone couldn't be reached; nothing is cached.</exception>
     public async Task<LodestoneCharacter?> FindCharacterAsync(string name, string worldName, CancellationToken ct) {
         var cacheKey = $"{name.ToLowerInvariant()}@{worldName.ToLowerInvariant()}";
         if (this._searchCache.TryGetValue(cacheKey, out var cached) && cached.Expires > DateTimeOffset.UtcNow) {
@@ -38,10 +42,8 @@ public sealed partial class LodestoneClient(HttpClient http, IOptions<ServerOpti
         LodestoneCharacter? found = null;
         for (var page = 1; page <= MaxSearchPages && found == null; page++) {
             var url = $"{this.Options.BaseUrl}/lodestone/character/?q={Uri.EscapeDataString($"\"{name}\"")}&worldname={Uri.EscapeDataString(worldName)}&page={page}";
-            var html = await this.GetAsync(url, ct);
-            if (html == null) {
-                break;
-            }
+            // A failed request is not "not found": don't cache it, and tell the caller.
+            var html = await this.GetAsync(url, ct) ?? throw new LodestoneUnavailableException();
 
             foreach (Match entry in EntryPattern().Matches(html)) {
                 var entryName = WebUtility.HtmlDecode(entry.Groups["name"].Value).Trim();
@@ -59,7 +61,8 @@ public sealed partial class LodestoneClient(HttpClient http, IOptions<ServerOpti
             }
         }
 
-        this._searchCache[cacheKey] = (found, DateTimeOffset.UtcNow + SearchCacheTime);
+        // Misses are cached briefly, so a newly created character can register soon.
+        this._searchCache[cacheKey] = (found, DateTimeOffset.UtcNow + (found != null ? SearchCacheTime : MissCacheTime));
         return found;
     }
 
