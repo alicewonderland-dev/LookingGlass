@@ -6,5 +6,7 @@
     <Version>0.1.0</Version>
     <Authors>WonderlandDev</Authors>
     <Product>WonderlandChat</Product>
+    <PackageLicenseExpression>AGPL-3.0-only</PackageLicenseExpression>
+    <Copyright>Copyright (C) 2026 WonderlandDev</Copyright>
   </PropertyGroup>
 </Project>

@@ -135,4 +135,6 @@ What it does not do yet (0.1):
 
 ## License
 
-Not yet chosen. Until a license is added, all rights are reserved.
+[GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0-only). If you
+run a modified version of the server for other people, you must offer them its
+source code (section 13).
