@@ -11,6 +11,17 @@ namespace LookingGlass.Core.Client;
 /// </summary>
 public sealed class ClientSecrets {
     public int Version { get; set; } = 1;
+
+    /// <summary>
+    /// The server address these secrets belong to, as <see cref="ServerSecretFiles.NormaliseUrl"/> gives it. A store
+    /// bound to an address (<see cref="ServerBoundSecretStore"/>) refuses secrets that name another, so identities
+    /// for different servers never mix. Null in files from before it was recorded, and in new, unsaved secrets.
+    /// </summary>
+    public string? ServerUrl { get; set; }
+
+    /// <summary>The origin of <see cref="ServerUrl"/> (see <see cref="Client.ServerOrigin"/>), for reference.</summary>
+    public string? ServerOrigin { get; set; }
+
     public byte[]? SigningPrivateKey { get; set; }
     public byte[]? AgreementPrivateKey { get; set; }
     public string? DeviceToken { get; set; }

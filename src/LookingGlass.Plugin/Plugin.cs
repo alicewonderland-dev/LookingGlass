@@ -19,6 +19,8 @@ public sealed class Plugin : IDalamudPlugin {
         pluginInterface.Create<Services>();
 
         this._config = pluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
+        // Before any session, and before the address can be changed: see ServerSecretFiles.
+        ProtectedSecretStore.MigrateOldFiles(this._config.ServerUrl);
         var chat = new ChatOutput(this._config);
         this._player = new PlayerTracker();
         this._sessions = new SessionManager(this._config, this._player, chat);
