@@ -40,6 +40,15 @@ public sealed class SigningPayload {
         return this.Add(bytes);
     }
 
+    /// <summary>A membership log position, or a marker that there is none.</summary>
+    public SigningPayload Add(Protocol.LogPosition? position) {
+        if (position == null) {
+            return this.Add(0L);
+        }
+
+        return this.Add(1L).Add(position.Seq).Add(position.Hash.Span);
+    }
+
     public byte[] ToArray() => this._buffer.WrittenSpan.ToArray();
 }
 
@@ -53,4 +62,6 @@ public static class Domains {
     public const string ChannelName = "wonderlandchat/channel-name/v1";
     public const string Invite = "wonderlandchat/invite/v1";
     public const string Message = "wonderlandchat/message/v1";
+    public const string MembershipEntry = "wonderlandchat/membership-entry/v1";
+    public const string MembershipEntryHash = "wonderlandchat/membership-entry-hash/v1";
 }

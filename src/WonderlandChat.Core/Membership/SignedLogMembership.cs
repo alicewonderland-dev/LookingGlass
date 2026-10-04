@@ -1,0 +1,437 @@
+using System.Collections.Immutable;
+using Google.Protobuf;
+using WonderlandChat.Core.Crypto;
+using WonderlandChat.Protocol;
+
+namespace WonderlandChat.Core.Membership;
+
+/// <summary>The v0.2 membership layer: a hash-chained log of signed entries per channel.</summary>
+public sealed class SignedLogMembershipProvider : IMembershipProvider {
+    public static readonly SignedLogMembershipProvider Instance = new();
+
+    public IChannelMembership Empty(string channelId) => SignedLogMembership.Empty(channelId);
+
+    public IChannelMembership Restore(MembershipCheckpoint checkpoint) => SignedLogMembership.Restore(checkpoint);
+
+    public MembershipEntry CreateGenesis(string channelId, IdentityKeys creator, long creatorId, long timestampMs) {
+        var keys = MemberKeys.Of(creator);
+        var entry = new MembershipEntry {
+            ChannelId = channelId,
+            Seq = 0,
+            Kind = MembershipEntryKind.Genesis,
+            ActorId = creatorId,
+            ActorKeyHash = ByteString.CopyFrom(keys.Hash),
+            Subject = keys.ToProto(creatorId),
+            Rank = Rank.Admin,
+            TimestampUnixMs = timestampMs,
+        };
+        MembershipEntries.Sign(entry, creator);
+        return entry;
+    }
+}
+
+/// <summary>
+/// A channel's membership, worked out by replaying its signed log. Each entry is valid only if,
+/// at that point in the log, its signer was allowed to make it (design doc, "Authenticated
+/// membership"), and only counts if signed by the exact keys the log knows its signer by: a
+/// removed member's key signs nothing that counts, and a member who registers again with new
+/// keys is not a member under them until invited again.
+/// </summary>
+public sealed class SignedLogMembership : IChannelMembership {
+    /// <summary>
+    /// How many recent entry hashes are kept: those since the members last changed, which keys
+    /// and names may name as their position. A longer run of invites and rank changes without a
+    /// join or leave only means keys made before it no longer count, and the channel is rekeyed.
+    /// </summary>
+    public const int MaxRecentHashes = 256;
+
+    private readonly ImmutableDictionary<long, ChannelMember> _members;
+    private readonly ImmutableDictionary<long, ChannelInvitee> _invitees;
+    // Hashes of entries _recentFrom .. Head.Seq.
+    private readonly ImmutableList<byte[]> _recent;
+    private readonly ulong _recentFrom;
+
+    private SignedLogMembership(string channelId, LogPosition? head, ulong membersChangedAt,
+        ImmutableDictionary<long, ChannelMember> members, ImmutableDictionary<long, ChannelInvitee> invitees,
+        ImmutableList<byte[]> recent, ulong recentFrom) {
+        this.ChannelId = channelId;
+        this.Head = head;
+        this.MembersChangedAt = membersChangedAt;
+        this._members = members;
+        this._invitees = invitees;
+        this._recent = recent;
+        this._recentFrom = recentFrom;
+    }
+
+    public static SignedLogMembership Empty(string channelId) {
+        return new SignedLogMembership(channelId, null, 0, ImmutableDictionary<long, ChannelMember>.Empty,
+            ImmutableDictionary<long, ChannelInvitee>.Empty, ImmutableList<byte[]>.Empty, 0);
+    }
+
+    public static SignedLogMembership Restore(MembershipCheckpoint checkpoint) {
+        if (checkpoint.Hash.Length == 0) {
+            return Empty(checkpoint.ChannelId);
+        }
+
+        var head = new LogPosition { Seq = checkpoint.Seq, Hash = ByteString.CopyFrom(checkpoint.Hash) };
+        var members = checkpoint.Members.ToImmutableDictionary(
+            member => member.UserId,
+            member => new ChannelMember(member.UserId, new MemberKeys(member.SigningPublicKey, member.AgreementPublicKey), member.Rank));
+        var invitees = checkpoint.Invitees.ToImmutableDictionary(
+            invitee => invitee.UserId,
+            invitee => new ChannelInvitee(invitee.UserId, new MemberKeys(invitee.SigningPublicKey, invitee.AgreementPublicKey),
+                new LogPosition { Seq = invitee.InviteSeq, Hash = ByteString.CopyFrom(invitee.InviteHash) },
+                invitee.InviterId, new MemberKeys(invitee.InviterSigningPublicKey, invitee.InviterAgreementPublicKey)));
+
+        var recent = checkpoint.RecentHashes.ToImmutableList();
+        var recentFrom = checkpoint.RecentFrom;
+        if (recent.Count == 0 || recentFrom + (ulong) recent.Count - 1 != checkpoint.Seq || !recent[^1].AsSpan().SequenceEqual(checkpoint.Hash)) {
+            // Inconsistent (edited by hand?): remember only the head.
+            recent = [checkpoint.Hash];
+            recentFrom = checkpoint.Seq;
+        }
+
+        return new SignedLogMembership(checkpoint.ChannelId, head, checkpoint.MembersChangedAt, members, invitees, recent, recentFrom);
+    }
+
+    public string ChannelId { get; }
+    public LogPosition? Head { get; }
+    public ulong MembersChangedAt { get; }
+    public IReadOnlyCollection<ChannelMember> Members => this._members.Values.ToList();
+    public IReadOnlyCollection<ChannelInvitee> Invitees => this._invitees.Values.ToList();
+
+    public ChannelMember? FindMember(long userId) => this._members.GetValueOrDefault(userId);
+
+    public ChannelInvitee? FindInvitee(long userId) => this._invitees.GetValueOrDefault(userId);
+
+    public bool IsCurrent(LogPosition? position) {
+        return position != null && this.Head != null
+                                && position.Seq >= this.MembersChangedAt
+                                && this.HashAt(position.Seq) is { } hash
+                                && hash.AsSpan().SequenceEqual(position.Hash.Span);
+    }
+
+    public byte[]? HashAt(ulong seq) {
+        if (this.Head == null || seq < this._recentFrom || seq > this.Head.Seq) {
+            return null;
+        }
+
+        return this._recent[(int) (seq - this._recentFrom)];
+    }
+
+    public MembershipVerdict Check(MembershipEntry entry) => this.Evaluate(entry, out _);
+
+    public IChannelMembership Apply(MembershipEntry entry) {
+        var verdict = this.Evaluate(entry, out var next);
+        return verdict.IsValid ? next! : throw new MembershipException(verdict);
+    }
+
+    public MembershipEntry Create(MembershipEntryKind kind, long subjectId, IdentityKeys actor, long actorId, long timestampMs,
+        MemberKeys? inviteeKeys = null, Rank rank = Rank.Unspecified) {
+        MemberKeys subjectKeys;
+        LogPosition? invite = null;
+        switch (kind) {
+            case MembershipEntryKind.Invite:
+                subjectKeys = inviteeKeys ?? throw new ArgumentNullException(nameof(inviteeKeys));
+                break;
+            case MembershipEntryKind.Accept:
+            case MembershipEntryKind.Decline:
+            case MembershipEntryKind.CancelInvite:
+                var invitee = this.FindInvitee(subjectId) ?? throw new MembershipException(new MembershipVerdict(MembershipVerdictKind.Conflict, "There is no open invite for them."));
+                subjectKeys = invitee.Keys;
+                invite = invitee.Invite.Clone();
+                break;
+            case MembershipEntryKind.Remove:
+            case MembershipEntryKind.Leave:
+            case MembershipEntryKind.SetRank:
+            case MembershipEntryKind.TransferAdmin:
+                subjectKeys = this.FindMember(subjectId)?.Keys ?? throw new MembershipException(new MembershipVerdict(MembershipVerdictKind.Conflict, "They aren't a member of this channel."));
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(kind), kind, "Genesis entries come from IMembershipProvider.CreateGenesis.");
+        }
+
+        var entry = new MembershipEntry {
+            ChannelId = this.ChannelId,
+            Seq = this.Head == null ? 0 : this.Head.Seq + 1,
+            PreviousHash = this.Head?.Hash ?? ByteString.Empty,
+            Kind = kind,
+            ActorId = actorId,
+            ActorKeyHash = ByteString.CopyFrom(MemberKeys.Of(actor).Hash),
+            Subject = subjectKeys.ToProto(subjectId),
+            Rank = rank,
+            TimestampUnixMs = timestampMs,
+            Invite = invite,
+        };
+        MembershipEntries.Sign(entry, actor);
+
+        var verdict = this.Check(entry);
+        return verdict.IsValid ? entry : throw new MembershipException(verdict);
+    }
+
+    public MembershipCheckpoint ToCheckpoint() {
+        return new MembershipCheckpoint {
+            ChannelId = this.ChannelId,
+            Seq = this.Head?.Seq ?? 0,
+            Hash = this.Head?.Hash.ToByteArray() ?? [],
+            MembersChangedAt = this.MembersChangedAt,
+            RecentHashes = [.. this._recent],
+            RecentFrom = this._recentFrom,
+            Members = this._members.Values.OrderBy(member => member.UserId).Select(member => new CheckpointMember {
+                UserId = member.UserId,
+                SigningPublicKey = member.Keys.SigningKeyArray(),
+                AgreementPublicKey = member.Keys.AgreementKeyArray(),
+                Rank = member.Rank,
+            }).ToList(),
+            Invitees = this._invitees.Values.OrderBy(invitee => invitee.UserId).Select(invitee => new CheckpointInvitee {
+                UserId = invitee.UserId,
+                SigningPublicKey = invitee.Keys.SigningKeyArray(),
+                AgreementPublicKey = invitee.Keys.AgreementKeyArray(),
+                InviteSeq = invitee.Invite.Seq,
+                InviteHash = invitee.Invite.Hash.ToByteArray(),
+                InviterId = invitee.InviterId,
+                InviterSigningPublicKey = invitee.InviterKeys.SigningKeyArray(),
+                InviterAgreementPublicKey = invitee.InviterKeys.AgreementKeyArray(),
+            }).ToList(),
+        };
+    }
+
+    // ================================================================ the rules
+
+    private MembershipVerdict Evaluate(MembershipEntry entry, out SignedLogMembership? next) {
+        next = null;
+        if (entry.ChannelId != this.ChannelId) {
+            return Invalid("It belongs to another channel.");
+        }
+
+        if (this.Head == null) {
+            if (entry.Kind != MembershipEntryKind.Genesis || entry.Seq != 0 || entry.PreviousHash.Length != 0) {
+                return new MembershipVerdict(MembershipVerdictKind.NotNext, "The log must start with a genesis entry.");
+            }
+        } else {
+            if (entry.Seq != this.Head.Seq + 1 || !entry.PreviousHash.Span.SequenceEqual(this.Head.Hash.Span)) {
+                return new MembershipVerdict(MembershipVerdictKind.NotNext, $"It isn't the entry after #{this.Head.Seq}.");
+            }
+
+            if (entry.Kind == MembershipEntryKind.Genesis) {
+                return Invalid("Only the first entry can be a genesis entry.");
+            }
+
+            if (this._members.IsEmpty) {
+                return Invalid("Everyone has left this channel.");
+            }
+        }
+
+        var subjectKeys = MemberKeys.FromProto(entry.Subject);
+        if (subjectKeys is not { IsWellFormed: true } || entry.Signature.Length != 64 || entry.ActorKeyHash.Length != MembershipEntries.HashSize) {
+            return Invalid("It is malformed.");
+        }
+
+        var subjectId = entry.Subject.UserId;
+        var kind = entry.Kind;
+
+        // Ranks and invite positions appear only where they mean something, so each entry has one reading.
+        var rankFits = kind switch {
+            MembershipEntryKind.Genesis => entry.Rank == Rank.Admin,
+            MembershipEntryKind.SetRank => entry.Rank is Rank.Member or Rank.Moderator,
+            _ => entry.Rank == Rank.Unspecified,
+        };
+        var answersInvite = kind is MembershipEntryKind.Accept or MembershipEntryKind.Decline or MembershipEntryKind.CancelInvite;
+        if (!rankFits || answersInvite != (entry.Invite != null)) {
+            return Invalid("Its rank or invite field doesn't fit its kind.");
+        }
+
+        // Work out whose keys must have signed it: the log's, never the server's.
+        MemberKeys actorKeys;
+        ChannelMember? actor = null;
+        ChannelInvitee? invitee = null;
+        switch (kind) {
+            case MembershipEntryKind.Genesis:
+                if (entry.ActorId != subjectId) {
+                    return Invalid("A channel's creator must be its first member.");
+                }
+
+                actorKeys = subjectKeys;
+                break;
+            case MembershipEntryKind.Accept:
+            case MembershipEntryKind.Decline:
+                if (entry.ActorId != subjectId) {
+                    return Invalid("Only the invitee can answer their invite.");
+                }
+
+                invitee = this.FindInvitee(subjectId);
+                if (invitee == null) {
+                    return Conflict("There is no open invite for them.");
+                }
+
+                actorKeys = invitee.Keys;
+                break;
+            default:
+                actor = this.FindMember(entry.ActorId);
+                if (actor == null) {
+                    return Forbidden("Its author isn't a member of the channel.");
+                }
+
+                actorKeys = actor.Keys;
+                break;
+        }
+
+        if (!entry.ActorKeyHash.Span.SequenceEqual(actorKeys.Hash)) {
+            return Invalid("It isn't signed with the key the log knows its author by.");
+        }
+
+        if (!IdentityKeys.Verify(actorKeys.SigningPublicKey, MembershipEntries.SigningPayload(entry), entry.Signature.Span)) {
+            return Invalid("Its signature doesn't verify.");
+        }
+
+        var members = this._members;
+        var invitees = this._invitees;
+        var membersChanged = false;
+        var position = MembershipEntries.PositionOf(entry);
+
+        switch (kind) {
+            case MembershipEntryKind.Genesis:
+                if (!IdentityKeys.IsUsableAgreementKey(subjectKeys.AgreementPublicKey)) {
+                    return Invalid("The creator's agreement key can't be sealed to.");
+                }
+
+                members = members.SetItem(subjectId, new ChannelMember(subjectId, subjectKeys, Rank.Admin));
+                membersChanged = true;
+                break;
+
+            case MembershipEntryKind.Invite:
+                if (actor!.Rank < Rank.Moderator) {
+                    return Forbidden("Only moderators and the admin can invite.");
+                }
+
+                if (members.ContainsKey(subjectId)) {
+                    return Conflict("They're already a member (perhaps under an older key: remove them first).");
+                }
+
+                if (invitees.ContainsKey(subjectId)) {
+                    return Conflict("They're already invited.");
+                }
+
+                if (!IdentityKeys.IsUsableAgreementKey(subjectKeys.AgreementPublicKey)) {
+                    return Invalid("The invitee's agreement key can't be sealed to.");
+                }
+
+                invitees = invitees.SetItem(subjectId, new ChannelInvitee(subjectId, subjectKeys, position, actor.UserId, actor.Keys));
+                break;
+
+            case MembershipEntryKind.Accept:
+            case MembershipEntryKind.Decline:
+            case MembershipEntryKind.CancelInvite:
+                if (kind == MembershipEntryKind.CancelInvite) {
+                    if (actor!.Rank < Rank.Moderator) {
+                        return Forbidden("Only moderators and the admin can cancel invites.");
+                    }
+
+                    invitee = this.FindInvitee(subjectId);
+                    if (invitee == null) {
+                        return Conflict("There is no open invite for them.");
+                    }
+                }
+
+                if (subjectKeys != invitee!.Keys || !MembershipEntries.SamePosition(entry.Invite, invitee.Invite)) {
+                    return Invalid("It doesn't answer the open invite.");
+                }
+
+                invitees = invitees.Remove(subjectId);
+                if (kind == MembershipEntryKind.Accept) {
+                    members = members.SetItem(subjectId, new ChannelMember(subjectId, subjectKeys, Rank.Member));
+                    membersChanged = true;
+                }
+
+                break;
+
+            case MembershipEntryKind.Remove:
+            case MembershipEntryKind.Leave:
+            case MembershipEntryKind.SetRank:
+            case MembershipEntryKind.TransferAdmin: {
+                var target = this.FindMember(subjectId);
+                if (target == null) {
+                    return Conflict("They aren't a member of this channel.");
+                }
+
+                if (subjectKeys != target.Keys) {
+                    return Invalid("It names keys their membership isn't bound to.");
+                }
+
+                switch (kind) {
+                    case MembershipEntryKind.Remove:
+                        if (actor!.Rank < Rank.Moderator || target.Rank >= actor.Rank) {
+                            return Forbidden("You can only remove members ranked below you.");
+                        }
+
+                        break;
+                    case MembershipEntryKind.Leave:
+                        if (subjectId != actor!.UserId) {
+                            return Invalid("Only members themselves can leave.");
+                        }
+
+                        if (actor.Rank == Rank.Admin && members.Count > 1) {
+                            return Forbidden("The admin can't leave while others remain. Make someone else admin first, or disband the channel.");
+                        }
+
+                        break;
+                    default:
+                        if (actor!.Rank != Rank.Admin) {
+                            return Forbidden("Only the admin can change ranks.");
+                        }
+
+                        if (subjectId == actor.UserId) {
+                            return Invalid("The admin can't change their own rank.");
+                        }
+
+                        if (kind == MembershipEntryKind.SetRank && target.Rank == entry.Rank) {
+                            return Conflict("They already have that rank.");
+                        }
+
+                        break;
+                }
+
+                if (kind is MembershipEntryKind.Remove or MembershipEntryKind.Leave) {
+                    members = members.Remove(subjectId);
+                    membersChanged = true;
+                } else if (kind == MembershipEntryKind.SetRank) {
+                    members = members.SetItem(subjectId, target with { Rank = entry.Rank });
+                } else {
+                    members = members
+                        .SetItem(subjectId, target with { Rank = Rank.Admin })
+                        .SetItem(actor!.UserId, actor with { Rank = Rank.Moderator });
+                }
+
+                break;
+            }
+
+            default:
+                return Invalid("Unknown kind of entry.");
+        }
+
+        var hash = position.Hash.ToByteArray();
+        ImmutableList<byte[]> recent;
+        ulong recentFrom;
+        if (membersChanged) {
+            recent = [hash];
+            recentFrom = entry.Seq;
+        } else {
+            recent = this._recent.Add(hash);
+            recentFrom = this._recentFrom;
+            if (recent.Count > MaxRecentHashes) {
+                recent = recent.RemoveAt(0);
+                recentFrom++;
+            }
+        }
+
+        next = new SignedLogMembership(this.ChannelId, position, membersChanged ? entry.Seq : this.MembersChangedAt,
+            members, invitees, recent, recentFrom);
+        return MembershipVerdict.Valid;
+    }
+
+    private static MembershipVerdict Invalid(string reason) => new(MembershipVerdictKind.Invalid, reason);
+
+    private static MembershipVerdict Forbidden(string reason) => new(MembershipVerdictKind.Forbidden, reason);
+
+    private static MembershipVerdict Conflict(string reason) => new(MembershipVerdictKind.Conflict, reason);
+}

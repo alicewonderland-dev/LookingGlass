@@ -4,6 +4,8 @@
 //   * Within protocol version 1, changes are additive only: new fields, new
 //     oneof cases, new enum values. Never renumber or reuse a field number.
 //   * Removing a field or changing its meaning requires protocol version 2.
+//   * Until version 1 is released it may still change in place (v0.2 replaced
+//     server-trusted membership with the signed membership log).
 //
 // Transport: one binary WebSocket message per frame. The client sends
 // ClientFrame, the server sends ServerFrame.
@@ -40,6 +42,7 @@ message ClientFrame {
     SubmitRekey submit_rekey = 26;
     FetchEpochKeys fetch_epoch_keys = 27;
     SendMessage send_message = 28;
+    FetchMembershipLog fetch_membership_log = 29;
   }
 }
 
@@ -65,6 +68,7 @@ message Response {
     ChannelInfo channel = 17;
     Ack ack = 18;
     EpochKeys epoch_keys = 19;
+    MembershipLog membership_log = 20;
   }
 }
 
@@ -73,15 +77,16 @@ message Event {
   uint64 seq = 1;
 
   oneof kind {
+    MemberChanged member_changed = 12;
     Announcement announcement = 10;
     InviteReceived invite_received = 11;
-    MemberChanged member_changed = 12;
     RekeyNeeded rekey_needed = 13;
     EpochAdvanced epoch_advanced = 14;
     ChatMessage chat_message = 15;
     ChannelRenamed channel_renamed = 16;
     ChannelRemoved channel_removed = 17;
     InviteRevoked invite_revoked = 18;
+    LogEntryAdded log_entry_added = 19;
   }
 }
 
@@ -235,6 +240,84 @@ enum Rank {
   RANK_ADMIN = 4;
 }
 
+// ---------------------------------------------------------------- membership log
+//
+// Every membership change is an entry in a hash-chained log per channel, signed
+// by the member who made it. Clients replay the log to work out the members, their
+// ranks and their keys, and never take the server's word for any of them (see
+// WonderlandChat.Core.Membership). The server checks entries the same way before
+// storing them, but only as a courtesy.
+
+enum MembershipEntryKind {
+  MEMBERSHIP_ENTRY_KIND_UNSPECIFIED = 0;
+  // Entry 0: the creator, who becomes admin.
+  MEMBERSHIP_ENTRY_KIND_GENESIS = 1;
+  // By a moderator or admin, for someone who isn't a member or invited.
+  MEMBERSHIP_ENTRY_KIND_INVITE = 2;
+  // By the invitee, with the exact key the invite names.
+  MEMBERSHIP_ENTRY_KIND_ACCEPT = 3;
+  // By the invitee.
+  MEMBERSHIP_ENTRY_KIND_DECLINE = 4;
+  // By a moderator or admin.
+  MEMBERSHIP_ENTRY_KIND_CANCEL_INVITE = 5;
+  // By a moderator or admin, for a member ranked below them.
+  MEMBERSHIP_ENTRY_KIND_REMOVE = 6;
+  // By the leaving member, unless they are the admin and others remain.
+  MEMBERSHIP_ENTRY_KIND_LEAVE = 7;
+  // By the admin: makes a member a moderator, or a moderator a member.
+  MEMBERSHIP_ENTRY_KIND_SET_RANK = 8;
+  // By the admin: the subject becomes admin and the actor a moderator.
+  MEMBERSHIP_ENTRY_KIND_TRANSFER_ADMIN = 9;
+}
+
+// A user as the log knows them: the identity keys that membership is bound to.
+// A member who registers again has new keys, which aren't a member until invited again.
+message MemberKey {
+  int64 user_id = 1;
+  bytes signing_public_key = 2;
+  bytes agreement_public_key = 3;
+}
+
+// A point in a channel's log: an entry's sequence number and hash.
+message LogPosition {
+  uint64 seq = 1;
+  bytes hash = 2;
+}
+
+message MembershipEntry {
+  string channel_id = 1;
+  uint64 seq = 2;
+  // Hash of entry seq - 1; empty for the genesis entry.
+  bytes previous_hash = 3;
+  MembershipEntryKind kind = 4;
+  int64 actor_id = 5;
+  // SHA-256 of the actor's identity keys, as hashed for their fingerprint (see MemberKeys.Hash).
+  bytes actor_key_hash = 6;
+  MemberKey subject = 7;
+  // Genesis: admin. Set rank: the new rank. Unspecified otherwise.
+  Rank rank = 8;
+  int64 timestamp_unix_ms = 9;
+  // Accept, decline and cancel: the invite entry they answer.
+  LogPosition invite = 10;
+  // The actor's signature over everything above (see MembershipEntries.SigningPayload).
+  bytes signature = 15;
+}
+
+// Entries of one channel's log, oldest first, and the server's newest position.
+message MembershipLog {
+  string channel_id = 1;
+  repeated MembershipEntry entries = 2;
+  LogPosition head = 3;
+}
+
+// Asks for log entries from from_seq on. Members and invitees may ask. The
+// server sends at most a page (ProtocolInfo.MaxLogEntriesPerPage), and the
+// client asks again from where it ends.
+message FetchMembershipLog {
+  string channel_id = 1;
+  uint64 from_seq = 2;
+}
+
 message Member {
   User user = 1;
   Rank rank = 2;
@@ -250,12 +333,15 @@ message SealedBox {
 message SealedEpochKey {
   int64 recipient_id = 1;
   SealedBox box = 2;
-  // Signature over the recipient, box and key_commitment (see ChannelCrypto).
+  // Signature over the recipient, box, key_commitment and log_position (see ChannelCrypto).
   bytes signature = 3;
   // SHA-256 commitment to the epoch key itself (see ChannelCrypto.KeyCommitment).
   // Every copy in a rekey carries the same one, so a recipient whose copy
   // opens to a different key knows the author tried to split the channel.
   bytes key_commitment = 4;
+  // The membership log position the key was made for: it is sealed to exactly
+  // the members at that position. Signed.
+  LogPosition log_position = 5;
 }
 
 // The channel name encrypted under an epoch key and signed by its author.
@@ -271,6 +357,8 @@ message EncryptedName {
   // new epoch. Signed, so a client that knows that version under another name
   // can tell the rekeyer changed it. Absent for new channels and renames.
   NameSource carried_from = 6;
+  // The membership log position the name was made at. Signed.
+  LogPosition log_position = 7;
 }
 
 message NameSource {
@@ -284,24 +372,43 @@ message ChannelInfo {
   // Membership changed since the current epoch; it must be rekeyed before use.
   bool rekey_pending = 3;
   EncryptedName name = 4;
+  // The users the server lists as members and invitees, for their names only.
+  // Clients take members and ranks from the log.
   repeated Member members = 5;
   Rank my_rank = 6;
   // With rekey_pending: the server asks the viewer to perform the rekey, as RekeyNeeded's
   // designated_user_id would. Lets a member who wasn't told (because the event came before
   // they knew the channel, or while they were offline) act on it.
   bool rekey_designated = 7;
+  // The server's newest log position.
+  LogPosition log_head = 8;
+  // Log entries after the position the client gave in ListChannels (from 0 if none), at
+  // most a few (ProtocolInfo.MaxLogEntriesInChannelInfo): fetch the rest with FetchMembershipLog.
+  repeated MembershipEntry log = 9;
 }
 
-message ListChannels {}
+// How much of a channel's log the client already has.
+message KnownLog {
+  string channel_id = 1;
+  // The first entry the client doesn't have.
+  uint64 next_seq = 2;
+}
+
+message ListChannels {
+  repeated KnownLog known = 1;
+}
 
 message InviteInfo {
   string channel_id = 1;
   User inviter = 2;
   // The channel name sealed to the invitee by the inviter.
   SealedBox sealed_name = 3;
-  // Inviter's signature over the invite (channel, invitee, sealed name).
+  // Inviter's signature over the sealed name (channel, invitee, sealed name).
   bytes signature = 4;
   int64 created_unix = 5;
+  // The invite's entry in the channel's log. The invitee fetches and checks the whole
+  // log before trusting it, and checks the signature above with the inviter's key from the log.
+  MembershipEntry entry = 6;
 }
 
 message ChannelList {
@@ -312,36 +419,48 @@ message ChannelList {
 message CreateChannel {
   // Client-generated (UUID, 32 hex digits) so it can be bound into signatures.
   string channel_id = 1;
-  // Epoch 0 key sealed to the creator.
+  // Epoch 0 key sealed to the creator, for the genesis position.
   SealedEpochKey creator_key = 2;
   EncryptedName name = 3;
+  // Entry 0 of the channel's log.
+  MembershipEntry genesis = 4;
 }
 
+// An invite entry, and the channel name sealed to the invitee.
 message InviteMember {
   string channel_id = 1;
   int64 user_id = 2;
   SealedBox sealed_name = 3;
   bytes signature = 4;
+  MembershipEntry entry = 5;
 }
 
+// An accept or decline entry.
 message RespondToInvite {
   string channel_id = 1;
   bool accept = 2;
+  MembershipEntry entry = 3;
 }
 
+// A leave entry.
 message LeaveChannel {
   string channel_id = 1;
+  MembershipEntry entry = 2;
 }
 
+// A remove or cancel-invite entry.
 message KickMember {
   string channel_id = 1;
   int64 user_id = 2;
+  MembershipEntry entry = 3;
 }
 
+// A set-rank or transfer-admin entry.
 message SetMemberRank {
   string channel_id = 1;
   int64 user_id = 2;
   Rank rank = 3;
+  MembershipEntry entry = 4;
 }
 
 message DisbandChannel {
@@ -354,7 +473,8 @@ message RenameChannel {
 }
 
 // Moves the channel from epoch N to N+1. Must contain exactly one key per
-// current member, and a channel name encrypted under the new key.
+// member at log_position, which must be the log's head, and a channel name
+// encrypted under the new key.
 message SubmitRekey {
   string channel_id = 1;
   uint64 new_epoch = 2;
@@ -362,6 +482,8 @@ message SubmitRekey {
   EncryptedName name = 4;
   // The new key's commitment. The server rejects the rekey unless every key carries it.
   bytes key_commitment = 5;
+  // The log position the rekey was made for. Every key and the name carry it too.
+  LogPosition log_position = 6;
 }
 
 message FetchEpochKeys {
@@ -392,7 +514,7 @@ message SendMessage {
   int64 timestamp_unix_ms = 4;
   // 24-byte nonce followed by the XChaCha20-Poly1305 ciphertext of Content.
   bytes ciphertext = 5;
-  // Sender's Ed25519 signature over the message (see MessageCrypto).
+  // Sender's Ed25519 signature over the message (see ChannelCrypto).
   bytes signature = 6;
 }
 
@@ -420,6 +542,16 @@ message InviteReceived {
 
 message InviteRevoked {
   string channel_id = 1;
+}
+
+// A new entry in the log of a channel the recipient is in. Clients check it
+// against their own copy of the log before believing it.
+message LogEntryAdded {
+  string channel_id = 1;
+  MembershipEntry entry = 2;
+  // Names of the entry's subject and actor, for display only.
+  User subject = 3;
+  User actor = 4;
 }
 
 enum MemberChangeKind {

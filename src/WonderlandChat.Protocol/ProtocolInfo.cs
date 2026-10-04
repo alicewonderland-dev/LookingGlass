@@ -13,6 +13,12 @@ public static class ProtocolInfo {
     /// <summary>The highest channel name revision a server accepts (it stores them as signed 64-bit integers).</summary>
     public const ulong MaxNameRevision = long.MaxValue;
 
+    /// <summary>The most membership log entries one FetchMembershipLog answer carries (about 300 bytes each).</summary>
+    public const int MaxLogEntriesPerPage = 500;
+
+    /// <summary>The most log entries a ChannelInfo carries; a client fetches the rest.</summary>
+    public const int MaxLogEntriesInChannelInfo = 32;
+
     public static class Capabilities {
         public const string Chat = "chat.v1";
     }
