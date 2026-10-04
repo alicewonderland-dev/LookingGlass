@@ -120,6 +120,12 @@ public sealed class RequestHandler(
     /// </summary>
     internal Action? BeforeAuthenticateSetOnlineForTests { get; set; }
 
+    /// <summary>
+    /// Runs once, after a retirement has been checked and before the key is retired, so tests can have another connection
+    /// of the account log in meanwhile.
+    /// </summary>
+    internal Action? BeforeIdentityRetiredForTests { get; set; }
+
     public async Task<Response> HandleAsync(ClientConnection connection, ClientFrame frame, CancellationToken ct) {
         try {
             if (!connection.HelloDone && frame.BodyCase != ClientFrame.BodyOneofCase.Hello) {
@@ -593,6 +599,11 @@ public sealed class RequestHandler(
 
         if (!RetireIdentityProof.Verify(user.SigningKey, user.UserId, tokenHash, request.ServerUrl, request.Signature.Span)) {
             throw new RequestException(ErrorCode.Forbidden, "That isn't signed with this account's identity key for this login, so nothing was retired.");
+        }
+
+        if (this.BeforeIdentityRetiredForTests is { } hook) {
+            this.BeforeIdentityRetiredForTests = null;
+            hook();
         }
 
         if (!db.RetireIdentity(user.UserId, user.SigningKey, user.KeyVersion)) {

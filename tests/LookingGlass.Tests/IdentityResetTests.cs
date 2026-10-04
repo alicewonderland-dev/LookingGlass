@@ -355,6 +355,85 @@ public sealed class IdentityResetTests : IAsyncLifetime {
     }
 
     /// <summary>
+    /// Retiring only retires the key the request was checked against, while the account still has it (and that version):
+    /// a registration with new keys landing in between makes it change nothing, so the new identity keeps its key and
+    /// its logins.
+    /// </summary>
+    [Fact]
+    public async Task RetiringAfterTheKeysChangedDoesNothing() {
+        var alice = await this._server.RegisterAsync("Alice Raced Retire");
+        var db = this._server.Database;
+        var checkedUser = db.GetUser(alice.UserId)!;
+        await alice.Session.DisposeAsync();
+
+        using var newKeys = IdentityKeys.Generate();
+        db.RegisterUser(alice.UserId, alice.Name, 0, ProtocolInfo.DebugWorldName, newKeys.ToBundle(), true);
+        var current = db.GetUser(alice.UserId)!;
+        Assert.True(db.AddDeviceForKey(current.UserId, current.SigningKey, current.KeyVersion, System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)));
+
+        Assert.False(db.RetireIdentity(alice.UserId, checkedUser.SigningKey, checkedUser.KeyVersion));
+        Assert.False(db.RetireIdentity(alice.UserId, checkedUser.SigningKey, current.KeyVersion));
+        Assert.False(db.RetireIdentity(alice.UserId, current.SigningKey, checkedUser.KeyVersion));
+        Assert.False(db.RetireIdentity(alice.UserId + 1, current.SigningKey, current.KeyVersion));
+
+        Assert.False(db.IsKeyRetired(alice.UserId, newKeys.SigningPublicKey));
+        Assert.Equal(1, db.CountDevices(alice.UserId));
+        Assert.Equal(newKeys.SigningPublicKey, db.GetUser(alice.UserId)!.SigningKey);
+    }
+
+    /// <summary>
+    /// Another connection of the account that logged in while the retirement was under way (replacing the one asking:
+    /// only one is online per account) is cut off too, as its login is one of those revoked.
+    /// </summary>
+    [Fact]
+    public async Task RetiringCutsOffAnotherConnectionThatLoggedInMeanwhile() {
+        var alice = await this._server.RegisterAsync("Alice Two Logins");
+        using var keys = alice.LoadIdentity();
+        var token = alice.Store.Load().DeviceToken!;
+        var url = this._server.ServerUri.AbsoluteUri;
+        var userId = alice.UserId;
+        await alice.Session.DisposeAsync();
+
+        await using var first = await this._server.ConnectRawAsync();
+        Assert.NotNull((await first.SendAsync(new ClientFrame { Authenticate = new Authenticate { DeviceToken = token } })).AuthenticateOk);
+        await using var second = await this._server.ConnectRawAsync();
+        var otherToken = (await KeyLoginAsync(second, keys, userId, url)).KeyLoginComplete.DeviceToken;
+
+        this._server.Handler.BeforeIdentityRetiredForTests = () => {
+            var login = second.SendAsync(new ClientFrame { Authenticate = new Authenticate { DeviceToken = otherToken } }).GetAwaiter().GetResult();
+            Assert.NotNull(login.AuthenticateOk);
+        };
+
+        try {
+            // The first connection was replaced by the second's login meanwhile, so its answer may never come.
+            await first.SendAsync(Retire(url, RetireIdentityProof.Sign(keys, userId, token, url)));
+        } catch (Exception ex) when (ex is InvalidOperationException or System.Net.WebSockets.WebSocketException or OperationCanceledException) {
+        }
+
+        Assert.Null(this._server.Handler.BeforeIdentityRetiredForTests);
+        Assert.True(this._server.Database.IsKeyRetired(userId, keys.SigningPublicKey));
+        Assert.Equal(0, this._server.Database.CountDevices(userId));
+        await WaitFor(() => this._server.Registry.IsOnline(userId) ? null : new object());
+        await Assert.ThrowsAnyAsync<Exception>(() => second.SendAsync(new ClientFrame { Ping = new Ping() }));
+    }
+
+    /// <summary>After a retirement the client drops its saved login (revoked with the rest); it keeps the key until the reset replaces it.</summary>
+    [Fact]
+    public async Task RetiringDropsTheSavedLogin() {
+        var store = new InMemorySecretStore();
+        var alice = await this._server.RegisterAsync("Alice Drops Login", store);
+        var before = store.Load();
+        Assert.NotNull(before.DeviceToken);
+
+        await alice.Session.RetireIdentityAsync(Ct);
+        var after = store.Load();
+        Assert.Null(after.DeviceToken);
+        Assert.Equal(before.SigningPrivateKey, after.SigningPrivateKey);
+        Assert.Equal(ConnectionState.Unregistered, alice.Session.Snapshot.State);
+        Assert.False(alice.Session.Snapshot.LoginRejected);
+    }
+
+    /// <summary>
     /// A login checked just before a retirement (or a registration, which revokes every device too) lands, and put online
     /// just after it disconnected the account, would stay logged in with a deleted login until it closed. It is checked
     /// again once online, and refused.
