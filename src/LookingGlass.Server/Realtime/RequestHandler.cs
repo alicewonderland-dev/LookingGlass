@@ -114,6 +114,12 @@ public sealed class RequestHandler(
     /// </summary>
     internal Action? BeforeKeyLoginDeviceAddedForTests { get; set; }
 
+    /// <summary>
+    /// Runs once, after a login (Authenticate) has been checked and before the connection goes online, so tests can have
+    /// the account's devices revoked in between, as a concurrent retirement or registration could.
+    /// </summary>
+    internal Action? BeforeAuthenticateSetOnlineForTests { get; set; }
+
     public async Task<Response> HandleAsync(ClientConnection connection, ClientFrame frame, CancellationToken ct) {
         try {
             if (!connection.HelloDone && frame.BodyCase != ClientFrame.BodyOneofCase.Hello) {
@@ -393,9 +399,26 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.NotAuthenticated, "Debug accounts are disabled on this server.");
         }
 
+        if (this.BeforeAuthenticateSetOnlineForTests is { } hook) {
+            this.BeforeAuthenticateSetOnlineForTests = null;
+            hook();
+        }
+
         connection.User = user;
         connection.DeviceTokenHash = tokenHash;
         registry.SetOnline(user.UserId, connection);
+
+        // A retirement or registration (each revokes every device, then disconnects the account) that landed after the
+        // checks above, and disconnected the account before this connection was online, would leave it logged in with a
+        // deleted login. Checked again now that it is online: anything revoking the login from here on disconnects it.
+        var current = db.FindDevice(tokenHash!) == user.UserId ? db.GetUser(user.UserId) : null;
+        if (current == null || db.IsKeyRetired(current.UserId, current.SigningKey)) {
+            connection.User = null;
+            connection.DeviceTokenHash = null;
+            registry.SetOffline(user.UserId, connection);
+            throw new RequestException(ErrorCode.NotAuthenticated, "Unknown or revoked device token.");
+        }
+
         return new Response { AuthenticateOk = new AuthenticateOk { User = user.ToProto(), KeyVersion = user.KeyVersion } };
     }
 
