@@ -18,7 +18,8 @@ public static class ProtocolInfo {
     }
 
     public static Limits DefaultLimits() => new() {
-        // A rekey for 500 members is about 82 KB.
+        // A rekey for 500 members is about 100 KB: each sealed key is about 200 bytes
+        // (64-byte signature, 32-byte commitment, 32-byte ephemeral key, 48-byte box, IDs and framing).
         MaxFrameBytes = 128 * 1024,
         MaxMessageBytes = 4 * 1024,
         MaxMembersPerChannel = 500,
