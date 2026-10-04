@@ -1641,7 +1641,8 @@ public sealed class ClientSession : IAsyncDisposable {
         // so junk with made-up IDs can't push genuine ones out of the seen-set.
         var (channelKnown, sender, seen, channelName, blocked) = this.Read(() => {
             var channel = this._channels.GetValueOrDefault(message.ChannelId);
-            return (channel != null,
+            // Not a member under this identity key (say, after registering again): nothing here can be read.
+            return (channel != null && this.IsMember(message.ChannelId),
                 channel == null ? null : this.MembershipOf(message.ChannelId).FindMember(message.SenderId),
                 this._seenMessages.Contains(messageId),
                 channel?.DisplayName,

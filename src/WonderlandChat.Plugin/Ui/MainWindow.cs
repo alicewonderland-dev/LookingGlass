@@ -230,7 +230,11 @@ public sealed class MainWindow : Window {
                 ImGui.TableNextColumn();
                 ImGui.TextUnformatted(channel.Members.Count(m => m.Rank >= Rank.Member).ToString());
                 ImGui.TableNextColumn();
-                ImGui.TextUnformatted(channel.RekeyPending ? "rekey pending" : channel.HasKey ? $"epoch {channel.Epoch}" : "waiting for key");
+                if (channel.MembershipWarning != null) {
+                    ImGui.TextColored(KeyChangedColour, "check members!");
+                } else {
+                    ImGui.TextUnformatted(channel.RekeyPending ? "rekey pending" : channel.HasKey ? $"epoch {channel.Epoch}" : "waiting for key");
+                }
             }
 
             ImGui.EndTable();
@@ -245,6 +249,11 @@ public sealed class MainWindow : Window {
     private void DrawChannelDetails(ChannelView channel, ClientSession session, SessionSnapshot snapshot) {
         ImGui.PushID(channel.Id);
         ImGui.TextUnformatted($"{channel.DisplayName}  (you are {ClientSession.RankName(channel.MyRank)})");
+        if (channel.MembershipWarning is { } warning) {
+            ImGui.PushStyleColor(ImGuiCol.Text, KeyChangedColour);
+            ImGui.TextWrapped(warning);
+            ImGui.PopStyleColor();
+        }
 
         // Command slot.
         var slot = this._sessions.SlotOf(channel.Id) ?? 0;
@@ -273,11 +282,18 @@ public sealed class MainWindow : Window {
                 ImGui.TableNextRow();
                 ImGui.TableNextColumn();
                 ImGui.TextUnformatted($"{member.User.Name}@{member.User.WorldName}{(isMe ? " (you)" : "")}");
-                if (member.KeyChanged) {
+                if (member.KeyChanged || (!isMe && !member.FingerprintCompared)) {
                     ImGui.SameLine();
-                    ImGui.TextColored(KeyChangedColour, "key changed!");
-                    if (ImGui.IsItemHovered()) {
-                        ImGui.SetTooltip("Their identity key changed, or this name now belongs to a different account.\nCompare fingerprints with them over /tell, then mark it verified.");
+                    if (member.KeyChanged) {
+                        ImGui.TextColored(KeyChangedColour, "key changed!");
+                        if (ImGui.IsItemHovered()) {
+                            ImGui.SetTooltip("Their identity key changed, or this name now belongs to a different account.\nCompare fingerprints with them over /tell, then mark it verified.");
+                        }
+                    } else {
+                        ImGui.TextDisabled("not compared");
+                        if (ImGui.IsItemHovered()) {
+                            ImGui.SetTooltip("Their keys are trusted on first use: whoever invited them got them from the server.\nCompare fingerprints with them over /tell, then mark them verified.");
+                        }
                     }
 
                     ImGui.SameLine();
@@ -287,6 +303,14 @@ public sealed class MainWindow : Window {
                     }
 
                     ImGui.EndDisabled();
+                }
+
+                if (member.KeyReplaced) {
+                    ImGui.SameLine();
+                    ImGui.TextColored(KeyChangedColour, "registered again");
+                    if (ImGui.IsItemHovered()) {
+                        ImGui.SetTooltip("They registered again with a new identity key, which isn't a member of this channel.\nTo let it in, compare fingerprints over /tell, then remove them and invite them again.");
+                    }
                 }
 
                 ImGui.TableNextColumn();
