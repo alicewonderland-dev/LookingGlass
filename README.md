@@ -294,10 +294,14 @@ Key logins are limited per connection (3 challenges), per address
 (`KeyLoginsPerHourPerIp` challenges, and `KeyLoginFailuresPerHourPerIp`
 failures, under `LookingGlass:Limits`; a challenge counts as a failure until
 it is answered correctly, so an address that only asks for challenges is
-stopped too) and per account (failed answers only, by anyone: twice the
-per-address failure limit at once, refilling three times as fast, so no
-single address can lock an account out). Each user keeps their 20 most
-recently used devices; older ones are dropped as new ones are added.
+stopped too) and per account from each address (failed answers only: half
+the per-address failure limit, rounded up, so with the default of 10 an
+address may fail 5 times an hour for one account). Nothing is limited per
+account alone: a signature made with the identity key can't be guessed, so
+failures from other addresses never stop you signing in from yours (an
+address you share with an attacker, such as one NAT, still shares its
+per-address limits). Each user keeps their 20 most recently used devices;
+older ones are dropped as new ones are added.
 
 **Docker:** a reverse proxy on the host reaches the container through Docker's
 bridge network, so inside the container the proxy's address is the bridge

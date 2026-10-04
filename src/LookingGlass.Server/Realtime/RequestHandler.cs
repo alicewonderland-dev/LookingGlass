@@ -58,18 +58,19 @@ public sealed class RequestHandler(
     private readonly WindowCounter _registrations = new(options.Value.Limits.RegistrationsPerHourPerIp, TimeSpan.FromHours(1));
     // Key login: challenges per address; failures per address, where a challenge counts as one from when it is issued
     // until it is answered correctly (so asking and never answering is limited like failing); and failed answers per
-    // account, by anyone. Each challenge allows one attempt, so these bound attempts per connection and account too.
+    // account and address. Each challenge allows one attempt, so these bound attempts per connection too.
     //
-    // Only failed answers count against an account, never challenges or successes: anyone can ask for challenges for
-    // any account, and counting those let one address keep an account's key login locked. The account's allowance is
-    // sized from the per-address one so no single address can empty it (twice as many at once, refilling three times as
-    // fast), so keeping an account locked takes the whole failure allowance of several addresses, each of which is then
-    // blocked from key login itself.
+    // Nothing is counted per account alone. An Ed25519 signature can't be guessed, so limiting failures only keeps
+    // addresses from spamming attempts (each costs a signature check and a log line), and every address is limited on
+    // its own; a limit per account, by anyone, only let enough addresses together lock the owner out of their own
+    // key login. Per account and address, only failed answers count, never challenges or successes (anyone can ask
+    // for challenges for any account), and the allowance is half the address's (rounded up), so one address can't
+    // spend all of its failures on one account. Both counters drop keys whose events have expired, so memory stays
+    // bounded by the addresses (and accounts per address) seen within the hour.
     private readonly WindowCounter _keyLoginsPerIp = new(options.Value.Limits.KeyLoginsPerHourPerIp, TimeSpan.FromHours(1));
     private readonly WindowCounter _keyLoginFailuresPerIp = new(options.Value.Limits.KeyLoginFailuresPerHourPerIp, TimeSpan.FromHours(1));
-    private readonly UserRateLimits _keyLoginFailuresPerUser = new(
-        perSecond: Math.Max(1, options.Value.Limits.KeyLoginFailuresPerHourPerIp) * 3 / 3600.0,
-        burst: Math.Max(1, options.Value.Limits.KeyLoginFailuresPerHourPerIp) * 2);
+    private readonly WindowCounter _keyLoginFailuresPerAccountAndIp = new(
+        Math.Max(1, (options.Value.Limits.KeyLoginFailuresPerHourPerIp + 1) / 2), TimeSpan.FromHours(1));
     private readonly IReadOnlyList<ServerOrigin> _publicOrigins = ParsePublicUrls(options.Value.PublicUrls);
     private readonly string[] _advertisedUrls = (options.Value.PublicUrls ?? []).Where(url => !string.IsNullOrWhiteSpace(url)).Select(url => url.Trim()).Distinct().ToArray();
     private readonly KeyLoginOrigins _keyLoginOrigins =ChooseKeyLoginOrigins(ParsePublicUrls(options.Value.PublicUrls), environment?.IsDevelopment() == true);
@@ -336,10 +337,10 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.RateLimited, "Too many key login attempts; try again later.");
         }
 
-        // Checked, not taken: only a failed answer uses up the account's allowance.
-        if (!this._keyLoginFailuresPerUser.HasToken(request.UserId)) {
-            logger.LogDebug("Key login for {User} from {Address} refused: too many failures for this account", request.UserId, address);
-            throw new RequestException(ErrorCode.RateLimited, "Too many key login attempts for this account; try again later.");
+        // Checked, not counted: only a failed answer uses up this address's allowance for the account.
+        if (this._keyLoginFailuresPerAccountAndIp.IsFull(AccountAndAddress(request.UserId, address))) {
+            logger.LogDebug("Key login for {User} from {Address} refused: too many failures for this account from this address", request.UserId, address);
+            throw new RequestException(ErrorCode.RateLimited, "Too many failed key logins for this account from your address; try again later.");
         }
 
         // The challenge, and (until it is answered correctly) a failure. Both checked above, but a request on another
@@ -399,8 +400,8 @@ public sealed class RequestHandler(
                 // An answer without a challenge: nothing was counted for it yet.
                 this._keyLoginFailuresPerIp.TryAdd(connection.RemoteAddress);
             } else {
-                // The address's failure was counted with the challenge; this is the account's.
-                this._keyLoginFailuresPerUser.TryTake(pending.UserId);
+                // The address's failure was counted with the challenge; this is the one for the account from this address.
+                this._keyLoginFailuresPerAccountAndIp.TryAdd(AccountAndAddress(pending.UserId, connection.RemoteAddress));
             }
 
             logger.LogInformation("Key login for {User} from {Address} refused: {Reason}", pending?.UserId, connection.RemoteAddress, refusal);
@@ -461,6 +462,9 @@ public sealed class RequestHandler(
 
         return valid ? null : "the signature isn't by the account's identity key";
     }
+
+    /// <summary>The key failed key logins are counted under for one account from one address.</summary>
+    private static string AccountAndAddress(long userId, string address) => $"{userId} {address}";
 
     // A valid Ed25519 public key whose private key was thrown away when the server started.
     private static readonly byte[] NobodysKey = MakeNobodysKey();
