@@ -366,11 +366,13 @@ public sealed class ClientSession : IAsyncDisposable {
             throw;
         }
 
+        var designated = false;
         lock (this._lock) {
             this._invites.Remove(channelId, out var invite);
             if (accept && response.Channel != null && response.Channel.ChannelId == channelId) {
                 var channel = this.ApplyChannelInfo(response.Channel);
                 channel.Name ??= invite?.Name;
+                designated = response.Channel.RekeyDesignated;
             }
         }
 
@@ -378,7 +380,17 @@ public sealed class ClientSession : IAsyncDisposable {
 
         if (accept) {
             await this.EnsureChannelReadyAsync(channelId, ct);
-            if (!this.Read(() => this.HasCurrentKey(channelId))) {
+            var (hasKey, pending) = this.Read(() => (this.HasCurrentKey(channelId), this._channels.GetValueOrDefault(channelId)?.RekeyPending == true));
+            if (designated && pending) {
+                // Nobody else is online to share the key. (The server's RekeyNeeded arrived before
+                // this response, while the channel was unknown, so it was ignored.)
+                if (this._options.AutoRekeyWhenDesignated) {
+                    this.RaiseNotice(NoticeLevel.Info, "Joined. No other member is online, so you're making the channel a new key.", channelId);
+                    this.RunBackground("Rekeying a channel", rekeyCt => this.RekeyAsync(channelId, rekeyCt));
+                } else {
+                    this.RaiseNotice(NoticeLevel.Info, "Joined. No other member is online to share the channel key; rekey the channel, or send a message, to make a new one.", channelId);
+                }
+            } else if (!hasKey) {
                 this.RaiseNotice(NoticeLevel.Info, "Joined. Waiting for a member to share the channel key.", channelId);
             }
         }
@@ -766,11 +778,15 @@ public sealed class ClientSession : IAsyncDisposable {
 
         this.Publish();
         // Identities cached before a disconnect may be stale: someone may have registered again meanwhile.
-        await this.RefreshAsync(connection, ct, refreshIdentities: true);
+        await this.RefreshAsync(connection, ct, refreshIdentities: true, rekeyIfDesignated: true);
     }
 
     /// <param name="refreshIdentities">Fetch every identity again, not only those not cached yet.</param>
-    private async Task RefreshAsync(Connection connection, CancellationToken ct, bool refreshIdentities = false) {
+    /// <param name="rekeyIfDesignated">
+    /// Rekey channels the server asks this client to (see <see cref="ClientSessionOptions.AutoRekeyWhenDesignated"/>): its
+    /// RekeyNeeded only reaches members who are online, so one who just connected wasn't told.
+    /// </param>
+    private async Task RefreshAsync(Connection connection, CancellationToken ct, bool refreshIdentities = false, bool rekeyIfDesignated = false) {
         var response = await this.RequestAsync(connection, new ClientFrame { ListChannels = new ListChannels() }, ct);
         var list = response.ChannelList ?? throw Unexpected(response);
         // Channel IDs are bound into signatures and shown in the UI, so only canonical ones are accepted.
@@ -839,6 +855,12 @@ public sealed class ClientSession : IAsyncDisposable {
 
         this.SaveSecrets();
         this.Publish();
+
+        if (rekeyIfDesignated && this._options.AutoRekeyWhenDesignated) {
+            foreach (var info in channels.Where(info => info.RekeyPending && info.RekeyDesignated)) {
+                this.RunBackground("Rekeying a channel", rekeyCt => this.RekeyAsync(info.ChannelId, rekeyCt));
+            }
+        }
     }
 
     // ================================================================ events
