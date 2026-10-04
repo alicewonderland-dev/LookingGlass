@@ -22,10 +22,16 @@ public sealed class Harness : IAsyncDisposable {
     private readonly List<IAsyncDisposable> _disposables = [];
 
     /// <param name="serverTime">The server's clock, for tests that move it forward (key login challenges expire by it).</param>
+    /// <param name="environment">
+    /// The server's hosting environment. In Development (the default here, as on the test server) key login may go by
+    /// the connection's Host header when no PublicUrls are set; anywhere else it needs them.
+    /// </param>
     /// <param name="settings">Extra server configuration, for example <c>("LookingGlass:Limits:MaxIdentitiesPerRequest", "2")</c>.</param>
-    public Harness(string? dataDirectory = null, bool allowDebugAccounts = true, TimeProvider? serverTime = null, params (string Key, string Value)[] settings) {
+    public Harness(string? dataDirectory = null, bool allowDebugAccounts = true, TimeProvider? serverTime = null, string environment = "Development",
+        params (string Key, string Value)[] settings) {
         this.DataDirectory = dataDirectory ?? Path.Combine(Path.GetTempPath(), "lgt-" + Guid.NewGuid().ToString("N"));
         this.Factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder => {
+            builder.UseEnvironment(environment);
             builder.UseSetting("LookingGlass:DataDirectory", this.DataDirectory);
             builder.UseSetting("LookingGlass:Dev:AllowDebugAccounts", allowDebugAccounts ? "true" : "false");
             builder.UseSetting("LookingGlass:Dev:HostEchoBot", "false");

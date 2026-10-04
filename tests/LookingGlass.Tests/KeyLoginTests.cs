@@ -172,13 +172,18 @@ public sealed class KeyLoginTests : IAsyncLifetime {
         Assert.Equal(alice.UserId, complete.User.UserId);
         Assert.NotEqual(first, complete.DeviceToken);
 
-        // The new token logs in; the old one still does, and its session wasn't dropped.
+        // The key login itself didn't drop the session using the other device.
+        await Task.Delay(200, Ct);
+        Assert.Equal(ConnectionState.Ready, alice.Session.Snapshot.State);
+        Assert.Single(alice.Session.GetTrace(), entry => entry.Outgoing && entry.Summary.EndsWith(" Hello"));
+
+        // The new token logs in; the old one still does. (Each login replaces the user's previous connection, one per
+        // user, so Alice's session is dropped here and reconnects with its own token, which still works.)
         var ok = await raw.SendAsync(new ClientFrame { Authenticate = new Authenticate { DeviceToken = complete.DeviceToken } });
         Assert.Equal(alice.UserId, ok.AuthenticateOk?.User.UserId);
         await using var other = await this._server.ConnectRawAsync();
         Assert.NotNull((await other.SendAsync(new ClientFrame { Authenticate = new Authenticate { DeviceToken = first } })).AuthenticateOk);
-        await Task.Delay(200, Ct);
-        Assert.Equal(ConnectionState.Ready, alice.Session.Snapshot.State);
+        await WaitFor(() => alice.Session.Snapshot.State == ConnectionState.Ready ? new object() : null);
     }
 
     /// <summary>
@@ -267,6 +272,68 @@ public sealed class KeyLoginTests : IAsyncLifetime {
             // ...while the public address works, whatever Host the proxy in front passes on.
             await using var proxied = await server.ConnectRawAsync();
             Assert.NotNull((await this.KeyLoginAsync(proxied, keys, alice.UserId, "wss://chat.example.com/ws")).KeyLoginComplete);
+        } finally {
+            DeleteDirectory(server.DataDirectory);
+        }
+    }
+
+    /// <summary>
+    /// Outside Development the Host header proves nothing (a relay sets it to whatever the user signed for), so without
+    /// configured PublicUrls the server has no address it can trust, and refuses key login outright. The client falls
+    /// back as it does for any refused key login: it keeps its login and says the server doesn't recognise it.
+    /// </summary>
+    [Fact]
+    public async Task OutsideDevelopmentKeyLoginNeedsPublicUrls() {
+        await using var server = new Harness(environment: "Production");
+        try {
+            var alice = await server.RegisterAsync("Alice Production");
+            using var keys = alice.LoadIdentity();
+
+            // Refused before any challenge is issued, with the same error whoever asks.
+            await using var raw = await server.ConnectRawAsync();
+            var refused = await raw.SendAsync(new ClientFrame { StartKeyLogin = new StartKeyLogin { UserId = alice.UserId } });
+            Assert.Equal(ErrorCode.NotAuthenticated, refused.Error?.Code);
+            Assert.Null(refused.KeyLoginChallenge);
+            var unknown = await raw.SendAsync(new ClientFrame { StartKeyLogin = new StartKeyLogin { UserId = 4242424242 } });
+            Assert.Equal(refused.Error!.Message, unknown.Error?.Message);
+            // Not even a signature made for the address this connection names in its Host header gets anywhere.
+            var url = server.ServerUri.AbsoluteUri;
+            var forged = await this.CompleteAsync(raw, new byte[KeyLoginProof.ChallengeSize], url, KeyLoginProof.Sign(keys, new byte[KeyLoginProof.ChallengeSize], alice.UserId, url));
+            Assert.Equal(ErrorCode.NotAuthenticated, forged.Error?.Code);
+
+            // The client tries, is refused, and keeps its (lost) login, as with any refused key login.
+            var token = alice.Store.Load().DeviceToken;
+            await alice.Session.DisposeAsync();
+            server.ExecuteSql("DELETE FROM devices WHERE user_id = $id;", ("$id", alice.UserId));
+            var restarted = server.StartClient(alice.Name, alice.Store, server.Options(loginRetryDelay: TimeSpan.FromHours(1)));
+            var snapshot = await WaitFor(() => restarted.Session.Snapshot is { State: ConnectionState.LoginNotRecognized } s ? s : null);
+            Assert.True(snapshot.LoginRejected);
+            Assert.Contains(restarted.Session.GetTrace(), entry => entry.Outgoing && entry.Summary.EndsWith(" StartKeyLogin"));
+            Assert.DoesNotContain(restarted.Session.GetTrace(), entry => entry.Outgoing && entry.Summary.EndsWith(" CompleteKeyLogin"));
+            Assert.Equal(token, alice.Store.Load().DeviceToken);
+        } finally {
+            DeleteDirectory(server.DataDirectory);
+        }
+    }
+
+    /// <summary>Outside Development, with PublicUrls set, key login works for exactly those addresses.</summary>
+    [Fact]
+    public async Task OutsideDevelopmentKeyLoginWorksForThePublicUrls() {
+        // The address the in-process clients connect to, as an operator would list theirs.
+        await using var server = new Harness(environment: "Production", settings: ("LookingGlass:PublicUrls:0", "ws://localhost/ws"));
+        try {
+            var alice = await server.RegisterAsync("Alice Listed");
+            await alice.Session.DisposeAsync();
+            server.ExecuteSql("DELETE FROM devices WHERE user_id = $id;", ("$id", alice.UserId));
+            var restarted = server.StartClient(alice.Name, alice.Store);
+            var snapshot = await WaitFor(() => restarted.Session.Snapshot is { State: ConnectionState.Ready } s ? s : null);
+            Assert.Equal(alice.UserId, snapshot.Me!.UserId);
+            Assert.Contains(restarted.Session.GetTrace(), entry => entry.Outgoing && entry.Summary.EndsWith(" CompleteKeyLogin"));
+
+            // A Host header naming another address doesn't make that address acceptable.
+            using var keys = alice.LoadIdentity();
+            await using var spoofed = await server.ConnectRawAsync(host: "evil.example");
+            Assert.Equal(ErrorCode.NotAuthenticated, (await this.KeyLoginAsync(spoofed, keys, alice.UserId, "ws://evil.example/ws")).Error?.Code);
         } finally {
             DeleteDirectory(server.DataDirectory);
         }
