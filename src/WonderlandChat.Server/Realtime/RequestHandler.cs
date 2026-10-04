@@ -57,6 +57,12 @@ public sealed class RequestHandler(
 
     public Limits Limits { get; } = BuildLimits(options.Value);
 
+    /// <summary>
+    /// Runs after a last member's leave has been checked and before their channel is deleted, so tests can
+    /// have someone else's request land in between, as a concurrent one could.
+    /// </summary>
+    internal Action? BeforeAbandonedChannelDeletedForTests { get; set; }
+
     public async Task<Response> HandleAsync(ClientConnection connection, ClientFrame frame, CancellationToken ct) {
         try {
             if (!connection.HelloDone && frame.BodyCase != ClientFrame.BodyOneofCase.Hello) {
@@ -452,6 +458,11 @@ public sealed class RequestHandler(
         if (db.GetMembers(channelId).Count == 1) {
             // The last member is leaving, so the channel goes, and with it any pending invites.
             this.CheckEntry(channelId, me, entry);
+            if (this.BeforeAbandonedChannelDeletedForTests is { } hook) {
+                this.BeforeAbandonedChannelDeletedForTests = null;
+                hook();
+            }
+
             var invitees = db.GetInvitees(channelId).Select(invitee => invitee.User.UserId).ToList();
             db.DeleteChannel(channelId);
             registry.SendToAll(invitees, new Event { InviteRevoked = new InviteRevoked { ChannelId = channelId } });

@@ -378,6 +378,30 @@ public sealed class MembershipLogTests : IAsyncLifetime {
         Assert.Null(this._server.Database.GetRank(channelId, alice.UserId));
     }
 
+    /// <summary>
+    /// The last member leaving deletes the channel. An invitee accepting at that moment must not be appended
+    /// in between and then deleted with the channel, a member nobody tells.
+    /// </summary>
+    [Fact]
+    public async Task LastMemberLeavingDoesNotDeleteAChannelSomeoneJustJoined() {
+        var alice = await this._server.RegisterAsync("Alice Last Out");
+        var bob = await this._server.RegisterAsync("Bob Just In");
+        var channelId = await alice.Session.CreateChannelAsync("Last Out", Ct);
+        await alice.Session.InviteAsync(channelId, bob.Name, ProtocolInfo.DebugWorldName, Ct);
+        await WaitFor(() => bob.Session.Snapshot.Invites.FirstOrDefault(i => i.ChannelId == channelId && i.ChannelName != null));
+
+        // Bob's accept is stored after the server checked Alice's leave, and before it acts on it.
+        var accept = this._server.NextEntry(channelId, bob, MembershipEntryKind.Accept, bob.UserId);
+        this._server.Handler.BeforeAbandonedChannelDeletedForTests = () => Assert.True(this._server.Database.AppendEntry(channelId, accept));
+
+        // Alice is no longer the last member, so, as the admin, she may not leave Bob behind.
+        var refused = await Assert.ThrowsAsync<MembershipException>(() => alice.Session.LeaveAsync(channelId, Ct));
+        Assert.Equal(MembershipVerdictKind.Forbidden, refused.Verdict.Kind);
+        Assert.NotNull(this._server.Database.GetChannel(channelId));
+        Assert.Equal(Rank.Admin, this._server.Database.GetRank(channelId, alice.UserId));
+        Assert.Equal(Rank.Member, this._server.Database.GetRank(channelId, bob.UserId));
+    }
+
     [Fact]
     public async Task AnOlderLogIsNoticedAfterARestart() {
         var alice = await this._server.RegisterAsync("Alice Rollback");

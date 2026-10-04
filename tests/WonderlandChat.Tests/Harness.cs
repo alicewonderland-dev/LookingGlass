@@ -43,6 +43,9 @@ public sealed class Harness : IAsyncDisposable {
     /// <summary>The server's database, for tests that play a malicious or misbehaving server.</summary>
     public Database Database => this.Factory.Services.GetRequiredService<Database>();
 
+    /// <summary>The server's request handler, for its test hooks.</summary>
+    public RequestHandler Handler => this.Factory.Services.GetRequiredService<RequestHandler>();
+
     /// <param name="beforeConnect">Awaited before every connection attempt, so a test can keep a client offline.</param>
     /// <param name="protocolVersion">The protocol version offered in Hello, to play an older plugin.</param>
     public ClientSessionOptions Options(bool autoRekey = true, Action<NoticeLevel, string>? log = null, TimeProvider? time = null, Func<CancellationToken, Task>? beforeConnect = null,
