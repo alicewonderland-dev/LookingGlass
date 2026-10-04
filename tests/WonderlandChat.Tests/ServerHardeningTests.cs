@@ -262,6 +262,39 @@ public sealed class ServerHardeningTests {
     }
 }
 
+public sealed class SecretFileTests {
+    [Fact]
+    public void ConcurrentStoresForOneFileNeverCollide() {
+        var directory = Path.Combine(Path.GetTempPath(), "wct-files-" + Guid.NewGuid().ToString("N"));
+        try {
+            var path = Path.Combine(directory, "secrets.json");
+            // Two stores for the same file, as when a closing session and a new one overlap.
+            var stores = new[] { new FileSecretStore(path), new FileSecretStore(path) };
+            Parallel.For(0, 400, i => stores[i % 2].Save(new ClientSecrets { UserId = i }));
+
+            Assert.NotNull(stores[0].Load().UserId);
+            Assert.Equal(["secrets.json"], Directory.GetFiles(directory).Select(Path.GetFileName));
+        } finally {
+            DeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
+    public void FileLockIsReentrant() {
+        var directory = Path.Combine(Path.GetTempPath(), "wct-files-" + Guid.NewGuid().ToString("N"));
+        try {
+            var path = Path.Combine(directory, "secrets.bin");
+            lock (AtomicFile.LockFor(path)) {
+                AtomicFile.Write(path, [1, 2, 3]);
+            }
+
+            Assert.Equal([1, 2, 3], File.ReadAllBytes(path));
+        } finally {
+            DeleteDirectory(directory);
+        }
+    }
+}
+
 public sealed class TextSanitizerTests {
     [Theory]
     [InlineData("hello", "hello")]

@@ -215,6 +215,58 @@ public sealed class ClientSession : IAsyncDisposable {
         this.Publish();
     }
 
+    /// <summary>
+    /// Blocks a user: their invites are declined without being shown, and their
+    /// messages are hidden. Pending invites from them are declined now.
+    /// </summary>
+    public void BlockUser(long userId) {
+        List<string> declined;
+        lock (this._lock) {
+            if (userId == this._me?.UserId) {
+                throw new InvalidOperationException("You can't block yourself.");
+            }
+
+            if (this._secrets.BlockedUsers.Add(userId)) {
+                this._secretsVersion++;
+            }
+
+            declined = this._invites.Values.Where(invite => invite.Info.Inviter.UserId == userId).Select(invite => invite.Info.ChannelId).ToList();
+            foreach (var channelId in declined) {
+                this._invites.Remove(channelId);
+            }
+        }
+
+        this.SaveSecrets();
+        this.Publish();
+        foreach (var channelId in declined) {
+            this.DeclineQuietly(channelId);
+        }
+    }
+
+    public void UnblockUser(long userId) {
+        lock (this._lock) {
+            if (this._secrets.BlockedUsers.Remove(userId)) {
+                this._secretsVersion++;
+            }
+        }
+
+        this.SaveSecrets();
+        this.Publish();
+    }
+
+    /// <summary>Declines an invite without telling the user (it came from someone they blocked).</summary>
+    private void DeclineQuietly(string channelId) {
+        this.RunBackground("Declining an invite", async ct => {
+            try {
+                await this.RequestAsync(new ClientFrame { RespondToInvite = new RespondToInvite { ChannelId = channelId, Accept = false } }, ct);
+            } catch (Exception ex) when (ex is ServerErrorException or SessionDisconnectedException) {
+                // Already gone, or offline: it is declined again on the next refresh.
+            }
+        });
+    }
+
+    private bool IsBlocked(long userId) => this._secrets.BlockedUsers.Contains(userId);
+
     /// <summary>Forgets the device token, for example to register again.</summary>
     public void ForgetAccount() {
         lock (this._lock) {
@@ -680,6 +732,11 @@ public sealed class ClientSession : IAsyncDisposable {
         // Channel IDs are bound into signatures and shown in the UI, so only canonical ones are accepted.
         var channels = list.Channels.Where(channel => IsValidChannelId(channel.ChannelId)).ToList();
         var invites = list.Invites.Where(invite => IsValidChannelId(invite.ChannelId) && invite.Inviter != null).ToList();
+        var blocked = this.Read(() => invites.Where(invite => this.IsBlocked(invite.Inviter.UserId)).Select(invite => invite.ChannelId).ToList());
+        invites.RemoveAll(invite => blocked.Contains(invite.ChannelId));
+        foreach (var channelId in blocked) {
+            this.DeclineQuietly(channelId);
+        }
 
         var userIds = new HashSet<long>();
         lock (this._lock) {
@@ -811,21 +868,28 @@ public sealed class ClientSession : IAsyncDisposable {
             return;
         }
 
+        if (this.Read(() => this.IsBlocked(invite.Inviter.UserId))) {
+            this.DeclineQuietly(invite.ChannelId);
+            return;
+        }
+
         lock (this._lock) {
             this._invites[invite.ChannelId] = new InviteState(invite);
         }
 
         this.Publish();
         this.RunBackground("Reading an invite", async ct => {
-            await this.EnsureIdentitiesAsync([invite.Inviter.UserId], ct);
+            // Fresh, so an inviter who re-registered shows as "key changed" rather than as a forged invite.
+            await this.EnsureIdentitiesAsync([invite.Inviter.UserId], ct, refresh: true);
             var view = this.OpenInvite(invite.ChannelId);
             this.Publish();
             if (view != null) {
                 this.InvokeSafely(this.InviteReceived, view);
+                var who = $"{view.Inviter.Name}@{view.Inviter.WorldName}";
                 this.RaiseNotice(NoticeLevel.Info,
-                    view.Verified
-                        ? $"{view.Inviter.Name}@{view.Inviter.WorldName} invited you to \"{view.ChannelName}\"."
-                        : $"{view.Inviter.Name}@{view.Inviter.WorldName} sent an invite that failed verification.",
+                    !view.Verified ? $"{who} sent an invite that failed verification."
+                    : view.InviterKeyChanged ? $"{who} invited you to \"{view.ChannelName}\", but their identity key changed. Compare fingerprints over /tell before accepting."
+                    : $"{who} invited you to \"{view.ChannelName}\".",
                     invite.ChannelId);
             }
         });
@@ -1060,15 +1124,16 @@ public sealed class ClientSession : IAsyncDisposable {
 
         // Cheap checks first. Nothing is marked seen until the message has been verified,
         // so junk with made-up IDs can't push genuine ones out of the seen-set.
-        var (channelKnown, senderIsMember, seen, channelName) = this.Read(() => {
+        var (channelKnown, senderIsMember, seen, channelName, blocked) = this.Read(() => {
             var channel = this._channels.GetValueOrDefault(message.ChannelId);
             return (channel != null,
                 channel?.Members.Any(member => member.User.UserId == message.SenderId && member.Rank >= Rank.Member) == true,
                 this._seenMessages.Contains(messageId),
-                channel?.DisplayName);
+                channel?.DisplayName,
+                this.IsBlocked(message.SenderId));
         });
 
-        if (!channelKnown || seen) {
+        if (!channelKnown || seen || blocked) {
             return;
         }
 
@@ -1364,8 +1429,19 @@ public sealed class ClientSession : IAsyncDisposable {
 
             invite.Name = ChannelCrypto.OpenInvite(invite.Info, inviter.Identity.SigningPublicKey.Span, this._identity, this._me.UserId);
             invite.Verified = invite.Name != null;
-            return invite.ToView();
+            return this.ToView(invite);
         }
+    }
+
+    /// <summary>Call inside the lock.</summary>
+    private InviteView ToView(InviteState invite) {
+        var inviterId = invite.Info.Inviter.UserId;
+        var fingerprint = this._identities.TryGetValue(inviterId, out var identity)
+            ? IdentityKeys.FingerprintOf(identity.Identity.SigningPublicKey.Span, identity.Identity.AgreementPublicKey.Span)
+            : null;
+        var keyChanged = this._secrets.PinnedIdentities.TryGetValue(inviterId, out var pinned) && pinned.KeyChangeUnacknowledged;
+        return new InviteView(invite.Info.ChannelId, invite.Info.Inviter, invite.Name, invite.Verified,
+            DateTimeOffset.FromUnixTimeSeconds(invite.Info.CreatedUnix), keyChanged, fingerprint);
     }
 
     // ================================================================ state helpers (call inside _lock)
@@ -1548,10 +1624,16 @@ public sealed class ClientSession : IAsyncDisposable {
                     .OrderBy(channel => channel.Name ?? channel.Id, StringComparer.OrdinalIgnoreCase)
                     .Select(this.ToView)
                     .ToImmutableArray(),
-                this._invites.Values.Select(invite => invite.ToView()).ToImmutableArray(),
+                this._invites.Values.Select(this.ToView).ToImmutableArray(),
                 this._limits,
                 this._debugAccountsEnabled,
-                this._challenge);
+                this._challenge,
+                this._secrets.BlockedUsers
+                    .Select(id => this._secrets.PinnedIdentities.TryGetValue(id, out var pinned)
+                        ? new User { UserId = id, Name = pinned.Name, WorldName = pinned.WorldName }
+                        : new User { UserId = id, Name = $"user {id}" })
+                    .OrderBy(user => user.Name, StringComparer.OrdinalIgnoreCase)
+                    .ToImmutableArray());
             this._snapshot = snapshot;
         }
 
@@ -1735,12 +1817,5 @@ public sealed class ClientSession : IAsyncDisposable {
         public InviteInfo Info { get; } = info;
         public string? Name { get; set; }
         public bool Verified { get; set; }
-
-        public InviteView ToView() => new(
-            this.Info.ChannelId,
-            this.Info.Inviter,
-            this.Name,
-            this.Verified,
-            DateTimeOffset.FromUnixTimeSeconds(this.Info.CreatedUnix));
     }
 }

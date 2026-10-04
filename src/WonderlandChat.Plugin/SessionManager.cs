@@ -20,6 +20,9 @@ public sealed class SessionManager : IDisposable {
     private PlayerInfo? _sessionPlayer;
     private volatile ImmutableDictionary<string, int> _slots = ImmutableDictionary<string, int>.Empty;
     private Task? _closing;
+    // Framework thread only. Bumped by every start and stop, so a start that was
+    // waiting for the previous session to close is dropped if anything changed meanwhile.
+    private int _generation;
 
     public SessionManager(Configuration config, PlayerTracker player, ChatOutput chat) {
         this._config = config;
@@ -113,7 +116,24 @@ public sealed class SessionManager : IDisposable {
         }
     }
 
+    /// <summary>Call on the framework thread.</summary>
     private void StartFor(PlayerInfo player) {
+        var generation = ++this._generation;
+        if (this._closing is { IsCompleted: false } closing) {
+            // A quick relog: the old session is still making its final save to the secrets file.
+            // Start once it's done, back on the framework thread, without blocking the game meanwhile.
+            _ = closing.ContinueWith(_ => Services.Framework.RunOnFrameworkThread(() => {
+                if (this._generation == generation) {
+                    this.StartNow(player);
+                }
+            }), TaskScheduler.Default);
+            return;
+        }
+
+        this.StartNow(player);
+    }
+
+    private void StartNow(PlayerInfo player) {
         Uri uri;
         try {
             uri = new Uri(this._config.ServerUrl);
@@ -121,9 +141,6 @@ public sealed class SessionManager : IDisposable {
             this._chat.Notice(NoticeLevel.Error, $"Invalid server URL: {this._config.ServerUrl}");
             return;
         }
-
-        // Usually finished long ago; only a quick relog has to wait for the old session's final save.
-        this.WaitForPreviousSession();
 
         ClientSession session;
         try {
@@ -192,12 +209,13 @@ public sealed class SessionManager : IDisposable {
     }
 
     /// <summary>
-    /// Stops the current session. Closing happens in the background so logging
-    /// out never stalls the game; the next session waits for it (see
-    /// <see cref="WaitForPreviousSession"/>) so the two never write the same
-    /// secrets file at once.
+    /// Stops the current session, and any start still waiting. Closing happens in
+    /// the background so logging out never stalls the game; the next session
+    /// starts only once it's done (see <see cref="StartFor"/>), so the two never
+    /// write the same secrets file at once. Call on the framework thread.
     /// </summary>
     private void Stop() {
+        this._generation++;
         var session = Interlocked.Exchange(ref this._session, null);
         this._sessionPlayer = null;
         this.RefreshSlotCache();
@@ -205,8 +223,10 @@ public sealed class SessionManager : IDisposable {
             return;
         }
 
+        var previous = this._closing ?? Task.CompletedTask;
         this._closing = Task.Run(async () => {
             try {
+                await previous;
                 await session.DisposeAsync();
             } catch (Exception ex) {
                 Services.Log.Warning(ex, "Error closing WonderlandChat session");
@@ -214,15 +234,13 @@ public sealed class SessionManager : IDisposable {
         });
     }
 
-    private void WaitForPreviousSession() {
-        if (this._closing is { IsCompleted: false } closing && !closing.Wait(TimeSpan.FromSeconds(5))) {
-            Services.Log.Warning("Previous WonderlandChat session is still closing");
-        }
-    }
-
     public void Dispose() {
         this._player.Changed -= this.OnPlayerChanged;
         this.Stop();
-        this.WaitForPreviousSession();
+
+        // Unloading: the final save must finish before the plugin goes away, so this one may wait.
+        if (this._closing is { IsCompleted: false } closing && !closing.Wait(TimeSpan.FromSeconds(5))) {
+            Services.Log.Warning("Previous WonderlandChat session is still closing");
+        }
     }
 }
