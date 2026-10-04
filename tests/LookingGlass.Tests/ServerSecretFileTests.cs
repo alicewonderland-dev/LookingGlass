@@ -193,6 +193,101 @@ public sealed class ServerSecretFileTests : IDisposable {
         Assert.Null(ServerSecretFiles.FindBackup(this._directory, ContentId, Url, path => new FileSecretStore(path)));
     }
 
+    /// <summary>
+    /// "Reset my identity" removes the old identity from every file of the character that holds its key, not just the
+    /// address's own: other addresses it was carried to by a move, the old-style file, and every .bak. Otherwise switching
+    /// back, or a backup, would bring the old key and login back ("Register again" keeps the key). What is about others
+    /// and the channels (pins, blocks, verified log positions) stays in each file. Other identities, and other
+    /// characters' files, aren't touched.
+    /// </summary>
+    [Fact]
+    public void ResettingRemovesTheOldIdentityFromEveryFile() {
+        const string moved = "wss://chat-new.example/ws";
+        const string elsewhere = "wss://other.example/ws";
+        const string reregistered = "wss://third.example/ws";
+        const ulong otherCharacter = 0x0040_0000_0000_0099;
+
+        // The identity, first in an old-style file (moved to the new name, the old one kept with its .bak)...
+        var old = Registered("old token");
+        old.PinnedIdentities[77] = new PinnedIdentity { Name = "Bob Pinned" };
+        old.BlockedUsers.Add(4242);
+        old.EpochKeys["channel"] = new Dictionary<ulong, byte[]> { [0] = new byte[32] };
+        new FileSecretStore(this.LegacyPathFor(Url)).Save(old.Clone());
+        this.Open(Url).Load();
+        // ...saved again (so its own .bak holds it too)...
+        this.Open(Url).Save(this.Open(Url).Load());
+        // ...carried to another address by a move, and saved there twice.
+        var copy = this.Open(Url).Load();
+        copy.ServerUrl = null;
+        copy.ServerOrigin = null;
+        this.Open(moved).Save(copy);
+        this.Open(moved).Save(this.Open(moved).Load());
+
+        // Another identity at another address; one whose .bak still holds the old key; another character's copy.
+        this.Open(elsewhere).Save(Registered("theirs"));
+        var replaced = this.Open(Url).Load();
+        replaced.ServerUrl = null;
+        replaced.ServerOrigin = null;
+        this.Open(reregistered).Save(replaced);
+        this.Open(reregistered).Save(Registered("re-registered"));
+        var otherPath = Path.Combine(this._directory, ServerSecretFiles.FileName(otherCharacter, Url));
+        new FileSecretStore(otherPath).Save(old.Clone());
+
+        var reset = ServerSecretFiles.ResetIdentity(this._directory, ContentId, Url, path => new FileSecretStore(path));
+        Assert.Empty(reset.Problems);
+        Assert.Equal(
+            new[] { this.PathFor(moved), this.PathFor(reregistered), this.LegacyPathFor(Url) }.Select(Path.GetFileName).Order(),
+            reset.Scrubbed.Select(Path.GetFileName).Order());
+
+        // No file of this character holds the old key any more, .bak files included.
+        var files = Directory.EnumerateFiles(this._directory, $"secrets-{ContentId:X16}-*").ToList();
+        Assert.Contains(files, file => file.EndsWith(".bak"));
+        foreach (var file in files) {
+            Assert.False(old.SigningPrivateKey.AsSpan().SequenceEqual(new FileSecretStore(file).Load().SigningPrivateKey), $"{Path.GetFileName(file)} still holds the old key");
+            Assert.NotEqual("old token", new FileSecretStore(file).Load().DeviceToken);
+        }
+
+        // The address: new keys, no login, no channel keys; pins of others and blocks kept.
+        var mine = this.Open(Url).Load();
+        Assert.NotNull(mine.SigningPrivateKey);
+        Assert.Null(mine.DeviceToken);
+        Assert.Null(mine.UserId);
+        Assert.Empty(mine.EpochKeys);
+        Assert.Contains(77L, mine.PinnedIdentities.Keys);
+        Assert.Contains(4242L, mine.BlockedUsers);
+
+        // The moved copy: nothing of the identity (a vouched move can carry the new one there), the rest kept, still bound.
+        var there = this.Open(moved).Load();
+        Assert.Null(there.SigningPrivateKey);
+        Assert.Null(there.AgreementPrivateKey);
+        Assert.Null(there.DeviceToken);
+        Assert.Empty(there.EpochKeys);
+        Assert.Contains(77L, there.PinnedIdentities.Keys);
+        Assert.Contains(4242L, there.BlockedUsers);
+        Assert.Equal(ServerSecretFiles.NormaliseUrl(moved), there.ServerUrl);
+
+        // The old-style file: still a backup for its address, with nothing of the identity in it, so not offered.
+        Assert.Null(new FileSecretStore(this.LegacyPathFor(Url)).Load().SigningPrivateKey);
+        Assert.Equal(ServerSecretFiles.NormaliseUrl(Url), new FileSecretStore(this.LegacyPathFor(Url)).Load().ServerUrl);
+
+        // Untouched: another identity, the newer identity whose .bak held the old key, another character.
+        Assert.Equal("theirs", this.Open(elsewhere).Load().DeviceToken);
+        Assert.Equal("re-registered", this.Open(reregistered).Load().DeviceToken);
+        Assert.Equal("old token", new FileSecretStore(otherPath).Load().DeviceToken);
+    }
+
+    /// <summary>A file that can't be read is reported, not skipped silently, and doesn't stop the reset.</summary>
+    [Fact]
+    public void AnUnreadableFileIsReportedAndTheResetGoesOn() {
+        this.Open(Url).Save(Registered("token"));
+        var broken = this.PathFor("wss://broken.example/ws");
+        File.WriteAllText(broken, "not json");
+
+        var reset = ServerSecretFiles.ResetIdentity(this._directory, ContentId, Url, path => new FileSecretStore(path));
+        Assert.Contains(reset.Problems, problem => problem.Contains(Path.GetFileName(broken)));
+        Assert.Null(this.Open(Url).Load().DeviceToken);
+    }
+
     [Fact]
     public void TheNewFileWinsOverAnOldOne() {
         this.Open(Url).Save(Registered("new"));
