@@ -116,12 +116,18 @@ register again, other members see that your key changed, and in each of your
 channels a moderator must remove you and invite you again), disconnect,
 delete **both** the secrets file and its `.bak`, then connect again.
 
-If a server doesn't recognise your login (say, it was reset or restored from
-a backup, or the address now leads to another server), the main window says
-"Login not recognised". The plugin keeps your login and tries it again every
-minute or so, so it works again by itself once the right server is back;
-"Retry now" tries it at once. Register again only if it doesn't come back:
-that replaces the login.
+**Signing in.** The Lodestone proves the character is yours once, when you
+register. After that the plugin signs in with the login (a device token) it
+was given, and if the server doesn't recognise that (say, it was restored
+from a backup), with your identity key: the server checks a signature made
+with it and gives this device a new login, with no Lodestone step. Only if
+the server doesn't accept the key either (it has never known your account,
+you registered again elsewhere with a new key, or the key is gone) does the
+main window say "Login not recognised". The plugin keeps your login and
+tries it again every minute or so, so it works again by itself once the
+right server is back; "Retry now" tries the login and the key at once.
+Register again through the Lodestone only if your key was lost or replaced,
+or the server has never known your account.
 
 ## Commands
 
@@ -205,6 +211,24 @@ single addresses (`"10.0.0.5"`) and networks in CIDR form
 (`"172.17.0.0/16"`). Otherwise every client appears to be the proxy, and the
 limits apply to everyone together. IPv6 clients are counted per /64.
 
+**Key login and the server's address.** When a plugin signs in with its
+identity key, the signature names the address it connected to, and the
+server only accepts its own address (scheme, host and port), so another
+server you use can't pass your signature on to this one. By default "its own
+address" is what each connection was made to: its scheme and `Host` header.
+That works for direct connections (`ws://<machine-name>:5180/ws`), behind
+`tailscale serve` (which keeps the Host header and sends
+`X-Forwarded-Proto` from loopback), and behind a proxy that passes the Host
+header and `X-Forwarded-Proto` on (Caddy does; nginx needs
+`proxy_set_header Host $host;` and `proxy_set_header X-Forwarded-Proto $scheme;`).
+But anyone connecting directly can send any Host header, so on a server
+reachable from the internet without such a proxy, or behind one that
+rewrites Host, list the addresses clients use in `LookingGlass:PublicUrls`
+(for example `LookingGlass__PublicUrls__0=wss://chat.example.com/ws`); then
+only those are accepted. Key logins are limited per connection, per address
+(`KeyLoginsPerHourPerIp`, `KeyLoginFailuresPerHourPerIp` under
+`LookingGlass:Limits`) and per account.
+
 **Docker:** a reverse proxy on the host reaches the container through Docker's
 bridge network, so inside the container the proxy's address is the bridge
 gateway (often `172.17.0.1`), not loopback. Trust the bridge network, for
@@ -278,6 +302,12 @@ What the encryption does today:
   whether to a name from an older epoch, an earlier rename, or an older
   membership. Only the admin renames; a rekey carries the name into the new
   epoch, and clients warn if a member's rekey changed it.
+- Signing in: the Lodestone check happens once, at registration. After
+  that a client signs in with its device token or, if the server no longer
+  knows the token, by signing a single-use challenge with its current
+  identity key (a key replaced by registering again can't). The signature
+  names the server's address, so a server can't replay it to another; the
+  plugin also keeps separate keys per server.
 - Clients can block users: their invites are declined unseen and their
   messages hidden. An invite is only shown as verified once the client has
   checked it against the channel's log, and one from someone whose identity
