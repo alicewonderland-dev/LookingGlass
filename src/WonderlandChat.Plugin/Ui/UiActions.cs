@@ -33,6 +33,14 @@ public sealed class UiActions {
         });
     }
 
+    /// <summary>For synchronous session calls that save the keys, which mustn't hold up the game's frame.</summary>
+    public void Run(string description, Action action) {
+        this.Run(description, () => {
+            action();
+            return Task.CompletedTask;
+        });
+    }
+
     public void DrawStatus() {
         if (this._result is not { } result) {
             return;

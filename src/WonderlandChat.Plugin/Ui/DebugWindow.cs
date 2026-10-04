@@ -58,8 +58,8 @@ public sealed class DebugWindow : Window {
         }
 
         ImGui.SameLine();
-        if (UiActions.ConfirmButton("Forget account")) {
-            session?.ForgetAccount();
+        if (UiActions.ConfirmButton("Forget account") && session != null) {
+            this._actions.Run("Forgetting the account", session.ForgetAccount);
         }
 
         ImGui.EndDisabled();
