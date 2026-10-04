@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Google.Protobuf;
 using Microsoft.Extensions.Options;
+using LookingGlass.Core.Client;
 using LookingGlass.Core.Crypto;
 using LookingGlass.Core.Membership;
 using LookingGlass.Protocol;
@@ -28,6 +29,7 @@ public sealed class RequestHandler(
     ILogger<RequestHandler> logger,
     IMembershipProvider membership,
     IGroupKeyProvider groupKeys,
+    IHostEnvironment? environment = null,
     TimeProvider? time = null) {
     private static readonly string ServerVersion = typeof(RequestHandler).Assembly.GetName().Version?.ToString(3) ?? "0.1.0";
 
@@ -43,6 +45,9 @@ public sealed class RequestHandler(
     // The same for every failure, so a failed key login doesn't tell whether the account exists, or which check failed.
     private const string KeyLoginFailed = "Key login failed.";
 
+    // Said to anyone asking, before looking at the account, on a server with key login off.
+    private const string KeyLoginUnavailable = "Signing in with the identity key isn't available on this server.";
+
     /// <summary>Pending invites one user can have at once, across all channels.</summary>
     public const int MaxPendingInvitesPerUser = 20;
 
@@ -51,12 +56,23 @@ public sealed class RequestHandler(
     private const int MaxSealedNameBytes = 128;
 
     private readonly WindowCounter _registrations = new(options.Value.Limits.RegistrationsPerHourPerIp, TimeSpan.FromHours(1));
-    // Key login: challenges per address, failures per address, and challenges per account asked about (by anyone).
-    // Each challenge allows one attempt, so the challenge limits bound attempts, and failures, per connection and account too.
+    // Key login: challenges per address; failures per address, where a challenge counts as one from when it is issued
+    // until it is answered correctly (so asking and never answering is limited like failing); and failed answers per
+    // account, by anyone. Each challenge allows one attempt, so these bound attempts per connection and account too.
+    //
+    // Only failed answers count against an account, never challenges or successes: anyone can ask for challenges for
+    // any account, and counting those let one address keep an account's key login locked. The account's allowance is
+    // sized from the per-address one so no single address can empty it (twice as many at once, refilling three times as
+    // fast), so keeping an account locked takes the whole failure allowance of several addresses, each of which is then
+    // blocked from key login itself.
     private readonly WindowCounter _keyLoginsPerIp = new(options.Value.Limits.KeyLoginsPerHourPerIp, TimeSpan.FromHours(1));
     private readonly WindowCounter _keyLoginFailuresPerIp = new(options.Value.Limits.KeyLoginFailuresPerHourPerIp, TimeSpan.FromHours(1));
-    private readonly UserRateLimits _keyLoginsPerUser = new(perSecond: 1.0 / 180, burst: 10);
+    private readonly UserRateLimits _keyLoginFailuresPerUser = new(
+        perSecond: Math.Max(1, options.Value.Limits.KeyLoginFailuresPerHourPerIp) * 3 / 3600.0,
+        burst: Math.Max(1, options.Value.Limits.KeyLoginFailuresPerHourPerIp) * 2);
     private readonly IReadOnlyList<ServerOrigin> _publicOrigins = ParsePublicUrls(options.Value.PublicUrls);
+    private readonly string[] _advertisedUrls = (options.Value.PublicUrls ?? []).Where(url => !string.IsNullOrWhiteSpace(url)).Select(url => url.Trim()).Distinct().ToArray();
+    private readonly KeyLoginOrigins _keyLoginOrigins =ChooseKeyLoginOrigins(ParsePublicUrls(options.Value.PublicUrls), environment?.IsDevelopment() == true);
     private readonly TimeProvider _time = time ?? TimeProvider.System;
     private readonly UserRateLimits _rekeys = new(perSecond: 0.5, burst: 5);
     private readonly UserRateLimits _lookups = new(perSecond: 0.5, burst: 10);
@@ -79,6 +95,12 @@ public sealed class RequestHandler(
     /// have someone else's request land in between, as a concurrent one could.
     /// </summary>
     internal Action? BeforeAbandonedChannelDeletedForTests { get; set; }
+
+    /// <summary>
+    /// Runs once, after a key login has been checked and before its device is added, so tests can have the account
+    /// register again with new keys in between, as a concurrent registration could.
+    /// </summary>
+    internal Action? BeforeKeyLoginDeviceAddedForTests { get; set; }
 
     public async Task<Response> HandleAsync(ClientConnection connection, ClientFrame frame, CancellationToken ct) {
         try {
@@ -149,6 +171,9 @@ public sealed class RequestHandler(
             DebugAccountsEnabled = options.Value.Dev.AllowDebugAccounts,
         };
         welcome.Capabilities.AddRange(hello.Capabilities.Where(capability => capability == ProtocolInfo.Capabilities.Chat));
+        // The operator's own addresses, which clients moving to one of them trust because this server, at the address
+        // they already use, lists it. Never the Host-header fallback: that's whatever the connecting side said.
+        welcome.PublicUrls.AddRange(this._advertisedUrls);
         return new Response { Welcome = welcome };
     }
 
@@ -289,27 +314,46 @@ public sealed class RequestHandler(
 
     /// <summary>
     /// The first half of a key login: a fresh challenge for this connection to sign. Issued whether or not the account
-    /// exists, so asking doesn't tell who is registered. Limited per connection, address and account.
+    /// exists, so asking doesn't tell who is registered. Limited per connection, address and account. Refused for
+    /// everyone on a server that has no address it can check signatures against (see <see cref="KeyLoginOrigins"/>).
     /// </summary>
     private Response StartKeyLogin(ClientConnection connection, StartKeyLogin request) {
         if (connection.User != null) {
             throw new RequestException(ErrorCode.InvalidRequest, "Already logged in on this connection.");
         }
 
+        if (this._keyLoginOrigins == KeyLoginOrigins.Off) {
+            throw new RequestException(ErrorCode.NotAuthenticated, KeyLoginUnavailable);
+        }
+
         if (connection.KeyLoginChallenges >= MaxKeyLoginChallengesPerConnection) {
             throw new RequestException(ErrorCode.RateLimited, "Too many key login attempts on this connection.");
         }
 
-        if (this._keyLoginFailuresPerIp.IsFull(connection.RemoteAddress) || !this._keyLoginsPerIp.TryAdd(connection.RemoteAddress)) {
-            logger.LogDebug("Key login from {Address} refused: too many from this address", connection.RemoteAddress);
+        var address = connection.RemoteAddress;
+        if (this._keyLoginFailuresPerIp.IsFull(address) || this._keyLoginsPerIp.IsFull(address)) {
+            logger.LogDebug("Key login from {Address} refused: too many from this address", address);
             throw new RequestException(ErrorCode.RateLimited, "Too many key login attempts; try again later.");
         }
 
-        if (!this._keyLoginsPerUser.TryTake(request.UserId)) {
-            logger.LogDebug("Key login for {User} from {Address} refused: too many for this account", request.UserId, connection.RemoteAddress);
+        // Checked, not taken: only a failed answer uses up the account's allowance.
+        if (!this._keyLoginFailuresPerUser.HasToken(request.UserId)) {
+            logger.LogDebug("Key login for {User} from {Address} refused: too many failures for this account", request.UserId, address);
             throw new RequestException(ErrorCode.RateLimited, "Too many key login attempts for this account; try again later.");
         }
 
+        // The challenge, and (until it is answered correctly) a failure. Both checked above, but a request on another
+        // connection from the same address may have counted meanwhile.
+        if (!this._keyLoginsPerIp.TryAdd(address)) {
+            throw new RequestException(ErrorCode.RateLimited, "Too many key login attempts; try again later.");
+        }
+
+        if (!this._keyLoginFailuresPerIp.TryAdd(address)) {
+            this._keyLoginsPerIp.Refund(address);
+            throw new RequestException(ErrorCode.RateLimited, "Too many key login attempts; try again later.");
+        }
+
+        // A challenge this one replaces stays counted as a failure for the address: it was never answered.
         connection.KeyLoginChallenges++;
         var challenge = RandomNumberGenerator.GetBytes(KeyLoginProof.ChallengeSize);
         var expires = this._time.GetUtcNow() + KeyLoginChallengeLifetime;
@@ -338,6 +382,11 @@ public sealed class RequestHandler(
         string? token = null;
         if (refusal == null) {
             token = NewDeviceToken();
+            if (this.BeforeKeyLoginDeviceAddedForTests is { } hook) {
+                this.BeforeKeyLoginDeviceAddedForTests = null;
+                hook();
+            }
+
             // Only while the key that signed is still the account's: registering again with new keys revokes every
             // device, and must not be undone by a key login checked just before it.
             if (!db.AddDeviceForKey(user!.UserId, user.SigningKey, user.KeyVersion, HashToken(token))) {
@@ -346,11 +395,20 @@ public sealed class RequestHandler(
         }
 
         if (refusal != null) {
-            this._keyLoginFailuresPerIp.TryAdd(connection.RemoteAddress);
+            if (pending == null) {
+                // An answer without a challenge: nothing was counted for it yet.
+                this._keyLoginFailuresPerIp.TryAdd(connection.RemoteAddress);
+            } else {
+                // The address's failure was counted with the challenge; this is the account's.
+                this._keyLoginFailuresPerUser.TryTake(pending.UserId);
+            }
+
             logger.LogInformation("Key login for {User} from {Address} refused: {Reason}", pending?.UserId, connection.RemoteAddress, refusal);
             throw new RequestException(ErrorCode.NotAuthenticated, KeyLoginFailed);
         }
 
+        // Answered correctly: the failure counted for the address when the challenge was issued didn't happen.
+        this._keyLoginFailuresPerIp.Refund(connection.RemoteAddress);
         logger.LogInformation("Key login for {User} from {Address}: new device", user!.UserId, connection.RemoteAddress);
         return new Response { KeyLoginComplete = new KeyLoginComplete { DeviceToken = token, User = user.ToProto() } };
     }
@@ -372,26 +430,70 @@ public sealed class RequestHandler(
 
         // Before the signature: a signature made for another server is what a relay would bring.
         var signed = ServerOrigin.FromUrl(request.ServerUrl);
-        if (signed == null || !(this._publicOrigins.Count > 0 ? this._publicOrigins.Contains(signed) : signed == connection.RequestOrigin)) {
-            return $"signed for {signed?.ToString() ?? "an invalid address"}, which isn't this server "
-                   + $"({(this._publicOrigins.Count > 0 ? string.Join(", ", this._publicOrigins) : connection.RequestOrigin?.ToString() ?? "unknown address")})";
+        var ours = this._keyLoginOrigins switch {
+            KeyLoginOrigins.PublicUrls => signed != null && this._publicOrigins.Contains(signed),
+            KeyLoginOrigins.HostHeader => signed != null && signed == connection.RequestOrigin,
+            _ => false,
+        };
+        if (!ours) {
+            return $"signed for {signed?.ToString() ?? "an invalid address"}, which isn't this server ("
+                   + this._keyLoginOrigins switch {
+                       KeyLoginOrigins.PublicUrls => string.Join(", ", this._publicOrigins),
+                       KeyLoginOrigins.HostHeader => $"Host header: {connection.RequestOrigin?.ToString() ?? "unknown address"}",
+                       _ => "key login is off: no PublicUrls",
+                   } + ")";
         }
 
         user = db.GetUser(pending.UserId);
-        if (user == null) {
-            return "no such account";
+        var refused = user == null ? "no such account"
+            : user.IsDebug && !options.Value.Dev.AllowDebugAccounts ? "debug accounts are disabled"
+            : null;
+
+        // Against the account's current key only: keys replaced by registering again can't sign in. An account that
+        // doesn't exist, or may not sign in, is checked against a key nobody holds, so every answer that gets this far
+        // costs one verification and the time a failure takes doesn't tell whether the account exists.
+        var valid = KeyLoginProof.Verify(refused == null ? user!.SigningKey : NobodysKey, pending.Challenge, pending.UserId, request.ServerUrl, request.Signature.Span);
+        Interlocked.Increment(ref this._keyLoginSignatureChecks);
+        if (refused != null) {
+            user = null;
+            return refused;
         }
 
-        if (user.IsDebug && !options.Value.Dev.AllowDebugAccounts) {
-            return "debug accounts are disabled";
-        }
+        return valid ? null : "the signature isn't by the account's identity key";
+    }
 
-        // Against the account's current key only: keys replaced by registering again can't sign in.
-        if (!KeyLoginProof.Verify(user.SigningKey, pending.Challenge, pending.UserId, request.ServerUrl, request.Signature.Span)) {
-            return "the signature isn't by the account's identity key";
-        }
+    // A valid Ed25519 public key whose private key was thrown away when the server started.
+    private static readonly byte[] NobodysKey = MakeNobodysKey();
 
-        return null;
+    private static byte[] MakeNobodysKey() {
+        using var keys = IdentityKeys.Generate();
+        return keys.SigningPublicKey;
+    }
+
+    private int _keyLoginSignatureChecks;
+
+    /// <summary>Key login signatures verified so far, for tests that every answer costs the same.</summary>
+    internal int KeyLoginSignatureChecks => Volatile.Read(ref this._keyLoginSignatureChecks);
+
+    /// <summary>Which server addresses a key login signature may name.</summary>
+    internal enum KeyLoginOrigins {
+        /// <summary>The configured <see cref="ServerOptions.PublicUrls"/>: the operator says which addresses are this server's.</summary>
+        PublicUrls,
+
+        /// <summary>
+        /// None configured, in Development only: the scheme and Host header each connection was made with. Whoever opens
+        /// the connection chooses the Host header, so this stops nothing a relaying server does on purpose (it sends the
+        /// address the user signed for); only the plugin keeping separate keys per server address does. For private test
+        /// servers only.
+        /// </summary>
+        HostHeader,
+
+        /// <summary>None configured, outside Development: there is no address to trust, so key login is refused.</summary>
+        Off,
+    }
+
+    internal static KeyLoginOrigins ChooseKeyLoginOrigins(IReadOnlyList<ServerOrigin> publicOrigins, bool development) {
+        return publicOrigins.Count > 0 ? KeyLoginOrigins.PublicUrls : development ? KeyLoginOrigins.HostHeader : KeyLoginOrigins.Off;
     }
 
     /// <exception cref="InvalidOperationException">An entry isn't a ws, wss, http or https URL.</exception>

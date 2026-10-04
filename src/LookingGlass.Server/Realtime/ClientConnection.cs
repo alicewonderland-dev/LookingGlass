@@ -1,6 +1,7 @@
 using System.Net.WebSockets;
 using System.Threading.Channels;
 using Google.Protobuf;
+using LookingGlass.Core.Client;
 using LookingGlass.Protocol;
 using LookingGlass.Server.Data;
 
@@ -57,8 +58,8 @@ public sealed class ClientConnection {
     public DateTimeOffset LastVerifyAttempt { get; set; } = DateTimeOffset.MinValue;
 
     /// <summary>
-    /// Where the client connected to (scheme and Host header), for checking the address a key login names.
-    /// Null if unknown, which no address matches.
+    /// Where the client says it connected to (scheme and Host header). Only used, in Development without PublicUrls,
+    /// to check the address a key login names; the connecting side chooses it. Null if unknown, which no address matches.
     /// </summary>
     public ServerOrigin? RequestOrigin { get; init; }
 

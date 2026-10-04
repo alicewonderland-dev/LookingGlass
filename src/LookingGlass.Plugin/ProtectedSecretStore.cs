@@ -37,9 +37,9 @@ public sealed class ProtectedSecretStore : ISecretStore {
     // the same character use different store objects but the same secrets file.
     public ClientSecrets Load() {
         // A damaged or missing file (say, after a power cut) falls back to the copy kept by the last save.
-        // Deleting the file is also how people reset their identity, so they're told the backup was used.
+        // Someone who deleted the file to start afresh is told the backup was used, and how to reset instead.
         return AtomicFile.Read(this._path, this.Decode, message =>
-                   this.Warn($"{message} To reset your LookingGlass identity instead, disconnect, delete both files, then connect again."))
+                   this.Warn($"{message} To replace your LookingGlass identity instead, use \"Reset my identity\" in Settings."))
                ?? new ClientSecrets();
     }
 
@@ -120,14 +120,56 @@ public sealed class ProtectedSecretStore : ISecretStore {
         }
     }
 
-    /// <summary>One secrets file per character and server.</summary>
+    private static string ConfigDirectory => Services.PluginInterface.ConfigDirectory.FullName;
+
+    /// <summary>
+    /// One secrets file per character and server address, which holds the address and is refused for any other (see
+    /// <see cref="ServerSecretFiles"/>). An old-style file for the address is moved to the new name first, and kept.
+    /// </summary>
     /// <param name="tellUser">Shows a warning to the user. Called on any thread.</param>
-    public static ProtectedSecretStore For(ulong contentId, string serverUrl, Action<string>? tellUser = null) {
-        var directory = Services.PluginInterface.ConfigDirectory.FullName;
-        var serverHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(serverUrl.Trim().ToLowerInvariant())))[..12];
-        return new ProtectedSecretStore(
-            Path.Combine(directory, $"secrets-{contentId:X16}-{serverHash}.bin"),
-            Path.Combine(directory, "local.key"),
-            tellUser);
+    /// <exception cref="SecretsServerMismatchException">The file belongs to another address.</exception>
+    public static ServerBoundSecretStore For(ulong contentId, string serverUrl, Action<string>? tellUser = null) {
+        return ServerSecretFiles.Open(ConfigDirectory, contentId, serverUrl, path => At(path, tellUser), message => Services.Log.Information(message));
+    }
+
+    /// <summary>
+    /// Moves every character's old-style secrets file for the configured address to its new name, when the plugin
+    /// starts, so they name their address before the user could switch to one whose short hash collides with them.
+    /// </summary>
+    public static void MigrateOldFiles(string serverUrl) {
+        try {
+            ServerSecretFiles.MigrateAll(ConfigDirectory, serverUrl, path => At(path, null), message => Services.Log.Information(message));
+        } catch (Exception ex) {
+            Services.Log.Warning(ex, "Couldn't move old LookingGlass secrets files");
+        }
+    }
+
+    /// <summary>
+    /// The characters with an identity for <paramref name="oldUrl"/> and nothing for <paramref name="newUrl"/>: those whose
+    /// identity a move to the new address could carry over. Reads (and decrypts) their files: not on the framework thread.
+    /// A file that can't be read, or belongs to another address, counts as something there, never as free.
+    /// </summary>
+    public static IReadOnlyList<ulong> CharactersToMove(string oldUrl, string newUrl) {
+        MigrateOldFiles(oldUrl);
+        return ServerSecretFiles.Characters(ConfigDirectory, oldUrl)
+            .Where(id => Holds(id, oldUrl, identity: true) && !Holds(id, newUrl, identity: false))
+            .ToList();
+    }
+
+    /// <param name="identity">Identity keys (true), or anything at all: keys or a login (false).</param>
+    private static bool Holds(ulong contentId, string serverUrl, bool identity) {
+        try {
+            var secrets = For(contentId, serverUrl).Load();
+            return identity
+                ? secrets.SigningPrivateKey != null && secrets.AgreementPrivateKey != null
+                : secrets.SigningPrivateKey != null || secrets.DeviceToken != null;
+        } catch (Exception ex) {
+            Services.Log.Warning(ex, "Couldn't read a LookingGlass secrets file");
+            return !identity;
+        }
+    }
+
+    private static ProtectedSecretStore At(string path, Action<string>? tellUser) {
+        return new ProtectedSecretStore(path, Path.Combine(ConfigDirectory, "local.key"), tellUser);
     }
 }

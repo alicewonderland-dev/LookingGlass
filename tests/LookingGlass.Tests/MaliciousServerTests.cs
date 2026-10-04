@@ -60,6 +60,8 @@ public sealed class MaliciousServerTests : IAsyncLifetime {
         await AddMemberAsync(alice, channelId, bob);
         await AddMemberAsync(alice, channelId, carol);
         var epoch = carol.Session.Snapshot.FindChannel(channelId)!.Epoch;
+        // Carol's join made a new key; Bob signs the forgeries with it, so wait until he holds it.
+        await WaitFor(() => bob.Store.Load().EpochKeys.GetValueOrDefault(channelId)?.ContainsKey(epoch) == true ? new object() : null);
         int Lookups() => carol.Session.GetTrace().Count(entry => entry.Outgoing && entry.Summary.EndsWith(" GetIdentities"));
 
         // Messages "from Bob" with bad signatures: his key hasn't changed, so each is dropped,

@@ -22,10 +22,16 @@ public sealed class Harness : IAsyncDisposable {
     private readonly List<IAsyncDisposable> _disposables = [];
 
     /// <param name="serverTime">The server's clock, for tests that move it forward (key login challenges expire by it).</param>
+    /// <param name="environment">
+    /// The server's hosting environment. In Development (the default here, as on the test server) key login may go by
+    /// the connection's Host header when no PublicUrls are set; anywhere else it needs them.
+    /// </param>
     /// <param name="settings">Extra server configuration, for example <c>("LookingGlass:Limits:MaxIdentitiesPerRequest", "2")</c>.</param>
-    public Harness(string? dataDirectory = null, bool allowDebugAccounts = true, TimeProvider? serverTime = null, params (string Key, string Value)[] settings) {
+    public Harness(string? dataDirectory = null, bool allowDebugAccounts = true, TimeProvider? serverTime = null, string environment = "Development",
+        params (string Key, string Value)[] settings) {
         this.DataDirectory = dataDirectory ?? Path.Combine(Path.GetTempPath(), "lgt-" + Guid.NewGuid().ToString("N"));
         this.Factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder => {
+            builder.UseEnvironment(environment);
             builder.UseSetting("LookingGlass:DataDirectory", this.DataDirectory);
             builder.UseSetting("LookingGlass:Dev:AllowDebugAccounts", allowDebugAccounts ? "true" : "false");
             builder.UseSetting("LookingGlass:Dev:HostEchoBot", "false");
@@ -97,15 +103,17 @@ public sealed class Harness : IAsyncDisposable {
     /// <param name="wrap">Wraps every connection's WebSocket, for example in a <see cref="HoldingWebSocket"/>.</param>
     /// <param name="forkCheckInterval">How often the client may fetch a channel's whole log to look into a possible fork.</param>
     /// <param name="loginRetryDelay">How often a saved login the server didn't recognise is tried again (by default, soon and often).</param>
+    /// <param name="serverUri">The address the client thinks it connects to (and signs for); it reaches this server whatever it is.</param>
     public ClientSessionOptions Options(bool autoRekey = true, Action<NoticeLevel, string>? log = null, TimeProvider? time = null, Func<CancellationToken, Task>? beforeConnect = null,
-        uint protocolVersion = ProtocolInfo.CurrentVersion, Func<WebSocket, WebSocket>? wrap = null, TimeSpan? forkCheckInterval = null, TimeSpan? loginRetryDelay = null) => new() {
-        ServerUri = new Uri(this.Factory.Server.BaseAddress, ProtocolInfo.WebSocketPath),
+        uint protocolVersion = ProtocolInfo.CurrentVersion, Func<WebSocket, WebSocket>? wrap = null, TimeSpan? forkCheckInterval = null, TimeSpan? loginRetryDelay = null,
+        Uri? serverUri = null) => new() {
+        ServerUri = serverUri ?? new Uri(this.Factory.Server.BaseAddress, ProtocolInfo.WebSocketPath),
         Connect = async (uri, ct) => {
             if (beforeConnect != null) {
                 await beforeConnect(ct);
             }
 
-            var socket = await this.Factory.Server.CreateWebSocketClient().ConnectAsync(uri, ct);
+            var socket = await this.ConnectAsync(uri, ct);
             return wrap?.Invoke(socket) ?? socket;
         },
         ReconnectMinDelay = TimeSpan.FromMilliseconds(100),
@@ -117,6 +125,9 @@ public sealed class Harness : IAsyncDisposable {
         ProtocolVersion = protocolVersion,
         ForkCheckInterval = forkCheckInterval ?? TimeSpan.FromMinutes(1),
     };
+
+    /// <summary>Opens a WebSocket to this server, whatever address <paramref name="uri"/> names (as a client's Connect).</summary>
+    public Task<WebSocket> ConnectAsync(Uri uri, CancellationToken ct) => this.Factory.Server.CreateWebSocketClient().ConnectAsync(uri, ct);
 
     public void Track(IAsyncDisposable disposable) => this._disposables.Add(disposable);
 

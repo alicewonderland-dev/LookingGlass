@@ -7,7 +7,10 @@ namespace LookingGlass.Core.Crypto;
 /// and the server's address as the client connected to it. The address is what stops a relay: a
 /// malicious server the user connects to could fetch another server's challenge for the user and
 /// have the user sign it, but the signature then names the malicious server's address, which the
-/// other server refuses (see the server's <c>ServerOrigin</c>).
+/// other server refuses, as long as it checks against its configured public addresses (the server's
+/// <c>PublicUrls</c>; without them only a Development server signs in with keys, by the Host header,
+/// which a relay chooses). Independently of that, the plugin keeps separate identity keys per server
+/// address, so the key a malicious server's users sign with isn't registered anywhere else.
 /// </summary>
 public static class KeyLoginProof {
     /// <summary>The size of a key login challenge, in bytes.</summary>

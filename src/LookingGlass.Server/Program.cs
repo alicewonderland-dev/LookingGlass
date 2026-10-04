@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Extensions.Options;
+using LookingGlass.Core.Client;
 using LookingGlass.Core.Crypto;
 using LookingGlass.Core.Membership;
 using LookingGlass.Protocol;
@@ -60,12 +61,33 @@ try {
 }
 
 // Likewise for the key login addresses: a typo would otherwise only show as every key login failing.
+IReadOnlyList<ServerOrigin> publicOrigins;
 try {
-    RequestHandler.ParsePublicUrls(options.PublicUrls);
+    publicOrigins = RequestHandler.ParsePublicUrls(options.PublicUrls);
 } catch (InvalidOperationException ex) {
     app.Logger.LogCritical("{Problem}", ex.Message);
     Environment.ExitCode = 1;
     return;
+}
+
+// Key login signatures name the server's address, and only an address the operator configured can be trusted: the Host
+// header is whatever the connecting side sends, so a relaying server sends the one the user signed for.
+switch (RequestHandler.ChooseKeyLoginOrigins(publicOrigins, app.Environment.IsDevelopment())) {
+    case RequestHandler.KeyLoginOrigins.PublicUrls:
+        app.Logger.LogInformation("Key login accepts signatures for {Origins}", string.Join(", ", publicOrigins));
+        break;
+    case RequestHandler.KeyLoginOrigins.HostHeader:
+        app.Logger.LogWarning(
+            "LookingGlass:PublicUrls is not set. In Development, key login accepts signatures for whatever address each connection names in its " +
+            "Host header, which a relaying server chooses, so the address check stops nothing; only the plugin's separate keys per server address do. " +
+            "Fine for a private test server; list the addresses clients use in LookingGlass:PublicUrls to check them properly.");
+        break;
+    default:
+        app.Logger.LogWarning(
+            "LookingGlass:PublicUrls is not set, so signing in with the identity key (key login) is OFF: a client whose login this server " +
+            "doesn't recognise must register again through the Lodestone. List every address clients connect to, for example " +
+            "LookingGlass__PublicUrls__0=wss://chat.example.com/ws.");
+        break;
 }
 
 if (options.Dev.AllowDebugAccounts) {

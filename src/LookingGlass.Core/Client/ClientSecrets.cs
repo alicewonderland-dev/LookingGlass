@@ -11,6 +11,17 @@ namespace LookingGlass.Core.Client;
 /// </summary>
 public sealed class ClientSecrets {
     public int Version { get; set; } = 1;
+
+    /// <summary>
+    /// The server address these secrets belong to, as <see cref="ServerSecretFiles.NormaliseUrl"/> gives it. A store
+    /// bound to an address (<see cref="ServerBoundSecretStore"/>) refuses secrets that name another, so identities
+    /// for different servers never mix. Null in files from before it was recorded, and in new, unsaved secrets.
+    /// </summary>
+    public string? ServerUrl { get; set; }
+
+    /// <summary>The origin of <see cref="ServerUrl"/> (see <see cref="Client.ServerOrigin"/>), for reference.</summary>
+    public string? ServerOrigin { get; set; }
+
     public byte[]? SigningPrivateKey { get; set; }
     public byte[]? AgreementPrivateKey { get; set; }
     public string? DeviceToken { get; set; }
@@ -47,6 +58,36 @@ public sealed class ClientSecrets {
 
     /// <summary>Channel ID → epoch → the log position its key was made for (pruned with <see cref="EpochKeys"/>).</summary>
     public Dictionary<string, Dictionary<ulong, KeyPosition>> EpochKeyPositions { get; set; } = new();
+
+    /// <summary>
+    /// "Reset my identity", for a lost or stolen key: new identity keys, and nothing kept that belongs to the old
+    /// identity on this server. Call only while no session uses these secrets; the next session starts unregistered.
+    /// <list type="bullet">
+    /// <item>Replaced or dropped: the identity keys; the login (device token and user ID), which is the old registration's
+    /// and would otherwise log the new keys in as the old identity; every channel key and where it was made (sealed to the
+    /// old keys, and for channels this identity is no longer in); and the pin of your own old keys.</item>
+    /// <item>Kept, as they are about others or about the channels, not about the old keys: the keys pinned for other users
+    /// (so a server can't swap them unnoticed now), blocked users, and per channel the newest verified log position, name
+    /// version and message times (so a server can't roll a channel back, or replay old messages, if the new identity is
+    /// invited again). None of them lets anyone act as the old identity.</item>
+    /// </list>
+    /// Registering the new keys (through the Lodestone) revokes the old identity's logins on the server and stops its keys
+    /// signing in; its channel memberships stay bound to the old keys until someone removes and invites you again.
+    /// </summary>
+    public void ResetIdentity() {
+        if (this.UserId is { } me) {
+            this.PinnedIdentities.Remove(me);
+        }
+
+        using var keys = Crypto.IdentityKeys.Generate();
+        var (signing, agreement) = keys.ExportPrivateKeys();
+        this.SigningPrivateKey = signing;
+        this.AgreementPrivateKey = agreement;
+        this.DeviceToken = null;
+        this.UserId = null;
+        this.EpochKeys.Clear();
+        this.EpochKeyPositions.Clear();
+    }
 
     public ClientSecrets Clone() {
         return JsonSerializer.Deserialize<ClientSecrets>(JsonSerializer.SerializeToUtf8Bytes(this))!;

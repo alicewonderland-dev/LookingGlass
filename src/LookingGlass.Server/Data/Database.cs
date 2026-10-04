@@ -320,11 +320,20 @@ public sealed class Database {
         return (stored, keysChanged);
     }
 
+    /// <summary>
+    /// Devices one user keeps. Every key login adds one, so a client whose logins keep getting lost, or anyone holding
+    /// the key, would otherwise add rows forever. Adding one beyond this drops the least recently used.
+    /// </summary>
+    public const int MaxDevicesPerUser = 20;
+
     public void AddDevice(long userId, byte[] tokenHash) {
         using var connection = this.Open();
+        using var tx = connection.BeginTransaction();
         var now = Now();
-        Execute(connection, null, "INSERT INTO devices (token_hash, user_id, created_at, last_used_at) VALUES ($hash, $id, $now, $now);",
+        Execute(connection, tx, "INSERT INTO devices (token_hash, user_id, created_at, last_used_at) VALUES ($hash, $id, $now, $now);",
             ("$hash", tokenHash), ("$id", userId), ("$now", now));
+        PruneDevices(connection, tx, userId);
+        tx.Commit();
     }
 
     /// <summary>
@@ -335,13 +344,46 @@ public sealed class Database {
     /// <returns>False if the user's keys changed (or they're gone) since <paramref name="signingKey"/> was checked.</returns>
     public bool AddDeviceForKey(long userId, byte[] signingKey, uint keyVersion, byte[] tokenHash) {
         using var connection = this.Open();
+        using var tx = connection.BeginTransaction();
         var now = Now();
-        return Execute(connection, null, """
+        var added = Execute(connection, tx, """
             INSERT INTO devices (token_hash, user_id, created_at, last_used_at)
             SELECT $hash, user_id, $now, $now FROM users
             WHERE user_id = $id AND signing_key = $key AND key_version = $version;
             """,
             ("$hash", tokenHash), ("$id", userId), ("$key", signingKey), ("$version", (long) keyVersion), ("$now", now)) == 1;
+        if (added) {
+            PruneDevices(connection, tx, userId);
+        }
+
+        tx.Commit();
+        return added;
+    }
+
+    /// <summary>
+    /// Keeps a user's <see cref="MaxDevicesPerUser"/> most recently used devices (the newest first among equals, so
+    /// the one just added always stays), in the transaction that added one.
+    /// </summary>
+    private static void PruneDevices(SqliteConnection connection, SqliteTransaction tx, long userId) {
+        Execute(connection, tx, """
+            DELETE FROM devices WHERE user_id = $id AND rowid NOT IN (
+                SELECT rowid FROM devices WHERE user_id = $id
+                ORDER BY last_used_at DESC, created_at DESC, rowid DESC
+                LIMIT $keep);
+            """,
+            ("$id", userId), ("$keep", MaxDevicesPerUser));
+    }
+
+    public int CountDevices(long userId) {
+        using var connection = this.Open();
+        return Convert.ToInt32(Scalar(connection, null, "SELECT COUNT(*) FROM devices WHERE user_id = $id;", ("$id", userId)));
+    }
+
+    /// <summary>Backdates a device's last use, for tests of which devices are kept.</summary>
+    internal void SetDeviceLastUsedForTests(byte[] tokenHash, DateTimeOffset when) {
+        using var connection = this.Open();
+        Execute(connection, null, "UPDATE devices SET last_used_at = $when WHERE token_hash = $hash;",
+            ("$when", when.ToUnixTimeSeconds()), ("$hash", tokenHash));
     }
 
     public long? FindDevice(byte[] tokenHash) {

@@ -172,13 +172,18 @@ public sealed class KeyLoginTests : IAsyncLifetime {
         Assert.Equal(alice.UserId, complete.User.UserId);
         Assert.NotEqual(first, complete.DeviceToken);
 
-        // The new token logs in; the old one still does, and its session wasn't dropped.
+        // The key login itself didn't drop the session using the other device.
+        await Task.Delay(200, Ct);
+        Assert.Equal(ConnectionState.Ready, alice.Session.Snapshot.State);
+        Assert.Single(alice.Session.GetTrace(), entry => entry.Outgoing && entry.Summary.EndsWith(" Hello"));
+
+        // The new token logs in; the old one still does. (Each login replaces the user's previous connection, one per
+        // user, so Alice's session is dropped here and reconnects with its own token, which still works.)
         var ok = await raw.SendAsync(new ClientFrame { Authenticate = new Authenticate { DeviceToken = complete.DeviceToken } });
         Assert.Equal(alice.UserId, ok.AuthenticateOk?.User.UserId);
         await using var other = await this._server.ConnectRawAsync();
         Assert.NotNull((await other.SendAsync(new ClientFrame { Authenticate = new Authenticate { DeviceToken = first } })).AuthenticateOk);
-        await Task.Delay(200, Ct);
-        Assert.Equal(ConnectionState.Ready, alice.Session.Snapshot.State);
+        await WaitFor(() => alice.Session.Snapshot.State == ConnectionState.Ready ? new object() : null);
     }
 
     /// <summary>
@@ -267,6 +272,68 @@ public sealed class KeyLoginTests : IAsyncLifetime {
             // ...while the public address works, whatever Host the proxy in front passes on.
             await using var proxied = await server.ConnectRawAsync();
             Assert.NotNull((await this.KeyLoginAsync(proxied, keys, alice.UserId, "wss://chat.example.com/ws")).KeyLoginComplete);
+        } finally {
+            DeleteDirectory(server.DataDirectory);
+        }
+    }
+
+    /// <summary>
+    /// Outside Development the Host header proves nothing (a relay sets it to whatever the user signed for), so without
+    /// configured PublicUrls the server has no address it can trust, and refuses key login outright. The client falls
+    /// back as it does for any refused key login: it keeps its login and says the server doesn't recognise it.
+    /// </summary>
+    [Fact]
+    public async Task OutsideDevelopmentKeyLoginNeedsPublicUrls() {
+        await using var server = new Harness(environment: "Production");
+        try {
+            var alice = await server.RegisterAsync("Alice Production");
+            using var keys = alice.LoadIdentity();
+
+            // Refused before any challenge is issued, with the same error whoever asks.
+            await using var raw = await server.ConnectRawAsync();
+            var refused = await raw.SendAsync(new ClientFrame { StartKeyLogin = new StartKeyLogin { UserId = alice.UserId } });
+            Assert.Equal(ErrorCode.NotAuthenticated, refused.Error?.Code);
+            Assert.Null(refused.KeyLoginChallenge);
+            var unknown = await raw.SendAsync(new ClientFrame { StartKeyLogin = new StartKeyLogin { UserId = 4242424242 } });
+            Assert.Equal(refused.Error!.Message, unknown.Error?.Message);
+            // Not even a signature made for the address this connection names in its Host header gets anywhere.
+            var url = server.ServerUri.AbsoluteUri;
+            var forged = await this.CompleteAsync(raw, new byte[KeyLoginProof.ChallengeSize], url, KeyLoginProof.Sign(keys, new byte[KeyLoginProof.ChallengeSize], alice.UserId, url));
+            Assert.Equal(ErrorCode.NotAuthenticated, forged.Error?.Code);
+
+            // The client tries, is refused, and keeps its (lost) login, as with any refused key login.
+            var token = alice.Store.Load().DeviceToken;
+            await alice.Session.DisposeAsync();
+            server.ExecuteSql("DELETE FROM devices WHERE user_id = $id;", ("$id", alice.UserId));
+            var restarted = server.StartClient(alice.Name, alice.Store, server.Options(loginRetryDelay: TimeSpan.FromHours(1)));
+            var snapshot = await WaitFor(() => restarted.Session.Snapshot is { State: ConnectionState.LoginNotRecognized } s ? s : null);
+            Assert.True(snapshot.LoginRejected);
+            Assert.Contains(restarted.Session.GetTrace(), entry => entry.Outgoing && entry.Summary.EndsWith(" StartKeyLogin"));
+            Assert.DoesNotContain(restarted.Session.GetTrace(), entry => entry.Outgoing && entry.Summary.EndsWith(" CompleteKeyLogin"));
+            Assert.Equal(token, alice.Store.Load().DeviceToken);
+        } finally {
+            DeleteDirectory(server.DataDirectory);
+        }
+    }
+
+    /// <summary>Outside Development, with PublicUrls set, key login works for exactly those addresses.</summary>
+    [Fact]
+    public async Task OutsideDevelopmentKeyLoginWorksForThePublicUrls() {
+        // The address the in-process clients connect to, as an operator would list theirs.
+        await using var server = new Harness(environment: "Production", settings: ("LookingGlass:PublicUrls:0", "ws://localhost/ws"));
+        try {
+            var alice = await server.RegisterAsync("Alice Listed");
+            await alice.Session.DisposeAsync();
+            server.ExecuteSql("DELETE FROM devices WHERE user_id = $id;", ("$id", alice.UserId));
+            var restarted = server.StartClient(alice.Name, alice.Store);
+            var snapshot = await WaitFor(() => restarted.Session.Snapshot is { State: ConnectionState.Ready } s ? s : null);
+            Assert.Equal(alice.UserId, snapshot.Me!.UserId);
+            Assert.Contains(restarted.Session.GetTrace(), entry => entry.Outgoing && entry.Summary.EndsWith(" CompleteKeyLogin"));
+
+            // A Host header naming another address doesn't make that address acceptable.
+            using var keys = alice.LoadIdentity();
+            await using var spoofed = await server.ConnectRawAsync(host: "evil.example");
+            Assert.Equal(ErrorCode.NotAuthenticated, (await this.KeyLoginAsync(spoofed, keys, alice.UserId, "ws://evil.example/ws")).Error?.Code);
         } finally {
             DeleteDirectory(server.DataDirectory);
         }
@@ -368,6 +435,57 @@ public sealed class KeyLoginTests : IAsyncLifetime {
         Assert.Single(errors.Select(error => error.Message).Distinct());
     }
 
+    /// <summary>
+    /// Every answer that gets as far as the account checks one signature, whether or not the account exists (or may sign
+    /// in at all), so how long a failure takes doesn't tell who is registered. Unknown and refused accounts are checked
+    /// against a fixed key nobody holds.
+    /// </summary>
+    [Fact]
+    public async Task EveryAnswerChecksOneSignatureWhetherOrNotTheAccountExists() {
+        var directory = Path.Combine(Path.GetTempPath(), "lgt-" + Guid.NewGuid().ToString("N"));
+        try {
+            long debugUser;
+            byte[] debugKey;
+            await using (var enabled = new Harness(directory)) {
+                var debug = await enabled.RegisterAsync("Debug Timing");
+                debugUser = debug.UserId;
+                using var keys = debug.LoadIdentity();
+                debugKey = keys.SigningPublicKey;
+                await debug.Session.DisposeAsync();
+            }
+
+            await using var server = new Harness(directory, allowDebugAccounts: false);
+            var url = server.ServerUri.AbsoluteUri;
+            using var someone = IdentityKeys.Generate();
+            Assert.NotEqual(debugKey, someone.SigningPublicKey);
+
+            foreach (var userId in new[] { 4242424242L, debugUser }) {
+                await using var raw = await server.ConnectRawAsync();
+                var before = server.Handler.KeyLoginSignatureChecks;
+                var challenge = (await raw.SendAsync(new ClientFrame { StartKeyLogin = new StartKeyLogin { UserId = userId } })).KeyLoginChallenge!.Challenge.ToByteArray();
+                var response = await this.CompleteAsync(raw, challenge, url, KeyLoginProof.Sign(someone, challenge, userId, url));
+                Assert.Equal(ErrorCode.NotAuthenticated, response.Error?.Code);
+                Assert.Equal(before + 1, server.Handler.KeyLoginSignatureChecks);
+            }
+
+            // As for an account that exists and may sign in (a verified character), with the wrong key...
+            using var aliceKeys = IdentityKeys.Generate();
+            var (alice, _) = server.Database.RegisterUser(31337, "Alice Timing", 21, "Gilgamesh", aliceKeys.ToBundle(), false);
+            await using var known = await server.ConnectRawAsync();
+            var checks = server.Handler.KeyLoginSignatureChecks;
+            var aliceChallenge = await this.ChallengeAsync(known, alice.UserId);
+            Assert.Equal(ErrorCode.NotAuthenticated, (await this.CompleteAsync(known, aliceChallenge, url, KeyLoginProof.Sign(someone, aliceChallenge, alice.UserId, url))).Error?.Code);
+            Assert.Equal(checks + 1, server.Handler.KeyLoginSignatureChecks);
+
+            // ...and with the right one.
+            aliceChallenge = await this.ChallengeAsync(known, alice.UserId);
+            Assert.NotNull((await this.CompleteAsync(known, aliceChallenge, url, KeyLoginProof.Sign(aliceKeys, aliceChallenge, alice.UserId, url))).KeyLoginComplete);
+            Assert.Equal(checks + 2, server.Handler.KeyLoginSignatureChecks);
+        } finally {
+            DeleteDirectory(directory);
+        }
+    }
+
     [Fact]
     public async Task ChallengesAreLimitedPerConnection() {
         var alice = await this._server.RegisterAsync("Alice Many");
@@ -404,11 +522,11 @@ public sealed class KeyLoginTests : IAsyncLifetime {
             await using var elsewhere = await server.ConnectRawAsync(remoteAddress: "203.0.113.2");
             Assert.NotNull((await this.KeyLoginAsync(elsewhere, keys, alice.UserId)).KeyLoginComplete);
 
-            // Challenges are counted per address too, failed or not.
+            // Challenges are counted per address too, failed or not: here all four work (unanswered ones would count as failures).
             await using var busy = await server.ConnectRawAsync(remoteAddress: "203.0.113.3");
             await using var busier = await server.ConnectRawAsync(remoteAddress: "203.0.113.3");
             for (var i = 0; i < 4; i++) {
-                Assert.NotNull((await (i < 2 ? busy : busier).SendAsync(new ClientFrame { StartKeyLogin = new StartKeyLogin { UserId = alice.UserId } })).KeyLoginChallenge);
+                Assert.NotNull((await this.KeyLoginAsync(i < 2 ? busy : busier, keys, alice.UserId, url)).KeyLoginComplete);
             }
 
             await using var busiest = await server.ConnectRawAsync(remoteAddress: "203.0.113.3");
@@ -418,17 +536,38 @@ public sealed class KeyLoginTests : IAsyncLifetime {
         }
     }
 
+    /// <summary>
+    /// Failed key logins are limited per account, whoever makes them: many addresses (each within its own limits)
+    /// failing for one account end up refused challenges for it. Successful ones don't count.
+    /// </summary>
     [Fact]
-    public async Task ChallengesAreLimitedPerUser() {
+    public async Task FailedKeyLoginsAreLimitedPerUser() {
         var alice = await this._server.RegisterAsync("Alice Targeted");
         var bob = await this._server.RegisterAsync("Bob Untargeted");
+        using var keys = alice.LoadIdentity();
+        var url = this._server.ServerUri.AbsoluteUri;
+
+        // More successful key logins than the account allows failures: none of them is held against it.
+        for (var address = 1; address <= 25; address++) {
+            await using var honest = await this._server.ConnectRawAsync(remoteAddress: $"192.0.2.{address}");
+            Assert.NotNull((await this.KeyLoginAsync(honest, keys, alice.UserId)).KeyLoginComplete);
+        }
+
         var refused = false;
-        // Many addresses (each within its own limits) asking about one user.
-        for (var address = 1; address <= 8 && !refused; address++) {
-            await using var raw = await this._server.ConnectRawAsync(remoteAddress: $"198.51.100.{address}");
-            for (var i = 0; i < 3 && !refused; i++) {
-                var response = await raw.SendAsync(new ClientFrame { StartKeyLogin = new StartKeyLogin { UserId = alice.UserId } });
-                refused = response.Error?.Code == ErrorCode.RateLimited;
+        for (var address = 1; address <= 10 && !refused; address++) {
+            for (var connection = 0; connection < 4 && !refused; connection++) {
+                await using var raw = await this._server.ConnectRawAsync(remoteAddress: $"198.51.100.{address}");
+                for (var i = 0; i < 3 && !refused; i++) {
+                    var response = await raw.SendAsync(new ClientFrame { StartKeyLogin = new StartKeyLogin { UserId = alice.UserId } });
+                    if (response.Error?.Code == ErrorCode.RateLimited) {
+                        // Either this address's failures, or the account's: only the account's counts here.
+                        refused = response.Error.Message.Contains("account");
+                        break;
+                    }
+
+                    var challenge = response.KeyLoginChallenge.Challenge.ToByteArray();
+                    Assert.Equal(ErrorCode.NotAuthenticated, (await this.CompleteAsync(raw, challenge, url, new byte[64])).Error?.Code);
+                }
             }
         }
 
@@ -436,6 +575,77 @@ public sealed class KeyLoginTests : IAsyncLifetime {
         // Another user isn't affected.
         await using var other = await this._server.ConnectRawAsync(remoteAddress: "198.51.100.200");
         Assert.NotNull((await other.SendAsync(new ClientFrame { StartKeyLogin = new StartKeyLogin { UserId = bob.UserId } })).KeyLoginChallenge);
+    }
+
+    /// <summary>
+    /// An address that asks for challenges for someone else's account and never answers them can't use up that
+    /// account's key logins: only failed answers count against an account.
+    /// </summary>
+    [Fact]
+    public async Task UnansweredChallengesDoNotLockOutTheAccount() {
+        await using var server = new Harness(settings: [
+            ("LookingGlass:Limits:KeyLoginsPerHourPerIp", "1000"),
+            ("LookingGlass:Limits:KeyLoginFailuresPerHourPerIp", "1000"),
+        ]);
+        try {
+            var alice = await server.RegisterAsync("Alice Besieged");
+            using var keys = alice.LoadIdentity();
+            var url = server.ServerUri.AbsoluteUri;
+
+            // One address asks for 60 challenges for Alice (more than the old per-account limit allowed in an hour), answering none.
+            for (var connection = 0; connection < 20; connection++) {
+                await using var attacker = await server.ConnectRawAsync(remoteAddress: "203.0.113.66");
+                for (var i = 0; i < 3; i++) {
+                    Assert.NotNull((await attacker.SendAsync(new ClientFrame { StartKeyLogin = new StartKeyLogin { UserId = alice.UserId } })).KeyLoginChallenge);
+                }
+            }
+
+            // Alice, from her own address, still signs in with her key.
+            await using var own = await server.ConnectRawAsync(remoteAddress: "203.0.113.7");
+            var challenge = await this.ChallengeAsync(own, alice.UserId);
+            Assert.NotNull((await this.CompleteAsync(own, challenge, url, KeyLoginProof.Sign(keys, challenge, alice.UserId, url))).KeyLoginComplete);
+        } finally {
+            DeleteDirectory(server.DataDirectory);
+        }
+    }
+
+    /// <summary>
+    /// A challenge counts as a failure for its address until it is answered correctly, so an address that only asks
+    /// for challenges is stopped as soon as one that fails is; one whose key logins work isn't.
+    /// </summary>
+    [Fact]
+    public async Task UnansweredChallengesCountAsFailuresForTheAddress() {
+        await using var server = new Harness(settings: [
+            ("LookingGlass:Limits:KeyLoginsPerHourPerIp", "1000"),
+            ("LookingGlass:Limits:KeyLoginFailuresPerHourPerIp", "3"),
+        ]);
+        try {
+            var alice = await server.RegisterAsync("Alice Asked About");
+            using var keys = alice.LoadIdentity();
+
+            // Three unanswered challenges (one replaced on its connection, two left open as the connections close)...
+            await using (var first = await server.ConnectRawAsync(remoteAddress: "203.0.113.20")) {
+                for (var i = 0; i < 2; i++) {
+                    Assert.NotNull((await first.SendAsync(new ClientFrame { StartKeyLogin = new StartKeyLogin { UserId = alice.UserId } })).KeyLoginChallenge);
+                }
+            }
+
+            await using (var second = await server.ConnectRawAsync(remoteAddress: "203.0.113.20")) {
+                Assert.NotNull((await second.SendAsync(new ClientFrame { StartKeyLogin = new StartKeyLogin { UserId = alice.UserId } })).KeyLoginChallenge);
+            }
+
+            // ...and the address gets no more.
+            await using var third = await server.ConnectRawAsync(remoteAddress: "203.0.113.20");
+            Assert.Equal(ErrorCode.RateLimited, (await third.SendAsync(new ClientFrame { StartKeyLogin = new StartKeyLogin { UserId = alice.UserId } })).Error?.Code);
+
+            // An address whose key logins work keeps going well past that.
+            for (var i = 0; i < 6; i++) {
+                await using var honest = await server.ConnectRawAsync(remoteAddress: "203.0.113.21");
+                Assert.NotNull((await this.KeyLoginAsync(honest, keys, alice.UserId, server.ServerUri.AbsoluteUri)).KeyLoginComplete);
+            }
+        } finally {
+            DeleteDirectory(server.DataDirectory);
+        }
     }
 
     /// <summary>Before logging in, a connection can say hello, ping, register, log in, or sign in with its key, and nothing else.</summary>
@@ -470,6 +680,116 @@ public sealed class KeyLoginTests : IAsyncLifetime {
         Assert.NotNull(loggedIn.AuthenticateOk);
         var after = await gate.SendAsync(new ClientFrame { StartKeyLogin = new StartKeyLogin { UserId = alice.UserId } });
         Assert.Equal(ErrorCode.InvalidRequest, after.Error?.Code);
+    }
+
+    // ================================================================ regression guards
+
+    /// <summary>
+    /// The race <see cref="ADeviceIsOnlyAddedForTheAccountsCurrentKey"/> checks in the database, end to end through the
+    /// handler: the account registers again with new keys after the key login was checked and before its device is
+    /// added. The registration wins: no device, no token, and the old key can't sign in afterwards. (Would fail if the
+    /// handler added the device unconditionally, as AddDevice does: the device would outlive the revocation.)
+    /// </summary>
+    [Fact]
+    public async Task RegisteringAgainDuringAKeyLoginWins() {
+        var alice = await this._server.RegisterAsync("Alice Mid Login");
+        using var oldKeys = alice.LoadIdentity();
+        using var newKeys = IdentityKeys.Generate();
+        var url = this._server.ServerUri.AbsoluteUri;
+        await alice.Session.DisposeAsync();
+
+        await using var raw = await this._server.ConnectRawAsync();
+        var challenge = await this.ChallengeAsync(raw, alice.UserId);
+        this._server.Handler.BeforeKeyLoginDeviceAddedForTests = () =>
+            this._server.Database.RegisterUser(alice.UserId, alice.Name, 0, ProtocolInfo.DebugWorldName, newKeys.ToBundle(), true);
+        var response = await this.CompleteAsync(raw, challenge, url, KeyLoginProof.Sign(oldKeys, challenge, alice.UserId, url));
+        Assert.Null(this._server.Handler.BeforeKeyLoginDeviceAddedForTests);
+
+        Assert.Equal(ErrorCode.NotAuthenticated, response.Error?.Code);
+        Assert.Null(response.KeyLoginComplete);
+        Assert.Equal(0, this._server.Database.CountDevices(alice.UserId));
+
+        // The old key stays out; the new one is the account's.
+        await using var again = await this._server.ConnectRawAsync();
+        Assert.Equal(ErrorCode.NotAuthenticated, (await this.KeyLoginAsync(again, oldKeys, alice.UserId)).Error?.Code);
+        Assert.NotNull((await this.KeyLoginAsync(again, newKeys, alice.UserId)).KeyLoginComplete);
+    }
+
+    /// <summary>
+    /// A debug account on a server that has since disabled them can't sign in with its key either, even with the right
+    /// signature, and is told exactly what an unknown account is.
+    /// </summary>
+    [Fact]
+    public async Task ADebugAccountCannotKeyLoginWhenDebugAccountsAreDisabled() {
+        var directory = Path.Combine(Path.GetTempPath(), "lgt-" + Guid.NewGuid().ToString("N"));
+        try {
+            TestClient debug;
+            await using (var enabled = new Harness(directory)) {
+                debug = await enabled.RegisterAsync("Debug Keyed");
+                await debug.Session.DisposeAsync();
+            }
+
+            await using var server = new Harness(directory, allowDebugAccounts: false);
+            var url = server.ServerUri.AbsoluteUri;
+            using var keys = debug.LoadIdentity();
+            await using var raw = await server.ConnectRawAsync();
+            var challenge = await this.ChallengeAsync(raw, debug.UserId);
+            var refused = await this.CompleteAsync(raw, challenge, url, KeyLoginProof.Sign(keys, challenge, debug.UserId, url));
+            Assert.Equal(ErrorCode.NotAuthenticated, refused.Error?.Code);
+            Assert.Null(refused.KeyLoginComplete);
+
+            challenge = await this.ChallengeAsync(raw, 4242424242);
+            var unknown = await this.CompleteAsync(raw, challenge, url, KeyLoginProof.Sign(keys, challenge, 4242424242, url));
+            Assert.Equal(unknown.Error!.Message, refused.Error!.Message);
+        } finally {
+            DeleteDirectory(directory);
+        }
+    }
+
+    /// <summary>
+    /// While the server doesn't recognise the login, the client tries the token again now and then, but signs in with its
+    /// key only on connecting and when the user asks: the automatic retries never ask for a challenge.
+    /// </summary>
+    [Fact]
+    public async Task AutomaticRetriesNeverSignInWithTheKey() {
+        var store = new InMemorySecretStore();
+        var alice = await this._server.RegisterAsync("Alice Retried", store);
+        var userId = alice.UserId;
+        await alice.Session.DisposeAsync();
+        this.DeleteDevices(userId);
+        this.ReplaceSigningKey(userId, RandomKey());
+
+        var restarted = this._server.StartClient(alice.Name, store, this._server.Options(loginRetryDelay: TimeSpan.FromMilliseconds(30)));
+        await WaitFor(() => restarted.Session.Snapshot.State == ConnectionState.LoginNotRecognized ? new object() : null);
+        // Several automatic retries of the token...
+        await WaitFor(() => restarted.Session.GetTrace().Count(entry => entry.Outgoing && entry.Summary.EndsWith(" Authenticate")) >= 5 ? new object() : null);
+
+        // ...and still only the one key login made on connecting.
+        var trace = restarted.Session.GetTrace();
+        Assert.Single(trace, entry => entry.Outgoing && entry.Summary.EndsWith(" StartKeyLogin"));
+        Assert.Single(trace, entry => entry.Outgoing && entry.Summary.EndsWith(" Hello"));
+    }
+
+    /// <summary>
+    /// A challenge fetched before logging in can't be answered after: a logged-in connection has nothing to sign in to,
+    /// and must not collect a device for whatever account the challenge was for.
+    /// </summary>
+    [Fact]
+    public async Task AKeyLoginCannotBeCompletedAfterLoggingIn() {
+        var alice = await this._server.RegisterAsync("Alice Late Answer");
+        var bob = await this._server.RegisterAsync("Bob Late Answer");
+        using var keys = alice.LoadIdentity();
+        var url = this._server.ServerUri.AbsoluteUri;
+        var devices = this._server.Database.CountDevices(alice.UserId);
+
+        await using var raw = await this._server.ConnectRawAsync();
+        var challenge = await this.ChallengeAsync(raw, alice.UserId);
+        Assert.NotNull((await raw.SendAsync(new ClientFrame { Authenticate = new Authenticate { DeviceToken = bob.Store.Load().DeviceToken } })).AuthenticateOk);
+
+        var late = await this.CompleteAsync(raw, challenge, url, KeyLoginProof.Sign(keys, challenge, alice.UserId, url));
+        Assert.Equal(ErrorCode.InvalidRequest, late.Error?.Code);
+        Assert.Null(late.KeyLoginComplete);
+        Assert.Equal(devices, this._server.Database.CountDevices(alice.UserId));
     }
 
     // ================================================================ the pieces

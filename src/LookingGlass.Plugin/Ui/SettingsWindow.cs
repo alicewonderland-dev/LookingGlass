@@ -14,12 +14,20 @@ public sealed class SettingsWindow : Window {
     private readonly Configuration _config;
     private readonly SessionManager _sessions;
     private readonly UiActions _actions;
+    private readonly Modals _modals;
     private string _serverUrl;
+
+    // Changing the server address: the check with the current server (in the background), then what to offer.
+    private Task<MoveOffer>? _moveCheck;
+    private MoveOffer? _moveOffer;
+    private bool _openMoveOffer;
+    private string? _moveError;
 
     public SettingsWindow(Configuration config, SessionManager sessions, UiActions actions) : base("LookingGlass settings###lookingglass-settings") {
         this._config = config;
         this._sessions = sessions;
         this._actions = actions;
+        this._modals = new Modals(actions);
         this._serverUrl = config.ServerUrl;
         this.Size = new Vector2(440, 520);
         this.SizeCondition = ImGuiCond.FirstUseEver;
@@ -32,6 +40,13 @@ public sealed class SettingsWindow : Window {
     public override void OnOpen() {
         // Start from what is saved, not a half-typed URL from last time.
         this._serverUrl = this._config.ServerUrl;
+        this._moveError = null;
+    }
+
+    public override void OnClose() {
+        // Closing the window drops an address change still being checked, rather than applying it unseen later.
+        this._moveCheck = null;
+        this._moveOffer = null;
     }
 
     public override void Draw() {
@@ -41,7 +56,135 @@ public sealed class SettingsWindow : Window {
         this.DrawBlockedUsers();
         ImGui.Spacing();
         this._actions.DrawStatus();
+        this._modals.Draw(this._sessions.Snapshot, this._sessions.Session);
+        this.DrawMoveOffer();
     }
+
+    /// <summary>
+    /// The server address is changing. If some character has an identity for the current address and none for the new
+    /// one, ask the current server (over the current address) whether the new one is its own, and the new one whether it
+    /// agrees (see ServerMove), before anything changes.
+    /// </summary>
+    private void StartMoveCheck(string oldUrl, string newUrl) {
+        this._moveError = null;
+        this._moveOffer = null;
+        this._moveCheck = Task.Run(async () => {
+            var characters = ProtectedSecretStore.CharactersToMove(oldUrl, newUrl);
+            if (characters.Count == 0) {
+                return new MoveOffer(oldUrl, newUrl, null, characters);
+            }
+
+            return new MoveOffer(oldUrl, newUrl, await ServerMove.CheckAsync(oldUrl, newUrl), characters);
+        });
+    }
+
+    /// <summary>Once the check is done (framework thread): change the address straight away, or ask the user first.</summary>
+    private void FinishMoveCheck() {
+        if (this._moveCheck is not { IsCompleted: true } done) {
+            return;
+        }
+
+        this._moveCheck = null;
+        if (!done.IsCompletedSuccessfully) {
+            this._moveError = $"Couldn't check the new address: {done.Exception?.InnerException?.Message}";
+            return;
+        }
+
+        var offer = done.Result;
+        if (offer.OldUrl != this._config.ServerUrl) {
+            // The address changed meanwhile; this check is about another move.
+            return;
+        }
+
+        if (offer.Check == null) {
+            // No identity there to keep (or the new address has its own): as before, a plain change.
+            this.ChangeServer(offer, keepIdentity: false);
+            return;
+        }
+
+        this._moveOffer = offer;
+        this._openMoveOffer = true;
+    }
+
+    private void ChangeServer(MoveOffer offer, bool keepIdentity) {
+        var work = this._sessions.ChangeServer(offer.NewUrl, keepIdentity ? offer.Check : null, offer.Characters);
+        this._actions.Run(keepIdentity ? "Keeping your identity at the new address" : "Changing the server address", () => work);
+    }
+
+    private void DrawMoveOffer() {
+        if (this._moveOffer is not { Check: { } check } offer) {
+            return;
+        }
+
+        const string id = "Server address###lg-move";
+        if (this._openMoveOffer) {
+            this._openMoveOffer = false;
+            ImGui.OpenPopup(id);
+        }
+
+        var open = true;
+        if (!ImGui.BeginPopupModal(id, ref open, ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoSavedSettings)) {
+            if (!open || !ImGui.IsPopupOpen(id)) {
+                this._moveOffer = null;
+            }
+
+            return;
+        }
+
+        var who = offer.Characters.Count == 1 ? "your character" : $"your {offer.Characters.Count} characters";
+        ImGui.PushTextWrapPos(ImGui.GetFontSize() * 26);
+        var close = false;
+        if (check.Verdict == ServerMoveVerdict.SameServer) {
+            ImGui.TextUnformatted("This is the same server. Keep your identity?");
+            ImGui.Spacing();
+            ImGui.TextColored(Widgets.Muted, check.Message);
+            ImGui.TextColored(Widgets.Muted,
+                $"Keeping it copies the identity of {who} registered there (keys, login and channels) to the new address: no registering again, " +
+                "and you stay in your channels. The identity for the old address is kept too, so switching back works.");
+            ImGui.Spacing();
+            if (ImGui.Button("Keep my identity")) {
+                this.ChangeServer(offer, keepIdentity: true);
+                close = true;
+            }
+
+            ImGui.SameLine();
+            if (ImGui.Button("Start afresh there")) {
+                this.ChangeServer(offer, keepIdentity: false);
+                close = true;
+            }
+
+            Widgets.Tooltip("Treat the new address as a different server: register there through the Lodestone, with new keys.");
+        } else {
+            ImGui.TextUnformatted("LookingGlass can't confirm this is the same server");
+            ImGui.Spacing();
+            ImGui.TextColored(Widgets.Muted, check.Message);
+            ImGui.TextColored(Widgets.Muted,
+                "So the new address counts as a different server: there you'd register through the Lodestone with new keys, and start " +
+                $"without channels. The identity of {who} for {offer.OldUrl} is kept, so switching back restores it. If it is the same " +
+                "server, ask whoever runs it to list both addresses in LookingGlass:PublicUrls, then apply it again.");
+            ImGui.Spacing();
+            if (ImGui.Button("Use the new address anyway")) {
+                this.ChangeServer(offer, keepIdentity: false);
+                close = true;
+            }
+        }
+
+        ImGui.SameLine();
+        if (ImGui.Button("Cancel") || ImGui.IsKeyPressed(ImGuiKey.Escape)) {
+            close = true;
+        }
+
+        ImGui.PopTextWrapPos();
+        if (close) {
+            this._moveOffer = null;
+            ImGui.CloseCurrentPopup();
+        }
+
+        ImGui.EndPopup();
+    }
+
+    /// <param name="Check">The current server's answer, or null if no character has an identity to carry over.</param>
+    private sealed record MoveOffer(string OldUrl, string NewUrl, ServerMoveCheck? Check, IReadOnlyList<ulong> Characters);
 
     private void DrawServer() {
         Widgets.Heading("Server");
@@ -52,16 +195,24 @@ public sealed class SettingsWindow : Window {
         var enter = ImGui.InputTextWithHint("##server-url", "ws://host:5180/ws", ref this._serverUrl, 256, ImGuiInputTextFlags.EnterReturnsTrue);
         ImGui.SameLine();
         var changed = this._serverUrl.Trim() != this._config.ServerUrl;
-        ImGui.BeginDisabled(!changed);
-        if ((ImGui.Button("Apply") || enter) && changed) {
-            this._config.ServerUrl = this._serverUrl.Trim();
-            this._config.Save();
-            this._sessions.Restart();
+        var checking = this._moveCheck is { IsCompleted: false };
+        ImGui.BeginDisabled(!changed || checking || this._actions.Busy);
+        if ((ImGui.Button("Apply") || enter) && changed && !checking && !this._actions.Busy) {
+            this.StartMoveCheck(this._config.ServerUrl, this._serverUrl.Trim());
         }
 
         ImGui.EndDisabled();
-        Widgets.Tooltip("Saves the URL and reconnects.");
+        Widgets.Tooltip("Saves the URL and reconnects. If you have an identity on the current server, it first asks that server, and the new address, whether they are the same server, to keep your identity.");
+        ImGui.PushTextWrapPos();
+        if (checking) {
+            ImGui.TextColored(Widgets.Muted, "Asking the current server and the new address whether they are the same server...");
+        } else if (this._moveError is { } error) {
+            ImGui.TextColored(Widgets.Error, error);
+        }
+
         ImGui.TextColored(Widgets.Muted, "For example ws://my-vm:5180/ws over Tailscale, or wss://chat.example.com/ws.");
+        ImGui.PopTextWrapPos();
+        this.FinishMoveCheck();
         ImGui.Spacing();
 
         var autoConnect = this._config.AutoConnect;
@@ -140,7 +291,31 @@ public sealed class SettingsWindow : Window {
         ImGui.PushTextWrapPos();
         ImGui.TextColored(Widgets.Muted, $"Keys are stored with: {ProtectedSecretStore.Protection}");
         ImGui.PopTextWrapPos();
+
+        ImGui.Spacing();
+        var player = this._sessions.Player;
+        ImGui.BeginDisabled(this._actions.Busy || player == null);
+        if (ImGui.Button("Reset my identity...") && player != null) {
+            this._modals.Confirm("Reset my identity", ResetText(player.Name, this._config.ServerUrl), "Reset my identity", () => {
+                // On the framework thread (the dialog's button); the returned task finishes the reset.
+                var reset = this._sessions.ResetIdentity();
+                this._actions.Run("Resetting your identity", () => reset);
+            });
+        }
+
+        ImGui.EndDisabled();
+        Widgets.Tooltip("New identity keys for this character on this server. Only if your key was lost or may have been stolen.");
     }
+
+    private static string ResetText(string name, string serverUrl) =>
+        $"This makes new identity keys for {name} on {serverUrl}. Only do this if your key was lost or may have been stolen. " +
+        "If you just can't sign in, you don't need it: registering again keeps your key.\n\n" +
+        "After a reset:\n" +
+        "- You register again through the Lodestone.\n" +
+        "- You lose your place in every channel on this server. To get back in, someone must remove you and invite you again.\n" +
+        "- Everyone who knows you sees a \"key changed\" warning for you.\n" +
+        "- Once you've registered again, your old keys and logins stop working on this server.\n\n" +
+        "Your identity on other servers isn't affected.";
 
     private void DrawBlockedUsers() {
         Widgets.Heading("Blocked users");

@@ -918,6 +918,7 @@ public sealed class ClientSession : IAsyncDisposable {
         while (!ct.IsCancellationRequested) {
             this.SetState(ConnectionState.Connecting, $"Connecting to {this._options.ServerUri}");
             Connection? connection = null;
+            string? failure = null;
             try {
                 var socket = await this.ConnectSocketAsync(ct);
                 connection = new Connection(socket, this._options.MaxReceiveBytes, this._options.RequestTimeout,
@@ -933,9 +934,10 @@ public sealed class ClientSession : IAsyncDisposable {
             } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
                 break;
             } catch (Exception ex) {
-                this.Log(NoticeLevel.Warning, $"Connection failed: {ex.Message}");
+                failure = $"Connection failed: {ex.Message}";
+                this.Log(NoticeLevel.Warning, failure);
                 lock (this._lock) {
-                    this._status = $"Connection failed: {ex.Message}";
+                    this._status = failure;
                 }
             } finally {
                 this._connection = null;
@@ -958,7 +960,8 @@ public sealed class ClientSession : IAsyncDisposable {
                 continue;
             }
 
-            this.SetState(ConnectionState.Reconnecting, $"Reconnecting in {delay.TotalSeconds:0} s");
+            // Why, too: a connection that keeps failing (a wrong address, a redirect) should say so where the user looks.
+            this.SetState(ConnectionState.Reconnecting, failure == null ? $"Reconnecting in {delay.TotalSeconds:0} s" : $"{failure} (reconnecting in {delay.TotalSeconds:0} s)");
             try {
                 await Task.Delay(delay, ct);
             } catch (OperationCanceledException) {
@@ -972,22 +975,8 @@ public sealed class ClientSession : IAsyncDisposable {
     }
 
     private async Task<WebSocket> ConnectSocketAsync(CancellationToken ct) {
-        if (this._options.Connect != null) {
-            return await this._options.Connect(this._options.ServerUri, ct);
-        }
-
-        var socket = new ClientWebSocket();
-        socket.Options.KeepAliveInterval = TimeSpan.FromSeconds(20);
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(TimeSpan.FromSeconds(15));
-        try {
-            await socket.ConnectAsync(this._options.ServerUri, timeout.Token);
-        } catch {
-            socket.Dispose();
-            throw;
-        }
-
-        return socket;
+        // Never following redirects (see WebSocketConnector).
+        return await (this._options.Connect ?? WebSocketConnector.ConnectAsync)(this._options.ServerUri, ct);
     }
 
     private async Task HandshakeAsync(Connection connection, CancellationToken ct) {
@@ -1142,7 +1131,10 @@ public sealed class ClientSession : IAsyncDisposable {
     /// <summary>
     /// Signs in with the identity key, after the server refused the saved login: a server that knows the account and its
     /// current key gives this device a new login, which replaces the saved one, and the client logs in with it. The
-    /// signature names the server's address as this client connected to it, so another server can't replay it here.
+    /// signature names the server's address as this client connected to it, which the server checks against its configured
+    /// addresses. Besides, this key is only used for this address (secrets are kept per server address, and only copied to
+    /// another address the server itself lists as its own: see ServerMove), so it isn't
+    /// registered on a server a relay could pass the signature to.
     /// Call inside <see cref="_loginGate"/>.
     /// </summary>
     /// <returns>

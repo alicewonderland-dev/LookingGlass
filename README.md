@@ -75,9 +75,26 @@ server can register (or take over) any debug account, including the echo bot.
    code, paste it into your Lodestone profile, then press **Verify**.
 
 Tailscale already encrypts traffic between devices, and message contents are
-end-to-end encrypted regardless. For TLS anyway, `tailscale serve` can put
-HTTPS in front of port 5180 (see `tailscale serve --help` for your version);
-the plugin URL then becomes `wss://<machine>.<tailnet>.ts.net/ws`.
+end-to-end encrypted regardless. For TLS anyway, `tailscale serve` (or
+`tailscale funnel`, to reach it from outside the tailnet) can put HTTPS in
+front of port 5180 (see `tailscale serve --help` for your version); the
+plugin URL then becomes `wss://<machine>.<tailnet>.ts.net/ws`.
+
+**List the server's addresses.** Tell the server every address clients use,
+so signing in with the identity key works on each of them and plugins can
+keep their identity when you switch between them (see "Moving the server" and
+"Key login and the server's address" below). For the tailnet plus Funnel case:
+
+```powershell
+$env:LookingGlass__PublicUrls__0 = 'ws://<machine-name>:5180/ws'
+$env:LookingGlass__PublicUrls__1 = 'wss://<machine-name>.<tailnet>.ts.net/ws'
+```
+
+(`export LookingGlass__PublicUrls__0=...` on Linux; or a `PublicUrls` list in
+`appsettings.json`.) List an address such as `ws://127.0.0.1:5180/ws` too if
+a plugin uses it. Without any, a Development server still signs plugins in
+with their key by the address each connection names (weaker, see below) and
+says so when it starts; a server not in Development turns key login off.
 
 Check a server from any machine:
 
@@ -107,14 +124,16 @@ sends a message and waits for the reply.
 Build in Release, then in Dalamud settings → Experimental → Dev Plugin
 Locations add `src/LookingGlass.Plugin/bin/Release/LookingGlass.dll`.
 
-Each character's identity and channel keys, per server, are kept encrypted
-in a `secrets-….bin` file in the plugin's config folder (under XIVLauncher's
-`pluginConfigs`). Every save keeps the previous version next to it as
-`secrets-….bin.bak`, and if the file is missing or damaged the plugin loads
-the backup and says so in chat. So to reset a character's identity (you then
-register again, other members see that your key changed, and in each of your
-channels a moderator must remove you and invite you again), disconnect,
-delete **both** the secrets file and its `.bak`, then connect again.
+Each character's identity and channel keys, per server address, are kept
+encrypted in a `secrets-<character>-<address hash>.bin` file in the plugin's
+config folder (under XIVLauncher's `pluginConfigs`). The file also records
+the address it belongs to, and the plugin refuses to use it for any other
+address, so one server's keys and login are never sent to another. Every save
+keeps the previous version next to it as `secrets-….bin.bak`, and if the file
+is missing or damaged the plugin loads the backup and says so in chat.
+Earlier versions named these files after a shorter hash (12 hex digits); the
+plugin moves each one to its new name the first time its address is used (at
+startup for the configured address), and keeps the old file as a backup.
 
 **Signing in.** The Lodestone proves the character is yours once, when you
 register. After that the plugin signs in with the login (a device token) it
@@ -122,12 +141,42 @@ was given, and if the server doesn't recognise that (say, it was restored
 from a backup), with your identity key: the server checks a signature made
 with it and gives this device a new login, with no Lodestone step. Only if
 the server doesn't accept the key either (it has never known your account,
-you registered again elsewhere with a new key, or the key is gone) does the
-main window say "Login not recognised". The plugin keeps your login and
-tries it again every minute or so, so it works again by itself once the
-right server is back; "Retry now" tries the login and the key at once.
-Register again through the Lodestone only if your key was lost or replaced,
-or the server has never known your account.
+you reset your identity elsewhere, the key is gone, or the server has key
+login off) does the main window say "Login not recognised". The plugin keeps
+your login and tries it again every minute or so, so it works again by itself
+once the right server is back; "Retry now" tries the login and the key at
+once. Register again through the Lodestone only if your key was lost, or the
+server has never known your account (or can't sign you in with your key).
+Registering again keeps the identity key the plugin has, so your channels
+keep working.
+
+**Reset my identity** (Settings, under "Your identity") is for a key that was
+lost or may have been stolen. It makes new identity keys for the character on
+this server, and keeps nothing of the old identity there (its login and
+channel keys). You then register again through the Lodestone; once you have,
+the old keys and logins stop working on the server. You lose your place in
+every channel on that server: someone must remove you and invite you again,
+and everyone who knows you sees a "key changed" warning. Your identity on
+other servers isn't affected.
+
+**Moving the server.** Identities are kept per address, so
+`ws://lookingglasschat:5180/ws`, `ws://127.0.0.1:5180/ws` and
+`wss://lookingglasschat.<tailnet>.ts.net/ws` count as different servers. When
+you change the address in Settings and a character has an identity for the
+old address but none for the new one, the plugin first asks the server at the
+old address (which you already trust with your login) whether the new address
+is one of its own, and then the server at the new address whether the old one
+is one of its own. Only if both list the other (in `LookingGlass:PublicUrls`)
+does it offer "This is the same server. Keep your identity?": yes copies the
+character's keys, login and channels to the new address, so you don't register
+again and stay in your channels. Otherwise it says why (the old server doesn't
+list the new address, the new one doesn't list the old, one of them can't be
+reached, or the server lists no addresses), and the new address counts as a
+different server: you'd register there with new keys. A server at a new
+address can never get your identity by claiming to be the old one: the old
+server has to say so. Either way the identity for the old address is kept, so
+switching back works. Numbers, nicknames and colours belong to the character
+and the channels, so they follow along.
 
 ## Commands
 
@@ -213,21 +262,42 @@ limits apply to everyone together. IPv6 clients are counted per /64.
 
 **Key login and the server's address.** When a plugin signs in with its
 identity key, the signature names the address it connected to, and the
-server only accepts its own address (scheme, host and port), so another
-server you use can't pass your signature on to this one. By default "its own
-address" is what each connection was made to: its scheme and `Host` header.
-That works for direct connections (`ws://<machine-name>:5180/ws`), behind
-`tailscale serve` (which keeps the Host header and sends
-`X-Forwarded-Proto` from loopback), and behind a proxy that passes the Host
-header and `X-Forwarded-Proto` on (Caddy does; nginx needs
-`proxy_set_header Host $host;` and `proxy_set_header X-Forwarded-Proto $scheme;`).
-But anyone connecting directly can send any Host header, so on a server
-reachable from the internet without such a proxy, or behind one that
-rewrites Host, list the addresses clients use in `LookingGlass:PublicUrls`
-(for example `LookingGlass__PublicUrls__0=wss://chat.example.com/ws`); then
-only those are accepted. Key logins are limited per connection, per address
-(`KeyLoginsPerHourPerIp`, `KeyLoginFailuresPerHourPerIp` under
-`LookingGlass:Limits`) and per account.
+server only accepts one of its own addresses (scheme, host and port; not the
+path), so another server you use can't pass your signature on to this one.
+"Its own addresses" are the ones listed in `LookingGlass:PublicUrls`; list
+every address clients use, for example:
+
+```sh
+LookingGlass__PublicUrls__0=wss://chat.example.com/ws
+# A tailnet server, reached directly and through Tailscale Funnel:
+LookingGlass__PublicUrls__0=ws://<machine-name>:5180/ws
+LookingGlass__PublicUrls__1=wss://<machine-name>.<tailnet>.ts.net/ws
+```
+
+The server also tells plugins these addresses, which is how a plugin moving
+between two of them keeps its identity (see "Moving the server" above).
+
+**Without `PublicUrls`, key login is off** (the server says so when it
+starts): plugins whose login it doesn't recognise must register again
+through the Lodestone. The exception is a server in Development, which then
+accepts the address each connection names in its `Host` header (and scheme,
+from `X-Forwarded-Proto` behind a trusted proxy), and warns that this is
+weaker: whoever opens a connection chooses its Host header, so a malicious
+server relaying your signature simply sends the address you signed for. On
+such a server, what protects you is that the plugin keeps separate identity
+keys per server address, so the key you sign with for another server isn't
+registered on this one (and a key is only carried to another address when
+both addresses' servers list each other). Fine for a private test server;
+list the addresses anywhere else.
+
+Key logins are limited per connection (3 challenges), per address
+(`KeyLoginsPerHourPerIp` challenges, and `KeyLoginFailuresPerHourPerIp`
+failures, under `LookingGlass:Limits`; a challenge counts as a failure until
+it is answered correctly, so an address that only asks for challenges is
+stopped too) and per account (failed answers only, by anyone: twice the
+per-address failure limit at once, refilling three times as fast, so no
+single address can lock an account out). Each user keeps their 20 most
+recently used devices; older ones are dropped as new ones are added.
 
 **Docker:** a reverse proxy on the host reaches the container through Docker's
 bridge network, so inside the container the proxy's address is the bridge
@@ -305,9 +375,14 @@ What the encryption does today:
 - Signing in: the Lodestone check happens once, at registration. After
   that a client signs in with its device token or, if the server no longer
   knows the token, by signing a single-use challenge with its current
-  identity key (a key replaced by registering again can't). The signature
-  names the server's address, so a server can't replay it to another; the
-  plugin also keeps separate keys per server.
+  identity key (a key replaced by "Reset my identity" can't). The signature
+  names the server's address, and the server only accepts its configured
+  `PublicUrls`, so a server can't replay it to another (a Development server
+  without them goes by the Host header, which doesn't stop this). The plugin
+  also keeps separate keys per server address, bound to the address inside
+  the file; never follows redirects, so a server can't hand your connection
+  and login to another; and only carries an identity to a new address when
+  the servers at both addresses list each other.
 - Clients can block users: their invites are declined unseen and their
   messages hidden. An invite is only shown as verified once the client has
   checked it against the channel's log, and one from someone whose identity
@@ -331,7 +406,7 @@ What it does not do yet (0.2):
   as messages some members can't decrypt.
 - Rekeys seal the new key to every member in the log, including one whose
   "key changed" warning you haven't cleared.
-- A member who registers again (new keys, say after losing their config) has
+- A member with new keys (after losing their config, or "Reset my identity") has
   no place in their channels until a moderator removes and invites them
   again. If that member was the admin, nobody can take over the admin role:
   moderators can still invite and remove members, but renames and rank
