@@ -126,6 +126,55 @@ public sealed class ServerMoveTests : IDisposable {
         }
     }
 
+    /// <summary>
+    /// The old server's word alone isn't enough either: a malicious (or compromised) old server could list an honest
+    /// server's address to have its users carry their identity key there, then relay that server's key login challenges
+    /// to them (stopped by PublicUrls, but not on a Development server going by the Host header) and link the two
+    /// identities. The server at the new address must list the old address too: both sides agree, or nothing is copied.
+    /// </summary>
+    [Fact]
+    public async Task AnOldServerCannotPushTheIdentityOntoAServerThatDoesNotListIt() {
+        const string honestUrl = "wss://honest.example/ws";
+        await using var malicious = Server(OldUrl, honestUrl);
+        await using var honest = Server(honestUrl);
+        try {
+            var oldStore = this.Store(OldUrl);
+            var alice = await malicious.RegisterAsync("Alice Pushed", oldStore, malicious.Options(serverUri: new Uri(OldUrl)));
+            await alice.Session.DisposeAsync();
+
+            var dialled = new ConcurrentQueue<Uri>();
+            var check = await ServerMove.CheckAsync(OldUrl, honestUrl, (uri, ct) => {
+                dialled.Enqueue(uri);
+                return uri.Host == "localhost" ? malicious.ConnectAsync(uri, ct) : honest.ConnectAsync(uri, ct);
+            }, Ct);
+            Assert.Equal("NotConfirmed", check.Verdict.ToString());
+            Assert.Equal([new Uri(OldUrl), new Uri(honestUrl)], dialled.ToArray());
+            Assert.Contains("honest.example", check.Message);
+
+            var newStore = this.Store(honestUrl);
+            Assert.Throws<InvalidOperationException>(() => ServerMove.CopyIdentity(check, oldStore, newStore));
+            Assert.False(File.Exists(Path.Combine(this._directory, ServerSecretFiles.FileName(ContentId, honestUrl))));
+        } finally {
+            DeleteDirectory(malicious.DataDirectory);
+            DeleteDirectory(honest.DataDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task AnUnreachableNewAddressMeansNoCopy() {
+        await using var server = Server(OldUrl, NewUrl);
+        try {
+            var check = await ServerMove.CheckAsync(OldUrl, NewUrl, (uri, ct) => uri.Host == "localhost"
+                ? server.ConnectAsync(uri, ct)
+                : Task.FromException<WebSocket>(new WebSocketException("No such host is known")), Ct);
+            Assert.Equal(ServerMoveVerdict.Unreachable, check.Verdict);
+            Assert.Contains(NewUrl, check.Message);
+            Assert.Contains("No such host", check.Message);
+        } finally {
+            DeleteDirectory(server.DataDirectory);
+        }
+    }
+
     [Fact]
     public async Task AnUnreachableOldServerMeansNoCopy() {
         var oldStore = this.Store(OldUrl);
