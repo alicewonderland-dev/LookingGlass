@@ -485,17 +485,38 @@ public sealed class KeyLoginTests : IAsyncLifetime {
         }
     }
 
+    /// <summary>
+    /// Failed key logins are limited per account, whoever makes them: many addresses (each within its own limits)
+    /// failing for one account end up refused challenges for it. Successful ones don't count.
+    /// </summary>
     [Fact]
-    public async Task ChallengesAreLimitedPerUser() {
+    public async Task FailedKeyLoginsAreLimitedPerUser() {
         var alice = await this._server.RegisterAsync("Alice Targeted");
         var bob = await this._server.RegisterAsync("Bob Untargeted");
+        using var keys = alice.LoadIdentity();
+        var url = this._server.ServerUri.AbsoluteUri;
+
+        // More successful key logins than the account allows failures: none of them is held against it.
+        for (var address = 1; address <= 25; address++) {
+            await using var honest = await this._server.ConnectRawAsync(remoteAddress: $"192.0.2.{address}");
+            Assert.NotNull((await this.KeyLoginAsync(honest, keys, alice.UserId)).KeyLoginComplete);
+        }
+
         var refused = false;
-        // Many addresses (each within its own limits) asking about one user.
-        for (var address = 1; address <= 8 && !refused; address++) {
-            await using var raw = await this._server.ConnectRawAsync(remoteAddress: $"198.51.100.{address}");
-            for (var i = 0; i < 3 && !refused; i++) {
-                var response = await raw.SendAsync(new ClientFrame { StartKeyLogin = new StartKeyLogin { UserId = alice.UserId } });
-                refused = response.Error?.Code == ErrorCode.RateLimited;
+        for (var address = 1; address <= 10 && !refused; address++) {
+            for (var connection = 0; connection < 4 && !refused; connection++) {
+                await using var raw = await this._server.ConnectRawAsync(remoteAddress: $"198.51.100.{address}");
+                for (var i = 0; i < 3 && !refused; i++) {
+                    var response = await raw.SendAsync(new ClientFrame { StartKeyLogin = new StartKeyLogin { UserId = alice.UserId } });
+                    if (response.Error?.Code == ErrorCode.RateLimited) {
+                        // Either this address's failures, or the account's: only the account's counts here.
+                        refused = response.Error.Message.Contains("account");
+                        break;
+                    }
+
+                    var challenge = response.KeyLoginChallenge.Challenge.ToByteArray();
+                    Assert.Equal(ErrorCode.NotAuthenticated, (await this.CompleteAsync(raw, challenge, url, new byte[64])).Error?.Code);
+                }
             }
         }
 
@@ -503,6 +524,77 @@ public sealed class KeyLoginTests : IAsyncLifetime {
         // Another user isn't affected.
         await using var other = await this._server.ConnectRawAsync(remoteAddress: "198.51.100.200");
         Assert.NotNull((await other.SendAsync(new ClientFrame { StartKeyLogin = new StartKeyLogin { UserId = bob.UserId } })).KeyLoginChallenge);
+    }
+
+    /// <summary>
+    /// An address that asks for challenges for someone else's account and never answers them can't use up that
+    /// account's key logins: only failed answers count against an account.
+    /// </summary>
+    [Fact]
+    public async Task UnansweredChallengesDoNotLockOutTheAccount() {
+        await using var server = new Harness(settings: [
+            ("LookingGlass:Limits:KeyLoginsPerHourPerIp", "1000"),
+            ("LookingGlass:Limits:KeyLoginFailuresPerHourPerIp", "1000"),
+        ]);
+        try {
+            var alice = await server.RegisterAsync("Alice Besieged");
+            using var keys = alice.LoadIdentity();
+            var url = server.ServerUri.AbsoluteUri;
+
+            // One address asks for 60 challenges for Alice (more than the old per-account limit allowed in an hour), answering none.
+            for (var connection = 0; connection < 20; connection++) {
+                await using var attacker = await server.ConnectRawAsync(remoteAddress: "203.0.113.66");
+                for (var i = 0; i < 3; i++) {
+                    Assert.NotNull((await attacker.SendAsync(new ClientFrame { StartKeyLogin = new StartKeyLogin { UserId = alice.UserId } })).KeyLoginChallenge);
+                }
+            }
+
+            // Alice, from her own address, still signs in with her key.
+            await using var own = await server.ConnectRawAsync(remoteAddress: "203.0.113.7");
+            var challenge = await this.ChallengeAsync(own, alice.UserId);
+            Assert.NotNull((await this.CompleteAsync(own, challenge, url, KeyLoginProof.Sign(keys, challenge, alice.UserId, url))).KeyLoginComplete);
+        } finally {
+            DeleteDirectory(server.DataDirectory);
+        }
+    }
+
+    /// <summary>
+    /// A challenge counts as a failure for its address until it is answered correctly, so an address that only asks
+    /// for challenges is stopped as soon as one that fails is; one whose key logins work isn't.
+    /// </summary>
+    [Fact]
+    public async Task UnansweredChallengesCountAsFailuresForTheAddress() {
+        await using var server = new Harness(settings: [
+            ("LookingGlass:Limits:KeyLoginsPerHourPerIp", "1000"),
+            ("LookingGlass:Limits:KeyLoginFailuresPerHourPerIp", "3"),
+        ]);
+        try {
+            var alice = await server.RegisterAsync("Alice Asked About");
+            using var keys = alice.LoadIdentity();
+
+            // Three unanswered challenges (one replaced on its connection, two left open as the connections close)...
+            await using (var first = await server.ConnectRawAsync(remoteAddress: "203.0.113.20")) {
+                for (var i = 0; i < 2; i++) {
+                    Assert.NotNull((await first.SendAsync(new ClientFrame { StartKeyLogin = new StartKeyLogin { UserId = alice.UserId } })).KeyLoginChallenge);
+                }
+            }
+
+            await using (var second = await server.ConnectRawAsync(remoteAddress: "203.0.113.20")) {
+                Assert.NotNull((await second.SendAsync(new ClientFrame { StartKeyLogin = new StartKeyLogin { UserId = alice.UserId } })).KeyLoginChallenge);
+            }
+
+            // ...and the address gets no more.
+            await using var third = await server.ConnectRawAsync(remoteAddress: "203.0.113.20");
+            Assert.Equal(ErrorCode.RateLimited, (await third.SendAsync(new ClientFrame { StartKeyLogin = new StartKeyLogin { UserId = alice.UserId } })).Error?.Code);
+
+            // An address whose key logins work keeps going well past that.
+            for (var i = 0; i < 6; i++) {
+                await using var honest = await server.ConnectRawAsync(remoteAddress: "203.0.113.21");
+                Assert.NotNull((await this.KeyLoginAsync(honest, keys, alice.UserId, server.ServerUri.AbsoluteUri)).KeyLoginComplete);
+            }
+        } finally {
+            DeleteDirectory(server.DataDirectory);
+        }
     }
 
     /// <summary>Before logging in, a connection can say hello, ping, register, log in, or sign in with its key, and nothing else.</summary>
