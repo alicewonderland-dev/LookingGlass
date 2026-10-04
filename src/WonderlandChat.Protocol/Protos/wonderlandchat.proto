@@ -1,0 +1,459 @@
+// WonderlandChat wire protocol, version 1.
+//
+// Rules for changing this file (see the design doc, "Versioning policy"):
+//   * Within protocol version 1, changes are additive only: new fields, new
+//     oneof cases, new enum values. Never renumber or reuse a field number.
+//   * Removing a field or changing its meaning requires protocol version 2.
+//
+// Transport: one binary WebSocket message per frame. The client sends
+// ClientFrame, the server sends ServerFrame.
+
+syntax = "proto3";
+
+package wonderlandchat.v1;
+
+option csharp_namespace = "WonderlandChat.Protocol";
+
+// ---------------------------------------------------------------- framing
+
+message ClientFrame {
+  // Chosen by the client, unique per connection. Echoed in the Response.
+  uint32 request_id = 1;
+
+  oneof body {
+    Hello hello = 10;
+    Ping ping = 11;
+    StartRegistration start_registration = 12;
+    CompleteRegistration complete_registration = 13;
+    Authenticate authenticate = 14;
+    GetIdentities get_identities = 15;
+    LookupUser lookup_user = 16;
+    ListChannels list_channels = 17;
+    CreateChannel create_channel = 18;
+    InviteMember invite_member = 19;
+    RespondToInvite respond_to_invite = 20;
+    LeaveChannel leave_channel = 21;
+    KickMember kick_member = 22;
+    SetMemberRank set_member_rank = 23;
+    DisbandChannel disband_channel = 24;
+    RenameChannel rename_channel = 25;
+    SubmitRekey submit_rekey = 26;
+    FetchEpochKeys fetch_epoch_keys = 27;
+    SendMessage send_message = 28;
+  }
+}
+
+message ServerFrame {
+  oneof body {
+    Response response = 1;
+    Event event = 2;
+  }
+}
+
+message Response {
+  uint32 request_id = 1;
+
+  oneof result {
+    Error error = 2;
+    Welcome welcome = 10;
+    Pong pong = 11;
+    RegistrationChallenge registration_challenge = 12;
+    RegistrationComplete registration_complete = 13;
+    AuthenticateOk authenticate_ok = 14;
+    Identities identities = 15;
+    ChannelList channel_list = 16;
+    ChannelInfo channel = 17;
+    Ack ack = 18;
+    EpochKeys epoch_keys = 19;
+  }
+}
+
+message Event {
+  // Increases by one for every event on a connection, so gaps are detectable.
+  uint64 seq = 1;
+
+  oneof kind {
+    Announcement announcement = 10;
+    InviteReceived invite_received = 11;
+    MemberChanged member_changed = 12;
+    RekeyNeeded rekey_needed = 13;
+    EpochAdvanced epoch_advanced = 14;
+    ChatMessage chat_message = 15;
+    ChannelRenamed channel_renamed = 16;
+    ChannelRemoved channel_removed = 17;
+    InviteRevoked invite_revoked = 18;
+  }
+}
+
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  ERROR_CODE_INVALID_REQUEST = 1;
+  ERROR_CODE_NOT_AUTHENTICATED = 2;
+  ERROR_CODE_NOT_FOUND = 3;
+  ERROR_CODE_FORBIDDEN = 4;
+  ERROR_CODE_RATE_LIMITED = 5;
+  ERROR_CODE_TOO_LARGE = 6;
+  ERROR_CODE_LIMIT_REACHED = 7;
+  // The request referred to an old epoch; refresh keys and retry.
+  ERROR_CODE_EPOCH_STALE = 8;
+  // Membership changed and the channel must be rekeyed before sending.
+  ERROR_CODE_REKEY_REQUIRED = 9;
+  // A concurrent change won (for example two members rekeyed at once).
+  ERROR_CODE_CONFLICT = 10;
+  ERROR_CODE_UNSUPPORTED_VERSION = 11;
+  ERROR_CODE_REGISTRATION_FAILED = 12;
+  ERROR_CODE_INTERNAL = 13;
+}
+
+message Error {
+  ErrorCode code = 1;
+  string message = 2;
+}
+
+message Ack {}
+
+// ---------------------------------------------------------------- handshake
+
+message Hello {
+  repeated uint32 protocol_versions = 1;
+  string client_version = 2;
+  repeated string capabilities = 3;
+}
+
+message Limits {
+  uint32 max_frame_bytes = 1;
+  uint32 max_message_bytes = 2;
+  uint32 max_members_per_channel = 3;
+  uint32 max_channels_per_user = 4;
+  uint32 messages_per_second = 5;
+  uint32 message_burst = 6;
+  uint32 max_pending_invites_per_channel = 7;
+}
+
+message Welcome {
+  uint32 protocol_version = 1;
+  string server_version = 2;
+  repeated string capabilities = 3;
+  Limits limits = 4;
+  string announcement = 5;
+  // True when the server accepts debug accounts (world "Debug").
+  bool debug_accounts_enabled = 6;
+}
+
+message Ping {}
+
+message Pong {
+  int64 server_time_unix_ms = 1;
+}
+
+// ---------------------------------------------------------------- identity
+
+message Character {
+  string name = 1;
+  uint32 world_id = 2;
+  string world_name = 3;
+}
+
+message User {
+  // Lodestone character ID. Debug accounts use negative IDs.
+  int64 user_id = 1;
+  string name = 2;
+  uint32 world_id = 3;
+  string world_name = 4;
+}
+
+message IdentityBundle {
+  // Ed25519 public key, 32 bytes.
+  bytes signing_public_key = 1;
+  // X25519 public key used to seal keys to this user, 32 bytes.
+  bytes agreement_public_key = 2;
+  // Ed25519 signature by signing_public_key over the agreement key binding.
+  bytes binding_signature = 3;
+}
+
+message UserIdentity {
+  User user = 1;
+  IdentityBundle identity = 2;
+  // Increments every time the user re-registers with a new identity.
+  uint32 key_version = 3;
+}
+
+message StartRegistration {
+  Character character = 1;
+  IdentityBundle identity = 2;
+}
+
+message RegistrationChallenge {
+  // Text the user places in their Lodestone profile.
+  string code = 1;
+  int64 expires_unix = 2;
+  int64 lodestone_id = 3;
+  // True for debug accounts: CompleteRegistration skips Lodestone.
+  bool verification_skipped = 4;
+}
+
+// Completes the registration started on this same connection.
+message CompleteRegistration {}
+
+message RegistrationComplete {
+  string device_token = 1;
+  User user = 2;
+}
+
+message Authenticate {
+  string device_token = 1;
+}
+
+message AuthenticateOk {
+  User user = 1;
+  uint32 key_version = 2;
+}
+
+message GetIdentities {
+  repeated int64 user_ids = 1;
+}
+
+message LookupUser {
+  string name = 1;
+  string world_name = 2;
+}
+
+message Identities {
+  repeated UserIdentity identities = 1;
+}
+
+// ---------------------------------------------------------------- channels
+
+enum Rank {
+  RANK_UNSPECIFIED = 0;
+  RANK_INVITED = 1;
+  RANK_MEMBER = 2;
+  RANK_MODERATOR = 3;
+  RANK_ADMIN = 4;
+}
+
+message Member {
+  User user = 1;
+  Rank rank = 2;
+}
+
+// X25519 sealed box: an ephemeral public key and an AEAD ciphertext.
+message SealedBox {
+  bytes ephemeral_public_key = 1;
+  bytes ciphertext = 2;
+}
+
+// One copy of an epoch key, sealed to one recipient and signed by its author.
+message SealedEpochKey {
+  int64 recipient_id = 1;
+  SealedBox box = 2;
+  bytes signature = 3;
+}
+
+// The channel name encrypted under an epoch key and signed by its author.
+message EncryptedName {
+  uint64 epoch = 1;
+  int64 author_id = 2;
+  bytes ciphertext = 3;
+  bytes signature = 4;
+}
+
+message ChannelInfo {
+  string channel_id = 1;
+  uint64 epoch = 2;
+  // Membership changed since the current epoch; it must be rekeyed before use.
+  bool rekey_pending = 3;
+  EncryptedName name = 4;
+  repeated Member members = 5;
+  Rank my_rank = 6;
+}
+
+message ListChannels {}
+
+message InviteInfo {
+  string channel_id = 1;
+  User inviter = 2;
+  // The channel name sealed to the invitee by the inviter.
+  SealedBox sealed_name = 3;
+  // Inviter's signature over the invite (channel, invitee, sealed name).
+  bytes signature = 4;
+  int64 created_unix = 5;
+}
+
+message ChannelList {
+  repeated ChannelInfo channels = 1;
+  repeated InviteInfo invites = 2;
+}
+
+message CreateChannel {
+  // Client-generated (UUID, 32 hex digits) so it can be bound into signatures.
+  string channel_id = 1;
+  // Epoch 0 key sealed to the creator.
+  SealedEpochKey creator_key = 2;
+  EncryptedName name = 3;
+}
+
+message InviteMember {
+  string channel_id = 1;
+  int64 user_id = 2;
+  SealedBox sealed_name = 3;
+  bytes signature = 4;
+}
+
+message RespondToInvite {
+  string channel_id = 1;
+  bool accept = 2;
+}
+
+message LeaveChannel {
+  string channel_id = 1;
+}
+
+message KickMember {
+  string channel_id = 1;
+  int64 user_id = 2;
+}
+
+message SetMemberRank {
+  string channel_id = 1;
+  int64 user_id = 2;
+  Rank rank = 3;
+}
+
+message DisbandChannel {
+  string channel_id = 1;
+}
+
+message RenameChannel {
+  string channel_id = 1;
+  EncryptedName name = 2;
+}
+
+// Moves the channel from epoch N to N+1. Must contain exactly one key per
+// current member, and a channel name encrypted under the new key.
+message SubmitRekey {
+  string channel_id = 1;
+  uint64 new_epoch = 2;
+  repeated SealedEpochKey keys = 3;
+  EncryptedName name = 4;
+}
+
+message FetchEpochKeys {
+  string channel_id = 1;
+  // Keys for epochs >= this value are returned.
+  uint64 from_epoch = 2;
+}
+
+message EpochKeyForMe {
+  uint64 epoch = 1;
+  int64 author_id = 2;
+  SealedEpochKey key = 3;
+}
+
+message EpochKeys {
+  string channel_id = 1;
+  repeated EpochKeyForMe keys = 2;
+  EncryptedName name = 3;
+}
+
+// ---------------------------------------------------------------- messages
+
+message SendMessage {
+  string channel_id = 1;
+  uint64 epoch = 2;
+  // 16 random bytes chosen by the sender; used for de-duplication.
+  bytes message_id = 3;
+  int64 timestamp_unix_ms = 4;
+  // 24-byte nonce followed by the XChaCha20-Poly1305 ciphertext of Content.
+  bytes ciphertext = 5;
+  // Sender's Ed25519 signature over the message (see MessageCrypto).
+  bytes signature = 6;
+}
+
+// Plaintext inside SendMessage.ciphertext. New kinds can be added freely:
+// the server never sees them, and clients show unknown kinds as unsupported.
+message Content {
+  oneof kind {
+    TextContent text = 1;
+  }
+}
+
+message TextContent {
+  string text = 1;
+}
+
+// ---------------------------------------------------------------- events
+
+message Announcement {
+  string text = 1;
+}
+
+message InviteReceived {
+  InviteInfo invite = 1;
+}
+
+message InviteRevoked {
+  string channel_id = 1;
+}
+
+enum MemberChangeKind {
+  MEMBER_CHANGE_KIND_UNSPECIFIED = 0;
+  MEMBER_CHANGE_KIND_INVITED = 1;
+  MEMBER_CHANGE_KIND_JOINED = 2;
+  MEMBER_CHANGE_KIND_DECLINED = 3;
+  MEMBER_CHANGE_KIND_LEFT = 4;
+  MEMBER_CHANGE_KIND_KICKED = 5;
+  MEMBER_CHANGE_KIND_RANK_CHANGED = 6;
+  MEMBER_CHANGE_KIND_INVITE_CANCELLED = 7;
+}
+
+message MemberChanged {
+  string channel_id = 1;
+  User user = 2;
+  MemberChangeKind kind = 3;
+  Rank rank = 4;
+  User actor = 5;
+}
+
+message RekeyNeeded {
+  string channel_id = 1;
+  uint64 current_epoch = 2;
+  repeated int64 member_ids = 3;
+  // The member the server asks to perform the rekey. Any member may do it.
+  int64 designated_user_id = 4;
+}
+
+message EpochAdvanced {
+  string channel_id = 1;
+  uint64 epoch = 2;
+  int64 author_id = 3;
+  SealedEpochKey my_key = 4;
+  EncryptedName name = 5;
+}
+
+message ChatMessage {
+  string channel_id = 1;
+  uint64 epoch = 2;
+  int64 sender_id = 3;
+  bytes message_id = 4;
+  int64 timestamp_unix_ms = 5;
+  bytes ciphertext = 6;
+  bytes signature = 7;
+}
+
+message ChannelRenamed {
+  string channel_id = 1;
+  EncryptedName name = 2;
+}
+
+enum RemovalReason {
+  REMOVAL_REASON_UNSPECIFIED = 0;
+  REMOVAL_REASON_LEFT = 1;
+  REMOVAL_REASON_KICKED = 2;
+  REMOVAL_REASON_DISBANDED = 3;
+}
+
+message ChannelRemoved {
+  string channel_id = 1;
+  RemovalReason reason = 2;
+}

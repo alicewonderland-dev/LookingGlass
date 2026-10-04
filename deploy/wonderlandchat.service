@@ -1,0 +1,30 @@
+# systemd unit for a published server, for example:
+#   dotnet publish src/WonderlandChat.Server -c Release -r linux-x64 --self-contained -o /opt/wonderlandchat
+#   sudo useradd --system --home /opt/wonderlandchat wonderlandchat
+#   sudo chown -R wonderlandchat: /opt/wonderlandchat
+#   sudo cp deploy/wonderlandchat.service /etc/systemd/system/
+#   sudo systemctl enable --now wonderlandchat
+#
+# The database lives in /opt/wonderlandchat/data (DataDirectory is relative to the install folder).
+
+[Unit]
+Description=WonderlandChat server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=wonderlandchat
+WorkingDirectory=/opt/wonderlandchat
+ExecStart=/opt/wonderlandchat/WonderlandChat.Server --urls http://0.0.0.0:5180
+Restart=on-failure
+RestartSec=5
+# Uncomment for a private test server (debug accounts + echo bot):
+# Environment=ASPNETCORE_ENVIRONMENT=Development
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/wonderlandchat/data
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

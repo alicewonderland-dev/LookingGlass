@@ -1,0 +1,635 @@
+using System.Security.Cryptography;
+using System.Text;
+using Google.Protobuf;
+using Microsoft.Extensions.Options;
+using WonderlandChat.Core.Crypto;
+using WonderlandChat.Protocol;
+using WonderlandChat.Server.Data;
+using WonderlandChat.Server.Services;
+
+namespace WonderlandChat.Server.Realtime;
+
+/// <summary>A request failed in a way the client should be told about.</summary>
+public sealed class RequestException(ErrorCode code, string message) : Exception(message) {
+    public ErrorCode Code { get; } = code;
+}
+
+/// <summary>Handles every client request. Errors become typed responses; they never drop the connection.</summary>
+public sealed class RequestHandler(
+    Database db,
+    ConnectionRegistry registry,
+    LodestoneClient lodestone,
+    IOptions<ServerOptions> options,
+    ILogger<RequestHandler> logger) {
+    private static readonly string ServerVersion = typeof(RequestHandler).Assembly.GetName().Version?.ToString(3) ?? "0.1.0";
+
+    private readonly WindowCounter _registrations = new(options.Value.Limits.RegistrationsPerHourPerIp, TimeSpan.FromHours(1));
+
+    public Limits Limits { get; } = ProtocolInfo.DefaultLimits();
+
+    public async Task<Response> HandleAsync(ClientConnection connection, ClientFrame frame, CancellationToken ct) {
+        try {
+            if (!connection.HelloDone && frame.BodyCase != ClientFrame.BodyOneofCase.Hello) {
+                throw new RequestException(ErrorCode.InvalidRequest, "Send Hello first.");
+            }
+
+            return frame.BodyCase switch {
+                ClientFrame.BodyOneofCase.Hello => this.Hello(connection, frame.Hello),
+                ClientFrame.BodyOneofCase.Ping => new Response { Pong = new Pong { ServerTimeUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() } },
+                ClientFrame.BodyOneofCase.StartRegistration => await this.StartRegistration(connection, frame.StartRegistration, ct),
+                ClientFrame.BodyOneofCase.CompleteRegistration => await this.CompleteRegistration(connection, ct),
+                ClientFrame.BodyOneofCase.Authenticate => this.Authenticate(connection, frame.Authenticate),
+                ClientFrame.BodyOneofCase.GetIdentities => this.GetIdentities(connection, frame.GetIdentities),
+                ClientFrame.BodyOneofCase.LookupUser => this.LookupUser(connection, frame.LookupUser),
+                ClientFrame.BodyOneofCase.ListChannels => this.ListChannels(connection),
+                ClientFrame.BodyOneofCase.CreateChannel => this.CreateChannel(connection, frame.CreateChannel),
+                ClientFrame.BodyOneofCase.InviteMember => this.InviteMember(connection, frame.InviteMember),
+                ClientFrame.BodyOneofCase.RespondToInvite => this.RespondToInvite(connection, frame.RespondToInvite),
+                ClientFrame.BodyOneofCase.LeaveChannel => this.LeaveChannel(connection, frame.LeaveChannel),
+                ClientFrame.BodyOneofCase.KickMember => this.KickMember(connection, frame.KickMember),
+                ClientFrame.BodyOneofCase.SetMemberRank => this.SetMemberRank(connection, frame.SetMemberRank),
+                ClientFrame.BodyOneofCase.DisbandChannel => this.DisbandChannel(connection, frame.DisbandChannel),
+                ClientFrame.BodyOneofCase.RenameChannel => this.RenameChannel(connection, frame.RenameChannel),
+                ClientFrame.BodyOneofCase.SubmitRekey => this.SubmitRekey(connection, frame.SubmitRekey),
+                ClientFrame.BodyOneofCase.FetchEpochKeys => this.FetchEpochKeys(connection, frame.FetchEpochKeys),
+                ClientFrame.BodyOneofCase.SendMessage => this.SendMessage(connection, frame.SendMessage),
+                _ => throw new RequestException(ErrorCode.InvalidRequest, "Unknown request."),
+            };
+        } catch (RequestException ex) {
+            return Error(ex.Code, ex.Message);
+        } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
+            throw;
+        } catch (Exception ex) {
+            logger.LogError(ex, "Request {Kind} failed", frame.BodyCase);
+            return Error(ErrorCode.Internal, "Internal server error.");
+        }
+    }
+
+    // ================================================================ handshake and identity
+
+    private Response Hello(ClientConnection connection, Hello hello) {
+        if (!hello.ProtocolVersions.Contains(ProtocolInfo.CurrentVersion)) {
+            throw new RequestException(ErrorCode.UnsupportedVersion, $"This server speaks protocol version {ProtocolInfo.CurrentVersion}. Please update the plugin.");
+        }
+
+        connection.HelloDone = true;
+        var welcome = new Welcome {
+            ProtocolVersion = ProtocolInfo.CurrentVersion,
+            ServerVersion = ServerVersion,
+            Limits = this.Limits,
+            Announcement = options.Value.Announcement ?? "",
+            DebugAccountsEnabled = options.Value.Dev.AllowDebugAccounts,
+        };
+        welcome.Capabilities.AddRange(hello.Capabilities.Where(capability => capability == ProtocolInfo.Capabilities.Chat));
+        return new Response { Welcome = welcome };
+    }
+
+    private async Task<Response> StartRegistration(ClientConnection connection, StartRegistration request, CancellationToken ct) {
+        var character = request.Character ?? throw new RequestException(ErrorCode.InvalidRequest, "Missing character.");
+        var name = character.Name.Trim();
+        var worldName = character.WorldName.Trim();
+        if (name.Length is 0 or > 32 || worldName.Length is 0 or > 32) {
+            throw new RequestException(ErrorCode.InvalidRequest, "Invalid character name or world.");
+        }
+
+        if (!IdentityKeys.IsValidBundle(request.Identity)) {
+            throw new RequestException(ErrorCode.InvalidRequest, "Invalid identity keys.");
+        }
+
+        var minutes = options.Value.Lodestone.ChallengeMinutes;
+        if (ProtocolInfo.IsDebugWorld(worldName)) {
+            if (!options.Value.Dev.AllowDebugAccounts) {
+                throw new RequestException(ErrorCode.RegistrationFailed, "Debug accounts are disabled on this server.");
+            }
+
+            connection.PendingRegistration = new PendingRegistration(
+                DebugUserId(name), name, 0, ProtocolInfo.DebugWorldName, request.Identity, "", DateTimeOffset.UtcNow.AddMinutes(minutes), true);
+            return new Response {
+                RegistrationChallenge = new RegistrationChallenge {
+                    Code = "",
+                    ExpiresUnix = connection.PendingRegistration.Expires.ToUnixTimeSeconds(),
+                    LodestoneId = connection.PendingRegistration.UserId,
+                    VerificationSkipped = true,
+                },
+            };
+        }
+
+        if (!this._registrations.TryAdd(connection.RemoteAddress)) {
+            throw new RequestException(ErrorCode.RateLimited, "Too many registration attempts; try again later.");
+        }
+
+        var found = await lodestone.FindCharacterAsync(name, worldName, ct)
+            ?? throw new RequestException(ErrorCode.RegistrationFailed, $"Couldn't find {name} on {worldName} in the Lodestone.");
+
+        var code = "WCL-" + RandomCode(8);
+        connection.PendingRegistration = new PendingRegistration(
+            found.Id, found.Name, character.WorldId, found.WorldName, request.Identity, code, DateTimeOffset.UtcNow.AddMinutes(minutes), false);
+
+        return new Response {
+            RegistrationChallenge = new RegistrationChallenge {
+                Code = code,
+                ExpiresUnix = connection.PendingRegistration.Expires.ToUnixTimeSeconds(),
+                LodestoneId = found.Id,
+            },
+        };
+    }
+
+    private async Task<Response> CompleteRegistration(ClientConnection connection, CancellationToken ct) {
+        var pending = connection.PendingRegistration
+            ?? throw new RequestException(ErrorCode.RegistrationFailed, "Start registration on this connection first.");
+
+        if (pending.Expires < DateTimeOffset.UtcNow) {
+            connection.PendingRegistration = null;
+            throw new RequestException(ErrorCode.RegistrationFailed, "The challenge expired; start again.");
+        }
+
+        if (!pending.IsDebug) {
+            var check = await lodestone.ProfileContainsAsync(pending.UserId, pending.Code, ct);
+            switch (check) {
+                case ProfileCheck.ProfileUnavailable:
+                    throw new RequestException(ErrorCode.RegistrationFailed, "Couldn't read your Lodestone profile. Is it public?");
+                case ProfileCheck.CodeNotFound:
+                    throw new RequestException(ErrorCode.RegistrationFailed, $"{pending.Code} isn't in your Lodestone profile yet. The Lodestone can take a minute to update.");
+            }
+        }
+
+        connection.PendingRegistration = null;
+        var (user, keysChanged) = db.RegisterUser(pending.UserId, pending.Name, pending.WorldId, pending.WorldName, pending.Identity, pending.IsDebug);
+
+        var token = "wct_" + Base64Url(RandomNumberGenerator.GetBytes(32));
+        db.AddDevice(user.UserId, HashToken(token));
+
+        // Old devices were revoked; drop any session still using one.
+        registry.Disconnect(user.UserId, "This character registered again");
+        logger.LogInformation("Registered {User} ({Kind})", user.UserId, pending.IsDebug ? "debug" : "verified");
+
+        if (keysChanged) {
+            foreach (var channel in db.GetChannelsForUser(user.UserId)) {
+                this.RequestRekey(channel.ChannelId, preferred: null, excluding: user.UserId);
+            }
+        }
+
+        return new Response { RegistrationComplete = new RegistrationComplete { DeviceToken = token, User = user.ToProto() } };
+    }
+
+    private Response Authenticate(ClientConnection connection, Authenticate request) {
+        var userId = string.IsNullOrEmpty(request.DeviceToken) ? null : db.FindDevice(HashToken(request.DeviceToken));
+        var user = userId == null ? null : db.GetUser(userId.Value);
+        if (user == null) {
+            throw new RequestException(ErrorCode.NotAuthenticated, "Unknown or revoked device token.");
+        }
+
+        if (user.IsDebug && !options.Value.Dev.AllowDebugAccounts) {
+            throw new RequestException(ErrorCode.NotAuthenticated, "Debug accounts are disabled on this server.");
+        }
+
+        connection.User = user;
+        registry.SetOnline(user.UserId, connection);
+        return new Response { AuthenticateOk = new AuthenticateOk { User = user.ToProto(), KeyVersion = user.KeyVersion } };
+    }
+
+    private Response GetIdentities(ClientConnection connection, GetIdentities request) {
+        RequireUser(connection);
+        if (request.UserIds.Count > options.Value.Limits.MaxIdentitiesPerRequest) {
+            throw new RequestException(ErrorCode.TooLarge, "Too many identities requested at once.");
+        }
+
+        var identities = new Identities();
+        identities.Identities_.AddRange(db.GetUsers(request.UserIds).Select(user => user.ToIdentity()));
+        return new Response { Identities = identities };
+    }
+
+    private Response LookupUser(ClientConnection connection, LookupUser request) {
+        RequireUser(connection);
+        var user = db.FindUser(request.Name, request.WorldName)
+            ?? throw new RequestException(ErrorCode.NotFound, $"{request.Name}@{request.WorldName} isn't registered.");
+
+        var identities = new Identities();
+        identities.Identities_.Add(user.ToIdentity());
+        return new Response { Identities = identities };
+    }
+
+    // ================================================================ channels
+
+    private Response ListChannels(ClientConnection connection) {
+        var me = RequireUser(connection);
+        var list = new ChannelList();
+        list.Channels.AddRange(db.GetChannelsForUser(me.UserId).Select(channel => this.BuildChannelInfo(channel, me.UserId)));
+        list.Invites.AddRange(db.GetInvitesForUser(me.UserId).Select(ToInviteInfo));
+        return new Response { ChannelList = list };
+    }
+
+    private Response CreateChannel(ClientConnection connection, CreateChannel request) {
+        var me = RequireUser(connection);
+        var channelId = RequireChannelId(request.ChannelId);
+
+        if (db.CountChannelsForUser(me.UserId) >= this.Limits.MaxChannelsPerUser) {
+            throw new RequestException(ErrorCode.LimitReached, $"You're already in {this.Limits.MaxChannelsPerUser} channels.");
+        }
+
+        if (db.GetChannel(channelId) != null) {
+            throw new RequestException(ErrorCode.Conflict, "That channel ID is taken.");
+        }
+
+        if (request.CreatorKey == null || request.CreatorKey.RecipientId != me.UserId
+            || !ChannelCrypto.VerifyEpochKey(request.CreatorKey, channelId, 0, me.UserId, me.SigningKey)) {
+            throw new RequestException(ErrorCode.InvalidRequest, "The creator's epoch key is missing or wrongly signed.");
+        }
+
+        this.ValidateName(request.Name, channelId, 0, me);
+        db.CreateChannel(channelId, me.UserId, request.CreatorKey, request.Name);
+        logger.LogDebug("User {User} created channel {Channel}", me.UserId, channelId);
+        return new Response { Channel = this.BuildChannelInfo(db.GetChannel(channelId)!, me.UserId) };
+    }
+
+    private Response InviteMember(ClientConnection connection, InviteMember request) {
+        var me = RequireUser(connection);
+        var channelId = RequireChannelId(request.ChannelId);
+        this.RequireAllowed(channelId, me, ChannelAction.Invite);
+
+        var invitee = db.GetUser(request.UserId) ?? throw new RequestException(ErrorCode.NotFound, "That user isn't registered.");
+        if (db.GetRank(channelId, invitee.UserId) != null) {
+            throw new RequestException(ErrorCode.Conflict, $"{invitee.Name} is already a member or invited.");
+        }
+
+        if (db.CountPendingInvites(channelId) >= this.Limits.MaxPendingInvitesPerChannel) {
+            throw new RequestException(ErrorCode.LimitReached, "Too many pending invites in this channel.");
+        }
+
+        if (db.CountMembers(channelId) + db.CountPendingInvites(channelId) >= this.Limits.MaxMembersPerChannel) {
+            throw new RequestException(ErrorCode.LimitReached, "This channel is full.");
+        }
+
+        if (request.SealedName == null || request.SealedName.EphemeralPublicKey.Length != 32 || request.Signature.Length != 64) {
+            throw new RequestException(ErrorCode.InvalidRequest, "Malformed invite.");
+        }
+
+        db.AddInvite(channelId, invitee.UserId, me.UserId, request.SealedName, request.Signature.ToByteArray());
+        var invite = db.GetInvite(channelId, invitee.UserId)!;
+
+        registry.Send(invitee.UserId, new Event { InviteReceived = new InviteReceived { Invite = ToInviteInfo(invite) } });
+        this.BroadcastMemberChange(channelId, invitee, MemberChangeKind.Invited, Rank.Invited, me);
+        return Ack();
+    }
+
+    private Response RespondToInvite(ClientConnection connection, RespondToInvite request) {
+        var me = RequireUser(connection);
+        var channelId = RequireChannelId(request.ChannelId);
+        if (db.GetInvite(channelId, me.UserId) == null) {
+            throw new RequestException(ErrorCode.NotFound, "No such invite.");
+        }
+
+        if (!request.Accept) {
+            db.DeleteInvite(channelId, me.UserId);
+            this.BroadcastMemberChange(channelId, me, MemberChangeKind.Declined, Rank.Unspecified, me);
+            return Ack();
+        }
+
+        if (db.CountChannelsForUser(me.UserId) >= this.Limits.MaxChannelsPerUser) {
+            throw new RequestException(ErrorCode.LimitReached, $"You're already in {this.Limits.MaxChannelsPerUser} channels.");
+        }
+
+        if (!db.AcceptInvite(channelId, me.UserId)) {
+            throw new RequestException(ErrorCode.NotFound, "No such invite.");
+        }
+
+        this.BroadcastMemberChange(channelId, me, MemberChangeKind.Joined, Rank.Member, me, except: me.UserId);
+        this.RequestRekey(channelId, preferred: null, excluding: me.UserId);
+        return new Response { Channel = this.BuildChannelInfo(db.GetChannel(channelId)!, me.UserId) };
+    }
+
+    private Response LeaveChannel(ClientConnection connection, LeaveChannel request) {
+        var me = RequireUser(connection);
+        var channelId = RequireChannelId(request.ChannelId);
+        var rank = this.RequireAllowed(channelId, me, ChannelAction.Leave);
+        var members = db.GetMembers(channelId);
+
+        if (members.Count == 1) {
+            db.DeleteChannel(channelId);
+            return Ack();
+        }
+
+        if (rank == Rank.Admin) {
+            throw new RequestException(ErrorCode.Forbidden, "Make someone else admin before leaving, or disband the channel.");
+        }
+
+        db.RemoveMember(channelId, me.UserId);
+        this.BroadcastMemberChange(channelId, me, MemberChangeKind.Left, Rank.Unspecified, me);
+        this.RequestRekey(channelId, preferred: null, excluding: null);
+        return Ack();
+    }
+
+    private Response KickMember(ClientConnection connection, KickMember request) {
+        var me = RequireUser(connection);
+        var channelId = RequireChannelId(request.ChannelId);
+        var myRank = this.RequireAllowed(channelId, me, ChannelAction.Kick);
+        var target = db.GetUser(request.UserId) ?? throw new RequestException(ErrorCode.NotFound, "No such user.");
+        var targetRank = db.GetRank(channelId, target.UserId) ?? throw new RequestException(ErrorCode.NotFound, $"{target.Name} isn't in this channel.");
+
+        if (!Policy.CanKick(myRank, targetRank)) {
+            throw new RequestException(ErrorCode.Forbidden, "You can only remove members ranked below you.");
+        }
+
+        if (targetRank == Rank.Invited) {
+            db.DeleteInvite(channelId, target.UserId);
+            registry.Send(target.UserId, new Event { InviteRevoked = new InviteRevoked { ChannelId = channelId } });
+            this.BroadcastMemberChange(channelId, target, MemberChangeKind.InviteCancelled, Rank.Unspecified, me);
+            return Ack();
+        }
+
+        db.RemoveMember(channelId, target.UserId);
+        registry.Send(target.UserId, new Event { ChannelRemoved = new ChannelRemoved { ChannelId = channelId, Reason = RemovalReason.Kicked } });
+        this.BroadcastMemberChange(channelId, target, MemberChangeKind.Kicked, Rank.Unspecified, me);
+        this.RequestRekey(channelId, preferred: me.UserId, excluding: null);
+        return Ack();
+    }
+
+    private Response SetMemberRank(ClientConnection connection, SetMemberRank request) {
+        var me = RequireUser(connection);
+        var channelId = RequireChannelId(request.ChannelId);
+        this.RequireAllowed(channelId, me, ChannelAction.SetRank);
+
+        if (request.UserId == me.UserId) {
+            throw new RequestException(ErrorCode.Forbidden, "You can't change your own rank.");
+        }
+
+        if (!Policy.IsAssignableRank(request.Rank)) {
+            throw new RequestException(ErrorCode.InvalidRequest, "Invalid rank.");
+        }
+
+        var target = db.GetUser(request.UserId) ?? throw new RequestException(ErrorCode.NotFound, "No such user.");
+        var targetRank = db.GetRank(channelId, target.UserId);
+        if (targetRank is null or Rank.Invited) {
+            throw new RequestException(ErrorCode.NotFound, $"{target.Name} isn't a member of this channel.");
+        }
+
+        if (request.Rank == Rank.Admin) {
+            db.TransferAdmin(channelId, me.UserId, target.UserId);
+            this.BroadcastMemberChange(channelId, target, MemberChangeKind.RankChanged, Rank.Admin, me);
+            this.BroadcastMemberChange(channelId, me, MemberChangeKind.RankChanged, Rank.Moderator, me);
+        } else {
+            db.SetRank(channelId, target.UserId, request.Rank);
+            this.BroadcastMemberChange(channelId, target, MemberChangeKind.RankChanged, request.Rank, me);
+        }
+
+        return Ack();
+    }
+
+    private Response DisbandChannel(ClientConnection connection, DisbandChannel request) {
+        var me = RequireUser(connection);
+        var channelId = RequireChannelId(request.ChannelId);
+        this.RequireAllowed(channelId, me, ChannelAction.Disband);
+
+        var everyone = db.GetMembers(channelId).Concat(db.GetInvitees(channelId)).Select(member => member.User.UserId).ToList();
+        db.DeleteChannel(channelId);
+        registry.SendToAll(everyone, new Event { ChannelRemoved = new ChannelRemoved { ChannelId = channelId, Reason = RemovalReason.Disbanded } }, except: me.UserId);
+        return Ack();
+    }
+
+    private Response RenameChannel(ClientConnection connection, RenameChannel request) {
+        var me = RequireUser(connection);
+        var channelId = RequireChannelId(request.ChannelId);
+        this.RequireAllowed(channelId, me, ChannelAction.Rename);
+        var channel = db.GetChannel(channelId)!;
+
+        this.ValidateName(request.Name, channelId, channel.Epoch, me);
+        db.RenameChannel(channelId, request.Name);
+        var members = db.GetMembers(channelId).Select(member => member.User.UserId);
+        registry.SendToAll(members, new Event { ChannelRenamed = new ChannelRenamed { ChannelId = channelId, Name = request.Name } }, except: me.UserId);
+        return Ack();
+    }
+
+    // ================================================================ epochs and messages
+
+    private Response SubmitRekey(ClientConnection connection, SubmitRekey request) {
+        var me = RequireUser(connection);
+        var channelId = RequireChannelId(request.ChannelId);
+        this.RequireAllowed(channelId, me, ChannelAction.Rekey);
+
+        if (request.Keys.Count == 0 || request.Keys.Count > this.Limits.MaxMembersPerChannel) {
+            throw new RequestException(ErrorCode.InvalidRequest, "A rekey needs one key per member.");
+        }
+
+        if (request.Keys.Select(key => key.RecipientId).Distinct().Count() != request.Keys.Count) {
+            throw new RequestException(ErrorCode.InvalidRequest, "Duplicate recipients in rekey.");
+        }
+
+        foreach (var key in request.Keys) {
+            if (key.Box == null || !ChannelCrypto.VerifyEpochKey(key, channelId, request.NewEpoch, me.UserId, me.SigningKey)) {
+                throw new RequestException(ErrorCode.InvalidRequest, "A key in the rekey is wrongly signed.");
+            }
+        }
+
+        this.ValidateName(request.Name, channelId, request.NewEpoch, me);
+
+        switch (db.ApplyRekey(channelId, request.NewEpoch, me.UserId, request.Keys, request.Name)) {
+            case RekeyResult.EpochStale:
+                throw new RequestException(ErrorCode.EpochStale, "The channel is no longer at that epoch.");
+            case RekeyResult.MembershipChanged:
+                throw new RequestException(ErrorCode.Conflict, "Membership changed; rekey for the current members.");
+        }
+
+        foreach (var key in request.Keys.Where(key => key.RecipientId != me.UserId)) {
+            registry.Send(key.RecipientId, new Event {
+                EpochAdvanced = new EpochAdvanced {
+                    ChannelId = channelId,
+                    Epoch = request.NewEpoch,
+                    AuthorId = me.UserId,
+                    MyKey = key,
+                    Name = request.Name,
+                },
+            });
+        }
+
+        logger.LogDebug("Channel {Channel} advanced to epoch {Epoch} by {User}", channelId, request.NewEpoch, me.UserId);
+        return Ack();
+    }
+
+    private Response FetchEpochKeys(ClientConnection connection, FetchEpochKeys request) {
+        var me = RequireUser(connection);
+        var channelId = RequireChannelId(request.ChannelId);
+        this.RequireAllowed(channelId, me, ChannelAction.FetchKeys);
+
+        var keys = new EpochKeys { ChannelId = channelId, Name = db.GetChannel(channelId)!.Name };
+        keys.Keys.AddRange(db.GetEpochKeys(channelId, me.UserId, request.FromEpoch));
+        return new Response { EpochKeys = keys };
+    }
+
+    private Response SendMessage(ClientConnection connection, SendMessage request) {
+        var me = RequireUser(connection);
+        var channelId = RequireChannelId(request.ChannelId);
+        this.RequireAllowed(channelId, me, ChannelAction.Send);
+
+        if (!connection.MessageBucket.TryTake()) {
+            throw new RequestException(ErrorCode.RateLimited, "You're sending messages too quickly.");
+        }
+
+        if (request.Ciphertext.Length > this.Limits.MaxMessageBytes) {
+            throw new RequestException(ErrorCode.TooLarge, "Message too large.");
+        }
+
+        if (request.MessageId.Length != 16) {
+            throw new RequestException(ErrorCode.InvalidRequest, "Malformed message ID.");
+        }
+
+        var channel = db.GetChannel(channelId)!;
+        if (channel.RekeyPending) {
+            throw new RequestException(ErrorCode.RekeyRequired, "Membership changed; rekey the channel before sending.");
+        }
+
+        if (request.Epoch != channel.Epoch) {
+            throw new RequestException(ErrorCode.EpochStale, "That epoch is no longer current.");
+        }
+
+        var message = new ChatMessage {
+            ChannelId = channelId,
+            Epoch = request.Epoch,
+            SenderId = me.UserId,
+            MessageId = request.MessageId,
+            TimestampUnixMs = request.TimestampUnixMs,
+            Ciphertext = request.Ciphertext,
+            Signature = request.Signature,
+        };
+
+        // Not needed for secrecy, but rejects garbage before it is fanned out.
+        if (!ChannelCrypto.VerifyMessage(message, me.SigningKey)) {
+            throw new RequestException(ErrorCode.InvalidRequest, "Message signature is invalid.");
+        }
+
+        var members = db.GetMembers(channelId).Select(member => member.User.UserId);
+        registry.SendToAll(members, new Event { ChatMessage = message }, except: me.UserId);
+        return Ack();
+    }
+
+    // ================================================================ helpers
+
+    private ChannelInfo BuildChannelInfo(ChannelRow channel, long viewerId) {
+        var info = new ChannelInfo {
+            ChannelId = channel.ChannelId,
+            Epoch = channel.Epoch,
+            RekeyPending = channel.RekeyPending,
+            Name = channel.Name,
+            MyRank = db.GetRank(channel.ChannelId, viewerId) ?? Rank.Unspecified,
+        };
+
+        foreach (var member in db.GetMembers(channel.ChannelId).Concat(db.GetInvitees(channel.ChannelId))) {
+            info.Members.Add(new Member { User = member.User.ToProto(), Rank = member.Rank });
+        }
+
+        return info;
+    }
+
+    /// <summary>
+    /// Marks the channel as needing a rekey and asks one online member to do
+    /// it: <paramref name="preferred"/> if possible, otherwise the
+    /// highest-ranked online member. Everyone online is told.
+    /// </summary>
+    private void RequestRekey(string channelId, long? preferred, long? excluding) {
+        var channel = db.GetChannel(channelId);
+        if (channel == null) {
+            return;
+        }
+
+        var members = db.GetMembers(channelId);
+        var online = members.Where(member => registry.IsOnline(member.User.UserId)).ToList();
+        var candidates = online.Where(member => member.User.UserId != excluding).ToList();
+        if (candidates.Count == 0) {
+            candidates = online;
+        }
+
+        var designated = candidates.FirstOrDefault(member => member.User.UserId == preferred)
+                         ?? candidates.OrderByDescending(member => member.Rank).ThenBy(member => member.User.UserId).FirstOrDefault();
+
+        var ev = new Event {
+            RekeyNeeded = new RekeyNeeded {
+                ChannelId = channelId,
+                CurrentEpoch = channel.Epoch,
+                DesignatedUserId = designated?.User.UserId ?? 0,
+            },
+        };
+        ev.RekeyNeeded.MemberIds.AddRange(members.Select(member => member.User.UserId));
+        registry.SendToAll(online.Select(member => member.User.UserId), ev);
+    }
+
+    private void BroadcastMemberChange(string channelId, UserRow user, MemberChangeKind kind, Rank rank, UserRow actor, long? except = null) {
+        var recipients = db.GetMembers(channelId).Select(member => member.User.UserId).ToList();
+        registry.SendToAll(recipients, new Event {
+            MemberChanged = new MemberChanged {
+                ChannelId = channelId,
+                User = user.ToProto(),
+                Kind = kind,
+                Rank = rank,
+                Actor = actor.ToProto(),
+            },
+        }, except);
+    }
+
+    private Rank RequireAllowed(string channelId, UserRow me, ChannelAction action) {
+        if (db.GetChannel(channelId) == null) {
+            throw new RequestException(ErrorCode.NotFound, "No such channel.");
+        }
+
+        var rank = db.GetRank(channelId, me.UserId);
+        if (rank == null) {
+            throw new RequestException(ErrorCode.NotFound, "You're not in that channel.");
+        }
+
+        if (!Policy.Can(rank, action)) {
+            throw new RequestException(ErrorCode.Forbidden, $"Your rank can't {action.ToString().ToLowerInvariant()} in this channel.");
+        }
+
+        return rank.Value;
+    }
+
+    private void ValidateName(EncryptedName? name, string channelId, ulong epoch, UserRow author) {
+        if (name == null || name.Epoch != epoch || name.AuthorId != author.UserId
+            || name.Ciphertext.Length is 0 or > 512
+            || !ChannelCrypto.VerifyName(name, channelId, author.SigningKey)) {
+            throw new RequestException(ErrorCode.InvalidRequest, "The encrypted channel name is missing or wrongly signed.");
+        }
+    }
+
+    private static UserRow RequireUser(ClientConnection connection) {
+        return connection.User ?? throw new RequestException(ErrorCode.NotAuthenticated, "Log in first.");
+    }
+
+    private static string RequireChannelId(string id) {
+        var normalised = ProtocolInfo.NormaliseChannelId(id);
+        if (normalised == null || normalised != id) {
+            throw new RequestException(ErrorCode.InvalidRequest, "Invalid channel ID.");
+        }
+
+        return normalised;
+    }
+
+    private static InviteInfo ToInviteInfo(InviteRow invite) => new() {
+        ChannelId = invite.ChannelId,
+        Inviter = invite.Inviter.ToProto(),
+        SealedName = invite.SealedName,
+        Signature = ByteString.CopyFrom(invite.Signature),
+        CreatedUnix = invite.CreatedUnix,
+    };
+
+    private static Response Ack() => new() { Ack = new Ack() };
+
+    private static Response Error(ErrorCode code, string message) => new() { Error = new Protocol.Error { Code = code, Message = message } };
+
+    /// <summary>Debug accounts get stable negative IDs derived from their name.</summary>
+    internal static long DebugUserId(string name) {
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(name.Trim().ToLowerInvariant()));
+        return -((BitConverter.ToInt64(hash, 0) & 0x001F_FFFF_FFFF_FFFF) + 1);
+    }
+
+    internal static byte[] HashToken(string token) => SHA256.HashData(Encoding.UTF8.GetBytes(token));
+
+    private static string RandomCode(int length) {
+        const string alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+        return string.Create(length, alphabet, (span, chars) => {
+            for (var i = 0; i < span.Length; i++) {
+                span[i] = chars[RandomNumberGenerator.GetInt32(chars.Length)];
+            }
+        });
+    }
+
+    private static string Base64Url(byte[] bytes) => Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+}

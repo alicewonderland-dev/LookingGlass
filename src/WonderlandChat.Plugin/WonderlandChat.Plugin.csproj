@@ -1,0 +1,18 @@
+<Project Sdk="Dalamud.NET.Sdk/15.0.0">
+
+  <PropertyGroup>
+    <AssemblyName>WonderlandChat</AssemblyName>
+    <RootNamespace>WonderlandChat.Plugin</RootNamespace>
+    <Version>0.1.0</Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.12" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\WonderlandChat.Core\WonderlandChat.Core.csproj" />
+    <ProjectReference Include="..\WonderlandChat.Protocol\WonderlandChat.Protocol.csproj" />
+  </ItemGroup>
+
+</Project>
