@@ -290,11 +290,15 @@ message KeyLoginComplete {
 // without a version change: an older server answers "Unknown request.", and the client
 // resets locally anyway.
 message RetireIdentity {
-  // Ed25519 signature by the account's current identity key over the user ID and the
-  // SHA-256 of the device token this connection logged in with (see
+  // Ed25519 signature by the account's current identity key over the user ID, the SHA-256
+  // of the device token this connection logged in with and the server URL (see
   // LookingGlass.Core.Crypto.RetireIdentityProof), so a stolen login alone can't retire
-  // the identity, and a signature made for one login doesn't work with another.
+  // the identity, and a signature made for one login, or for another server (user IDs
+  // are the same on every server), doesn't work here.
   bytes signature = 1;
+  // The server's address exactly as the client connected to it, as in CompleteKeyLogin,
+  // and checked the same way.
+  string server_url = 2;
 }
 
 message GetIdentities {

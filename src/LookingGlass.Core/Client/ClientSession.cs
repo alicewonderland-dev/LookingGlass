@@ -422,8 +422,13 @@ public sealed class ClientSession : IAsyncDisposable {
                 throw new InvalidOperationException("You're not logged in, so the server can't be asked to retire your key.");
             }
 
+            // Exactly the address this connection was made to, as for key login.
+            var serverUrl = this._options.ServerUri.AbsoluteUri;
             var response = await this.RequestAsync(connection, new ClientFrame {
-                RetireIdentity = new RetireIdentity { Signature = ByteString.CopyFrom(RetireIdentityProof.Sign(identity, me.UserId, token)) },
+                RetireIdentity = new RetireIdentity {
+                    ServerUrl = serverUrl,
+                    Signature = ByteString.CopyFrom(RetireIdentityProof.Sign(identity, me.UserId, token, serverUrl)),
+                },
             }, ct);
             if (response.Ack == null) {
                 throw Unexpected(response);

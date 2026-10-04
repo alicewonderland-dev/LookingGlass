@@ -571,7 +571,8 @@ public sealed class RequestHandler(
     /// out. The account then has no working login until new keys are registered through the Lodestone, as one whose
     /// logins were all lost; others see the old key until then, as before any registration.
     ///
-    /// Signed by the key being retired, over this connection's login (see <see cref="RetireIdentityProof"/>): a login
+    /// Signed by the key being retired, over this connection's login and this server's address, checked as for key login
+    /// (see <see cref="RetireIdentityProof"/> and <see cref="NotThisServerIfCheckable"/>): a login
     /// alone, which a thief may hold without the key, could otherwise wreck the owner's identity. Anyone with both could
     /// already act as the owner; retiring is then what the owner wants anyway. No rate limit beyond that: it can succeed
     /// once per key, since the key can't sign in again and a new one only comes from registering through the Lodestone.
@@ -584,7 +585,13 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.NotAuthenticated, "Log in first.");
         }
 
-        if (!RetireIdentityProof.Verify(user.SigningKey, user.UserId, tokenHash, request.Signature.Span)) {
+        // Before the signature, as for key login: one made for another server is what a relay would bring.
+        if (this.NotThisServerIfCheckable(connection, request.ServerUrl) is { } elsewhere) {
+            logger.LogInformation("Retiring the identity key of {User} refused: {Reason}", user.UserId, elsewhere);
+            throw new RequestException(ErrorCode.Forbidden, "That was signed for another server address than this server's, so nothing was retired.");
+        }
+
+        if (!RetireIdentityProof.Verify(user.SigningKey, user.UserId, tokenHash, request.ServerUrl, request.Signature.Span)) {
             throw new RequestException(ErrorCode.Forbidden, "That isn't signed with this account's identity key for this login, so nothing was retired.");
         }
 
