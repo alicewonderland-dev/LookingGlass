@@ -488,6 +488,61 @@ public sealed class EndToEndTests : IAsyncLifetime {
         Assert.Equal(before + 1, Lookups());
     }
 
+    /// <summary>
+    /// Two checks that fail for the same user at once share one fetch of their identity, and both use what it
+    /// brings. A name's follow-up starts the fetch, which is held on its way to the server; a message that fails
+    /// meanwhile must wait for it, not be refused a second fetch for a minute and dropped with a bare "failed
+    /// checks". (Restores the coverage of the two "MessageIsDelivered...ItsAuthorsNewIdentity" tests.)
+    /// </summary>
+    [Fact]
+    public async Task ChecksFailingAtOnceForOneUserShareOneIdentityFetch() {
+        HoldingWebSocket? socket = null;
+        var alice = await this._server.RegisterAsync("Alice Shared Fetch");
+        // Carol doesn't rekey when asked, which would also fetch Alice's new identity.
+        var carol = await this._server.RegisterAsync("Carol Shared Fetch", options: this._server.Options(autoRekey: false, wrap: inner => socket = new HoldingWebSocket(inner)));
+        var channelId = await alice.Session.CreateChannelAsync("Shared Fetch", Ct);
+        await AddMemberAsync(alice, channelId, carol);
+        var epoch = carol.Session.Snapshot.FindChannel(channelId)!.Epoch;
+        var position = PositionOf(carol, channelId);
+        await alice.Session.DisposeAsync();
+        var aliceAgain = await this._server.RegisterAsync(alice.Name);
+        int Lookups() => carol.Session.GetTrace().Count(entry => entry.Outgoing && entry.Summary.EndsWith(" GetIdentities"));
+        var before = Lookups();
+
+        using var newKeys = aliceAgain.LoadIdentity();
+        var key = carol.LoadEpochKey(channelId, epoch);
+        var name = ChannelCrypto.EncryptName("New Name", key, channelId, epoch, position, newKeys, aliceAgain.UserId, revision: 1);
+        var sent = ChannelCrypto.EncryptMessage(new Content { Text = new TextContent { Text = "while you were fetching" } }, key,
+            channelId, epoch, newKeys, aliceAgain.UserId, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+
+        // A name signed with Alice's new keys fails its check, and its follow-up fetches her identity: held.
+        socket!.HoldNext(ClientFrame.BodyOneofCase.GetIdentities);
+        this._server.Registry.Send(carol.UserId, new Event { ChannelRenamed = new ChannelRenamed { ChannelId = channelId, Name = name } });
+        await socket.Held.WaitAsync(Harness.Timeout, Ct);
+
+        // A message signed with the same keys fails its check while that fetch is under way. It waits for it,
+        // and so does everything after it in Carol's inbox.
+        var sentinel = "sentinel " + Guid.NewGuid().ToString("N");
+        this._server.Registry.Send(carol.UserId, new Event {
+            ChatMessage = new ChatMessage {
+                ChannelId = channelId, Epoch = epoch, SenderId = aliceAgain.UserId, MessageId = sent.MessageId,
+                TimestampUnixMs = sent.TimestampUnixMs, Ciphertext = sent.Ciphertext, Signature = sent.Signature,
+            },
+        });
+        this._server.Registry.Send(carol.UserId, new Event { Announcement = new Announcement { Text = sentinel } });
+        await Task.Delay(300, Ct);
+        Assert.DoesNotContain(carol.Notices, n => n.Text == sentinel || n.Text.StartsWith("Dropped a message"));
+
+        // Once the one fetch answers, both use it: the message is refused for the right reason, and the key change shown.
+        socket.Release();
+        await WaitFor(() => carol.Notices.FirstOrDefault(n => n.Text == sentinel));
+        var dropped = carol.Notices.Single(n => n.Text.StartsWith("Dropped a message"));
+        Assert.StartsWith($"Dropped a message from {alice.Name}: it's signed with the identity key they registered again with", dropped.Text);
+        await WaitFor(() => carol.Notices.FirstOrDefault(n => n.Level == NoticeLevel.Warning && n.Text.StartsWith($"{alice.Name}@Debug's identity key changed")));
+        Assert.Equal(before + 1, Lookups());
+        Assert.Equal("Shared Fetch", carol.Session.Snapshot.FindChannel(channelId)!.Name);
+    }
+
     [Fact]
     public async Task RenameMissedWhileOfflineIsNotBlamedOnTheNextRekey() {
         var online = Task.CompletedTask;

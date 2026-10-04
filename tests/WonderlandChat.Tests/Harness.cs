@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Net.WebSockets;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Data.Sqlite;
@@ -48,15 +49,17 @@ public sealed class Harness : IAsyncDisposable {
 
     /// <param name="beforeConnect">Awaited before every connection attempt, so a test can keep a client offline.</param>
     /// <param name="protocolVersion">The protocol version offered in Hello, to play an older plugin.</param>
+    /// <param name="wrap">Wraps every connection's WebSocket, for example in a <see cref="HoldingWebSocket"/>.</param>
     public ClientSessionOptions Options(bool autoRekey = true, Action<NoticeLevel, string>? log = null, TimeProvider? time = null, Func<CancellationToken, Task>? beforeConnect = null,
-        uint protocolVersion = ProtocolInfo.CurrentVersion) => new() {
+        uint protocolVersion = ProtocolInfo.CurrentVersion, Func<WebSocket, WebSocket>? wrap = null) => new() {
         ServerUri = new Uri(this.Factory.Server.BaseAddress, ProtocolInfo.WebSocketPath),
         Connect = async (uri, ct) => {
             if (beforeConnect != null) {
                 await beforeConnect(ct);
             }
 
-            return await this.Factory.Server.CreateWebSocketClient().ConnectAsync(uri, ct);
+            var socket = await this.Factory.Server.CreateWebSocketClient().ConnectAsync(uri, ct);
+            return wrap?.Invoke(socket) ?? socket;
         },
         ReconnectMinDelay = TimeSpan.FromMilliseconds(100),
         AutoRekeyWhenDesignated = autoRekey,
@@ -215,33 +218,60 @@ public sealed class ManualClock : TimeProvider {
 }
 
 /// <summary>
-/// The real clock, but able to hold one thread the next time it reads the time: a way to stop a
-/// client part-way through handling something, at a point the test knows, and change what happens meanwhile.
+/// A client's WebSocket that can hold back its next request of one kind on the way to the server, until
+/// released: the client is then waiting for an answer, at a point the test knows, while everything else
+/// (events from the server included) carries on.
 /// </summary>
-public sealed class StallingClock : TimeProvider, IDisposable {
-    private readonly ManualResetEventSlim _resume = new();
-    private readonly TaskCompletionSource _stalled = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private int _threadId = -1;
+public sealed class HoldingWebSocket(WebSocket inner) : WebSocket {
+    private readonly TaskCompletionSource _held = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private int _holdNext = -1;
 
-    /// <summary>Completes once the thread is held.</summary>
-    public Task Stalled => this._stalled.Task;
+    /// <summary>Completes once a request is being held.</summary>
+    public Task Held => this._held.Task;
 
-    /// <summary>Holds the given managed thread the next time it reads the time, until <see cref="Resume"/>.</summary>
-    public void StallNextReadOn(int threadId) => Volatile.Write(ref this._threadId, threadId);
+    /// <summary>Holds the next request of this kind, until <see cref="Release"/>.</summary>
+    public void HoldNext(ClientFrame.BodyOneofCase kind) => Volatile.Write(ref this._holdNext, (int) kind);
 
-    public void Resume() => this._resume.Set();
+    public void Release() => this._release.TrySetResult();
 
-    public override DateTimeOffset GetUtcNow() {
-        var thread = Environment.CurrentManagedThreadId;
-        if (Interlocked.CompareExchange(ref this._threadId, -1, thread) == thread) {
-            this._stalled.TrySetResult();
-            this._resume.Wait(Harness.Timeout);
+    public override WebSocketCloseStatus? CloseStatus => inner.CloseStatus;
+    public override string? CloseStatusDescription => inner.CloseStatusDescription;
+    public override WebSocketState State => inner.State;
+    public override string? SubProtocol => inner.SubProtocol;
+
+    public override async Task SendAsync(ArraySegment<byte> buffer, WebSocketMessageType messageType, bool endOfMessage, CancellationToken cancellationToken) {
+        var kind = Volatile.Read(ref this._holdNext);
+        if (kind >= 0 && endOfMessage && (int) ClientFrame.Parser.ParseFrom(buffer.AsSpan()).BodyCase == kind
+            && Interlocked.CompareExchange(ref this._holdNext, -1, kind) == kind) {
+            this._held.TrySetResult();
+            await this._release.Task.WaitAsync(cancellationToken);
         }
 
-        return base.GetUtcNow();
+        await inner.SendAsync(buffer, messageType, endOfMessage, cancellationToken);
     }
 
-    public void Dispose() => this._resume.Set();
+    public override ValueTask SendAsync(ReadOnlyMemory<byte> buffer, WebSocketMessageType messageType, bool endOfMessage, CancellationToken cancellationToken) {
+        return new ValueTask(this.SendAsync(new ArraySegment<byte>(buffer.ToArray()), messageType, endOfMessage, cancellationToken));
+    }
+
+    public override Task<WebSocketReceiveResult> ReceiveAsync(ArraySegment<byte> buffer, CancellationToken cancellationToken) => inner.ReceiveAsync(buffer, cancellationToken);
+
+    public override ValueTask<ValueWebSocketReceiveResult> ReceiveAsync(Memory<byte> buffer, CancellationToken cancellationToken) => inner.ReceiveAsync(buffer, cancellationToken);
+
+    public override Task CloseAsync(WebSocketCloseStatus closeStatus, string? statusDescription, CancellationToken cancellationToken) => inner.CloseAsync(closeStatus, statusDescription, cancellationToken);
+
+    public override Task CloseOutputAsync(WebSocketCloseStatus closeStatus, string? statusDescription, CancellationToken cancellationToken) => inner.CloseOutputAsync(closeStatus, statusDescription, cancellationToken);
+
+    public override void Abort() {
+        this._release.TrySetResult();
+        inner.Abort();
+    }
+
+    public override void Dispose() {
+        this._release.TrySetResult();
+        inner.Dispose();
+    }
 }
 
 /// <summary>Counts saves, to check what is written per message.</summary>
