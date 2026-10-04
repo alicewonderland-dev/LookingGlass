@@ -147,7 +147,7 @@ public sealed class ServerMoveTests : IDisposable {
                 dialled.Enqueue(uri);
                 return uri.Host == "localhost" ? malicious.ConnectAsync(uri, ct) : honest.ConnectAsync(uri, ct);
             }, Ct);
-            Assert.Equal("NotConfirmed", check.Verdict.ToString());
+            Assert.Equal(ServerMoveVerdict.NotConfirmed, check.Verdict);
             Assert.Equal([new Uri(OldUrl), new Uri(honestUrl)], dialled.ToArray());
             Assert.Contains("honest.example", check.Message);
 
@@ -207,9 +207,13 @@ public sealed class ServerMoveTests : IDisposable {
         }
     }
 
-    /// <summary>Addresses are compared by origin: another path on a listed origin is the same server; another port isn't.</summary>
+    /// <summary>
+    /// Addresses are compared by origin (case and an explicit default port don't matter; scheme, host and port do). The
+    /// new address must also answer, as a LookingGlass server, at its own path.
+    /// </summary>
     [Theory]
-    [InlineData("wss://CHAT-NEW.example:443/other", ServerMoveVerdict.SameServer)]
+    [InlineData("wss://CHAT-NEW.example:443/ws", ServerMoveVerdict.SameServer)]
+    [InlineData("wss://chat-new.example/elsewhere", ServerMoveVerdict.Unreachable)]
     [InlineData("wss://chat-new.example:8443/ws", ServerMoveVerdict.NotListed)]
     [InlineData("ws://chat-new.example/ws", ServerMoveVerdict.NotListed)]
     [InlineData("wss://chat-new.example.evil.example/ws", ServerMoveVerdict.NotListed)]

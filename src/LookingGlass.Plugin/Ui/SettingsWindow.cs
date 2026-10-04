@@ -62,7 +62,8 @@ public sealed class SettingsWindow : Window {
 
     /// <summary>
     /// The server address is changing. If some character has an identity for the current address and none for the new
-    /// one, ask the current server (over the current address) whether the new one is its own, before anything changes.
+    /// one, ask the current server (over the current address) whether the new one is its own, and the new one whether it
+    /// agrees (see ServerMove), before anything changes.
     /// </summary>
     private void StartMoveCheck(string oldUrl, string newUrl) {
         this._moveError = null;
@@ -160,7 +161,7 @@ public sealed class SettingsWindow : Window {
             ImGui.TextColored(Widgets.Muted,
                 "So the new address counts as a different server: there you'd register through the Lodestone with new keys, and start " +
                 $"without channels. The identity of {who} for {offer.OldUrl} is kept, so switching back restores it. If it is the same " +
-                "server, ask whoever runs it to list the new address in LookingGlass:PublicUrls, then apply it again.");
+                "server, ask whoever runs it to list both addresses in LookingGlass:PublicUrls, then apply it again.");
             ImGui.Spacing();
             if (ImGui.Button("Use the new address anyway")) {
                 this.ChangeServer(offer, keepIdentity: false);
@@ -201,10 +202,10 @@ public sealed class SettingsWindow : Window {
         }
 
         ImGui.EndDisabled();
-        Widgets.Tooltip("Saves the URL and reconnects. If you have an identity on the current server, it first asks that server whether the new address is its own, to keep your identity.");
+        Widgets.Tooltip("Saves the URL and reconnects. If you have an identity on the current server, it first asks that server, and the new address, whether they are the same server, to keep your identity.");
         ImGui.PushTextWrapPos();
         if (checking) {
-            ImGui.TextColored(Widgets.Muted, "Asking the current server whether the new address is its own...");
+            ImGui.TextColored(Widgets.Muted, "Asking the current server and the new address whether they are the same server...");
         } else if (this._moveError is { } error) {
             ImGui.TextColored(Widgets.Error, error);
         }

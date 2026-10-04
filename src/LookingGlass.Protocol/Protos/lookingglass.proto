@@ -157,7 +157,8 @@ message Welcome {
   // for example "wss://chat.example.com/ws"; empty if none. A client that has an identity
   // for this server and is moving to another address asks the server, over the address
   // it already uses, and only carries its identity over if the new address's origin is
-  // listed here. Added in 0.2 without a version change: older servers send none.
+  // listed here (and the server at the new address lists the old one). Added in 0.2
+  // without a version change: older servers send none.
   repeated string public_urls = 7;
 }
 

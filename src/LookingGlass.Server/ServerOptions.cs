@@ -13,7 +13,8 @@ public sealed class ServerOptions {
     /// <summary>
     /// Every address clients connect to, such as "wss://chat.example.com/ws". Key login only accepts signatures made
     /// for one of these (scheme, host and port; not the path), and Welcome lists them, so a client moving to one of them
-    /// keeps its identity (the server, at the address the client already uses, vouches for the new one). Empty:
+    /// keeps its identity (the server at the address the client already uses lists the new one, and the server at the new
+    /// one lists the old). Empty:
     /// key login is off, except in Development, where it goes by each connection's Host header and scheme. That is
     /// weaker: whoever connects chooses the Host header, so a relaying server sends the address the user signed for.
     /// </summary>
