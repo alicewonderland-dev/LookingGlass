@@ -53,8 +53,8 @@ public sealed class ClientSession : IAsyncDisposable {
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _channelLocks = new();
     // One log sync per channel at a time, so entries are checked in order against one state.
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _logLocks = new();
-    // Logging in and registering, one request at a time: a try of a saved login the server didn't recognise
-    // never runs alongside registering again, so neither's answer can undo the other's.
+    // Logging in (with the saved login or the identity key) and registering, one request at a time: a try of a saved
+    // login the server didn't recognise never runs alongside registering again, so neither's answer can undo the other's.
     private readonly SemaphoreSlim _loginGate = new(1, 1);
     private readonly Channel<Event> _inbox = Channel.CreateUnbounded<Event>(new UnboundedChannelOptions { SingleReader = true });
     private readonly ConcurrentQueue<TraceEntry> _trace = new();
@@ -360,7 +360,8 @@ public sealed class ClientSession : IAsyncDisposable {
 
     /// <summary>
     /// Tries the saved login again now, after the server didn't recognise it (it is tried again by itself too, now
-    /// and then). While disconnected, reconnects instead, which tries it.
+    /// and then), and if it is still refused, signing in with the identity key. While disconnected, reconnects
+    /// instead, which tries both.
     /// </summary>
     /// <exception cref="InvalidOperationException">The server still doesn't recognise the login.</exception>
     public async Task RetryLoginAsync(CancellationToken ct = default) {
@@ -1036,7 +1037,10 @@ public sealed class ClientSession : IAsyncDisposable {
             try {
                 await this.AuthenticateAsync(connection, ct);
             } catch (ServerErrorException ex) when (ex.Code == ErrorCode.NotAuthenticated) {
-                this.RejectLogin(connection, ex);
+                // A server that lost the login but knows the account and its key signs it back in, without the Lodestone.
+                if (!await this.TryKeyLoginAsync(connection, ct)) {
+                    this.RejectLogin(connection, ex);
+                }
             }
         } finally {
             this._loginGate.Release();
@@ -1044,11 +1048,14 @@ public sealed class ClientSession : IAsyncDisposable {
     }
 
     private const string LoginNotRecognizedStatus =
-        "This server doesn't recognise your login. If you changed the server address or the server was reset, check the address in Settings; otherwise register again.";
+        "This server doesn't recognise your login or your identity key. If you changed the server address, check it in Settings. " +
+        "You only need to register again (through the Lodestone) if your identity key was lost or replaced, or this server has never known your account; " +
+        "otherwise your login is tried again by itself.";
 
     /// <summary>
-    /// The server refused the saved login. It is kept, never discarded: this may be the wrong server, or one reset or
-    /// restored from a backup, and the right one may be back soon. Only registering again (or "Forget account") replaces it.
+    /// The server refused the saved login, and signing in with the identity key didn't work either (or there is no key).
+    /// The login is kept, never discarded: this may be the wrong server, or one reset or restored from a backup, and the
+    /// right one may be back soon. Only a key login, registering again (or "Forget account") replaces it.
     /// </summary>
     private void RejectLogin(Connection connection, ServerErrorException ex) {
         this.Log(NoticeLevel.Info, $"The server doesn't recognise the saved login: {ex.ServerMessage}");
@@ -1119,11 +1126,76 @@ public sealed class ClientSession : IAsyncDisposable {
                 this.Log(NoticeLevel.Info, "The server recognises the saved login again");
                 return false;
             } catch (ServerErrorException ex) when (ex.Code == ErrorCode.NotAuthenticated) {
+                // Signing in with the key was tried on connecting; the user asking again may be because the server now knows it.
+                if (userAsked && await this.TryKeyLoginAsync(connection, ct)) {
+                    return false;
+                }
+
                 this.RejectLogin(connection, ex);
                 return true;
             }
         } finally {
             this._loginGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Signs in with the identity key, after the server refused the saved login: a server that knows the account and its
+    /// current key gives this device a new login, which replaces the saved one, and the client logs in with it. The
+    /// signature names the server's address as this client connected to it, so another server can't replay it here.
+    /// Call inside <see cref="_loginGate"/>.
+    /// </summary>
+    /// <returns>
+    /// Whether it worked. False without asking if there is no key or no account to sign in to (a new client, or one
+    /// whose keys are gone, registers instead), and false if the server refuses: it has never known the account, the
+    /// key was replaced by registering again, it is limiting attempts, or it is too old to know key login.
+    /// </returns>
+    private async Task<bool> TryKeyLoginAsync(Connection connection, CancellationToken ct) {
+        var (identity, userId) = this.Read(() => (this._identity, this._secrets.UserId));
+        if (identity == null || userId is not { } id) {
+            return false;
+        }
+
+        // Exactly the address this connection was made to.
+        var serverUrl = this._options.ServerUri.AbsoluteUri;
+        try {
+            var response = await this.RequestAsync(connection, new ClientFrame { StartKeyLogin = new StartKeyLogin { UserId = id } }, ct);
+            var challenge = response.KeyLoginChallenge ?? throw Unexpected(response);
+            if (challenge.Challenge.Length != KeyLoginProof.ChallengeSize) {
+                this.Log(NoticeLevel.Warning, "The server sent a malformed key login challenge");
+                return false;
+            }
+
+            response = await this.RequestAsync(connection, new ClientFrame {
+                CompleteKeyLogin = new CompleteKeyLogin {
+                    Challenge = challenge.Challenge,
+                    ServerUrl = serverUrl,
+                    Signature = ByteString.CopyFrom(KeyLoginProof.Sign(identity, challenge.Challenge.Span, id, serverUrl)),
+                },
+            }, ct);
+            var complete = response.KeyLoginComplete ?? throw Unexpected(response);
+            if (string.IsNullOrEmpty(complete.DeviceToken)) {
+                return false;
+            }
+
+            lock (this._lock) {
+                this._secrets.DeviceToken = complete.DeviceToken;
+                this._secretsVersion++;
+            }
+
+            this.SaveSecrets();
+        } catch (ServerErrorException ex) when (ex.Code is ErrorCode.NotAuthenticated or ErrorCode.RateLimited or ErrorCode.InvalidRequest) {
+            this.Log(NoticeLevel.Info, $"Signing in with the identity key didn't work: {ex.ServerMessage}");
+            return false;
+        }
+
+        this.Log(NoticeLevel.Info, "Signed in with the identity key; the server gave this device a new login");
+        try {
+            await this.AuthenticateAsync(connection, ct);
+            return true;
+        } catch (ServerErrorException ex) when (ex.Code == ErrorCode.NotAuthenticated) {
+            this.Log(NoticeLevel.Warning, $"The server refused the login it just gave: {ex.ServerMessage}");
+            return false;
         }
     }
 

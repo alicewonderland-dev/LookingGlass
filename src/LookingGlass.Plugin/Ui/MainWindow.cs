@@ -320,7 +320,7 @@ public sealed class MainWindow : Window {
 
         ImGui.TextUnformatted(rejected ? "Register again" : "Register this character");
         ImGui.TextColored(Widgets.Muted, rejected
-            ? "If your login doesn't work again, register again: it replaces your login. LookingGlass checks that the character is yours with a short code you put in your Lodestone profile for a few minutes."
+            ? "Only needed if your identity key was lost or replaced, or this server has never known your account; it replaces your login. LookingGlass checks that the character is yours with a short code you put in your Lodestone profile for a few minutes."
             : "LookingGlass checks that the character is yours with a short code you put in your Lodestone profile for a few minutes.");
         ImGui.Spacing();
         ImGui.Spacing();
@@ -394,15 +394,17 @@ public sealed class MainWindow : Window {
     }
 
     private const string LoginNotRecognisedText =
-        "This server doesn't recognise your login. If you changed the server address or the server was reset, check the address in Settings; otherwise register again.";
+        "This server doesn't recognise your login or your identity key. If you changed the server address, check it in Settings. " +
+        "Register again (through the Lodestone) only if your key was lost or replaced, or this server has never known your account.";
 
     /// <summary>
-    /// Above the registration steps when the server refused the saved login: what may be wrong, that the login is kept
-    /// and tried again, and buttons to check the server address and to try the login again now.
+    /// Above the registration steps when the server refused the saved login and the identity key: what may be wrong, that
+    /// the login is kept and tried again, and buttons to check the server address and to try again now.
     /// </summary>
     private void DrawLoginNotRecognised(ClientSession session) {
         Widgets.IconText(FontAwesomeIcon.ExclamationTriangle, "This server doesn't recognise your login", Widgets.Warning);
-        ImGui.TextUnformatted("If you changed the server address or the server was reset, check the address in Settings; otherwise register again.");
+        ImGui.TextUnformatted("It didn't accept your saved login or your identity key. If you changed the server address, check it in Settings.");
+        ImGui.TextUnformatted("Register again (below) only if your identity key was lost or replaced, or this server has never known your account.");
         ImGui.TextColored(Widgets.Muted, "Your login is kept and tried again every minute or so, so it works again by itself once the server knows it.");
         ImGui.TextColored(Widgets.Muted, $"Server: {this._config.ServerUrl}");
         ImGui.Spacing();
@@ -412,7 +414,7 @@ public sealed class MainWindow : Window {
         }
 
         ImGui.EndDisabled();
-        Widgets.Tooltip("Try your saved login on this server again now.");
+        Widgets.Tooltip("Try your saved login on this server again now, then your identity key.");
         ImGui.SameLine();
         if (Widgets.GhostButton("Open settings", "Check the server address. Also behind the gear in the title bar.")) {
             this._openSettings();

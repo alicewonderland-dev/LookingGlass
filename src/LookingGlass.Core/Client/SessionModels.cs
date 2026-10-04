@@ -17,7 +17,8 @@ public enum ConnectionState {
     Reconnecting,
     /// <summary>
     /// Connected, but the server doesn't recognise this device's saved login (the wrong server, or one that was
-    /// reset or restored). The login is kept and tried again now and then; registering again replaces it.
+    /// reset or restored), and signing in with the identity key didn't work either: the server doesn't know the
+    /// account or this key, or there is no key. The login is kept and tried again now and then; registering again replaces it.
     /// </summary>
     LoginNotRecognized,
 }
@@ -32,7 +33,7 @@ public enum ConnectionState {
 /// missing from it may still exist.
 /// </param>
 /// <param name="LoginRejected">
-/// The server refused this device's saved login on this connection. The login is kept and tried again now and then;
+/// The server refused this device's saved login on this connection, and a key login. The login is kept and tried again now and then;
 /// registering again replaces it. True in <see cref="ConnectionState.LoginNotRecognized"/>, and while registering again from it.
 /// </param>
 public sealed record SessionSnapshot(
