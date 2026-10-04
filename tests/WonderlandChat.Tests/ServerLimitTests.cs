@@ -76,6 +76,21 @@ public sealed class ServerLimitTests : IAsyncLifetime {
         }
     }
 
+    /// <summary>A plugin speaking an older protocol version is turned away at Hello, and the user is told why, once.</summary>
+    [Fact]
+    public async Task APluginSpeakingAnOlderProtocolIsToldToUpdate() {
+        var old = this._server.StartClient("Old Plugin", options: this._server.Options(protocolVersion: 1));
+        var notice = await WaitFor(() => old.Notices.FirstOrDefault(n => n.Text.Contains("different protocol versions")));
+        Assert.Equal(NoticeLevel.Warning, notice.Level);
+        Assert.Contains("Please update the plugin", notice.Text);
+
+        // It keeps trying (the server may be updated), but says so only once, and never gets further.
+        await WaitFor(() => old.Session.GetTrace().Count(entry => entry.Outgoing && entry.Summary.EndsWith(" Hello")) >= 2 ? new object() : null);
+        Assert.Single(old.Notices, n => n.Text.Contains("different protocol versions"));
+        Assert.NotEqual(ConnectionState.Unregistered, old.Session.Snapshot.State);
+        Assert.NotEqual(ConnectionState.Ready, old.Session.Snapshot.State);
+    }
+
     [Fact]
     public async Task InvitesMustBeSmallAndCorrectlySigned() {
         var alice = await this._server.RegisterAsync("Alice Invite Checks");

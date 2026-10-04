@@ -105,6 +105,8 @@ public sealed class ClientSession : IAsyncDisposable {
     private Task? _inboxTask;
     private volatile bool _reconnectImmediately;
     private int _disposed;
+    // The user has been told the server speaks another protocol version (once, not at every reconnect).
+    private int _versionMismatchReported;
 
     public ClientSession(ClientSessionOptions options, ISecretStore store) {
         this._options = options;
@@ -860,10 +862,23 @@ public sealed class ClientSession : IAsyncDisposable {
 
     private async Task HandshakeAsync(Connection connection, CancellationToken ct) {
         var hello = new Hello { ClientVersion = this._options.ClientVersion };
-        hello.ProtocolVersions.Add(ProtocolInfo.CurrentVersion);
+        hello.ProtocolVersions.Add(this._options.ProtocolVersion);
         hello.Capabilities.Add(ProtocolInfo.Capabilities.Chat);
 
-        var response = await this.RequestAsync(connection, new ClientFrame { Hello = hello }, ct);
+        Response response;
+        try {
+            response = await this.RequestAsync(connection, new ClientFrame { Hello = hello }, ct);
+        } catch (ServerErrorException ex) when (ex.Code == ErrorCode.UnsupportedVersion) {
+            // Plugin and server must speak the same version; which one is older, only the server's message can say.
+            var text = $"This plugin (protocol version {this._options.ProtocolVersion}) and the server speak different protocol versions, so it can't connect. " +
+                       $"The server says: \"{ex.ServerMessage}\" If the server is the older one, its operator needs to update it.";
+            if (Interlocked.Exchange(ref this._versionMismatchReported, 1) == 0) {
+                this.RaiseNotice(NoticeLevel.Warning, text);
+            }
+
+            throw new InvalidOperationException(text, ex);
+        }
+
         var welcome = response.Welcome ?? throw Unexpected(response);
 
         lock (this._lock) {

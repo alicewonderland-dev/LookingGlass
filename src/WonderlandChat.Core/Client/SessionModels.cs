@@ -165,4 +165,7 @@ public sealed class ClientSessionOptions {
 
     /// <summary>The group-key layer (channel keys and what they encrypt). Sealed epoch keys in v0.2.</summary>
     public IGroupKeyProvider GroupKeys { get; init; } = SealedEpochKeyProvider.Instance;
+
+    /// <summary>The protocol version offered in Hello. Only tests change it, to play an older plugin.</summary>
+    internal uint ProtocolVersion { get; init; } = ProtocolInfo.CurrentVersion;
 }

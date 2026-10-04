@@ -44,7 +44,9 @@ public sealed class Harness : IAsyncDisposable {
     public Database Database => this.Factory.Services.GetRequiredService<Database>();
 
     /// <param name="beforeConnect">Awaited before every connection attempt, so a test can keep a client offline.</param>
-    public ClientSessionOptions Options(bool autoRekey = true, Action<NoticeLevel, string>? log = null, TimeProvider? time = null, Func<CancellationToken, Task>? beforeConnect = null) => new() {
+    /// <param name="protocolVersion">The protocol version offered in Hello, to play an older plugin.</param>
+    public ClientSessionOptions Options(bool autoRekey = true, Action<NoticeLevel, string>? log = null, TimeProvider? time = null, Func<CancellationToken, Task>? beforeConnect = null,
+        uint protocolVersion = ProtocolInfo.CurrentVersion) => new() {
         ServerUri = new Uri(this.Factory.Server.BaseAddress, ProtocolInfo.WebSocketPath),
         Connect = async (uri, ct) => {
             if (beforeConnect != null) {
@@ -57,6 +59,7 @@ public sealed class Harness : IAsyncDisposable {
         AutoRekeyWhenDesignated = autoRekey,
         Log = log,
         TimeProvider = time ?? TimeProvider.System,
+        ProtocolVersion = protocolVersion,
     };
 
     public void Track(IAsyncDisposable disposable) => this._disposables.Add(disposable);

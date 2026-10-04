@@ -2,7 +2,11 @@ namespace WonderlandChat.Protocol;
 
 /// <summary>Constants shared by client and server.</summary>
 public static class ProtocolInfo {
-    public const uint CurrentVersion = 1;
+    /// <summary>
+    /// The protocol version client and server speak. Version 2 is v0.2's (signed membership log):
+    /// version 1 clients and servers can't talk to it, and are told to update at Hello.
+    /// </summary>
+    public const uint CurrentVersion = 2;
 
     /// <summary>The fake home world used by debug accounts.</summary>
     public const string DebugWorldName = "Debug";
