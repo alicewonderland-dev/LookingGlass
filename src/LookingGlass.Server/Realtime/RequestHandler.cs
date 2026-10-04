@@ -95,6 +95,12 @@ public sealed class RequestHandler(
     /// </summary>
     internal Action? BeforeAbandonedChannelDeletedForTests { get; set; }
 
+    /// <summary>
+    /// Runs once, after a key login has been checked and before its device is added, so tests can have the account
+    /// register again with new keys in between, as a concurrent registration could.
+    /// </summary>
+    internal Action? BeforeKeyLoginDeviceAddedForTests { get; set; }
+
     public async Task<Response> HandleAsync(ClientConnection connection, ClientFrame frame, CancellationToken ct) {
         try {
             if (!connection.HelloDone && frame.BodyCase != ClientFrame.BodyOneofCase.Hello) {
@@ -372,6 +378,11 @@ public sealed class RequestHandler(
         string? token = null;
         if (refusal == null) {
             token = NewDeviceToken();
+            if (this.BeforeKeyLoginDeviceAddedForTests is { } hook) {
+                this.BeforeKeyLoginDeviceAddedForTests = null;
+                hook();
+            }
+
             // Only while the key that signed is still the account's: registering again with new keys revokes every
             // device, and must not be undone by a key login checked just before it.
             if (!db.AddDeviceForKey(user!.UserId, user.SigningKey, user.KeyVersion, HashToken(token))) {

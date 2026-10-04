@@ -682,6 +682,116 @@ public sealed class KeyLoginTests : IAsyncLifetime {
         Assert.Equal(ErrorCode.InvalidRequest, after.Error?.Code);
     }
 
+    // ================================================================ regression guards
+
+    /// <summary>
+    /// The race <see cref="ADeviceIsOnlyAddedForTheAccountsCurrentKey"/> checks in the database, end to end through the
+    /// handler: the account registers again with new keys after the key login was checked and before its device is
+    /// added. The registration wins: no device, no token, and the old key can't sign in afterwards. (Would fail if the
+    /// handler added the device unconditionally, as AddDevice does: the device would outlive the revocation.)
+    /// </summary>
+    [Fact]
+    public async Task RegisteringAgainDuringAKeyLoginWins() {
+        var alice = await this._server.RegisterAsync("Alice Mid Login");
+        using var oldKeys = alice.LoadIdentity();
+        using var newKeys = IdentityKeys.Generate();
+        var url = this._server.ServerUri.AbsoluteUri;
+        await alice.Session.DisposeAsync();
+
+        await using var raw = await this._server.ConnectRawAsync();
+        var challenge = await this.ChallengeAsync(raw, alice.UserId);
+        this._server.Handler.BeforeKeyLoginDeviceAddedForTests = () =>
+            this._server.Database.RegisterUser(alice.UserId, alice.Name, 0, ProtocolInfo.DebugWorldName, newKeys.ToBundle(), true);
+        var response = await this.CompleteAsync(raw, challenge, url, KeyLoginProof.Sign(oldKeys, challenge, alice.UserId, url));
+        Assert.Null(this._server.Handler.BeforeKeyLoginDeviceAddedForTests);
+
+        Assert.Equal(ErrorCode.NotAuthenticated, response.Error?.Code);
+        Assert.Null(response.KeyLoginComplete);
+        Assert.Equal(0, this._server.Database.CountDevices(alice.UserId));
+
+        // The old key stays out; the new one is the account's.
+        await using var again = await this._server.ConnectRawAsync();
+        Assert.Equal(ErrorCode.NotAuthenticated, (await this.KeyLoginAsync(again, oldKeys, alice.UserId)).Error?.Code);
+        Assert.NotNull((await this.KeyLoginAsync(again, newKeys, alice.UserId)).KeyLoginComplete);
+    }
+
+    /// <summary>
+    /// A debug account on a server that has since disabled them can't sign in with its key either, even with the right
+    /// signature, and is told exactly what an unknown account is.
+    /// </summary>
+    [Fact]
+    public async Task ADebugAccountCannotKeyLoginWhenDebugAccountsAreDisabled() {
+        var directory = Path.Combine(Path.GetTempPath(), "lgt-" + Guid.NewGuid().ToString("N"));
+        try {
+            TestClient debug;
+            await using (var enabled = new Harness(directory)) {
+                debug = await enabled.RegisterAsync("Debug Keyed");
+                await debug.Session.DisposeAsync();
+            }
+
+            await using var server = new Harness(directory, allowDebugAccounts: false);
+            var url = server.ServerUri.AbsoluteUri;
+            using var keys = debug.LoadIdentity();
+            await using var raw = await server.ConnectRawAsync();
+            var challenge = await this.ChallengeAsync(raw, debug.UserId);
+            var refused = await this.CompleteAsync(raw, challenge, url, KeyLoginProof.Sign(keys, challenge, debug.UserId, url));
+            Assert.Equal(ErrorCode.NotAuthenticated, refused.Error?.Code);
+            Assert.Null(refused.KeyLoginComplete);
+
+            challenge = await this.ChallengeAsync(raw, 4242424242);
+            var unknown = await this.CompleteAsync(raw, challenge, url, KeyLoginProof.Sign(keys, challenge, 4242424242, url));
+            Assert.Equal(unknown.Error!.Message, refused.Error!.Message);
+        } finally {
+            DeleteDirectory(directory);
+        }
+    }
+
+    /// <summary>
+    /// While the server doesn't recognise the login, the client tries the token again now and then, but signs in with its
+    /// key only on connecting and when the user asks: the automatic retries never ask for a challenge.
+    /// </summary>
+    [Fact]
+    public async Task AutomaticRetriesNeverSignInWithTheKey() {
+        var store = new InMemorySecretStore();
+        var alice = await this._server.RegisterAsync("Alice Retried", store);
+        var userId = alice.UserId;
+        await alice.Session.DisposeAsync();
+        this.DeleteDevices(userId);
+        this.ReplaceSigningKey(userId, RandomKey());
+
+        var restarted = this._server.StartClient(alice.Name, store, this._server.Options(loginRetryDelay: TimeSpan.FromMilliseconds(30)));
+        await WaitFor(() => restarted.Session.Snapshot.State == ConnectionState.LoginNotRecognized ? new object() : null);
+        // Several automatic retries of the token...
+        await WaitFor(() => restarted.Session.GetTrace().Count(entry => entry.Outgoing && entry.Summary.EndsWith(" Authenticate")) >= 5 ? new object() : null);
+
+        // ...and still only the one key login made on connecting.
+        var trace = restarted.Session.GetTrace();
+        Assert.Single(trace, entry => entry.Outgoing && entry.Summary.EndsWith(" StartKeyLogin"));
+        Assert.Single(trace, entry => entry.Outgoing && entry.Summary.EndsWith(" Hello"));
+    }
+
+    /// <summary>
+    /// A challenge fetched before logging in can't be answered after: a logged-in connection has nothing to sign in to,
+    /// and must not collect a device for whatever account the challenge was for.
+    /// </summary>
+    [Fact]
+    public async Task AKeyLoginCannotBeCompletedAfterLoggingIn() {
+        var alice = await this._server.RegisterAsync("Alice Late Answer");
+        var bob = await this._server.RegisterAsync("Bob Late Answer");
+        using var keys = alice.LoadIdentity();
+        var url = this._server.ServerUri.AbsoluteUri;
+        var devices = this._server.Database.CountDevices(alice.UserId);
+
+        await using var raw = await this._server.ConnectRawAsync();
+        var challenge = await this.ChallengeAsync(raw, alice.UserId);
+        Assert.NotNull((await raw.SendAsync(new ClientFrame { Authenticate = new Authenticate { DeviceToken = bob.Store.Load().DeviceToken } })).AuthenticateOk);
+
+        var late = await this.CompleteAsync(raw, challenge, url, KeyLoginProof.Sign(keys, challenge, alice.UserId, url));
+        Assert.Equal(ErrorCode.InvalidRequest, late.Error?.Code);
+        Assert.Null(late.KeyLoginComplete);
+        Assert.Equal(devices, this._server.Database.CountDevices(alice.UserId));
+    }
+
     // ================================================================ the pieces
 
     /// <summary>
