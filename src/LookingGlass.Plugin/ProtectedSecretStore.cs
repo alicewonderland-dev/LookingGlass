@@ -37,9 +37,9 @@ public sealed class ProtectedSecretStore : ISecretStore {
     // the same character use different store objects but the same secrets file.
     public ClientSecrets Load() {
         // A damaged or missing file (say, after a power cut) falls back to the copy kept by the last save.
-        // Deleting the file is also how people reset their identity, so they're told the backup was used.
+        // Someone who deleted the file to start afresh is told the backup was used, and how to reset instead.
         return AtomicFile.Read(this._path, this.Decode, message =>
-                   this.Warn($"{message} To reset your LookingGlass identity instead, disconnect, delete both files, then connect again."))
+                   this.Warn($"{message} To replace your LookingGlass identity instead, use \"Reset my identity\" in Settings."))
                ?? new ClientSecrets();
     }
 

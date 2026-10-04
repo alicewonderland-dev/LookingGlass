@@ -14,12 +14,14 @@ public sealed class SettingsWindow : Window {
     private readonly Configuration _config;
     private readonly SessionManager _sessions;
     private readonly UiActions _actions;
+    private readonly Modals _modals;
     private string _serverUrl;
 
     public SettingsWindow(Configuration config, SessionManager sessions, UiActions actions) : base("LookingGlass settings###lookingglass-settings") {
         this._config = config;
         this._sessions = sessions;
         this._actions = actions;
+        this._modals = new Modals(actions);
         this._serverUrl = config.ServerUrl;
         this.Size = new Vector2(440, 520);
         this.SizeCondition = ImGuiCond.FirstUseEver;
@@ -41,6 +43,7 @@ public sealed class SettingsWindow : Window {
         this.DrawBlockedUsers();
         ImGui.Spacing();
         this._actions.DrawStatus();
+        this._modals.Draw(this._sessions.Snapshot, this._sessions.Session);
     }
 
     private void DrawServer() {
@@ -140,7 +143,31 @@ public sealed class SettingsWindow : Window {
         ImGui.PushTextWrapPos();
         ImGui.TextColored(Widgets.Muted, $"Keys are stored with: {ProtectedSecretStore.Protection}");
         ImGui.PopTextWrapPos();
+
+        ImGui.Spacing();
+        var player = this._sessions.Player;
+        ImGui.BeginDisabled(this._actions.Busy || player == null);
+        if (ImGui.Button("Reset my identity...") && player != null) {
+            this._modals.Confirm("Reset my identity", ResetText(player.Name, this._config.ServerUrl), "Reset my identity", () => {
+                // On the framework thread (the dialog's button); the returned task finishes the reset.
+                var reset = this._sessions.ResetIdentity();
+                this._actions.Run("Resetting your identity", () => reset);
+            });
+        }
+
+        ImGui.EndDisabled();
+        Widgets.Tooltip("New identity keys for this character on this server. Only if your key was lost or may have been stolen.");
     }
+
+    private static string ResetText(string name, string serverUrl) =>
+        $"This makes new identity keys for {name} on {serverUrl}. Only do this if your key was lost or may have been stolen. " +
+        "If you just can't sign in, you don't need it: registering again keeps your key.\n\n" +
+        "After a reset:\n" +
+        "- You register again through the Lodestone.\n" +
+        "- You lose your place in every channel on this server. To get back in, someone must remove you and invite you again.\n" +
+        "- Everyone who knows you sees a \"key changed\" warning for you.\n" +
+        "- Once you've registered again, your old keys and logins stop working on this server.\n\n" +
+        "Your identity on other servers isn't affected.";
 
     private void DrawBlockedUsers() {
         Widgets.Heading("Blocked users");

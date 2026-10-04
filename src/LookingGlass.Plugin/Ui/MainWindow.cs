@@ -320,7 +320,7 @@ public sealed class MainWindow : Window {
 
         ImGui.TextUnformatted(rejected ? "Register again" : "Register this character");
         ImGui.TextColored(Widgets.Muted, rejected
-            ? "Only needed if your identity key was lost or replaced, or this server has never known your account; it replaces your login. LookingGlass checks that the character is yours with a short code you put in your Lodestone profile for a few minutes."
+            ? "Only needed if your identity key was lost or replaced, or this server has never known your account; it replaces your login but keeps the identity key the plugin has, so your channels keep working. LookingGlass checks that the character is yours with a short code you put in your Lodestone profile for a few minutes."
             : "LookingGlass checks that the character is yours with a short code you put in your Lodestone profile for a few minutes.");
         ImGui.Spacing();
         ImGui.Spacing();

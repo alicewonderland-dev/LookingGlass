@@ -67,8 +67,10 @@ public sealed class IdentityResetTests : IAsyncLifetime {
         await alice.Session.DisposeAsync();
 
         var before = store.Load();
-        Assert.Contains(alice.UserId, before.PinnedIdentities.Keys);
+        Assert.Contains(bob.UserId, before.PinnedIdentities.Keys);
         var secrets = store.Load();
+        // The session doesn't pin your own keys; if anything ever did, they'd be the old identity's.
+        secrets.PinnedIdentities[alice.UserId] = new PinnedIdentity { SigningPublicKey = alice.Keys().SigningKeyArray(), Name = alice.Name };
         secrets.ResetIdentity();
 
         // A new key pair, and no login.

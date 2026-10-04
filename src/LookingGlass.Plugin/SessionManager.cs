@@ -67,6 +67,34 @@ public sealed class SessionManager : IDisposable {
 
     public void Disconnect() => this.Stop();
 
+    /// <summary>
+    /// "Reset my identity" for the logged-in character on the configured server (see <see cref="ClientSecrets.ResetIdentity"/>):
+    /// stops the session, replaces the keys once it has closed (so nothing else writes the secrets file meanwhile), then
+    /// connects again, which leads to registering. Call on the framework thread; the returned task finishes the work.
+    /// </summary>
+    public Task ResetIdentity() {
+        if (this._player.Current is not { } player) {
+            return Task.FromException(new InvalidOperationException("Log in to the character whose identity you want to reset."));
+        }
+
+        var serverUrl = this._config.ServerUrl;
+        this.Stop();
+        var closing = this._closing ?? Task.CompletedTask;
+        var reset = Task.Run(async () => {
+            await closing;
+            var store = ProtectedSecretStore.For(player.ContentId, serverUrl, warning => this._chat.Notice(NoticeLevel.Warning, warning));
+            var secrets = store.Load();
+            secrets.ResetIdentity();
+            store.Save(secrets);
+            Services.Log.Information("Reset the LookingGlass identity of a character");
+        });
+
+        // Any session started meanwhile (this one below, a relog, Connect) waits for the reset, as for a closing session.
+        this._closing = reset.ContinueWith(_ => { }, TaskScheduler.Default);
+        this.StartFor(player);
+        return reset;
+    }
+
     /// <summary>The command slot of a channel for the current character. Safe from any thread.</summary>
     public int? SlotOf(string channelId) {
         return this._slots.TryGetValue(channelId, out var slot) ? slot : null;
