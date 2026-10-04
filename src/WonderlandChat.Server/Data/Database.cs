@@ -416,6 +416,31 @@ public sealed class Database {
     }
 
     /// <summary>
+    /// Deletes a channel its last member is leaving, only if its log is still at <paramref name="head"/> (where
+    /// their leave was checked) and they are still its only member, all in one transaction. Otherwise someone
+    /// joined (or something else changed) meanwhile, and the channel stays.
+    /// </summary>
+    /// <returns>Who was invited to it, to tell; or null (and nothing changes) if it changed meanwhile.</returns>
+    public List<long>? DeleteAbandonedChannel(string channelId, LogPosition head, long lastMemberId) {
+        using var connection = this.Open();
+        using var tx = connection.BeginTransaction();
+        var channel = GetChannel(connection, tx, channelId);
+        if (channel == null || !MembershipEntries.SamePosition(channel.LogHead, head)) {
+            return null;
+        }
+
+        var members = Query(connection, tx, "SELECT user_id FROM members WHERE channel_id = $id;", reader => reader.GetInt64(0), ("$id", channelId));
+        if (members is not [var only] || only != lastMemberId) {
+            return null;
+        }
+
+        var invitees = Query(connection, tx, "SELECT user_id FROM invites WHERE channel_id = $id;", reader => reader.GetInt64(0), ("$id", channelId));
+        Execute(connection, tx, "DELETE FROM channels WHERE channel_id = $id;", ("$id", channelId));
+        tx.Commit();
+        return invitees;
+    }
+
+    /// <summary>
     /// Renames only if the channel is still at the name's epoch and log position, not
     /// awaiting a rekey, and the name's revision is newer than the stored one.
     /// </summary>

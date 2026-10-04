@@ -463,8 +463,9 @@ public sealed class RequestHandler(
                 hook();
             }
 
-            var invitees = db.GetInvitees(channelId).Select(invitee => invitee.User.UserId).ToList();
-            db.DeleteChannel(channelId);
+            // Only if nobody joined meanwhile (an invitee accepting right now, say): checked and deleted in one go.
+            var invitees = db.DeleteAbandonedChannel(channelId, new LogPosition { Seq = entry.Seq - 1, Hash = entry.PreviousHash }, me.UserId)
+                           ?? throw new RequestException(ErrorCode.Conflict, "The channel's membership changed meanwhile; refresh and try again.");
             registry.SendToAll(invitees, new Event { InviteRevoked = new InviteRevoked { ChannelId = channelId } });
             return Ack();
         }
