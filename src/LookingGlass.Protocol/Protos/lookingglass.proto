@@ -243,8 +243,10 @@ message CompleteKeyLogin {
   // The challenge being answered, as received.
   bytes challenge = 1;
   // The server's address exactly as the client connected to it (for example
-  // "wss://chat.example.com/ws"). Signed, and checked by the server against its own
-  // address, so a signature made for one server can't be replayed to another.
+  // "wss://chat.example.com/ws"). Signed, and checked by the server against its
+  // configured public addresses (LookingGlass:PublicUrls; a Development server without
+  // them goes by the Host header, which proves nothing against a relay), so a signature
+  // made for one server can't be replayed to another.
   string server_url = 2;
   // Ed25519 signature by the user's identity key over the challenge, user ID and
   // server URL (see LookingGlass.Core.Crypto.KeyLoginProof).

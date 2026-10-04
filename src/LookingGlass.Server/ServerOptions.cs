@@ -11,10 +11,10 @@ public sealed class ServerOptions {
     public string Announcement { get; set; } = "";
 
     /// <summary>
-    /// The addresses clients connect to, such as "wss://chat.example.com/ws". Key login only accepts signatures made
-    /// for one of these (scheme, host and port; not the path). Empty: the address each connection was made to, from
-    /// its Host header and scheme, which a client connecting directly can choose, so list them on a server reachable
-    /// from the internet without a proxy that checks the Host header.
+    /// Every address clients connect to, such as "wss://chat.example.com/ws". Key login only accepts signatures made
+    /// for one of these (scheme, host and port; not the path). Empty:
+    /// key login is off, except in Development, where it goes by each connection's Host header and scheme. That is
+    /// weaker: whoever connects chooses the Host header, so a relaying server sends the address the user signed for.
     /// </summary>
     public string[] PublicUrls { get; set; } = [];
 

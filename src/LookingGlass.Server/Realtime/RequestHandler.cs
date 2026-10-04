@@ -28,6 +28,7 @@ public sealed class RequestHandler(
     ILogger<RequestHandler> logger,
     IMembershipProvider membership,
     IGroupKeyProvider groupKeys,
+    IHostEnvironment? environment = null,
     TimeProvider? time = null) {
     private static readonly string ServerVersion = typeof(RequestHandler).Assembly.GetName().Version?.ToString(3) ?? "0.1.0";
 
@@ -43,6 +44,9 @@ public sealed class RequestHandler(
     // The same for every failure, so a failed key login doesn't tell whether the account exists, or which check failed.
     private const string KeyLoginFailed = "Key login failed.";
 
+    // Said to anyone asking, before looking at the account, on a server with key login off.
+    private const string KeyLoginUnavailable = "Signing in with the identity key isn't available on this server.";
+
     /// <summary>Pending invites one user can have at once, across all channels.</summary>
     public const int MaxPendingInvitesPerUser = 20;
 
@@ -57,6 +61,7 @@ public sealed class RequestHandler(
     private readonly WindowCounter _keyLoginFailuresPerIp = new(options.Value.Limits.KeyLoginFailuresPerHourPerIp, TimeSpan.FromHours(1));
     private readonly UserRateLimits _keyLoginsPerUser = new(perSecond: 1.0 / 180, burst: 10);
     private readonly IReadOnlyList<ServerOrigin> _publicOrigins = ParsePublicUrls(options.Value.PublicUrls);
+    private readonly KeyLoginOrigins _keyLoginOrigins = ChooseKeyLoginOrigins(ParsePublicUrls(options.Value.PublicUrls), environment?.IsDevelopment() == true);
     private readonly TimeProvider _time = time ?? TimeProvider.System;
     private readonly UserRateLimits _rekeys = new(perSecond: 0.5, burst: 5);
     private readonly UserRateLimits _lookups = new(perSecond: 0.5, burst: 10);
@@ -289,11 +294,16 @@ public sealed class RequestHandler(
 
     /// <summary>
     /// The first half of a key login: a fresh challenge for this connection to sign. Issued whether or not the account
-    /// exists, so asking doesn't tell who is registered. Limited per connection, address and account.
+    /// exists, so asking doesn't tell who is registered. Limited per connection, address and account. Refused for
+    /// everyone on a server that has no address it can check signatures against (see <see cref="KeyLoginOrigins"/>).
     /// </summary>
     private Response StartKeyLogin(ClientConnection connection, StartKeyLogin request) {
         if (connection.User != null) {
             throw new RequestException(ErrorCode.InvalidRequest, "Already logged in on this connection.");
+        }
+
+        if (this._keyLoginOrigins == KeyLoginOrigins.Off) {
+            throw new RequestException(ErrorCode.NotAuthenticated, KeyLoginUnavailable);
         }
 
         if (connection.KeyLoginChallenges >= MaxKeyLoginChallengesPerConnection) {
@@ -372,9 +382,18 @@ public sealed class RequestHandler(
 
         // Before the signature: a signature made for another server is what a relay would bring.
         var signed = ServerOrigin.FromUrl(request.ServerUrl);
-        if (signed == null || !(this._publicOrigins.Count > 0 ? this._publicOrigins.Contains(signed) : signed == connection.RequestOrigin)) {
-            return $"signed for {signed?.ToString() ?? "an invalid address"}, which isn't this server "
-                   + $"({(this._publicOrigins.Count > 0 ? string.Join(", ", this._publicOrigins) : connection.RequestOrigin?.ToString() ?? "unknown address")})";
+        var ours = this._keyLoginOrigins switch {
+            KeyLoginOrigins.PublicUrls => signed != null && this._publicOrigins.Contains(signed),
+            KeyLoginOrigins.HostHeader => signed != null && signed == connection.RequestOrigin,
+            _ => false,
+        };
+        if (!ours) {
+            return $"signed for {signed?.ToString() ?? "an invalid address"}, which isn't this server ("
+                   + this._keyLoginOrigins switch {
+                       KeyLoginOrigins.PublicUrls => string.Join(", ", this._publicOrigins),
+                       KeyLoginOrigins.HostHeader => $"Host header: {connection.RequestOrigin?.ToString() ?? "unknown address"}",
+                       _ => "key login is off: no PublicUrls",
+                   } + ")";
         }
 
         user = db.GetUser(pending.UserId);
@@ -392,6 +411,27 @@ public sealed class RequestHandler(
         }
 
         return null;
+    }
+
+    /// <summary>Which server addresses a key login signature may name.</summary>
+    internal enum KeyLoginOrigins {
+        /// <summary>The configured <see cref="ServerOptions.PublicUrls"/>: the operator says which addresses are this server's.</summary>
+        PublicUrls,
+
+        /// <summary>
+        /// None configured, in Development only: the scheme and Host header each connection was made with. Whoever opens
+        /// the connection chooses the Host header, so this stops nothing a relaying server does on purpose (it sends the
+        /// address the user signed for); only the plugin keeping separate keys per server address does. For private test
+        /// servers only.
+        /// </summary>
+        HostHeader,
+
+        /// <summary>None configured, outside Development: there is no address to trust, so key login is refused.</summary>
+        Off,
+    }
+
+    internal static KeyLoginOrigins ChooseKeyLoginOrigins(IReadOnlyList<ServerOrigin> publicOrigins, bool development) {
+        return publicOrigins.Count > 0 ? KeyLoginOrigins.PublicUrls : development ? KeyLoginOrigins.HostHeader : KeyLoginOrigins.Off;
     }
 
     /// <exception cref="InvalidOperationException">An entry isn't a ws, wss, http or https URL.</exception>

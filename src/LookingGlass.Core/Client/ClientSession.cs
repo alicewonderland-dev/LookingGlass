@@ -1142,7 +1142,9 @@ public sealed class ClientSession : IAsyncDisposable {
     /// <summary>
     /// Signs in with the identity key, after the server refused the saved login: a server that knows the account and its
     /// current key gives this device a new login, which replaces the saved one, and the client logs in with it. The
-    /// signature names the server's address as this client connected to it, so another server can't replay it here.
+    /// signature names the server's address as this client connected to it, which the server checks against its configured
+    /// addresses. Besides, this key is only used for this address (secrets are kept per server address), so it isn't
+    /// registered on a server a relay could pass the signature to.
     /// Call inside <see cref="_loginGate"/>.
     /// </summary>
     /// <returns>
