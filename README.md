@@ -149,14 +149,15 @@ What the encryption does today:
   who made it. Invites are signed by a moderator or the admin, accepts by the
   exact key the invite named, removals by a moderator or admin ranked above
   the member removed, and rank changes and admin transfers by the admin; the
-  admin can't leave while others remain. Every client replays and checks the
-  log itself, and saves the newest position it has verified, so it carries
-  on from there after a restart. The server checks entries too, but nothing
-  relies on that: it can't add a member, change a rank, or reorder the log,
-  because that takes a member's signature and breaks the hash chain. Members
-  are bound to the keys the log admitted them with, so a removed member's
-  key signs nothing that counts, and neither does the new key of a member
-  who registered again, until they are invited again.
+  admin can't leave while others remain, and an open invite lapses when
+  whoever made it is removed, leaves or is demoted. Every client replays
+  and checks the log itself, and saves the newest position it has verified,
+  so it carries on from there after a restart. The server checks entries
+  too, but nothing relies on that: it can't add a member, change a rank, or
+  reorder the log, because that takes a member's signature and breaks the
+  hash chain. Members are bound to the keys the log admitted them with, so a
+  removed member's key signs nothing that counts, and neither does the new
+  key of a member who registered again, until they are invited again.
 - If a client sees two different, validly signed versions of the log (a
   fork: someone is being shown a different member list), or the server
   shows it an older log than it has already verified (it may be hiding a
