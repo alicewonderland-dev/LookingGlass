@@ -415,7 +415,7 @@ public sealed class MembershipLogTests : IAsyncLifetime {
 
     private ClientFrame InviteRequest(string channelId, TestClient inviter, TestClient invitee, MembershipEntry entry) {
         using var keys = inviter.LoadIdentity();
-        var (sealedName, signature) = ChannelCrypto.SealInvite("Ghosts welcome", channelId, invitee.UserId, invitee.Keys().AgreementPublicKey, keys, inviter.UserId);
+        var (sealedName, signature) = ChannelCrypto.SealInvite("Ghosts welcome", channelId, MembershipEntries.PositionOf(entry), invitee.UserId, invitee.Keys().AgreementPublicKey, keys, inviter.UserId);
         return new ClientFrame {
             InviteMember = new InviteMember { ChannelId = channelId, Entry = entry, SealedName = sealedName, Signature = ByteString.CopyFrom(signature) },
         };

@@ -35,9 +35,9 @@ public interface IGroupKeyProvider {
 
     Content? DecryptMessage(ChatMessage message, byte[] epochKey, ReadOnlySpan<byte> senderSigningKey);
 
-    (SealedBox SealedName, byte[] Signature) SealInvite(string channelName, string channelId, long inviteeId, ReadOnlySpan<byte> inviteeAgreementKey, IdentityKeys inviter, long inviterId);
+    (SealedBox SealedName, byte[] Signature) SealInvite(string channelName, string channelId, LogPosition invite, long inviteeId, ReadOnlySpan<byte> inviteeAgreementKey, IdentityKeys inviter, long inviterId);
 
-    bool VerifyInvite(string channelId, long inviteeId, long inviterId, SealedBox sealedName, ReadOnlySpan<byte> signature, ReadOnlySpan<byte> inviterSigningKey);
+    bool VerifyInvite(string channelId, LogPosition invite, long inviteeId, long inviterId, SealedBox sealedName, ReadOnlySpan<byte> signature, ReadOnlySpan<byte> inviterSigningKey);
 
     string? OpenInvite(InviteInfo invite, ReadOnlySpan<byte> inviterSigningKey, IdentityKeys me, long myId);
 }
@@ -99,12 +99,12 @@ public sealed class SealedEpochKeyProvider : IGroupKeyProvider {
         return ChannelCrypto.DecryptMessage(message, epochKey, senderSigningKey);
     }
 
-    public (SealedBox SealedName, byte[] Signature) SealInvite(string channelName, string channelId, long inviteeId, ReadOnlySpan<byte> inviteeAgreementKey, IdentityKeys inviter, long inviterId) {
-        return ChannelCrypto.SealInvite(channelName, channelId, inviteeId, inviteeAgreementKey, inviter, inviterId);
+    public (SealedBox SealedName, byte[] Signature) SealInvite(string channelName, string channelId, LogPosition invite, long inviteeId, ReadOnlySpan<byte> inviteeAgreementKey, IdentityKeys inviter, long inviterId) {
+        return ChannelCrypto.SealInvite(channelName, channelId, invite, inviteeId, inviteeAgreementKey, inviter, inviterId);
     }
 
-    public bool VerifyInvite(string channelId, long inviteeId, long inviterId, SealedBox sealedName, ReadOnlySpan<byte> signature, ReadOnlySpan<byte> inviterSigningKey) {
-        return ChannelCrypto.VerifyInvite(channelId, inviteeId, inviterId, sealedName, signature, inviterSigningKey);
+    public bool VerifyInvite(string channelId, LogPosition invite, long inviteeId, long inviterId, SealedBox sealedName, ReadOnlySpan<byte> signature, ReadOnlySpan<byte> inviterSigningKey) {
+        return ChannelCrypto.VerifyInvite(channelId, invite, inviteeId, inviterId, sealedName, signature, inviterSigningKey);
     }
 
     public string? OpenInvite(InviteInfo invite, ReadOnlySpan<byte> inviterSigningKey, IdentityKeys me, long myId) {

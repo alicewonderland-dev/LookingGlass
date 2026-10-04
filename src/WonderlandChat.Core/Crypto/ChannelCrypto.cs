@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Google.Protobuf;
 using NSec.Cryptography;
+using WonderlandChat.Core.Membership;
 using WonderlandChat.Protocol;
 
 namespace WonderlandChat.Core.Crypto;
@@ -147,39 +148,41 @@ public static class ChannelCrypto {
 
     // ------------------------------------------------------------ invites
 
-    private static byte[] InviteContext(string channelId, long inviteeId, long inviterId) {
-        return new SigningPayload(Domains.Invite).Add(channelId).Add(inviteeId).Add(inviterId).ToArray();
+    /// <param name="invite">The invite's entry in the membership log, so a sealed name can't be moved to another invite.</param>
+    private static byte[] InviteContext(string channelId, long inviteeId, long inviterId, LogPosition? invite) {
+        return new SigningPayload(Domains.Invite).Add(channelId).Add(inviteeId).Add(inviterId).Add(invite).ToArray();
     }
 
-    private static byte[] InviteSignaturePayload(string channelId, long inviteeId, long inviterId, SealedBox sealedName) {
+    private static byte[] InviteSignaturePayload(string channelId, long inviteeId, long inviterId, LogPosition? invite, SealedBox sealedName) {
         return new SigningPayload(Domains.Invite)
-            .Add(InviteContext(channelId, inviteeId, inviterId))
+            .Add(InviteContext(channelId, inviteeId, inviterId, invite))
             .Add(sealedName.EphemeralPublicKey.Span)
             .Add(sealedName.Ciphertext.Span)
             .ToArray();
     }
 
-    public static (SealedBox SealedName, byte[] Signature) SealInvite(string channelName, string channelId, long inviteeId, ReadOnlySpan<byte> inviteeAgreementKey, IdentityKeys inviter, long inviterId) {
-        var box = SealedBoxes.Seal(Encoding.UTF8.GetBytes(channelName), inviteeAgreementKey, InviteContext(channelId, inviteeId, inviterId));
-        return (box, inviter.Sign(InviteSignaturePayload(channelId, inviteeId, inviterId, box)));
+    public static (SealedBox SealedName, byte[] Signature) SealInvite(string channelName, string channelId, LogPosition invite, long inviteeId, ReadOnlySpan<byte> inviteeAgreementKey, IdentityKeys inviter, long inviterId) {
+        var box = SealedBoxes.Seal(Encoding.UTF8.GetBytes(channelName), inviteeAgreementKey, InviteContext(channelId, inviteeId, inviterId, invite));
+        return (box, inviter.Sign(InviteSignaturePayload(channelId, inviteeId, inviterId, invite, box)));
     }
 
     /// <summary>Checks the inviter's signature over an invite. The server uses this before storing one.</summary>
-    public static bool VerifyInvite(string channelId, long inviteeId, long inviterId, SealedBox sealedName, ReadOnlySpan<byte> signature, ReadOnlySpan<byte> inviterSigningKey) {
-        return IdentityKeys.Verify(inviterSigningKey, InviteSignaturePayload(channelId, inviteeId, inviterId, sealedName), signature);
+    public static bool VerifyInvite(string channelId, LogPosition invite, long inviteeId, long inviterId, SealedBox sealedName, ReadOnlySpan<byte> signature, ReadOnlySpan<byte> inviterSigningKey) {
+        return IdentityKeys.Verify(inviterSigningKey, InviteSignaturePayload(channelId, inviteeId, inviterId, invite, sealedName), signature);
     }
 
     public static string? OpenInvite(InviteInfo invite, ReadOnlySpan<byte> inviterSigningKey, IdentityKeys me, long myId) {
-        if (invite.SealedName == null || invite.Inviter == null) {
+        if (invite.SealedName == null || invite.Inviter == null || invite.Entry == null) {
             return null;
         }
 
         var inviterId = invite.Inviter.UserId;
-        if (!VerifyInvite(invite.ChannelId, myId, inviterId, invite.SealedName, invite.Signature.Span, inviterSigningKey)) {
+        var position = MembershipEntries.PositionOf(invite.Entry);
+        if (!VerifyInvite(invite.ChannelId, position, myId, inviterId, invite.SealedName, invite.Signature.Span, inviterSigningKey)) {
             return null;
         }
 
-        var plaintext = SealedBoxes.Open(invite.SealedName, me, InviteContext(invite.ChannelId, myId, inviterId));
+        var plaintext = SealedBoxes.Open(invite.SealedName, me, InviteContext(invite.ChannelId, myId, inviterId, position));
         return plaintext == null ? null : Encoding.UTF8.GetString(plaintext);
     }
 

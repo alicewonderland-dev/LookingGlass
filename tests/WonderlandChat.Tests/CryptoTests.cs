@@ -1,5 +1,6 @@
 using Google.Protobuf;
 using WonderlandChat.Core.Crypto;
+using WonderlandChat.Core.Membership;
 using WonderlandChat.Protocol;
 
 namespace WonderlandChat.Tests;
@@ -202,17 +203,24 @@ public class CryptoTests {
         using var inviter = IdentityKeys.Generate();
         using var invitee = IdentityKeys.Generate();
         using var other = IdentityKeys.Generate();
-        var (box, signature) = ChannelCrypto.SealInvite("Tea Party", ChannelId, 20, invitee.AgreementPublicKey, inviter, 10);
+        var entry = new MembershipEntry { ChannelId = ChannelId, Seq = 4, Kind = MembershipEntryKind.Invite, ActorId = 10, Subject = new MemberKey { UserId = 20 } };
+        var (box, signature) = ChannelCrypto.SealInvite("Tea Party", ChannelId, MembershipEntries.PositionOf(entry), 20, invitee.AgreementPublicKey, inviter, 10);
         var invite = new InviteInfo {
             ChannelId = ChannelId,
             Inviter = new User { UserId = 10 },
             SealedName = box,
             Signature = ByteString.CopyFrom(signature),
+            Entry = entry,
         };
 
         Assert.Equal("Tea Party", ChannelCrypto.OpenInvite(invite, inviter.SigningPublicKey, invitee, 20));
         Assert.Null(ChannelCrypto.OpenInvite(invite, inviter.SigningPublicKey, other, 21));
         Assert.Null(ChannelCrypto.OpenInvite(invite, other.SigningPublicKey, invitee, 20));
+
+        // The sealed name belongs to its invite entry: a server can't pair it with another (later) invite.
+        var later = invite.Clone();
+        later.Entry.Seq = 9;
+        Assert.Null(ChannelCrypto.OpenInvite(later, inviter.SigningPublicKey, invitee, 20));
     }
 
     private static ChatMessage ToChatMessage(SendMessage sent, long senderId) => new() {

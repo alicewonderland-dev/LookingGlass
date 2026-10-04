@@ -476,7 +476,7 @@ public sealed class MaliciousServerTests : IAsyncLifetime {
         using var carolKeys = carol.LoadIdentity();
         var forged = this._server.ForgeEntry(channelId, aliceAgain, MembershipEntryKind.Invite, carol.UserId, new MemberKeys(carolKeys.SigningPublicKey, new byte[32]));
         using var aliceKeys = aliceAgain.LoadIdentity();
-        var (sealedName, signature) = ChannelCrypto.SealInvite("Zero", channelId, carol.UserId, carolKeys.AgreementPublicKey, aliceKeys, aliceAgain.UserId);
+        var (sealedName, signature) = ChannelCrypto.SealInvite("Zero", channelId, MembershipEntries.PositionOf(forged), carol.UserId, carolKeys.AgreementPublicKey, aliceKeys, aliceAgain.UserId);
         var error = await Assert.ThrowsAsync<ServerErrorException>(() => aliceAgain.Session.SendRawAsync(new ClientFrame {
             InviteMember = new InviteMember { ChannelId = channelId, Entry = forged, SealedName = sealedName, Signature = ByteString.CopyFrom(signature) },
         }, Ct));

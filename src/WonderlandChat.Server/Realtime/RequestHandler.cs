@@ -390,7 +390,7 @@ public sealed class RequestHandler(
         }
 
         // Only the invitee can open the name, but anyone can check who signed it.
-        if (!groupKeys.VerifyInvite(channelId, invitee.UserId, me.UserId, request.SealedName, request.Signature.Span, me.SigningKey)) {
+        if (!groupKeys.VerifyInvite(channelId, MembershipEntries.PositionOf(entry), invitee.UserId, me.UserId, request.SealedName, request.Signature.Span, me.SigningKey)) {
             throw new RequestException(ErrorCode.InvalidRequest, "The invite is wrongly signed.");
         }
 

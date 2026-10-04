@@ -406,7 +406,7 @@ message InviteInfo {
   User inviter = 2;
   // The channel name sealed to the invitee by the inviter.
   SealedBox sealed_name = 3;
-  // Inviter's signature over the sealed name (channel, invitee, sealed name).
+  // Inviter's signature over the sealed name (channel, invitee, invite entry, sealed name).
   bytes signature = 4;
   int64 created_unix = 5;
   // The invite's entry in the channel's log. The invitee fetches and checks the whole

@@ -392,7 +392,7 @@ public sealed class ClientSession : IAsyncDisposable {
             }
 
             var entry = membership.Create(MembershipEntryKind.Invite, invitee.User.UserId, identity, me.UserId, this.NowMs(), inviteeKeys);
-            var (sealedName, signature) = this._groupKeys.SealInvite(channelName, channelId, invitee.User.UserId, inviteeKeys.AgreementPublicKey, identity, me.UserId);
+            var (sealedName, signature) = this._groupKeys.SealInvite(channelName, channelId, MembershipEntries.PositionOf(entry), invitee.User.UserId, inviteeKeys.AgreementPublicKey, identity, me.UserId);
             return (entry, new ClientFrame {
                 InviteMember = new InviteMember {
                     ChannelId = channelId,
