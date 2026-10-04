@@ -92,8 +92,12 @@ public sealed record ChannelView(
 /// If <paramref name="KeyReplaced"/>, the fingerprint of the keys they registered again with. <see cref="KeyChanged"/>
 /// is about those keys, so it is this fingerprint, not <paramref name="Fingerprint"/>, that is shown and marked verified.
 /// </param>
+/// <param name="Online">
+/// Connected to the server right now, as the server last said on this connection. Yourself while you are
+/// connected. Always false for invitees (their presence isn't shared until they join) and while disconnected.
+/// </param>
 public sealed record MemberView(User User, Rank Rank, string? Fingerprint, bool KeyChanged, bool FingerprintCompared = false, bool KeyReplaced = false,
-    string? NewFingerprint = null);
+    string? NewFingerprint = null, bool Online = false);
 
 /// <param name="Verified">The invite is signed by the inviter's current identity key.</param>
 /// <param name="InviterKeyChanged">

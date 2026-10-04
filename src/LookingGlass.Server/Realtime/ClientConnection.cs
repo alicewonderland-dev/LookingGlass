@@ -54,7 +54,10 @@ public sealed class ClientConnection {
     public DateTimeOffset LastVerifyAttempt { get; set; } = DateTimeOffset.MinValue;
     public CancellationToken Aborted => this._cts.Token;
 
-    public async Task RunAsync(Func<ClientConnection, ClientFrame, CancellationToken, Task<Response>> handle) {
+    /// <param name="respond">Queues each response; by default <see cref="SendResponse"/>. The server's goes through the
+    /// <see cref="ConnectionRegistry"/>, which fills in presence on the way.</param>
+    public async Task RunAsync(Func<ClientConnection, ClientFrame, CancellationToken, Task<Response>> handle,
+        Action<ClientConnection, Response>? respond = null) {
         var sendLoop = Task.Run(this.SendLoop);
         // Disposed when the connection ends, so a closed connection isn't kept alive for the full lifetime.
         var loginDeadline = new Timer(_ => {
@@ -94,7 +97,11 @@ public sealed class ClientConnection {
 
                 var response = await handle(this, request, this._cts.Token);
                 response.RequestId = request.RequestId;
-                this.Enqueue(new ServerFrame { Response = response });
+                if (respond != null) {
+                    respond(this, response);
+                } else {
+                    this.SendResponse(response);
+                }
             }
         } catch (Exception ex) when (ex is OperationCanceledException or WebSocketException) {
             // Client went away or we aborted.
@@ -104,6 +111,11 @@ public sealed class ClientConnection {
             await sendLoop;
             await this.CloseAsync(this._abortStatus, this._abortReason);
         }
+    }
+
+    /// <summary>Queues a response.</summary>
+    public void SendResponse(Response response) {
+        this.Enqueue(new ServerFrame { Response = response });
     }
 
     /// <summary>Queues an event. Each connection numbers its own events, so the event is copied.</summary>

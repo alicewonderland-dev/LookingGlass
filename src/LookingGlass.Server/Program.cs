@@ -90,7 +90,7 @@ app.Map(ProtocolInfo.WebSocketPath, async (HttpContext context, RequestHandler h
             loggers.CreateLogger<ClientConnection>());
 
         try {
-            await connection.RunAsync(handler.HandleAsync);
+            await connection.RunAsync(handler.HandleAsync, registry.Respond);
         } finally {
             if (connection.User != null) {
                 registry.SetOffline(connection.User.UserId, connection);

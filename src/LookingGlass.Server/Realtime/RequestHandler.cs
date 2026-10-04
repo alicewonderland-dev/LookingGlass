@@ -441,6 +441,8 @@ public sealed class RequestHandler(
 
         this.AppendEntry(channelId, me, entry);
         this.BroadcastEntry(channelId, entry, me, me);
+        // The members who didn't share a channel with the joiner weren't told when they came online.
+        registry.AnnounceJoined(channelId, me.UserId);
         var designated = this.RequestRekey(channelId, preferred: null, excluding: me.UserId);
         // The RekeyNeeded event reaches the joiner before this response, while they don't know
         // the channel yet, so if it's theirs to do (nobody else is online), say so here.
@@ -704,6 +706,9 @@ public sealed class RequestHandler(
         foreach (var member in members.Concat(db.GetInvitees(channel.ChannelId))) {
             info.Members.Add(new Member { User = member.User.ToProto(), Rank = member.Rank });
         }
+
+        // Filled in again, under the presence lock, as the response is sent (see ConnectionRegistry.Respond).
+        registry.MarkOnline(info);
 
         if (knownNext <= channel.LogHead.Seq) {
             info.Log.AddRange(db.GetLogEntries(channel.ChannelId, knownNext, ProtocolInfo.MaxLogEntriesInChannelInfo));

@@ -1,5 +1,6 @@
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
+using Dalamud.Interface;
 
 namespace LookingGlass.Plugin.Ui;
 
@@ -8,9 +9,14 @@ namespace LookingGlass.Plugin.Ui;
 /// the result to show next frame. Only one action runs at a time.
 /// </summary>
 public sealed class UiActions {
+    /// <summary>How long a success stays in the status bar; the last part of it fades. Errors stay until dismissed or replaced.</summary>
+    private const long SuccessShownMs = 8000;
+    private const long FadeMs = 1500;
+
     private volatile Task? _running;
     private volatile string? _result;
     private volatile bool _resultIsError;
+    private long _resultAt;
 
     public bool Busy => this._running is { IsCompleted: false };
 
@@ -19,16 +25,13 @@ public sealed class UiActions {
             return;
         }
 
-        this._result = $"{description}...";
-        this._resultIsError = false;
+        this.SetResult($"{description}...", false);
         this._running = Task.Run(async () => {
             try {
                 await action();
-                this._result = $"{description}: done.";
-                this._resultIsError = false;
+                this.SetResult($"{description}: done.", false);
             } catch (Exception ex) {
-                this._result = $"{description} failed: {ex.Message}";
-                this._resultIsError = true;
+                this.SetResult($"{description} failed: {ex.Message}", true);
             }
         });
     }
@@ -41,15 +44,56 @@ public sealed class UiActions {
         });
     }
 
+    private void SetResult(string text, bool error) {
+        this._resultIsError = error;
+        Interlocked.Exchange(ref this._resultAt, Environment.TickCount64);
+        this._result = text;
+    }
+
     public void DrawStatus() {
         if (this._result is not { } result) {
             return;
         }
 
         if (this._resultIsError) {
-            ImGui.TextColored(new Vector4(1f, 0.45f, 0.4f, 1f), result);
+            ImGui.TextColored(Widgets.Error, result);
         } else {
             ImGui.TextDisabled(result);
+        }
+    }
+
+    /// <summary>
+    /// The one-line footer of the main window: the latest action and how it went. A success fades
+    /// after a few seconds; an error stays until clicked away or replaced.
+    /// </summary>
+    public void DrawStatusBar() {
+        ImGui.AlignTextToFramePadding();
+        if (this._result is not { } result) {
+            // Keeps the footer's height.
+            ImGui.TextUnformatted(" ");
+            return;
+        }
+
+        var busy = this.Busy;
+        var error = this._resultIsError && !busy;
+        var age = Environment.TickCount64 - Interlocked.Read(ref this._resultAt);
+        if (!busy && !error && age > SuccessShownMs) {
+            this._result = null;
+            ImGui.TextUnformatted(" ");
+            return;
+        }
+
+        var alpha = busy || error ? 1f : Math.Clamp((SuccessShownMs - age) / (float) FadeMs, 0f, 1f);
+        var colour = error ? Widgets.Error : Widgets.Muted;
+        colour.W *= alpha;
+
+        var icon = busy ? FontAwesomeIcon.Spinner : error ? FontAwesomeIcon.ExclamationCircle : FontAwesomeIcon.Check;
+        Widgets.Icon(icon, colour);
+        ImGui.SameLine(0, 6 * Widgets.Scale);
+        var width = ImGui.GetContentRegionAvail().X;
+        Widgets.TextEllipsis(result, width, colour, error ? $"{result}\n\nClick to dismiss." : null);
+        if (error && ImGui.IsItemClicked()) {
+            this._result = null;
         }
     }
 

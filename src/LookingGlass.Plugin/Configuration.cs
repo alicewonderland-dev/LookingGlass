@@ -19,6 +19,12 @@ public sealed class Configuration : IPluginConfiguration {
 
     public XivChatType ChatType { get; set; } = XivChatType.Debug;
 
+    /// <summary>A channel's colour is used for its whole chat line, not only the [LGC] tag.</summary>
+    public bool ColourWholeLine { get; set; } = true;
+
+    /// <summary>A channel with a nickname is tagged [nickname] in chat instead of [LGCn]. See <see cref="ChannelTag"/>.</summary>
+    public bool NicknameTags { get; set; } = true;
+
     /// <summary>Per character, keyed by content ID.</summary>
     public Dictionary<ulong, CharacterSettings> Characters { get; set; } = new();
 
@@ -42,20 +48,27 @@ public sealed class CharacterSettings {
     /// <summary>Channel ID → local nickname, as in /lgc sky. Never sent to the server.</summary>
     public Dictionary<string, string> Nicknames { get; set; } = new();
 
+    /// <summary>Channel ID → UIColor sheet row for its chat lines and its place in the channel list. Never sent to the server.</summary>
+    public Dictionary<string, ushort> ChannelColours { get; set; } = new();
+
     public int? SlotOf(string channelId) => this.ChannelSlots.TryGetValue(channelId, out var slot) ? slot : null;
 
     public string? ChannelInSlot(int slot) => CommandSlots.ChannelIn(this.ChannelSlots, slot);
 
     /// <summary>
-    /// See <see cref="CommandSlots.Sync"/> and <see cref="ChannelNicknames.Sync"/>: nothing
-    /// changes until the snapshot holds the complete channel list.
+    /// See <see cref="CommandSlots.Sync"/>, <see cref="ChannelNicknames.Sync"/> and <see cref="Core.Client.ChannelColours.Sync"/>:
+    /// nothing changes until the snapshot holds the complete channel list.
     /// </summary>
     /// <returns>True if anything changed.</returns>
     public bool Sync(SessionSnapshot snapshot) {
         var slots = CommandSlots.Sync(this.ChannelSlots, snapshot, Configuration.SlotCount);
         var nicknames = ChannelNicknames.Sync(this.Nicknames, snapshot);
-        return slots || nicknames;
+        var colours = Core.Client.ChannelColours.Sync(this.ChannelColours, snapshot);
+        return slots || nicknames || colours;
     }
+
+    /// <summary>Sets a channel's colour (a UIColor row), or with null its default.</summary>
+    public void SetColour(string channelId, ushort? colour) => Core.Client.ChannelColours.Set(this.ChannelColours, channelId, colour);
 
     /// <summary>Moves a channel to a slot, swapping with whatever was there.</summary>
     public void AssignSlot(string channelId, int slot) => CommandSlots.Assign(this.ChannelSlots, channelId, slot);

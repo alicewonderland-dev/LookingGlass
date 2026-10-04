@@ -44,8 +44,20 @@ On the server machine (Linux or Windows):
 
 ```sh
 ./scripts/run-dev-server.sh        # Linux / macOS
-./scripts/run-dev-server.ps1       # Windows PowerShell
 ```
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run-dev-server.ps1   # Windows
+```
+
+(Windows blocks `.ps1` scripts by default; `-ExecutionPolicy Bypass` applies to
+that one run only and changes no system setting.)
+
+The database lives outside the build output, so rebuilding, cleaning or running
+from another checkout of the code keeps your registrations and channels:
+`%LOCALAPPDATA%\LookingGlass\dev-server` on Windows,
+`~/.local/share/lookingglass/dev-server` on Linux (the script prints it). Set
+`LookingGlass__DataDirectory` first to use another folder.
 
 This listens on port 5180 on all interfaces in **Development** mode, which
 turns on debug accounts and runs an echo bot inside the server. Only do this
@@ -53,10 +65,11 @@ on a private network such as your tailnet: anyone who can reach a Development
 server can register (or take over) any debug account, including the echo bot.
 
 1. Make sure the machine's firewall allows TCP 5180 from the tailnet.
-2. In game, open `/lookingglass`, expand **Settings**, and set the server URL
+2. In game, open `/lookingglass`, click the gear in its title bar (or the
+   plugin's settings button in Dalamud's plugin list), and set the server URL
    to `ws://<machine-name>:5180/ws` (the Tailscale MagicDNS name or 100.x IP).
-3. Register your character. The plugin shows a code to paste into your
-   Lodestone profile; then press **Verify**.
+3. Register your character. The main window walks you through it: get a
+   code, paste it into your Lodestone profile, then press **Verify**.
 
 Tailscale already encrypts traffic between devices, and message contents are
 end-to-end encrypted regardless. For TLS anyway, `tailscale serve` can put
@@ -104,7 +117,7 @@ delete **both** the secrets file and its `.bak`, then connect again.
 
 | Command | What it does |
 | --- | --- |
-| `/lookingglass` or `/lg` | Open the main window: register, create and manage channels, settings |
+| `/lookingglass` or `/lg` | Open the main window: register, create and manage channels and invites |
 | `/lgc1 <message>` … `/lgc50 <message>` | Send to the channel on that number |
 | `/lgc <nickname> <message>` | Send to the channel with that nickname, numbered or not |
 | `/lgdebug` | Open the debug window |
@@ -116,18 +129,44 @@ prints how to use it.
 **Numbers.** Each channel you're in gets a number automatically, and keeps it
 across restarts until you leave it (or it's disbanded, or you're removed);
 the freed number then goes to the next channel without one. To change a
-channel's number, select it in the main window and pick another under
-**Command**: if another channel has that number, the two swap. The list shows
-which channel has each number. Typing a number with no channel on it says so.
+channel's number, select it in the main window's channel list and click its
+`/lgcN` tag under the name: if another channel has the number you pick, the
+two swap. The list shows which channel has each number. Typing a number with
+no channel on it says so.
 
-**Nicknames.** Select a channel in the main window, type a nickname next to
-its number, and press **Set nickname** (clear the box and press **Clear
-nickname** to remove it). A nickname is 1 to 16 letters, digits, `-` or `_`,
+**Nicknames.** Select a channel, click **+ nickname** (or its `/lgc <nickname>`
+tag) next to its number, type one and press **Set** (or **Clear** to
+remove it). A nickname is 1 to 16 letters, digits, `-` or `_`,
 can't be only digits (so `/lgc 3` is never confused with `/lgc3`), and must
 be different from your other channels' nicknames, ignoring case: `/lgc Sky hi`
 and `/lgc sky hi` go to the same channel. Problems are shown under the box.
 Nicknames, like numbers, are kept per character in the plugin's settings and
 are never sent to the server; a channel's nickname goes away when you leave it.
+In chat, a channel with a nickname is tagged with it, as in `[sky]`, instead of
+its number (`[LGC3]`); turn off **Show nicknames in chat tags** in Settings to
+always see numbers. A channel with neither (more than fifty channels, or a
+message that arrives before the channel list is in) is tagged `[LGC]`.
+
+**Colours.** In a channel's menu (the ⋮ button next to its name), choose
+**Colour...** to give it one of the game's own chat colours, or click the
+coloured dot before its name. Its lines in chat take that colour (or only the
+tag, if you turn that off in Settings), and so does the bar beside it in the
+channel list. **Default** colours only the tag, as before. Colours are kept
+per character like nicknames.
+
+**Unread messages.** The channel list counts messages from others since you
+last looked at a channel in the main window or talked in it, and the window's
+title shows the total. The counts start again from zero when you log in.
+
+**Members.** The icon before each member says whether you've compared
+fingerprints with them (a question mark until you have, a check once you
+marked them verified, a warning if their key changed); click it to compare.
+Its colour says whether they're online: green while they're connected, grey
+when they aren't (a warning keeps its orange either way, and invitees stay
+grey until they join). Hover over it to see which. Their ⋮ menu has the rest. To remove someone, hold **Ctrl** while choosing
+**Remove from channel** (it stays greyed out otherwise); cancelling an invite
+happens straight away. Leaving or disbanding a channel (from the channel's ⋮
+menu) asks first.
 
 ## Server configuration
 
@@ -172,7 +211,8 @@ What the encryption does today:
   see a 25-digit fingerprint. Clients pin each user's keys and name on first
   use and show a persistent "key changed" warning when they change. Members
   whose fingerprint you haven't compared show "not compared" (compare
-  fingerprints over /tell, then press "Mark verified").
+  fingerprints over /tell: click the icon before a member's name, or **Compare
+  fingerprints** in their ⋮ menu, then **Mark verified**).
 - Who is in a channel, and with what rank, comes from the channel's
   membership log: a hash-chained list of changes, each signed by the member
   who made it. Invites are signed by a moderator or the admin, accepts by the
@@ -260,6 +300,11 @@ What it does not do yet (0.2):
   channel (or invited to it) replays it from the start.
 - The server sees metadata (who is in which channel, when messages are sent)
   and can drop or delay anything.
+- Members who share a channel see when each other are online: the server
+  tells them when a fellow member connects or disconnects, and when someone
+  online joins. Invitees and people you share no channel with aren't told,
+  and you aren't shown to them. This comes from the server, which could lie
+  about it.
 - Debug accounts on a Development server can be taken over by anyone who can
   reach it.
 

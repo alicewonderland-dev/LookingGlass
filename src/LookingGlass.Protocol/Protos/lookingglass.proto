@@ -89,6 +89,7 @@ message Event {
     ChannelRemoved channel_removed = 17;
     InviteRevoked invite_revoked = 18;
     LogEntryAdded log_entry_added = 19;
+    PresenceChanged presence_changed = 20;
   }
 }
 
@@ -323,6 +324,9 @@ message FetchMembershipLog {
 message Member {
   User user = 1;
   Rank rank = 2;
+  // The user is connected right now. Only for members (rank member and above); always false
+  // for invitees, whose presence isn't shared until they join. PresenceChanged keeps it current.
+  bool online = 3;
 }
 
 // X25519 sealed box: an ephemeral public key and an AEAD ciphertext.
@@ -573,6 +577,15 @@ message EpochAdvanced {
   int64 author_id = 3;
   SealedEpochKey my_key = 4;
   EncryptedName name = 5;
+}
+
+// A user who is a member of a channel the recipient is also a member of came online (their first
+// connection) or went offline (their last connection closed). Sent only to members who share a
+// channel with them, never to invitees or strangers, and never about the recipient themselves.
+// Also sent, with online set, to a channel's members when an online user joins it.
+message PresenceChanged {
+  int64 user_id = 1;
+  bool online = 2;
 }
 
 message ChatMessage {

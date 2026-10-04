@@ -7,23 +7,36 @@ namespace LookingGlass.Plugin;
 
 /// <summary>Prints LookingGlass lines into the game's chat log. Every call is marshalled to the framework thread.</summary>
 public sealed class ChatOutput(Configuration config) {
-    // UIColor rows used for the channel tag and for warnings.
-    private const ushort TagColour = 37;
+    // UIColor rows used for the channel tag (unless the channel has a colour of its own) and for warnings.
+    public const ushort TagColour = 37;
     private const ushort WarningColour = 17;
     private const ushort ErrorColour = 534;
 
-    public void Message(IncomingMessage message, int? slot) {
+    /// <param name="slot">The channel's command number, if it has one.</param>
+    /// <param name="nickname">The channel's nickname, if it has one: its tag, unless nickname tags are turned off.</param>
+    /// <param name="colour">The channel's colour (a UIColor row), or null for the default: only the tag coloured.</param>
+    public void Message(IncomingMessage message, int? slot, string? nickname, ushort? colour = null) {
         RunOnFramework(() => {
-            var tag = slot is { } s ? $"LGC{s}" : "LGC?";
+            var tag = ChannelTag.For(slot, nickname, config.NicknameTags);
             // Everything from other users is sanitised: raw control bytes would become live game formatting.
-            var builder = new SeStringBuilder()
-                .AddUiForeground($"[{tag}]", TagColour)
-                .AddText($"<{TextSanitizer.Name(message.Sender.Name)}@{TextSanitizer.Name(message.Sender.WorldName)}> ");
+            var sender = $"<{TextSanitizer.Name(message.Sender.Name)}@{TextSanitizer.Name(message.Sender.WorldName)}> ";
+            var builder = new SeStringBuilder().AddUiForeground(tag, colour ?? TagColour);
 
+            // The whole line in the channel's colour, like the game's own linkshells.
+            var wholeLine = colour != null && config.ColourWholeLine;
+            if (wholeLine) {
+                builder.AddUiForeground(colour!.Value);
+            }
+
+            builder.AddText(sender);
             if (message.Unsupported) {
                 builder.AddItalics("(a message type this version can't show)");
             } else {
                 builder.AddText(TextSanitizer.Clean(message.Text));
+            }
+
+            if (wholeLine) {
+                builder.AddUiForegroundOff();
             }
 
             Services.Chat.Print(new XivChatEntry { Type = config.ChatType, Message = builder.Build() });

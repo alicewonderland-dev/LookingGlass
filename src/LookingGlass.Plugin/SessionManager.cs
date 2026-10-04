@@ -20,6 +20,7 @@ public sealed class SessionManager : IDisposable {
     private PlayerInfo? _sessionPlayer;
     private volatile ImmutableDictionary<string, int> _slots = ImmutableDictionary<string, int>.Empty;
     private volatile ImmutableDictionary<string, string> _nicknames = ImmutableDictionary<string, string>.Empty;
+    private volatile ImmutableDictionary<string, ushort> _colours = ImmutableDictionary<string, ushort>.Empty;
     private Task? _closing;
     // Framework thread only. Bumped by every start and stop, so a start that was
     // waiting for the previous session to close is dropped if anything changed meanwhile.
@@ -38,6 +39,9 @@ public sealed class SessionManager : IDisposable {
     public SessionSnapshot Snapshot => this.Session?.Snapshot ?? SessionSnapshot.Empty;
 
     public PlayerInfo? Player => this._sessionPlayer ?? this._player.Current;
+
+    /// <summary>Unread messages per channel, for the current session. Safe from any thread.</summary>
+    public UnreadCounter Unread { get; } = new();
 
     public IReadOnlyList<SessionNotice> RecentNotices {
         get {
@@ -79,6 +83,18 @@ public sealed class SessionManager : IDisposable {
         return this._nicknames.TryGetValue(channelId, out var nickname) ? nickname : null;
     }
 
+    /// <summary>The colour (a UIColor row) of a channel for the current character, or null for the default. Safe from any thread.</summary>
+    public ushort? ColourOf(string channelId) => ChannelColours.Of(this._colours, channelId);
+
+    /// <summary>Sets a channel's colour (a UIColor row), or with null its default. Call on the framework thread.</summary>
+    public void SetColour(string channelId, ushort? colour) {
+        if (this._sessionPlayer is { } player) {
+            this._config.ForCharacter(player.ContentId).SetColour(channelId, colour);
+            this._config.Save();
+            this.RefreshCommandCache();
+        }
+    }
+
     /// <summary>Call on the framework thread.</summary>
     public void AssignSlot(string channelId, int slot) {
         if (this._sessionPlayer is { } player) {
@@ -106,16 +122,18 @@ public sealed class SessionManager : IDisposable {
 
     /// <summary>
     /// Configuration is only touched on the framework thread; other threads read
-    /// these immutable copies of the current character's slots and nicknames.
+    /// these immutable copies of the current character's slots, nicknames and colours.
     /// </summary>
     private void RefreshCommandCache() {
         if (this._sessionPlayer is { } player) {
             var settings = this._config.ForCharacter(player.ContentId);
             this._slots = settings.ChannelSlots.ToImmutableDictionary();
             this._nicknames = settings.Nicknames.ToImmutableDictionary();
+            this._colours = settings.ChannelColours.ToImmutableDictionary();
         } else {
             this._slots = ImmutableDictionary<string, int>.Empty;
             this._nicknames = ImmutableDictionary<string, string>.Empty;
+            this._colours = ImmutableDictionary<string, ushort>.Empty;
         }
     }
 
@@ -124,7 +142,13 @@ public sealed class SessionManager : IDisposable {
         var snapshot = this.Snapshot;
         var channel = snapshot.FindChannel(channelId);
         var sender = new Protocol.User { UserId = -1, Name = "Simulated Sender", WorldName = Protocol.ProtocolInfo.DebugWorldName };
-        this._chat.Message(new IncomingMessage(channelId, channel?.Name, sender, false, text, false, DateTimeOffset.Now), this.SlotOf(channelId));
+        this.Deliver(new IncomingMessage(channelId, channel?.Name, sender, false, text, false, DateTimeOffset.Now));
+    }
+
+    /// <summary>Prints a message and counts it as unread. From any thread.</summary>
+    private void Deliver(IncomingMessage message) {
+        this.Unread.Add(message);
+        this._chat.Message(message, this.SlotOf(message.ChannelId), this.NicknameOf(message.ChannelId), this.ColourOf(message.ChannelId));
     }
 
     private void OnPlayerChanged(PlayerInfo? player) {
@@ -187,7 +211,7 @@ public sealed class SessionManager : IDisposable {
         // Events from a session that has since been replaced are ignored.
         session.MessageReceived += message => {
             if (this.Session == session) {
-                this._chat.Message(message, this.SlotOf(message.ChannelId));
+                this.Deliver(message);
             }
         };
         session.Notice += notice => {
@@ -204,6 +228,8 @@ public sealed class SessionManager : IDisposable {
 
         this._sessionPlayer = player;
         this.RefreshCommandCache();
+        // A new session (relog, another character or server) counts from zero; reconnects keep counting.
+        this.Unread.Reset();
         Volatile.Write(ref this._session, session);
         session.Start();
     }
@@ -220,6 +246,8 @@ public sealed class SessionManager : IDisposable {
     }
 
     private void SyncCommands(SessionSnapshot snapshot) {
+        this.Unread.Retain(snapshot);
+
         // Only against the complete channel list; a partial one would free (and then hand out) slots in use, and drop nicknames.
         if (this._sessionPlayer is not { } player || snapshot is not { State: ConnectionState.Ready, ChannelsLoaded: true }) {
             return;
@@ -242,6 +270,7 @@ public sealed class SessionManager : IDisposable {
         var session = Interlocked.Exchange(ref this._session, null);
         this._sessionPlayer = null;
         this.RefreshCommandCache();
+        this.Unread.Reset();
         if (session == null) {
             return;
         }
