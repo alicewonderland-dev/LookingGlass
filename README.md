@@ -5,26 +5,28 @@ a small server. The server relays ciphertext only; channel names and messages
 are encrypted between members. This is a clean-room rewrite inspired by the
 ideas of ExtraChat; no code is shared with it.
 
-Status: **0.1, core functionality** — registration, channels, invites,
-automatic rekeying, encrypted messaging, ranks, and debug tooling. ChatTwo
-integration and the import wizard come next (see [docs/design.md](docs/design.md)).
+Status: **0.2, authenticated membership** — registration, channels, invites,
+automatic rekeying, encrypted messaging, ranks, debug tooling, and a signed
+membership log that every client checks for itself. ChatTwo integration and
+the import wizard come next (see [docs/design.md](docs/design.md)).
 
-> **Security status.** Message contents are encrypted end to end, but in 0.1
-> the server's member list is still trusted: a malicious server could add a
-> hidden member and receive channel keys. Only use servers run by someone you
-> trust. Version 0.2 replaces this with signed, verifiable membership (see
-> "Security model" below).
+> **Security status.** Message contents are encrypted end to end, and since
+> 0.2 clients work out who is in a channel from a signed membership log they
+> verify themselves, not from the server's word. A malicious server still
+> sees who is in which channel, can drop or delay anything, and can hand you
+> its own key the first time you invite someone by name: compare fingerprints
+> over /tell (see "Security model" below).
 
 ## Layout
 
 | Path | What it is |
 | --- | --- |
 | `src/WonderlandChat.Protocol` | The wire protocol (`Protos/wonderlandchat.proto`), shared by everything |
-| `src/WonderlandChat.Core` | Crypto, the client session, and the echo bot. No Dalamud dependency |
+| `src/WonderlandChat.Core` | Crypto, the membership log, the client session, and the echo bot. No Dalamud dependency |
 | `src/WonderlandChat.Server` | ASP.NET Core server with SQLite. Runs on Linux and Windows |
 | `src/WonderlandChat.Plugin` | The Dalamud plugin (`/wcl1`–`/wcl8`, `/wonderlandchat`, `/wcdebug`) |
 | `tools/WonderlandChat.DevTool` | `wcdev`: run an echo bot, or smoke-test a server |
-| `tests/WonderlandChat.Tests` | Crypto, policy and end-to-end tests against an in-process server |
+| `tests/WonderlandChat.Tests` | Crypto, policy, membership log and end-to-end tests, including a malicious in-process server |
 
 ## Build and test
 
@@ -94,7 +96,8 @@ in a `secrets-….bin` file in the plugin's config folder (under XIVLauncher's
 `pluginConfigs`). Every save keeps the previous version next to it as
 `secrets-….bin.bak`, and if the file is missing or damaged the plugin loads
 the backup and says so in chat. So to reset a character's identity (you then
-register again, and other members see that your key changed), disconnect,
+register again, other members see that your key changed, and in each of your
+channels a moderator must remove you and invite you again), disconnect,
 delete **both** the secrets file and its `.bak`, then connect again.
 
 ## Server configuration
@@ -108,6 +111,13 @@ against the install folder.
 Production deployment: `deploy/wonderlandchat.service` (systemd) or the
 `Dockerfile`. By default the server only listens on `127.0.0.1:5180`; put a
 TLS reverse proxy (for example Caddy) in front and use `wss://` URLs.
+
+**Upgrading from 0.1:** 0.1's channels have no membership log, and nobody can
+sign one for them now, so 0.2 refuses to start on a database that has any. It
+says which file it is and leaves it unchanged: stop the server, delete or move
+that file (with its `-wal` and `-shm` files, if any), and start again.
+Everyone registers again and creates their channels anew. A database without
+channels is upgraded in place.
 
 Per-IP limits (registrations and concurrent connections) only work if the
 server sees real client addresses. It reads them from `X-Forwarded-For`, but
@@ -131,20 +141,47 @@ What the encryption does today:
 
 - Each character has a long-term Ed25519 signing key and X25519 key. Others
   see a 25-digit fingerprint. Clients pin each user's keys and name on first
-  use and show a persistent "key changed" warning when they change (compare
+  use and show a persistent "key changed" warning when they change. Members
+  whose fingerprint you haven't compared show "not compared" (compare
   fingerprints over /tell, then press "Mark verified").
-- Each channel has an epoch key. Any membership change (join, leave, kick,
-  re-registration) makes a member generate a new one, seal it to every
-  member's X25519 key, and sign it together with a commitment to the key.
-  The server refuses a rekey unless every copy carries the same commitment,
-  so a member who hands someone a different or unreadable key is named in a
-  warning, and that client rekeys. This relies on the server checking: one
-  that colludes with the member can give each recipient a different
-  commitment, and nobody notices (the v0.2 design fixes this). The server
-  stores and forwards the sealed copies but can't open them.
+- Who is in a channel, and with what rank, comes from the channel's
+  membership log: a hash-chained list of changes, each signed by the member
+  who made it. Invites are signed by a moderator or the admin, accepts by the
+  exact key the invite named, removals by a moderator or admin ranked above
+  the member removed, and rank changes and admin transfers by the admin; the
+  admin can't leave while others remain. Every client replays and checks the
+  log itself, and saves the newest position it has verified, so it carries
+  on from there after a restart. The server checks entries too, but nothing
+  relies on that: it can't add a member, change a rank, or reorder the log,
+  because that takes a member's signature and breaks the hash chain. Members
+  are bound to the keys the log admitted them with, so a removed member's
+  key signs nothing that counts, and neither does the new key of a member
+  who registered again, until they are invited again.
+- If a client sees two different, validly signed versions of the log (a
+  fork: someone is being shown a different member list), or the server
+  shows it an older log than it has already verified (it may be hiding a
+  change, such as a removal), it says so, keeps what it verified, and marks
+  the channel "check members".
+- Each channel has an epoch key. Any join, leave or removal makes a member
+  generate a new one, seal it to exactly the members at the log's head (with
+  the keys the log has for them), and sign it together with that log
+  position and a commitment to the key. The server refuses a rekey unless it
+  is for the log's head and every copy carries the same commitment, so a
+  member who hands someone a different or unreadable key is named in a
+  warning, and that client rekeys. The server stores and forwards the sealed
+  copies but can't open them.
+- Clients only accept a new epoch key from a member in their verified log,
+  only for a newer epoch than they hold, and only if it was made for the
+  current membership: a key made before the last join or leave is refused
+  (with a warning that the server may be hiding a change), and for a key
+  made at a newer position the client fetches and checks the log first.
+  They send with the newest key they hold, whatever epoch the server claims,
+  and rekey first if that key predates the last join or leave.
 - Messages are XChaCha20-Poly1305 encrypted under the epoch key and signed by
   the sender. The server can't read them, alter them, or attribute them to
-  someone else.
+  someone else. A message is only accepted from a member in the verified log,
+  signed with the key the log has for them, and under an older epoch only
+  within 2 minutes of the client getting the newer key.
 - Replays: clients remember the IDs of recent verified messages (in memory),
   drop messages dated more than 10 minutes from their own clock, and save,
   per channel and sender, the timestamp of the newest message accepted.
@@ -153,35 +190,44 @@ What the encryption does today:
   while messages arrive at least every 5 minutes, so a crash can lose up to
   about 5 minutes of them. Your own messages aren't recorded this way, so
   after a restart the server could replay one you sent in the last 10
-  minutes back to you. A message is only
-  accepted from a current member, and under an older epoch only within
-  2 minutes of the client getting the newer key.
-- Clients only accept a new epoch key from a member according to the
-  server's member list (verifiable membership is planned for v0.2), and only
-  for a newer epoch than they hold. They send with the newest key they hold,
-  whatever epoch the server claims.
-- Channel names carry a signed epoch and revision. Clients only accept a
-  name encrypted under the key they use, and never one older than the newest
-  they have accepted (remembered across restarts), so a server can't roll a
-  name back, whether to a name from an older epoch or an earlier rename.
-  Only the admin renames; a rekey carries the name into the new epoch, and
-  clients warn if a member's rekey changed it.
+  minutes back to you.
+- Channel names carry a signed epoch, revision and log position. Clients only
+  accept a name encrypted under the key they use, signed by a member, made for
+  the current membership, and never one older than the newest they have
+  accepted (remembered across restarts), so a server can't roll a name back,
+  whether to a name from an older epoch, an earlier rename, or an older
+  membership. Only the admin renames; a rekey carries the name into the new
+  epoch, and clients warn if a member's rekey changed it.
 - Clients can block users: their invites are declined unseen and their
-  messages hidden. An invite from someone whose identity key changed can't
-  be accepted until it is marked verified.
+  messages hidden. An invite is only shown as verified once the client has
+  checked it against the channel's log, and one from someone whose identity
+  key changed can't be accepted until it is marked verified.
 
-What it does not do yet (0.1):
+What it does not do yet (0.2):
 
-- **The member list is trusted.** A malicious server can list an extra,
-  hidden member; honest clients will then seal new keys to it. Fixing this is
-  the v0.2 "authenticated membership" design in [docs/design.md](docs/design.md).
-- **Ranks and removals aren't signed.** Clients take the server's word for
-  who is admin or moderator and who was removed.
-- **Invitees' keys are trusted on first use.** An invite is sealed to
-  whatever identity key the server returns for that name the first time you
-  look them up; compare fingerprints over /tell to be sure.
-- Rekeys still seal the new key to a member whose identity key changed,
-  even while the "key changed" warning is showing.
+- **You trust the keys of the people you invite on first use.** When you
+  invite someone by name, the server supplies their key and could substitute
+  its own. Each member shows "not compared" until you compare fingerprints
+  over /tell and mark them verified. There is no strict mode yet that refuses
+  to invite, or seal keys to, anyone not compared.
+- **A removal takes effect when the remover's client publishes it.** The
+  remover's client rekeys straight away. A server that suppresses that rekey
+  stops the channel working for everyone else, and the remover is warned; but
+  members who never saw the removal can be shown the old membership, and a
+  key they make for it reaches the removed member (anyone who did see the
+  removal refuses that key).
+- Key commitments rely on the server checking them: a member colluding with
+  the server can still give different members different keys, which shows up
+  as messages some members can't decrypt.
+- Rekeys seal the new key to every member in the log, including one whose
+  "key changed" warning you haven't cleared.
+- A member who registers again (new keys, say after losing their config) has
+  no place in their channels until a moderator removes and invites them
+  again. If that member was the admin, nobody can take over the admin role:
+  moderators can still invite and remove members, but renames and rank
+  changes are no longer possible in that channel.
+- The log only grows. Clients fetch just the new entries, but someone new to a
+  channel (or invited to it) replays it from the start.
 - The server sees metadata (who is in which channel, when messages are sent)
   and can drop or delay anything.
 - Debug accounts on a Development server can be taken over by anyone who can
