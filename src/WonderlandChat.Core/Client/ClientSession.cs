@@ -2210,7 +2210,11 @@ public sealed class ClientSession : IAsyncDisposable {
             return;
         }
 
-        if (!membership.IsCurrent(position)) {
+        // Made for an older membership: refused. Unlike a key, a name made so many entries back that its
+        // hash is no longer remembered is still shown if nobody joined or left since; otherwise a long run
+        // of invites would leave restarted clients without the name, which they need to rekey.
+        var tooOldToCheck = position.Seq >= membership.MembersChangedAt && membership.HashAt(position.Seq) == null;
+        if (!membership.IsCurrent(position) && !tooOldToCheck) {
             return;
         }
 

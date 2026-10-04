@@ -223,6 +223,26 @@ public sealed class MembershipRulesTests : IDisposable {
     }
 
     [Fact]
+    public void OnlyARecentSpanOfPositionsIsRemembered() {
+        var state = this.WithMember(this.Genesis(), Bob, this._bob);
+        var joined = state.Head!;
+        for (var i = 0; i < SignedLogMembership.MaxRecentHashes; i++) {
+            state = state.Apply(state.Create(MembershipEntryKind.SetRank, Bob, this._alice, Alice, this.Now(), rank: i % 2 == 0 ? Rank.Moderator : Rank.Member));
+        }
+
+        // Nobody joined or left, but the position is too far back to check: keys made there no longer count.
+        Assert.Equal(joined.Seq, state.MembersChangedAt);
+        Assert.Null(state.HashAt(joined.Seq));
+        Assert.False(state.IsCurrent(joined));
+        Assert.True(state.IsCurrent(state.Head));
+
+        // Restored from a checkpoint, the same.
+        var restored = Provider.Restore(state.ToCheckpoint());
+        Assert.False(restored.IsCurrent(joined));
+        Assert.NotNull(restored.HashAt(joined.Seq + 1));
+    }
+
+    [Fact]
     public void CheckpointRestoresTheSameState() {
         var state = this.WithMember(this.Genesis(), Bob, this._bob);
         state = state.Apply(state.Create(MembershipEntryKind.Invite, Carol, this._alice, Alice, this.Now(), MemberKeys.Of(this._carol)));
