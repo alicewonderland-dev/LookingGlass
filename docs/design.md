@@ -166,7 +166,7 @@ MLS (RFC 9420) solves the same problems with an audited standard, and scales bet
 
 ### Protocol and tests
 
-- New protocol pieces: a membership entry message; channel info carries the log (or the part after the client's position); a log-fetch request; invite, accept, decline, remove, leave and rank requests each carry their signed entry; epoch keys and names carry the log position. Protocol version 1 is unreleased, so it changes in place.
+- New protocol pieces: a membership entry message; channel info carries the log (or the part after the client's position); a log-fetch request; invite, accept, decline, remove, leave and rank requests each carry their signed entry; epoch keys and names carry the log position. These changes moved the unreleased protocol to version 2, so a 0.1 plugin is told to update instead of failing later.
 - Acceptance tests:
     1. A server-inserted ghost never receives a key.
     2. A former member's invite is rejected.
