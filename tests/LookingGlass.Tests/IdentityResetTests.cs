@@ -268,12 +268,14 @@ public sealed class IdentityResetTests : IAsyncLifetime {
         Assert.NotNull((await thief.SendAsync(new ClientFrame { Authenticate = new Authenticate { DeviceToken = token } })).AuthenticateOk);
         using var otherKeys = IdentityKeys.Generate();
         foreach (var signature in new[] {
-                     RetireIdentityProof.Sign(otherKeys, alice.UserId, token),
-                     RetireIdentityProof.Sign(keys, alice.UserId, otherToken),
-                     RetireIdentityProof.Sign(keys, alice.UserId + 1, token),
+                     RetireIdentityProof.Sign(otherKeys, alice.UserId, token, url),
+                     RetireIdentityProof.Sign(keys, alice.UserId, otherToken, url),
+                     RetireIdentityProof.Sign(keys, alice.UserId + 1, token, url),
+                     // Signed for another server, sent with this one's address: the signature doesn't cover it.
+                     RetireIdentityProof.Sign(keys, alice.UserId, token, "wss://evil.example/ws"),
                      new byte[64],
                  }) {
-            var refused = await thief.SendAsync(new ClientFrame { RetireIdentity = new RetireIdentity { Signature = ByteString.CopyFrom(signature) } });
+            var refused = await thief.SendAsync(Retire(url, signature));
             Assert.Equal(ErrorCode.Forbidden, refused.Error?.Code);
         }
 
@@ -284,9 +286,48 @@ public sealed class IdentityResetTests : IAsyncLifetime {
 
         // Not before logging in either.
         await using var anonymous = await this._server.ConnectRawAsync();
-        var early = await anonymous.SendAsync(new ClientFrame { RetireIdentity = new RetireIdentity { Signature = ByteString.CopyFrom(RetireIdentityProof.Sign(keys, alice.UserId, token)) } });
+        var early = await anonymous.SendAsync(Retire(url, RetireIdentityProof.Sign(keys, alice.UserId, token, url)));
         Assert.Equal(ErrorCode.NotAuthenticated, early.Error?.Code);
     }
+
+    /// <summary>
+    /// User IDs are Lodestone IDs, the same on every server, so a retirement is signed for the server's address too, and
+    /// checked as key login checks it: a signature a malicious server got for itself (from a user who uses one key with
+    /// both, and a login it relayed) doesn't retire the key here. Here by the Host header (Development without
+    /// PublicUrls), and with PublicUrls by those.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ARetirementSignedForAnotherServerIsRefused(bool publicUrls) {
+        await using var server = publicUrls ? new Harness(settings: ("LookingGlass:PublicUrls:0", "wss://chat.example.com/ws")) : new Harness();
+        try {
+            var alice = await server.RegisterAsync("Alice Elsewhere");
+            using var keys = alice.LoadIdentity();
+            var token = alice.Store.Load().DeviceToken!;
+            await alice.Session.DisposeAsync();
+            await using var raw = await server.ConnectRawAsync();
+            Assert.NotNull((await raw.SendAsync(new ClientFrame { Authenticate = new Authenticate { DeviceToken = token } })).AuthenticateOk);
+
+            foreach (var url in new[] { "wss://evil.example/ws", publicUrls ? server.ServerUri.AbsoluteUri : "wss://chat.example.com/ws" }) {
+                var refused = await raw.SendAsync(Retire(url, RetireIdentityProof.Sign(keys, alice.UserId, token, url)));
+                Assert.Equal(ErrorCode.Forbidden, refused.Error?.Code);
+            }
+
+            Assert.False(server.Database.IsKeyRetired(alice.UserId, keys.SigningPublicKey));
+            Assert.Equal(1, server.Database.CountDevices(alice.UserId));
+
+            var ours = publicUrls ? "wss://chat.example.com/ws" : server.ServerUri.AbsoluteUri;
+            Assert.NotNull((await raw.SendAsync(Retire(ours, RetireIdentityProof.Sign(keys, alice.UserId, token, ours)))).Ack);
+            Assert.True(server.Database.IsKeyRetired(alice.UserId, keys.SigningPublicKey));
+        } finally {
+            DeleteDirectory(server.DataDirectory);
+        }
+    }
+
+    private static ClientFrame Retire(string url, byte[] signature) => new() {
+        RetireIdentity = new RetireIdentity { ServerUrl = url, Signature = ByteString.CopyFrom(signature) },
+    };
 
     /// <summary>
     /// A retirement that lands after a key login was checked and before its device is added wins: no device for a
@@ -349,22 +390,24 @@ public sealed class IdentityResetTests : IAsyncLifetime {
     }
 
     [Fact]
-    public void TheRetireSignatureCoversTheUserAndTheLogin() {
+    public void TheRetireSignatureCoversTheUserTheLoginAndTheServer() {
         using var keys = IdentityKeys.Generate();
         const string token = "lgt_example";
+        const string url = "wss://chat.example.com/ws";
         var hash = RetireIdentityProof.TokenHash(token);
         // The hash the server stores for a device token.
         Assert.Equal(LookingGlass.Server.Realtime.RequestHandler.HashToken(token), hash);
 
-        var signature = RetireIdentityProof.Sign(keys, 1234, token);
-        Assert.True(RetireIdentityProof.Verify(keys.SigningPublicKey, 1234, hash, signature));
-        Assert.False(RetireIdentityProof.Verify(keys.SigningPublicKey, 1235, hash, signature));
-        Assert.False(RetireIdentityProof.Verify(keys.SigningPublicKey, 1234, RetireIdentityProof.TokenHash("lgt_other"), signature));
+        var signature = RetireIdentityProof.Sign(keys, 1234, token, url);
+        Assert.True(RetireIdentityProof.Verify(keys.SigningPublicKey, 1234, hash, url, signature));
+        Assert.False(RetireIdentityProof.Verify(keys.SigningPublicKey, 1235, hash, url, signature));
+        Assert.False(RetireIdentityProof.Verify(keys.SigningPublicKey, 1234, RetireIdentityProof.TokenHash("lgt_other"), url, signature));
+        Assert.False(RetireIdentityProof.Verify(keys.SigningPublicKey, 1234, hash, "wss://chat.example.org/ws", signature));
         using var other = IdentityKeys.Generate();
-        Assert.False(RetireIdentityProof.Verify(other.SigningPublicKey, 1234, hash, signature));
+        Assert.False(RetireIdentityProof.Verify(other.SigningPublicKey, 1234, hash, url, signature));
         // Its own domain: the same fields signed for anything else (a key login, say) don't count.
-        Assert.False(RetireIdentityProof.Verify(keys.SigningPublicKey, 1234, hash,
-            keys.Sign(new SigningPayload(Domains.KeyLogin).Add(1234L).Add(hash).ToArray())));
+        Assert.False(RetireIdentityProof.Verify(keys.SigningPublicKey, 1234, hash, url,
+            keys.Sign(new SigningPayload(Domains.KeyLogin).Add(1234L).Add(hash).Add(url).ToArray())));
     }
 
     private static async Task<Response> KeyLoginAsync(RawConnection raw, IdentityKeys keys, long userId, string url) {
