@@ -329,7 +329,74 @@ public sealed class SecretFileTests {
             Parallel.For(0, 400, i => stores[i % 2].Save(new ClientSecrets { UserId = i }));
 
             Assert.NotNull(stores[0].Load().UserId);
-            Assert.Equal(["secrets.json"], Directory.GetFiles(directory).Select(Path.GetFileName));
+            Assert.Equal(["secrets.json", "secrets.json.bak"], Directory.GetFiles(directory).Select(Path.GetFileName).Order());
+        } finally {
+            DeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
+    public void SavingKeepsThePreviousVersionAsABackup() {
+        var directory = Path.Combine(Path.GetTempPath(), "wct-files-" + Guid.NewGuid().ToString("N"));
+        try {
+            var path = Path.Combine(directory, "secrets.json");
+            var store = new FileSecretStore(path);
+            store.Save(new ClientSecrets { UserId = 1 });
+            Assert.False(File.Exists(AtomicFile.BackupPath(path)));
+
+            store.Save(new ClientSecrets { UserId = 2 });
+            Assert.Equal(2, store.Load().UserId);
+            Assert.Equal(1, ClientSecrets.Deserialize(File.ReadAllBytes(AtomicFile.BackupPath(path))).UserId);
+        } finally {
+            DeleteDirectory(directory);
+        }
+    }
+
+    [Theory]
+    [InlineData("missing")]
+    [InlineData("empty")]
+    [InlineData("garbled")]
+    public void DamagedSecretsFileFallsBackToTheBackup(string damage) {
+        var directory = Path.Combine(Path.GetTempPath(), "wct-files-" + Guid.NewGuid().ToString("N"));
+        try {
+            var path = Path.Combine(directory, "secrets.json");
+            var warnings = new List<string>();
+            var store = new FileSecretStore(path, warnings.Add);
+            store.Save(new ClientSecrets { UserId = 1 });
+            store.Save(new ClientSecrets { UserId = 2 });
+
+            // As a power cut mid-save might leave it.
+            switch (damage) {
+                case "missing":
+                    File.Delete(path);
+                    break;
+                case "empty":
+                    File.WriteAllBytes(path, []);
+                    break;
+                default:
+                    File.WriteAllBytes(path, "{\"UserId\": 2, \"Pinned"u8.ToArray());
+                    break;
+            }
+
+            Assert.Equal(1, store.Load().UserId);
+            Assert.Contains("secrets.json.bak", Assert.Single(warnings));
+        } finally {
+            DeleteDirectory(directory);
+        }
+    }
+
+    [Fact]
+    public void DamagedSecretsFileWithoutABackupIsAnError() {
+        var directory = Path.Combine(Path.GetTempPath(), "wct-files-" + Guid.NewGuid().ToString("N"));
+        try {
+            var path = Path.Combine(directory, "secrets.json");
+            var store = new FileSecretStore(path);
+            store.Save(new ClientSecrets { UserId = 1 });
+            File.WriteAllBytes(path, "not json"u8.ToArray());
+
+            // Starting afresh would silently replace the identity and lose every key.
+            Assert.ThrowsAny<System.Text.Json.JsonException>(() => store.Load());
+            Assert.Null(new FileSecretStore(Path.Combine(directory, "none.json")).Load().UserId);
         } finally {
             DeleteDirectory(directory);
         }

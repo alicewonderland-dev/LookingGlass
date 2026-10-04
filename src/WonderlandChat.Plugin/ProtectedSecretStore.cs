@@ -32,31 +32,34 @@ public sealed class ProtectedSecretStore : ISecretStore {
     // Locks are per file and shared by every instance: a closing session and a new one for
     // the same character use different store objects but the same secrets file.
     public ClientSecrets Load() {
-        lock (AtomicFile.LockFor(this._path)) {
-            if (!File.Exists(this._path)) {
-                return new ClientSecrets();
-            }
+        // A damaged or missing file (say, after a power cut) falls back to the copy kept by the last save.
+        return AtomicFile.Read(this._path, this.Decode, Warn) ?? new ClientSecrets();
+    }
 
-            var data = File.ReadAllBytes(this._path);
-            var magic = data.AsSpan(0, Math.Min(4, data.Length));
-            var body = data.AsSpan(Math.Min(4, data.Length)).ToArray();
+    private ClientSecrets Decode(byte[] data) {
+        var magic = data.AsSpan(0, Math.Min(4, data.Length));
+        var body = data.AsSpan(Math.Min(4, data.Length)).ToArray();
 
-            if (magic.SequenceEqual(DpapiMagic)) {
-                Protection = "Windows DPAPI";
-                return ClientSecrets.Deserialize(ProtectedData.Unprotect(body, Entropy, DataProtectionScope.CurrentUser));
-            }
-
-            if (magic.SequenceEqual(KeyFileMagic)) {
-                Protection = "local key file";
-                var nonce = body.AsSpan(0, Aead.NonceSize);
-                using var key = this.LoadOrCreateFileKey();
-                var plaintext = Aead.Decrypt(key, nonce, KeyFileMagic, body.AsSpan(Aead.NonceSize))
-                                ?? throw new CryptographicException("The secrets file couldn't be decrypted with the local key file.");
-                return ClientSecrets.Deserialize(plaintext);
-            }
-
-            throw new CryptographicException("Unrecognised secrets file format.");
+        if (magic.SequenceEqual(DpapiMagic)) {
+            Protection = "Windows DPAPI";
+            return ClientSecrets.Deserialize(ProtectedData.Unprotect(body, Entropy, DataProtectionScope.CurrentUser));
         }
+
+        if (magic.SequenceEqual(KeyFileMagic)) {
+            Protection = "local key file";
+            if (body.Length < Aead.NonceSize) {
+                throw new CryptographicException("The secrets file is truncated.");
+            }
+
+            var nonce = body.AsSpan(0, Aead.NonceSize);
+            // Never a new key here: one made now couldn't decrypt anything.
+            using var key = this.LoadFileKey(create: false);
+            var plaintext = Aead.Decrypt(key, nonce, KeyFileMagic, body.AsSpan(Aead.NonceSize))
+                            ?? throw new CryptographicException("The secrets file couldn't be decrypted with the local key file.");
+            return ClientSecrets.Deserialize(plaintext);
+        }
+
+        throw new CryptographicException("Unrecognised secrets file format.");
     }
 
     public void Save(ClientSecrets secrets) {
@@ -68,7 +71,7 @@ public sealed class ProtectedSecretStore : ISecretStore {
                 output = [.. DpapiMagic, .. ProtectedData.Protect(plaintext, Entropy, DataProtectionScope.CurrentUser)];
                 Protection = "Windows DPAPI";
             } catch (Exception ex) when (ex is CryptographicException or PlatformNotSupportedException or EntryPointNotFoundException or DllNotFoundException) {
-                using var key = this.LoadOrCreateFileKey();
+                using var key = this.LoadFileKey(create: true);
                 var nonce = RandomNumberGenerator.GetBytes(Aead.NonceSize);
                 output = [.. KeyFileMagic, .. nonce, .. Aead.Encrypt(key, nonce, KeyFileMagic, plaintext)];
                 Protection = "local key file";
@@ -78,16 +81,26 @@ public sealed class ProtectedSecretStore : ISecretStore {
         }
     }
 
-    private Key LoadOrCreateFileKey() {
+    private Key LoadFileKey(bool create) {
         // Shared by every character: two stores creating it at once would each encrypt with a different key.
         lock (AtomicFile.LockFor(this._keyFilePath)) {
-            if (!File.Exists(this._keyFilePath)) {
-                AtomicFile.Write(this._keyFilePath, RandomNumberGenerator.GetBytes(Aead.KeySize));
+            var raw = AtomicFile.Read(this._keyFilePath,
+                data => data.Length == Aead.KeySize ? data : throw new CryptographicException("The local key file is damaged."),
+                Warn);
+            if (raw == null) {
+                if (!create) {
+                    throw new CryptographicException("The local key file is missing.");
+                }
+
+                raw = RandomNumberGenerator.GetBytes(Aead.KeySize);
+                AtomicFile.Write(this._keyFilePath, raw);
             }
 
-            return Key.Import(Aead, File.ReadAllBytes(this._keyFilePath), KeyBlobFormat.RawSymmetricKey);
+            return Key.Import(Aead, raw, KeyBlobFormat.RawSymmetricKey);
         }
     }
+
+    private static void Warn(string message) => Services.Log.Warning(message);
 
     /// <summary>One secrets file per character and server.</summary>
     public static ProtectedSecretStore For(ulong contentId, string serverUrl) {

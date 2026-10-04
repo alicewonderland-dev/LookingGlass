@@ -30,7 +30,8 @@ public sealed class EchoBotHost(
         lifetime.ApplicationStarted.Register(() => {
             try {
                 var uri = this.ResolveServerUri(dev.EchoBotServerUrl);
-                var store = new FileSecretStore(Path.Combine(options.Value.DataDirectory, "echo-bot-secrets.json"));
+                var store = new FileSecretStore(Path.Combine(options.Value.DataDirectory, "echo-bot-secrets.json"),
+                    message => logger.LogWarning("[echo bot] {Message}", message));
                 this._bot = new EchoBot(new ClientSessionOptions { ServerUri = uri, ClientVersion = "echo-bot" }, store, dev.EchoBotName,
                     line => logger.LogInformation("[echo bot] {Line}", line));
                 this._bot.Start();
