@@ -1722,6 +1722,7 @@ public sealed class ClientSession : IAsyncDisposable {
 
         string? rejected = null;
         var stale = false;
+        string? equivocation = null;
         BadKey? bad = null;
         MemberKeys? failedSigner = null;
         lock (this._lock) {
@@ -1750,6 +1751,7 @@ public sealed class ClientSession : IAsyncDisposable {
                     // Validly signed by a member, but sealed to the members of another time.
                     rejected = $"it was made for the channel's membership at entry #{position?.Seq}, not the current one (entry #{membership.Head?.Seq}). The server may be hiding a change from someone";
                     stale = true;
+                    equivocation = this.EquivocationShownBy(advanced.ChannelId, advanced.Epoch, position);
                 } else if (rejected == null && key == null) {
                     bad = this.FlagBadEpochKey(channel, advanced.Epoch, this.UserOf(advanced.AuthorId), check);
                     rejected = "it failed signature or decryption checks";
@@ -1781,9 +1783,12 @@ public sealed class ClientSession : IAsyncDisposable {
             return;
         }
 
-        // An honest server sends such a key now and then: made just before a change this client already
-        // applied (its own, say), or while it was away. Only a server that can't show what was verified is blamed.
-        if (stale && await this.ConfirmHeadAsync(advanced.ChannelId, ct)) {
+        if (equivocation != null) {
+            // Whatever log the server shows this client, it showed another to whoever made the key.
+            this.WarnAboutMembership(advanced.ChannelId, EquivocationWarning(equivocation));
+        } else if (stale && await this.ConfirmHeadAsync(advanced.ChannelId, ct)) {
+            // An honest server sends such a key now and then: made just before a change this client already
+            // applied (its own, say), or while it was away. Only a server that can't show what was verified is blamed.
             this.Log(NoticeLevel.Debug, $"Ignored epoch {advanced.Epoch} key for {advanced.ChannelId}: made before the latest membership change");
             return;
         }
@@ -1798,6 +1803,45 @@ public sealed class ClientSession : IAsyncDisposable {
     }
 
     private sealed record BadKey(string ChannelId, string Message, bool Rekey);
+
+    /// <param name="detail">What gives the server away, from <see cref="EquivocationShownBy"/>.</param>
+    private static string EquivocationWarning(string detail) =>
+        $"the server delivered a key for {{0}} {detail}. An honest server never takes such a key, so it is showing members " +
+        "different versions of the membership. " + HidingSuffix;
+
+    /// <summary>
+    /// Whether a key for <paramref name="epoch"/> made at <paramref name="position"/>, which isn't this client's current
+    /// membership, shows that the server is showing members different versions of the log. An honest server takes a
+    /// rekey only at its log's head and only for the next epoch, and its head never goes back. So no key it takes is
+    /// made for a position that isn't in the log, nor for an earlier position than a key with an older epoch, such as
+    /// one made after a change this client verified (its own removal of someone, say). The server can still show this
+    /// client the log it verified: it showed another to whoever made the key. Call inside the lock.
+    /// </summary>
+    /// <returns>
+    /// What gives the server away, or null if nothing does: a key for an older membership with no such newer key held is
+    /// what an honest server sends now and then (made just before a change this client already applied).
+    /// </returns>
+    private string? EquivocationShownBy(string channelId, ulong epoch, LogPosition? position) {
+        if (position == null || this.MembershipOf(channelId) is not { Head: { } head } membership || position.Seq > head.Seq) {
+            return null;
+        }
+
+        if (membership.HashAt(position.Seq) is { } verified && !verified.AsSpan().SequenceEqual(position.Hash.Span)) {
+            return $"(epoch {epoch}) made for a version of membership log entry #{position.Seq} other than the one you verified";
+        }
+
+        if (!this._secrets.EpochKeyPositions.TryGetValue(channelId, out var held)) {
+            return null;
+        }
+
+        foreach (var (heldEpoch, heldPosition) in held.Where(pair => pair.Key < epoch).OrderByDescending(pair => pair.Key)) {
+            if (heldPosition.Seq > position.Seq || (heldPosition.Seq == position.Seq && !heldPosition.Hash.AsSpan().SequenceEqual(position.Hash.Span))) {
+                return $"for epoch {epoch}, made for an older membership (entry #{position.Seq}) than your key for epoch {heldEpoch} (entry #{heldPosition.Seq})";
+            }
+        }
+
+        return null;
+    }
 
     /// <summary>
     /// A member signed an epoch key that is no use to us: it doesn't open, or
@@ -2020,6 +2064,7 @@ public sealed class ClientSession : IAsyncDisposable {
 
         BadKey? bad = null;
         EpochKeyForMe? staleNewest = null;
+        string? equivocation = null;
         lock (this._lock) {
             if (this._identity == null || this._me == null || !this._channels.TryGetValue(channelId, out var channel) || !this.IsMember(channelId)) {
                 return;
@@ -2044,9 +2089,11 @@ public sealed class ClientSession : IAsyncDisposable {
                 }
 
                 if (!membership.IsCurrent(entry.Key.LogPosition)) {
-                    // Sealed to the members of another time. Only worth a warning if no newer key replaces it.
+                    // Sealed to the members of another time. Only worth a warning if no newer key replaces it, or if
+                    // it gives away a server showing members different logs (whatever it shows this client).
                     this.Log(NoticeLevel.Warning, $"Ignored epoch {entry.Epoch} key for {channelId}: made at log entry {entry.Key.LogPosition?.Seq}, not the current membership");
                     staleNewest = entry;
+                    equivocation ??= this.EquivocationShownBy(channelId, entry.Epoch, entry.Key.LogPosition);
                     continue;
                 }
 
@@ -2086,8 +2133,10 @@ public sealed class ClientSession : IAsyncDisposable {
 
         this.SaveSecrets();
         this.Publish();
-        // Normal while a join or leave awaits its rekey; only a server that can't show what was verified is blamed.
-        if (staleNewest != null && !await this.ConfirmHeadAsync(channelId, ct, connection)) {
+        if (equivocation != null) {
+            this.WarnAboutMembership(channelId, EquivocationWarning(equivocation));
+        } else if (staleNewest != null && !await this.ConfirmHeadAsync(channelId, ct, connection)) {
+            // Normal while a join or leave awaits its rekey; only a server that can't show what was verified is blamed.
             this.WarnAboutMembership(channelId,
                 $"the server offered a key for {{0}} made for an older membership (entry #{staleNewest.Key.LogPosition?.Seq}) than you have verified. It may be hiding a change from someone");
         }
