@@ -45,8 +45,11 @@ public enum RekeyResult {
     MembershipChanged,
 }
 
-/// <summary>A registration names a signing key that was replaced or retired, which is never registered again.</summary>
+/// <summary>A registration names a signing key the account replaced or retired, which it never registers again.</summary>
 public sealed class KeyRetiredException() : Exception("That identity key was replaced or retired, so it can't be registered again.");
+
+/// <summary>A registration names a signing key another account is registered with: a key belongs to one account at most.</summary>
+public sealed class KeyInUseException() : Exception("That identity key is registered to another account.");
 
 /// <summary>The database file can't be used by this version of the server. It is left as it was.</summary>
 public sealed class UnsupportedDatabaseException(string message) : Exception(message);
@@ -56,7 +59,7 @@ public sealed class UnsupportedDatabaseException(string message) : Exception(mes
 /// Methods are synchronous (SQLite is in-process) and short.
 /// </summary>
 public sealed class Database {
-    private const int SchemaVersion = 5;
+    private const int SchemaVersion = 6;
     private const int KeptEpochs = 4;
 
     private readonly string _path;
@@ -169,6 +172,7 @@ public sealed class Database {
         if (current < 5) {
             // Identity signing keys that may never sign in or be registered again: replaced by registering again with
             // new keys, or retired by "Reset my identity". Keys replaced before this table existed aren't known.
+            // (Version 6 makes them per account.)
             Execute(connection, tx, """
                 CREATE TABLE retired_keys (
                     signing_key BLOB    PRIMARY KEY,
@@ -176,6 +180,27 @@ public sealed class Database {
                     retired_at  INTEGER NOT NULL
                 );
                 INSERT INTO schema_version (version) VALUES (5);
+                """);
+        }
+
+        if (current < 6) {
+            // A key is retired for the account that replaced or retired it, never for others: version 5 retired it for
+            // everyone, so registering another user's public key and then replacing it shut that user out. Each row is
+            // kept, for the account it was recorded for. And an index to find the account a signing key is registered to
+            // (a key belongs to one at most; not a unique index, which a database where one was registered twice, before
+            // registrations were signed, couldn't take).
+            Execute(connection, tx, """
+                CREATE TABLE retired_keys_per_user (
+                    user_id     INTEGER NOT NULL,
+                    signing_key BLOB    NOT NULL,
+                    retired_at  INTEGER NOT NULL,
+                    PRIMARY KEY (user_id, signing_key)
+                );
+                INSERT INTO retired_keys_per_user (user_id, signing_key, retired_at) SELECT user_id, signing_key, retired_at FROM retired_keys;
+                DROP TABLE retired_keys;
+                ALTER TABLE retired_keys_per_user RENAME TO retired_keys;
+                CREATE INDEX IF NOT EXISTS users_by_signing_key ON users (signing_key);
+                INSERT INTO schema_version (version) VALUES (6);
                 """);
         }
 
@@ -284,11 +309,13 @@ public sealed class Database {
     }
 
     /// <summary>
-    /// Creates or replaces a user's registration. Revokes all their devices. A signing key it replaces is retired (see
-    /// <see cref="IsKeyRetired"/>), and a retired one is never registered again.
+    /// Creates or replaces a user's registration. Revokes all their devices. A signing key it replaces is retired for
+    /// this user (see <see cref="IsKeyRetired"/>), and a key retired for them is never registered for them again. A key
+    /// another user is registered with isn't registered for this one.
     /// </summary>
     /// <returns>The stored user, and whether their identity keys changed.</returns>
-    /// <exception cref="KeyRetiredException">The signing key is retired. Nothing was changed.</exception>
+    /// <exception cref="KeyRetiredException">The signing key is retired for this user. Nothing was changed.</exception>
+    /// <exception cref="KeyInUseException">Another user is registered with the signing key. Nothing was changed.</exception>
     public (UserRow User, bool KeysChanged) RegisterUser(long userId, string name, uint worldId, string worldName, IdentityBundle identity, bool isDebug) {
         using var connection = this.Open();
         using var tx = connection.BeginTransaction();
@@ -297,9 +324,14 @@ public sealed class Database {
 
         var signing = identity.SigningPublicKey.ToByteArray();
         var agreement = identity.AgreementPublicKey.ToByteArray();
-        // In the transaction that registers it, so a key retired after the registration started still can't come back.
-        if (IsKeyRetired(connection, tx, signing)) {
+        // In the transaction that registers it, so a key retired, or registered by another user, after the registration
+        // started still can't be registered.
+        if (IsKeyRetired(connection, tx, userId, signing)) {
             throw new KeyRetiredException();
+        }
+
+        if (IsKeyInUseByAnother(connection, tx, userId, signing)) {
+            throw new KeyInUseException();
         }
 
         var keysChanged = existing != null
@@ -307,7 +339,7 @@ public sealed class Database {
         var keyVersion = existing == null ? 1u : keysChanged ? existing.KeyVersion + 1 : existing.KeyVersion;
         if (existing != null && !existing.SigningKey.AsSpan().SequenceEqual(signing)) {
             // Replaced: a copy of the old identity left anywhere must not take the account back by registering it again.
-            Execute(connection, tx, "INSERT OR IGNORE INTO retired_keys (signing_key, user_id, retired_at) VALUES ($key, $id, $now);",
+            Execute(connection, tx, "INSERT OR IGNORE INTO retired_keys (user_id, signing_key, retired_at) VALUES ($id, $key, $now);",
                 ("$key", existing.SigningKey), ("$id", userId), ("$now", now));
         }
 
@@ -372,9 +404,9 @@ public sealed class Database {
 
     /// <summary>
     /// Adds a device for a key login (or a registration), but only while the user is still registered with the key that
-    /// signed it (or was registered), and that key isn't retired. In one statement, so a registration with new keys or a
-    /// retirement (each of which revokes every device) can't land between the check and the insert and leave the old
-    /// key with a working login.
+    /// signed it (or was registered), and that key isn't retired for them. In one statement, so a registration with new
+    /// keys or a retirement (each of which revokes every device) can't land between the check and the insert and leave
+    /// the old key with a working login.
     /// </summary>
     /// <returns>False if the user's keys changed or were retired (or they're gone) since <paramref name="signingKey"/> was checked.</returns>
     public bool AddDeviceForKey(long userId, byte[] signingKey, uint keyVersion, byte[] tokenHash) {
@@ -385,7 +417,7 @@ public sealed class Database {
             INSERT INTO devices (token_hash, user_id, created_at, last_used_at)
             SELECT $hash, user_id, $now, $now FROM users
             WHERE user_id = $id AND signing_key = $key AND key_version = $version
-              AND NOT EXISTS (SELECT 1 FROM retired_keys WHERE retired_keys.signing_key = users.signing_key);
+              AND NOT EXISTS (SELECT 1 FROM retired_keys WHERE retired_keys.user_id = users.user_id AND retired_keys.signing_key = users.signing_key);
             """,
             ("$hash", tokenHash), ("$id", userId), ("$key", signingKey), ("$version", (long) keyVersion), ("$now", now)) == 1;
         if (added) {
@@ -412,21 +444,34 @@ public sealed class Database {
             return false;
         }
 
-        Execute(connection, tx, "INSERT OR IGNORE INTO retired_keys (signing_key, user_id, retired_at) VALUES ($key, $id, $now);",
+        Execute(connection, tx, "INSERT OR IGNORE INTO retired_keys (user_id, signing_key, retired_at) VALUES ($id, $key, $now);",
             ("$key", signingKey), ("$id", userId), ("$now", Now()));
         Execute(connection, tx, "DELETE FROM devices WHERE user_id = $id;", ("$id", userId));
         tx.Commit();
         return true;
     }
 
-    /// <summary>Whether a signing key was replaced or retired: it may never sign in or be registered again.</summary>
-    public bool IsKeyRetired(byte[] signingKey) {
+    /// <summary>
+    /// Whether a user replaced or retired a signing key: it may never sign in to their account or be registered for it
+    /// again. Only for that user: whatever one account does with a key never shuts another out.
+    /// </summary>
+    public bool IsKeyRetired(long userId, byte[] signingKey) {
         using var connection = this.Open();
-        return IsKeyRetired(connection, null, signingKey);
+        return IsKeyRetired(connection, null, userId, signingKey);
     }
 
-    private static bool IsKeyRetired(SqliteConnection connection, SqliteTransaction? tx, byte[] signingKey) {
-        return Scalar(connection, tx, "SELECT 1 FROM retired_keys WHERE signing_key = $key;", ("$key", signingKey)) != null;
+    private static bool IsKeyRetired(SqliteConnection connection, SqliteTransaction? tx, long userId, byte[] signingKey) {
+        return Scalar(connection, tx, "SELECT 1 FROM retired_keys WHERE user_id = $id AND signing_key = $key;", ("$id", userId), ("$key", signingKey)) != null;
+    }
+
+    /// <summary>Whether a user other than <paramref name="userId"/> is registered with a signing key (a key belongs to one at most).</summary>
+    public bool IsKeyInUseByAnother(long userId, byte[] signingKey) {
+        using var connection = this.Open();
+        return IsKeyInUseByAnother(connection, null, userId, signingKey);
+    }
+
+    private static bool IsKeyInUseByAnother(SqliteConnection connection, SqliteTransaction? tx, long userId, byte[] signingKey) {
+        return Scalar(connection, tx, "SELECT 1 FROM users WHERE signing_key = $key AND user_id <> $id;", ("$id", userId), ("$key", signingKey)) != null;
     }
 
     /// <summary>

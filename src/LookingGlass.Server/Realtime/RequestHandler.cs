@@ -53,6 +53,12 @@ public sealed class RequestHandler(
         "This identity key was replaced (by registering again with new keys, or \"Reset my identity\"), so it can't be registered again. " +
         "Use \"Reset my identity\" in Settings to make new keys, then register.";
 
+    // Registering a key another account is registered with. With registrations signed, only the key's owner can get here,
+    // registering a second character with one character's keys, which the plugin never does (it keeps keys per character).
+    private const string KeyInUse =
+        "This identity key is already registered to another character on this server, and each character needs its own. " +
+        "Use \"Reset my identity\" in Settings to make new keys for this character, then register.";
+
     /// <summary>Pending invites one user can have at once, across all channels.</summary>
     public const int MaxPendingInvitesPerUser = 20;
 
@@ -196,17 +202,13 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.InvalidRequest, "Invalid identity keys.");
         }
 
-        // Before any Lodestone work; checked again when it completes (see RegisterUser).
-        if (db.IsKeyRetired(request.Identity.SigningPublicKey.ToByteArray())) {
-            throw new RequestException(ErrorCode.RegistrationFailed, KeyRetired);
-        }
-
         var minutes = options.Value.Lodestone.ChallengeMinutes;
         if (ProtocolInfo.IsDebugWorld(worldName)) {
             if (!options.Value.Dev.AllowDebugAccounts) {
                 throw new RequestException(ErrorCode.RegistrationFailed, "Debug accounts are disabled on this server.");
             }
 
+            this.CheckKeyRegistrable(DebugUserId(name), request.Identity);
             connection.PendingRegistration = new PendingRegistration(
                 DebugUserId(name), name, 0, ProtocolInfo.DebugWorldName, request.Identity, "", DateTimeOffset.UtcNow.AddMinutes(minutes), true, NewRegistrationNonce());
             return new Response {
@@ -237,6 +239,8 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.RegistrationFailed, $"Couldn't find {name} on {worldName} in the Lodestone.");
         }
 
+        // Once the account is known (the lookup is cached, so asking again costs nothing).
+        this.CheckKeyRegistrable(found.Id, request.Identity);
         var code = "LGC-" + RandomCode(8);
         connection.PendingRegistration = new PendingRegistration(
             found.Id, found.Name, character.WorldId, found.WorldName, request.Identity, code, DateTimeOffset.UtcNow.AddMinutes(minutes), false, NewRegistrationNonce());
@@ -253,6 +257,22 @@ public sealed class RequestHandler(
     }
 
     private static byte[] NewRegistrationNonce() => RandomNumberGenerator.GetBytes(RegistrationProof.NonceSize);
+
+    /// <summary>
+    /// Refuses, when registering starts, a key the account replaced or retired, or one another account is registered
+    /// with, so the user is told before putting a code in their profile. Checked again when it completes (see
+    /// <see cref="Database.RegisterUser"/>), where it counts.
+    /// </summary>
+    private void CheckKeyRegistrable(long userId, IdentityBundle identity) {
+        var signing = identity.SigningPublicKey.ToByteArray();
+        if (db.IsKeyRetired(userId, signing)) {
+            throw new RequestException(ErrorCode.RegistrationFailed, KeyRetired);
+        }
+
+        if (db.IsKeyInUseByAnother(userId, signing)) {
+            throw new RequestException(ErrorCode.RegistrationFailed, KeyInUse);
+        }
+    }
 
     private async Task<Response> CompleteRegistration(ClientConnection connection, CompleteRegistration request, CancellationToken ct) {
         var pending = connection.PendingRegistration
@@ -305,6 +325,9 @@ public sealed class RequestHandler(
         } catch (KeyRetiredException) {
             // Replaced or retired since this registration started.
             throw new RequestException(ErrorCode.RegistrationFailed, KeyRetired);
+        } catch (KeyInUseException) {
+            // Registered by another account since this registration started.
+            throw new RequestException(ErrorCode.RegistrationFailed, KeyInUse);
         }
 
         // Only while the key just registered is still the account's, and not retired: a retirement or another
@@ -362,7 +385,7 @@ public sealed class RequestHandler(
         var user = userId == null ? null : db.GetUser(userId.Value);
         // A retired key has no devices (retiring deletes them, and none are added for it); checked here too, so that holds
         // whatever adds a device.
-        if (user == null || db.IsKeyRetired(user.SigningKey)) {
+        if (user == null || db.IsKeyRetired(user.UserId, user.SigningKey)) {
             throw new RequestException(ErrorCode.NotAuthenticated, "Unknown or revoked device token.");
         }
 
@@ -499,7 +522,7 @@ public sealed class RequestHandler(
 
         user = db.GetUser(pending.UserId);
         // Looked up for unknown accounts too (a key nobody holds is never retired), so the work doesn't tell them apart.
-        var retired = db.IsKeyRetired(user?.SigningKey ?? NobodysKey);
+        var retired = db.IsKeyRetired(pending.UserId, user?.SigningKey ?? NobodysKey);
         var refused = user == null ? "no such account"
             : user.IsDebug && !options.Value.Dev.AllowDebugAccounts ? "debug accounts are disabled"
             : retired ? "the account's key was retired"
