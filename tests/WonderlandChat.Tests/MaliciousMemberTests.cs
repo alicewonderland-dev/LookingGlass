@@ -59,6 +59,27 @@ public sealed class MaliciousMemberTests : IAsyncLifetime {
     }
 
     [Fact]
+    public async Task KickedMembersMessageIsDropped() {
+        var alice = await this._server.RegisterAsync("Alice Kicker");
+        var bob = await this._server.RegisterAsync("Bob Stays");
+        var carol = await this._server.RegisterAsync("Carol Kicked");
+        var channelId = await alice.Session.CreateChannelAsync("Kicked", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        await AddMemberAsync(alice, channelId, carol);
+        var oldEpoch = bob.Session.Snapshot.FindChannel(channelId)!.Epoch;
+        // Her client forgets the key once she's removed, but she could have kept a copy.
+        var fromCarol = carol.ForgeMessage(channelId, oldEpoch, "still here", DateTimeOffset.UtcNow);
+
+        await alice.Session.KickAsync(channelId, carol.UserId, Ct);
+        await WaitFor(() => bob.Session.Snapshot.FindChannel(channelId) is { Epoch: var e } c && e > oldEpoch ? c : null);
+
+        // A server that helps her delivers her message straight after the rekey.
+        this._server.Registry.Send(bob.UserId, new Event { ChatMessage = fromCarol });
+        await WaitFor(() => bob.Notices.FirstOrDefault(n => n.Text.Contains("isn't a member")));
+        Assert.DoesNotContain(bob.Messages, m => m.Text == "still here");
+    }
+
+    [Fact]
     public async Task ServerRejectsRekeyWithInconsistentCommitments() {
         var alice = await this._server.RegisterAsync("Alice Commit");
         var bob = await this._server.RegisterAsync("Bob Commit");

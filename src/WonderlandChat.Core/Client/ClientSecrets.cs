@@ -25,6 +25,13 @@ public sealed class ClientSecrets {
     /// </summary>
     public Dictionary<string, NameVersion> ChannelNameVersions { get; set; } = new();
 
+    /// <summary>
+    /// Channel ID → sender → timestamp (Unix ms) of the newest message accepted
+    /// from them. Messages much older than this are replays; unlike the in-memory
+    /// seen-set, this survives restarts. Saved along with other changes, not per message.
+    /// </summary>
+    public Dictionary<string, Dictionary<long, long>> NewestMessageTimes { get; set; } = new();
+
     public ClientSecrets Clone() {
         return JsonSerializer.Deserialize<ClientSecrets>(JsonSerializer.SerializeToUtf8Bytes(this))!;
     }

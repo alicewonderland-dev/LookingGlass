@@ -130,6 +130,7 @@ public sealed class SessionManager : IDisposable {
             session = new ClientSession(new ClientSessionOptions {
                 ServerUri = uri,
                 ClientVersion = typeof(SessionManager).Assembly.GetName().Version?.ToString(3) ?? "0.1.0",
+                // Diagnostics only: the session keeps user content (names, messages) out of these.
                 Log = (level, text) => {
                     if (level >= NoticeLevel.Warning) {
                         Services.Log.Warning(text);

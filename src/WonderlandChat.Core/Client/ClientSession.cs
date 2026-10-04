@@ -22,6 +22,12 @@ public sealed class ClientSession : IAsyncDisposable {
     private const int KeptEpochsPerChannel = 4;
     private const int SeenMessageCapacity = 2048;
     private static readonly TimeSpan MaxMessageClockSkew = TimeSpan.FromMinutes(10);
+    // How far a sender's messages may arrive out of order before they count as replays.
+    private static readonly TimeSpan MessageReorderAllowance = TimeSpan.FromMinutes(2);
+    // How long messages under an older epoch are accepted after a newer key arrives
+    // (only those in flight during the rekey are legitimate; the server rejects new ones).
+    private static readonly TimeSpan OldEpochGrace = TimeSpan.FromMinutes(2);
+    private static readonly TimeSpan ReplayStateSaveInterval = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan RegistrationRequestTimeout = TimeSpan.FromSeconds(60);
 
     private readonly ClientSessionOptions _options;
@@ -48,6 +54,9 @@ public sealed class ClientSession : IAsyncDisposable {
     private readonly HashSet<string> _seenMessages = new();
     private readonly Queue<string> _seenOrder = new();
     private long _secretsVersion;
+    // NewestMessageTimes changed but hasn't been saved; the next save includes it.
+    private bool _replayStateDirty;
+    private DateTimeOffset _replayStateSavedAt = DateTimeOffset.MinValue;
     // ----
 
     private long _savedSecretsVersion;
@@ -151,6 +160,9 @@ public sealed class ClientSession : IAsyncDisposable {
 
     /// <summary>Sends a request exactly as given, bypassing every client check. Only for tests that play a misbehaving client.</summary>
     internal Task<Response> SendRawAsync(ClientFrame frame, CancellationToken ct = default) => this.RequestAsync(frame, ct);
+
+    /// <summary>Runs between a kick's request and its bookkeeping, so tests can force the race with a background rekey.</summary>
+    internal Func<Task>? AfterKickRequestForTests { get; set; }
 
     // ================================================================ registration
 
@@ -301,11 +313,20 @@ public sealed class ClientSession : IAsyncDisposable {
     }
 
     public async Task KickAsync(string channelId, long userId, CancellationToken ct = default) {
+        var epochBefore = this.Read(() => this.NewestEpochOf(channelId));
         await this.RequestAsync(new ClientFrame { KickMember = new KickMember { ChannelId = channelId, UserId = userId } }, ct);
+        if (this.AfterKickRequestForTests is { } hook) {
+            await hook();
+        }
+
         lock (this._lock) {
             if (this._channels.TryGetValue(channelId, out var channel)) {
                 channel.Members.RemoveAll(member => member.User.UserId == userId);
-                channel.RekeyPending = true;
+                // The server asks a member to rekey before it answers, so a background rekey
+                // may already be done. Asking again would rekey a second time for nothing.
+                if (this.NewestEpochOf(channelId) == epochBefore) {
+                    channel.RekeyPending = true;
+                }
             }
         }
 
@@ -511,7 +532,10 @@ public sealed class ClientSession : IAsyncDisposable {
                 continue;
             }
 
-            this.MarkSeen(message.MessageId);
+            lock (this._lock) {
+                this.MarkSeen(Convert.ToHexString(message.MessageId.Span));
+            }
+
             this.RaiseMessage(new IncomingMessage(
                 channelId,
                 this.Read(() => this._channels.GetValueOrDefault(channelId)?.Name),
@@ -1029,7 +1053,26 @@ public sealed class ClientSession : IAsyncDisposable {
     }
 
     private async Task ProcessChatMessageAsync(ChatMessage message, CancellationToken ct) {
-        if (!this.MarkSeen(message.MessageId)) {
+        var messageId = Convert.ToHexString(message.MessageId.Span);
+
+        // Cheap checks first. Nothing is marked seen until the message has been verified,
+        // so junk with made-up IDs can't push genuine ones out of the seen-set.
+        var (channelKnown, senderIsMember, seen, channelName) = this.Read(() => {
+            var channel = this._channels.GetValueOrDefault(message.ChannelId);
+            return (channel != null,
+                channel?.Members.Any(member => member.User.UserId == message.SenderId && member.Rank >= Rank.Member) == true,
+                this._seenMessages.Contains(messageId),
+                channel?.DisplayName);
+        });
+
+        if (!channelKnown || seen) {
+            return;
+        }
+
+        if (!senderIsMember) {
+            // A removed member (with the server's help) could otherwise keep posting with an old key.
+            var who = this.Read(() => this._identities.TryGetValue(message.SenderId, out var known) ? $"{known.User.Name}@{known.User.WorldName}" : "someone");
+            this.RaiseNotice(NoticeLevel.Warning, $"Dropped a message in {channelName} from {who}, who isn't a member of it.", message.ChannelId);
             return;
         }
 
@@ -1050,6 +1093,12 @@ public sealed class ClientSession : IAsyncDisposable {
             return;
         }
 
+        var now = this._options.TimeProvider.GetUtcNow();
+        if (this.Read(() => this.IsPastOldEpochGrace(message.ChannelId, message.Epoch, now))) {
+            this.RaiseNotice(NoticeLevel.Warning, $"Dropped a message from {sender.User.Name}: it uses an older key that was replaced a while ago.", message.ChannelId);
+            return;
+        }
+
         var content = ChannelCrypto.DecryptMessage(message, key, sender.Identity.SigningPublicKey.Span);
         if (content == null) {
             this.RaiseNotice(NoticeLevel.Warning, $"Dropped a message claiming to be from {sender.User.Name}: it failed signature or decryption checks.", message.ChannelId);
@@ -1059,16 +1108,62 @@ public sealed class ClientSession : IAsyncDisposable {
         // The timestamp is signed, so an old message can't be replayed as new
         // once it falls outside this window (the seen-set covers the window itself).
         var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(message.TimestampUnixMs);
-        if ((DateTimeOffset.UtcNow - timestamp).Duration() > MaxMessageClockSkew) {
+        if ((now - timestamp).Duration() > MaxMessageClockSkew) {
             this.RaiseNotice(NoticeLevel.Warning, $"Dropped a message from {sender.User.Name} dated {timestamp.ToLocalTime():g}: too far from the current time (replayed, or a wrong clock).", message.ChannelId);
             return;
         }
 
-        var channelName = this.Read(() => this._channels.GetValueOrDefault(message.ChannelId)?.Name);
+        // The seen-set is lost on restart; this persisted high-water mark isn't.
+        var newest = this.Read(() => this._secrets.NewestMessageTimes.TryGetValue(message.ChannelId, out var senders)
+                                     && senders.TryGetValue(message.SenderId, out var time) ? time : (long?) null);
+        if (newest is { } newestMs && message.TimestampUnixMs < newestMs - (long) MessageReorderAllowance.TotalMilliseconds) {
+            this.RaiseNotice(NoticeLevel.Warning, $"Dropped a message from {sender.User.Name} dated {timestamp.ToLocalTime():g}: it's older than messages already received from them (replayed?).", message.ChannelId);
+            return;
+        }
+
+        bool saveNow;
+        lock (this._lock) {
+            if (!this.MarkSeen(messageId)) {
+                return;
+            }
+
+            if (!this._secrets.NewestMessageTimes.TryGetValue(message.ChannelId, out var senders)) {
+                senders = new Dictionary<long, long>();
+                this._secrets.NewestMessageTimes[message.ChannelId] = senders;
+            }
+
+            if (!senders.TryGetValue(message.SenderId, out var previous) || message.TimestampUnixMs > previous) {
+                senders[message.SenderId] = message.TimestampUnixMs;
+                this._replayStateDirty = true;
+            }
+
+            // Saved with the next other change, and at least every few minutes; never once per message.
+            saveNow = this._replayStateDirty && now - this._replayStateSavedAt > ReplayStateSaveInterval;
+            channelName = this._channels.GetValueOrDefault(message.ChannelId)?.Name;
+        }
+
+        if (saveNow) {
+            this.SaveSecrets();
+        }
+
         var isOwn = message.SenderId == this.Read(() => this._me?.UserId);
         this.RaiseMessage(content.KindCase == Content.KindOneofCase.Text
             ? new IncomingMessage(message.ChannelId, channelName, sender.User, isOwn, content.Text.Text, false, timestamp)
             : new IncomingMessage(message.ChannelId, channelName, sender.User, isOwn, null, true, timestamp));
+    }
+
+    /// <summary>
+    /// True if <paramref name="epoch"/> is older than the key epoch and a newer key
+    /// was accepted more than <see cref="OldEpochGrace"/> ago (or before this
+    /// session started). Call inside the lock.
+    /// </summary>
+    private bool IsPastOldEpochGrace(string channelId, ulong epoch, DateTimeOffset now) {
+        if (this.KeyEpochOf(channelId) is not { } held || epoch >= held || !this._channels.TryGetValue(channelId, out var channel)) {
+            return false;
+        }
+
+        var replacedAt = channel.KeyAcceptedAt.Where(entry => entry.Key > epoch).Select(entry => entry.Value).DefaultIfEmpty(DateTimeOffset.MinValue).Min();
+        return now - replacedAt > OldEpochGrace;
     }
 
     // ================================================================ keys and identities
@@ -1331,6 +1426,11 @@ public sealed class ClientSession : IAsyncDisposable {
         return this._secrets.EpochKeys.TryGetValue(channelId, out var keys) && keys.Count > 0 ? keys.Keys.Max() : null;
     }
 
+    /// <summary>The newer of the server's epoch and the key epoch, or null for an unknown channel.</summary>
+    private ulong? NewestEpochOf(string channelId) {
+        return this._channels.TryGetValue(channelId, out var channel) ? Math.Max(channel.ServerEpoch, this.KeyEpochOf(channelId) ?? 0) : null;
+    }
+
     /// <summary>True if this client holds a key at least as new as the server's epoch.</summary>
     private bool HasCurrentKey(string channelId) {
         return this._channels.TryGetValue(channelId, out var channel) && this.KeyEpochOf(channelId) is { } held && held >= channel.ServerEpoch;
@@ -1347,6 +1447,10 @@ public sealed class ClientSession : IAsyncDisposable {
         }
 
         keys[epoch] = key;
+        if (this._channels.TryGetValue(channelId, out var channel)) {
+            channel.KeyAcceptedAt[epoch] = this._options.TimeProvider.GetUtcNow();
+        }
+
         var newest = keys.Keys.Max();
         foreach (var old in keys.Keys.Where(e => e + KeptEpochsPerChannel <= newest).ToList()) {
             keys.Remove(old);
@@ -1360,6 +1464,7 @@ public sealed class ClientSession : IAsyncDisposable {
             this._channels.Remove(channelId);
             this._secrets.EpochKeys.Remove(channelId);
             this._secrets.ChannelNameVersions.Remove(channelId);
+            this._secrets.NewestMessageTimes.Remove(channelId);
             this._secretsVersion++;
         }
 
@@ -1367,21 +1472,19 @@ public sealed class ClientSession : IAsyncDisposable {
         this.Publish();
     }
 
+    /// <summary>Remembers a verified message's ID. Call inside the lock.</summary>
     /// <returns>False if the message was already seen.</returns>
-    private bool MarkSeen(ByteString messageId) {
-        var id = Convert.ToHexString(messageId.Span);
-        lock (this._lock) {
-            if (!this._seenMessages.Add(id)) {
-                return false;
-            }
-
-            this._seenOrder.Enqueue(id);
-            while (this._seenOrder.Count > SeenMessageCapacity) {
-                this._seenMessages.Remove(this._seenOrder.Dequeue());
-            }
-
-            return true;
+    private bool MarkSeen(string id) {
+        if (!this._seenMessages.Add(id)) {
+            return false;
         }
+
+        this._seenOrder.Enqueue(id);
+        while (this._seenOrder.Count > SeenMessageCapacity) {
+            this._seenMessages.Remove(this._seenOrder.Dequeue());
+        }
+
+        return true;
     }
 
     private IdentityKeys EnsureIdentity() {
@@ -1493,6 +1596,13 @@ public sealed class ClientSession : IAsyncDisposable {
         ClientSecrets copy;
         long version;
         lock (this._lock) {
+            // Message timestamps ride along with whatever else is being saved.
+            if (this._replayStateDirty) {
+                this._replayStateDirty = false;
+                this._replayStateSavedAt = this._options.TimeProvider.GetUtcNow();
+                this._secretsVersion++;
+            }
+
             version = this._secretsVersion;
             if (version == Interlocked.Read(ref this._savedSecretsVersion)) {
                 return;
@@ -1546,8 +1656,11 @@ public sealed class ClientSession : IAsyncDisposable {
 
     private void RaiseMessage(IncomingMessage message) => this.InvokeSafely(this.MessageReceived, message);
 
+    /// <summary>
+    /// Tells the user something. Notices often contain names, channel names or
+    /// server text, so they go only to <see cref="Notice"/>, never to the diagnostic log.
+    /// </summary>
     private void RaiseNotice(NoticeLevel level, string text, string? channelId = null) {
-        this.Log(level, text);
         this.InvokeSafely(this.Notice, new SessionNotice(level, text, channelId));
     }
 
@@ -1609,6 +1722,9 @@ public sealed class ClientSession : IAsyncDisposable {
 
         /// <summary>The last epoch whose unusable key made this client rekey automatically.</summary>
         public ulong? BadKeyRekeyEpoch { get; set; }
+
+        /// <summary>When this session accepted each epoch key; keys loaded from disk aren't listed.</summary>
+        public Dictionary<ulong, DateTimeOffset> KeyAcceptedAt { get; } = new();
         public string DisplayName => this.Name ?? ChannelView.PlaceholderName(this.Id);
     }
 

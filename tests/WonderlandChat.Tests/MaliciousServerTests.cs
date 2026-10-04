@@ -112,6 +112,118 @@ public sealed class MaliciousServerTests : IAsyncLifetime {
     }
 
     [Fact]
+    public async Task JunkMessagesCannotFlushTheSeenSet() {
+        var alice = await this._server.RegisterAsync("Alice Flush");
+        var bob = await this._server.RegisterAsync("Bob Flush");
+        var channelId = await alice.Session.CreateChannelAsync("Flush", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        var epoch = bob.Session.Snapshot.FindChannel(channelId)!.Epoch;
+
+        var genuine = bob.ForgeMessage(channelId, epoch, "only once", DateTimeOffset.UtcNow);
+        this._server.Registry.Send(alice.UserId, new Event { ChatMessage = genuine });
+        await WaitFor(() => alice.Messages.FirstOrDefault(m => m.Text == "only once"));
+
+        // More junk than the seen-set holds, each with a fresh ID. In batches, so the server's
+        // per-connection send queue never overflows.
+        const string failed = "failed signature or decryption";
+        for (var sent = 0; sent < 2100;) {
+            for (var i = 0; i < 200 && sent < 2100; i++, sent++) {
+                this._server.Registry.Send(alice.UserId, new Event {
+                    ChatMessage = new ChatMessage {
+                        ChannelId = channelId, Epoch = epoch, SenderId = bob.UserId,
+                        MessageId = ByteString.CopyFrom(Guid.NewGuid().ToByteArray()), TimestampUnixMs = genuine.TimestampUnixMs,
+                        Ciphertext = ByteString.CopyFrom(new byte[64]), Signature = ByteString.CopyFrom(new byte[64]),
+                    },
+                });
+            }
+
+            var expected = sent;
+            await WaitFor(() => alice.Notices.Count(n => n.Text.Contains(failed)) >= expected ? new object() : null);
+        }
+
+        // The genuine message is replayed; a fresh one after it shows the replay was handled.
+        this._server.Registry.Send(alice.UserId, new Event { ChatMessage = genuine });
+        this._server.Registry.Send(alice.UserId, new Event { ChatMessage = bob.ForgeMessage(channelId, epoch, "barrier", DateTimeOffset.UtcNow) });
+        await WaitFor(() => alice.Messages.FirstOrDefault(m => m.Text == "barrier"));
+        Assert.Single(alice.Messages, m => m.Text == "only once");
+    }
+
+    [Fact]
+    public async Task ReplayOlderThanNewestAcceptedIsDroppedAfterRestart() {
+        var alice = await this._server.RegisterAsync("Alice Restart Replay");
+        var bob = await this._server.RegisterAsync("Bob Restart Replay");
+        var channelId = await alice.Session.CreateChannelAsync("Replay Restart", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        var epoch = bob.Session.Snapshot.FindChannel(channelId)!.Epoch;
+
+        // A message Bob wrote five minutes ago, never delivered, is captured by the server.
+        var captured = bob.ForgeMessage(channelId, epoch, "written earlier", DateTimeOffset.UtcNow.AddMinutes(-5));
+        await bob.Session.SendTextAsync(channelId, "latest", Ct);
+        await WaitFor(() => alice.Messages.FirstOrDefault(m => m.Text == "latest"));
+
+        // After a restart the seen-set is empty, but the newest timestamp from Bob was saved.
+        await alice.Session.DisposeAsync();
+        var aliceAgain = await this._server.RestartAsync(alice);
+        this._server.Registry.Send(aliceAgain.UserId, new Event { ChatMessage = captured });
+
+        await WaitFor(() => aliceAgain.Notices.FirstOrDefault(n => n.Text.Contains("older than messages already received")));
+        Assert.DoesNotContain(aliceAgain.Messages, m => m.Text == "written earlier");
+
+        // Slightly out-of-order messages (within two minutes) are still fine.
+        this._server.Registry.Send(aliceAgain.UserId, new Event { ChatMessage = bob.ForgeMessage(channelId, epoch, "a bit late", DateTimeOffset.UtcNow.AddSeconds(-30)) });
+        await WaitFor(() => aliceAgain.Messages.FirstOrDefault(m => m.Text == "a bit late"));
+    }
+
+    [Fact]
+    public async Task ReplayStateIsNotSavedForEveryMessage() {
+        var store = new CountingSecretStore();
+        var alice = await this._server.RegisterAsync("Alice Saves", store);
+        var bob = await this._server.RegisterAsync("Bob Saves");
+        var channelId = await alice.Session.CreateChannelAsync("Saves", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        var epoch = bob.Session.Snapshot.FindChannel(channelId)!.Epoch;
+
+        // The first message may flush; after that, ten messages must not mean ten writes.
+        this._server.Registry.Send(alice.UserId, new Event { ChatMessage = bob.ForgeMessage(channelId, epoch, "first", DateTimeOffset.UtcNow) });
+        await WaitFor(() => alice.Messages.FirstOrDefault(m => m.Text == "first"));
+        var before = store.Saves;
+        for (var i = 0; i < 10; i++) {
+            this._server.Registry.Send(alice.UserId, new Event { ChatMessage = bob.ForgeMessage(channelId, epoch, $"message {i}", DateTimeOffset.UtcNow.AddMilliseconds(i)) });
+        }
+
+        await WaitFor(() => alice.Messages.FirstOrDefault(m => m.Text == "message 9"));
+        // At most one unrelated save (say, a background identity fetch) may slip in.
+        Assert.True(store.Saves - before <= 1, $"{store.Saves - before} saves for 10 messages");
+
+        // It is saved with the next save (here, on shutdown).
+        await alice.Session.DisposeAsync();
+        Assert.Contains(bob.UserId, store.Load().NewestMessageTimes[channelId].Keys);
+    }
+
+    [Fact]
+    public async Task OlderEpochIsOnlyAcceptedBrieflyAfterARekey() {
+        var clock = new ManualClock();
+        var alice = await this._server.RegisterAsync("Alice Grace");
+        var bob = await this._server.RegisterAsync("Bob Grace", options: this._server.Options(time: clock));
+        var channelId = await alice.Session.CreateChannelAsync("Grace", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        var oldEpoch = bob.Session.Snapshot.FindChannel(channelId)!.Epoch;
+
+        await alice.Session.RekeyAsync(channelId, Ct, force: true);
+        await WaitFor(() => bob.Session.Snapshot.FindChannel(channelId) is { Epoch: var e } c && e > oldEpoch ? c : null);
+
+        // Sent just before the rekey and delivered just after: fine.
+        this._server.Registry.Send(bob.UserId, new Event { ChatMessage = alice.ForgeMessage(channelId, oldEpoch, "in flight", clock.GetUtcNow()) });
+        await WaitFor(() => bob.Messages.FirstOrDefault(m => m.Text == "in flight"));
+
+        // Three minutes later the old key is still held, but no longer good for new messages.
+        clock.Offset = TimeSpan.FromMinutes(3);
+        this._server.Registry.Send(bob.UserId, new Event { ChatMessage = alice.ForgeMessage(channelId, oldEpoch, "much later", clock.GetUtcNow()) });
+        await WaitFor(() => bob.Notices.FirstOrDefault(n => n.Text.Contains("older key that was replaced")));
+        Assert.DoesNotContain(bob.Messages, m => m.Text == "much later");
+    }
+
+    [Fact]
     public async Task OldChannelNameCannotBeReplayed() {
         var alice = await this._server.RegisterAsync("Alice Rename");
         var bob = await this._server.RegisterAsync("Bob Rename");

@@ -38,12 +38,13 @@ public sealed class Harness : IAsyncDisposable {
     /// <summary>The server's database, for tests that play a malicious or misbehaving server.</summary>
     public Database Database => this.Factory.Services.GetRequiredService<Database>();
 
-    public ClientSessionOptions Options(bool autoRekey = true, Action<NoticeLevel, string>? log = null) => new() {
+    public ClientSessionOptions Options(bool autoRekey = true, Action<NoticeLevel, string>? log = null, TimeProvider? time = null) => new() {
         ServerUri = new Uri(this.Factory.Server.BaseAddress, ProtocolInfo.WebSocketPath),
         Connect = (uri, ct) => this.Factory.Server.CreateWebSocketClient().ConnectAsync(uri, ct),
         ReconnectMinDelay = TimeSpan.FromMilliseconds(100),
         AutoRekeyWhenDesignated = autoRekey,
         Log = log,
+        TimeProvider = time ?? TimeProvider.System,
     };
 
     public void Track(IAsyncDisposable disposable) => this._disposables.Add(disposable);
@@ -149,6 +150,28 @@ public sealed class Harness : IAsyncDisposable {
     }
 }
 
+/// <summary>The real clock plus an offset a test can move forward.</summary>
+public sealed class ManualClock : TimeProvider {
+    public TimeSpan Offset { get; set; }
+
+    public override DateTimeOffset GetUtcNow() => base.GetUtcNow() + this.Offset;
+}
+
+/// <summary>Counts saves, to check what is written per message.</summary>
+public sealed class CountingSecretStore : ISecretStore {
+    private readonly InMemorySecretStore _inner = new();
+    private int _saves;
+
+    public int Saves => Volatile.Read(ref this._saves);
+
+    public ClientSecrets Load() => this._inner.Load();
+
+    public void Save(ClientSecrets secrets) {
+        Interlocked.Increment(ref this._saves);
+        this._inner.Save(secrets);
+    }
+}
+
 public sealed class TestClient {
     private readonly ConcurrentQueue<IncomingMessage> _messages = new();
     private readonly ConcurrentQueue<SessionNotice> _notices = new();
@@ -175,4 +198,14 @@ public sealed class TestClient {
     }
 
     public byte[] LoadEpochKey(string channelId, ulong epoch) => this.Store.Load().EpochKeys[channelId][epoch];
+
+    /// <summary>A message signed and encrypted with this client's keys, as the server would deliver it.</summary>
+    public ChatMessage ForgeMessage(string channelId, ulong epoch, string text, DateTimeOffset when) {
+        using var keys = this.LoadIdentity();
+        var sent = ChannelCrypto.EncryptMessage(new Content { Text = new TextContent { Text = text } }, this.LoadEpochKey(channelId, epoch), channelId, epoch, keys, this.UserId, when.ToUnixTimeMilliseconds());
+        return new ChatMessage {
+            ChannelId = channelId, Epoch = epoch, SenderId = this.UserId, MessageId = sent.MessageId,
+            TimestampUnixMs = sent.TimestampUnixMs, Ciphertext = sent.Ciphertext, Signature = sent.Signature,
+        };
+    }
 }

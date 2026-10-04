@@ -81,6 +81,44 @@ public sealed class EndToEndTests : IAsyncLifetime {
     }
 
     [Fact]
+    public async Task KickDoesNotRekeyAgainWhenTheBackgroundRekeyFinishedFirst() {
+        var alice = await this._server.RegisterAsync("Alice Race");
+        var bob = await this._server.RegisterAsync("Bob Race");
+        var carol = await this._server.RegisterAsync("Carol Race");
+        var channelId = await alice.Session.CreateChannelAsync("Race", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        await AddMemberAsync(alice, channelId, carol);
+        var epochBeforeKick = alice.Session.Snapshot.FindChannel(channelId)!.Epoch;
+
+        // Force the race: the rekey the server asks for completes before KickAsync carries on.
+        alice.Session.AfterKickRequestForTests = () => WaitFor(() =>
+            alice.Session.Snapshot.FindChannel(channelId) is { Epoch: var e, RekeyPending: false } c && e > epochBeforeKick ? c : null);
+        await alice.Session.KickAsync(channelId, carol.UserId, Ct);
+
+        Assert.Equal(epochBeforeKick + 1, alice.Session.Snapshot.FindChannel(channelId)!.Epoch);
+        Assert.Equal(epochBeforeKick + 1, this._server.Database.GetChannel(channelId)!.Epoch);
+    }
+
+    [Fact]
+    public async Task NoticesWithUserContentStayOutOfTheLog() {
+        var log = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        var alice = await this._server.RegisterAsync("Alice Quiet", options: this._server.Options(log: (_, text) => log.Enqueue(text)));
+        var bob = await this._server.RegisterAsync("Bob Quiet");
+        var channelId = await alice.Session.CreateChannelAsync("Hush Channel", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+
+        // The notice is shown to the user...
+        await WaitFor(() => alice.Notices.FirstOrDefault(n => n.Text.Contains("Bob Quiet@Debug joined Hush Channel")));
+        await alice.Session.RenameAsync(channelId, "Hush Renamed", Ct);
+        await bob.Session.LeaveAsync(channelId, Ct);
+        await WaitFor(() => alice.Notices.FirstOrDefault(n => n.Text.Contains("left Hush Renamed")));
+
+        // ...but names and channel names never reach the diagnostic log.
+        Assert.NotEmpty(log);
+        Assert.DoesNotContain(log, line => line.Contains("Hush") || line.Contains("Bob Quiet"));
+    }
+
+    [Fact]
     public async Task MemberCannotKickModerator() {
         var alice = await this._server.RegisterAsync("Alice Rank");
         var bob = await this._server.RegisterAsync("Bob Rank");

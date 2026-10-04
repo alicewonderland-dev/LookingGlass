@@ -113,6 +113,12 @@ public sealed class ClientSessionOptions {
     public int MaxReceiveBytes { get; init; } = 4 * 1024 * 1024;
     public int TraceCapacity { get; init; } = 200;
 
-    /// <summary>Diagnostic log sink. Called from background threads.</summary>
+    /// <summary>
+    /// Diagnostic log sink. Called from background threads. Never given user
+    /// content (names, channel names, messages): that only goes to <see cref="ClientSession.Notice"/>.
+    /// </summary>
     public Action<NoticeLevel, string>? Log { get; init; }
+
+    /// <summary>The clock used to judge message ages. Tests replace it.</summary>
+    public TimeProvider TimeProvider { get; init; } = TimeProvider.System;
 }
