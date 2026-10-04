@@ -87,6 +87,37 @@ public sealed class ServerHardeningTests {
     }
 
     [Fact]
+    public void PreReleaseDatabaseWithChannelsIsRefusedAndLeftAlone() {
+        var (db, directory) = NewDatabase();
+        try {
+            var path = Path.Combine(directory, "test.db");
+            var (channelId, _, _) = CreateChannel(db);
+            Assert.Equal(2L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
+
+            // As if the file were left over from the unreleased schema 1.
+            QueryLong(path, "DELETE FROM schema_version WHERE version = 2; SELECT 0;");
+            var error = Assert.Throws<UnsupportedDatabaseException>(() => new Database(path));
+            Assert.Contains(Path.GetFullPath(path), error.Message);
+            Assert.Contains("delete or move", error.Message);
+
+            // Nothing was deleted or migrated.
+            Assert.Equal(1L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
+            Assert.Equal(1L, QueryLong(path, "SELECT COUNT(*) FROM channels WHERE channel_id = '" + channelId + "';"));
+        } finally {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            DeleteDirectory(directory);
+        }
+    }
+
+    private static long QueryLong(string path, string sql) {
+        using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={path};Pooling=False");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        return Convert.ToInt64(command.ExecuteScalar());
+    }
+
+    [Fact]
     public void AdminTransferFailsIfTargetLeftMeanwhile() {
         var (db, directory) = NewDatabase();
         try {

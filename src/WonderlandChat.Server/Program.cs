@@ -46,7 +46,13 @@ var app = builder.Build();
 var options = app.Services.GetRequiredService<IOptions<ServerOptions>>().Value;
 
 // Open the database now so migration errors stop startup instead of the first request.
-app.Services.GetRequiredService<Database>();
+try {
+    app.Services.GetRequiredService<Database>();
+} catch (UnsupportedDatabaseException ex) {
+    app.Logger.LogCritical("{Problem}", ex.Message);
+    Environment.ExitCode = 1;
+    return;
+}
 
 if (options.Dev.AllowDebugAccounts) {
     app.Logger.LogWarning("Debug accounts are ENABLED. Anyone can register a fake character on world \"{World}\". Never do this on a public server.", ProtocolInfo.DebugWorldName);

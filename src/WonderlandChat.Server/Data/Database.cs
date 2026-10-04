@@ -39,6 +39,9 @@ public enum RekeyResult {
     MembershipChanged,
 }
 
+/// <summary>The database file can't be used by this version of the server. It is left as it was.</summary>
+public sealed class UnsupportedDatabaseException(string message) : Exception(message);
+
 /// <summary>
 /// SQLite storage. Every multi-statement change runs in one transaction.
 /// Methods are synchronous (SQLite is in-process) and short.
@@ -47,9 +50,12 @@ public sealed class Database {
     private const int SchemaVersion = 2;
     private const int KeptEpochs = 4;
 
+    private readonly string _path;
     private readonly string _connectionString;
 
+    /// <exception cref="UnsupportedDatabaseException">The file is from a version whose channels this one can't use.</exception>
     public Database(string path) {
+        this._path = path;
         this._connectionString = new SqliteConnectionStringBuilder {
             DataSource = path,
             Mode = SqliteOpenMode.ReadWriteCreate,
@@ -76,6 +82,16 @@ public sealed class Database {
         var current = Convert.ToInt32(Scalar(connection, null, "SELECT COALESCE(MAX(version), 0) FROM schema_version;"));
         if (current >= SchemaVersion) {
             return;
+        }
+
+        // Version 2 signs key commitments and name revisions, so version 1's epoch keys and
+        // names no longer verify and its channels would stall at the next membership change.
+        // Version 1 was never released: rather than migrate, ask for a fresh database.
+        if (current == 1 && Convert.ToInt64(Scalar(connection, null, "SELECT COUNT(*) FROM channels;")) > 0) {
+            throw new UnsupportedDatabaseException(
+                $"The database {Path.GetFullPath(this._path)} was made by a pre-release version (schema 1) whose channels this version can't use. " +
+                "It has not been changed. Stop the server and delete or move that file (with its -wal and -shm files, if any), then start again " +
+                "to create a new database. Everyone will need to register again.");
         }
 
         using var tx = connection.BeginTransaction();
