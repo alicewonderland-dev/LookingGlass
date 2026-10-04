@@ -53,7 +53,7 @@ on a private network such as your tailnet: anyone who can reach a Development
 server can register (or take over) any debug account, including the echo bot.
 
 1. Make sure the machine's firewall allows TCP 5180 from the tailnet.
-2. In game, open `/lookingglass`, click the gear at the top right (or the
+2. In game, open `/lookingglass`, click the gear in its title bar (or the
    plugin's settings button in Dalamud's plugin list), and set the server URL
    to `ws://<machine-name>:5180/ws` (the Tailscale MagicDNS name or 100.x IP).
 3. Register your character. The main window walks you through it: get a
@@ -118,12 +118,12 @@ prints how to use it.
 across restarts until you leave it (or it's disbanded, or you're removed);
 the freed number then goes to the next channel without one. To change a
 channel's number, select it in the main window's channel list and click its
-`/lgcN` button under the name: if another channel has the number you pick, the
+`/lgcN` tag under the name: if another channel has the number you pick, the
 two swap. The list shows which channel has each number. Typing a number with
 no channel on it says so.
 
-**Nicknames.** Select a channel, click **+ Nickname** (or its `/lgc <nickname>`
-button) next to its number, type one and press **Set** (or **Clear** to
+**Nicknames.** Select a channel, click **+ nickname** (or its `/lgc <nickname>`
+tag) next to its number, type one and press **Set** (or **Clear** to
 remove it). A nickname is 1 to 16 letters, digits, `-` or `_`,
 can't be only digits (so `/lgc 3` is never confused with `/lgc3`), and must
 be different from your other channels' nicknames, ignoring case: `/lgc Sky hi`
@@ -135,15 +135,24 @@ its number (`[LGC3]`); turn off **Show nicknames in chat tags** in Settings to
 always see numbers. A channel with neither (more than fifty channels, or a
 message that arrives before the channel list is in) is tagged `[LGC]`.
 
-**Colours.** Click the swatch next to a channel's commands to give it one of
-the game's own chat colours. Its lines in chat take that colour (or only the
-`[LGC]` tag, if you turn that off in Settings), and so does its place in the
+**Colours.** In a channel's menu (the ⋮ button next to its name), choose
+**Colour...** to give it one of the game's own chat colours, or click the
+coloured dot before its name. Its lines in chat take that colour (or only the
+tag, if you turn that off in Settings), and so does the bar beside it in the
 channel list. **Default** colours only the tag, as before. Colours are kept
 per character like nicknames.
 
 **Unread messages.** The channel list counts messages from others since you
 last looked at a channel in the main window or talked in it, and the window's
 title shows the total. The counts start again from zero when you log in.
+
+**Members.** The icon before each member says whether you've compared
+fingerprints with them (a question mark until you have, a check once you
+marked them verified, a warning if their key changed); click it to compare.
+Their ⋮ menu has the rest. To remove someone, hold **Ctrl** while choosing
+**Remove from channel** (it stays greyed out otherwise); cancelling an invite
+happens straight away. Leaving or disbanding a channel (from the channel's ⋮
+menu) asks first.
 
 ## Server configuration
 
@@ -188,7 +197,8 @@ What the encryption does today:
   see a 25-digit fingerprint. Clients pin each user's keys and name on first
   use and show a persistent "key changed" warning when they change. Members
   whose fingerprint you haven't compared show "not compared" (compare
-  fingerprints over /tell: a member's ... menu, **Compare fingerprints**, then **Mark verified**).
+  fingerprints over /tell: click the icon before a member's name, or **Compare
+  fingerprints** in their ⋮ menu, then **Mark verified**).
 - Who is in a channel, and with what rank, comes from the channel's
   membership log: a hash-chained list of changes, each signed by the member
   who made it. Invites are signed by a moderator or the admin, accepts by the
