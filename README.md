@@ -35,10 +35,23 @@ early testing (version 0.2).
 | `/lookingglass` or `/lg` | Open the main window: register, create and manage channels and invites |
 | `/lgc1 <message>` … `/lgc50 <message>` | Send to the channel with that number |
 | `/lgc <nickname> <message>` | Send to the channel with that nickname |
+| `/lgc3` or `/lgc <nickname>` (no message) | Talk in that channel: what you type in chat goes there, not to game chat, until you switch back with `/s` (or any chat channel) |
 | `/lgdebug` | Open the debug window (connection details, for reporting problems) |
 
 `/lgc` on its own explains how to use it. Only `/lgc` is listed in Dalamud's
-command help (`/xlhelp`), to keep the list short.
+command help (`/xlhelp`), to keep the list short. While you talk in a channel,
+its tag (like `[sky]`) shows where the chat box names its channel and in the
+server info bar; click that to stop. If a message can't be sent, you're told,
+and it doesn't go to game chat either.
+
+With ChatTwo, every ChatTwo chat box and pop-out sends to the channel too,
+whatever channel it shows, and so do short commands with a message (`/p hi`).
+To say something in a game channel just once, use the long command
+(`/party hi`, `/say hi`), or switch channel first. ChatTwo shows the tag in its
+input, with "(Warning: ...)" naming the game's channel underneath; your
+messages still go to the LookingGlass channel, except from a ChatTwo tab or
+pop-out set to a tell, which ChatTwo sends itself. Turn ExtraChat off while you
+do this: it watches the same chat box.
 
 ## Installing
 

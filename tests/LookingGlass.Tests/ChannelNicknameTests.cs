@@ -95,16 +95,28 @@ public sealed class ChannelNicknameTests {
     [Fact]
     public void NicknameCommandsResolveOrExplain() {
         var nicknames = new Dictionary<string, string> { ["aaa"] = "Sky" };
-        const string usage = "Usage: /lgc <nickname> <message>, or /lgc1 to /lgc50 <message>. Set nicknames and numbers in the main window (/lg).";
+        const string usage = "Usage: /lgc <nickname> <message>, or /lgc1 to /lgc50 <message>. " +
+                             "Leave out the message to keep talking in that channel until you switch back (for example with /s). " +
+                             "Set nicknames and numbers in the main window (/lg).";
 
         Assert.Equal(new ChannelCommand.Send("aaa", "hello there"), ChannelCommand.ForNickname(nicknames, " sky hello there "));
         Assert.Equal(new ChannelCommand.Send("aaa", "hi"), ChannelCommand.ForNickname(nicknames, "SKY hi"));
+
+        // /lgc alone explains itself.
         Assert.Equal(new ChannelCommand.Usage(usage), ChannelCommand.ForNickname(nicknames, ""));
         Assert.Equal(new ChannelCommand.Usage(usage), ChannelCommand.ForNickname(nicknames, "   "));
-        Assert.Equal(new ChannelCommand.Usage(usage), ChannelCommand.ForNickname(nicknames, "sky"));
-        Assert.Equal(new ChannelCommand.Usage(usage), ChannelCommand.ForNickname(nicknames, "moon  "));
+
+        // A nickname with no message: talk in that channel from now on.
+        Assert.Equal(new ChannelCommand.TalkIn("aaa"), ChannelCommand.ForNickname(nicknames, "sky"));
+        Assert.Equal(new ChannelCommand.TalkIn("aaa"), ChannelCommand.ForNickname(nicknames, "  SKY  "));
+
+        // An unknown nickname, with or without a message.
+        Assert.Equal(new ChannelCommand.NotFound("No channel has the nickname 'moon'."), ChannelCommand.ForNickname(nicknames, "moon  "));
         Assert.Equal(new ChannelCommand.NotFound("No channel has the nickname 'moon'."), ChannelCommand.ForNickname(nicknames, "moon hello"));
+
+        // A nickname is never only digits, so "/lgc 3" is never channel number 3 (that is /lgc3), with or without a message.
         Assert.Equal(new ChannelCommand.NotFound("No channel has the nickname '3'."), ChannelCommand.ForNickname(nicknames, "3 hello"));
+        Assert.Equal(new ChannelCommand.NotFound("No channel has the nickname '3'."), ChannelCommand.ForNickname(nicknames, "3"));
     }
 
     [Fact]
