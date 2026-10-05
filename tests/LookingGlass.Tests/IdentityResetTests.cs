@@ -96,8 +96,8 @@ public sealed class IdentityResetTests : IAsyncLifetime {
 
     /// <summary>
     /// The whole reset, end to end: the client goes straight to registering (no login to try, no key login), registers
-    /// new keys, and the server shuts out the old login and the old keys. The old channel memberships stay with the old
-    /// keys, and others see the key change.
+    /// new keys, and the server shuts out the old login and the old keys. The channel memberships move to the new keys,
+    /// and others see the new key.
     /// </summary>
     [Fact]
     public async Task AfterAResetTheOldKeysAndLoginAreShutOut() {
@@ -133,14 +133,13 @@ public sealed class IdentityResetTests : IAsyncLifetime {
         using var newKeys = reset.LoadIdentity();
         Assert.NotNull((await KeyLoginAsync(raw, newKeys, alice.UserId, this._server.ServerUri.AbsoluteUri)).KeyLoginComplete);
 
-        // The channel's place belongs to the old keys: no key for it, and a warning saying why.
-        var channel = await WaitFor(() => reset.Session.Snapshot.FindChannel(channelId) is { MembershipWarning: not null } c ? c : null);
-        Assert.False(channel.HasKey);
-        Assert.Contains("registered again", channel.MembershipWarning);
+        // The channel's place moved to the new keys, rank and all (see KeyRecoveryTests): nothing is left under the old ones.
+        var channel = await WaitFor(() => reset.Session.Snapshot.FindChannel(channelId) is { MyRank: Rank.Admin } c ? c : null);
+        Assert.False(channel.OldKeyMembership);
 
-        // Bob sees that Alice's key was replaced.
+        // Bob sees Alice's new key, as expected rather than as an unexplained change.
         await bob.Session.RefreshAsync(Ct);
-        await WaitFor(() => bob.Session.Snapshot.FindChannel(channelId)?.Members.FirstOrDefault(m => m.User.UserId == alice.UserId) is { KeyReplaced: true } m ? m : null);
+        await WaitFor(() => bob.Session.Snapshot.FindChannel(channelId)?.Members.FirstOrDefault(m => m.User.UserId == alice.UserId) is { KeyRecovered: true, KeyReplaced: false } m ? m : null);
     }
 
     /// <summary>
@@ -494,7 +493,7 @@ public sealed class IdentityResetTests : IAsyncLifetime {
             keys.Sign(new SigningPayload(Domains.KeyLogin).Add(1234L).Add(hash).Add(url).ToArray())));
     }
 
-    private static async Task<Response> KeyLoginAsync(RawConnection raw, IdentityKeys keys, long userId, string url) {
+    internal static async Task<Response> KeyLoginAsync(RawConnection raw, IdentityKeys keys, long userId, string url) {
         var challenge = (await raw.SendAsync(new ClientFrame { StartKeyLogin = new StartKeyLogin { UserId = userId } })).KeyLoginChallenge!.Challenge.ToByteArray();
         return await raw.SendAsync(new ClientFrame {
             CompleteKeyLogin = new CompleteKeyLogin {

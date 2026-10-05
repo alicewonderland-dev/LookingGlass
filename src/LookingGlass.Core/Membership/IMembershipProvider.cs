@@ -48,6 +48,13 @@ public interface IChannelMembership {
     ChannelInvitee? FindInvitee(long userId);
 
     /// <summary>
+    /// The keys a member or invitee had at entry <paramref name="seq"/>, for checking what they signed there: their keys now,
+    /// unless a key recovered entry after it moved them (then the keys it moved them from). Only their last few recoveries are
+    /// remembered (earlier ones give the oldest keys remembered). Null for someone not in the channel now.
+    /// </summary>
+    MemberKeys? KeysAt(long userId, ulong seq);
+
+    /// <summary>
     /// True if keys or names made at <paramref name="position"/> were made for today's members:
     /// it is in this log, and nobody has joined or left since.
     /// </summary>
@@ -77,6 +84,14 @@ public interface IChannelMembership {
     /// <exception cref="MembershipException">The change isn't allowed at this point, with why.</exception>
     MembershipEntry Create(MembershipEntryKind kind, long subjectId, IdentityKeys actor, long actorId, long timestampMs,
         MemberKeys? inviteeKeys = null, Rank rank = Rank.Unspecified);
+
+    /// <summary>
+    /// Makes the next entry as the server does when <paramref name="userId"/> re-verifies their character with new keys: their
+    /// place (as a member, or invited) moves from the keys this state has for them to <paramref name="newKeys"/>.
+    /// <paramref name="proof"/> is the new keys' <see cref="KeyRecoveryProof"/> signature, made when registering them.
+    /// </summary>
+    /// <exception cref="MembershipException">The change isn't allowed at this point, with why.</exception>
+    MembershipEntry CreateKeyRecovered(long userId, MemberKeys newKeys, byte[] proof, long timestampMs);
 
     MembershipCheckpoint ToCheckpoint();
 }

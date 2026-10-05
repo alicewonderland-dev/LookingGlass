@@ -4,9 +4,11 @@ namespace LookingGlass.Protocol;
 public static class ProtocolInfo {
     /// <summary>
     /// The protocol version client and server speak. Version 2 is v0.2's (signed membership log):
-    /// version 1 clients and servers can't talk to it, and are told to update at Hello.
+    /// version 1 clients and servers can't talk to it, and are told to update at Hello. Version 3
+    /// adds key recovered entries to the log (registering again through the Lodestone with new keys
+    /// keeps the account's places), which a version 2 client would take for a log it can't verify.
     /// </summary>
-    public const uint CurrentVersion = 2;
+    public const uint CurrentVersion = 3;
 
     /// <summary>The fake home world used by debug accounts.</summary>
     public const string DebugWorldName = "Debug";

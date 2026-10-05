@@ -207,6 +207,20 @@ public sealed class Harness : IAsyncDisposable {
         return client;
     }
 
+    /// <summary>
+    /// <see cref="RegisterAsync"/> on a server from before key recovery: an account registering new keys keeps its places in
+    /// channels under its old ones (see <see cref="RequestHandler.KeepPlacesOnNewKeysForTests"/>). Places like that are
+    /// still about, from then.
+    /// </summary>
+    public async Task<TestClient> RegisterOnAnOldServerAsync(string name, ISecretStore? store = null, ClientSessionOptions? options = null) {
+        this.Handler.KeepPlacesOnNewKeysForTests = true;
+        try {
+            return await this.RegisterAsync(name, store, options);
+        } finally {
+            this.Handler.KeepPlacesOnNewKeysForTests = false;
+        }
+    }
+
     /// <summary>The channel's membership as the server's database has it, as a misbehaving member would build on.</summary>
     public IChannelMembership ServerMembership(string channelId) {
         return SignedLogMembershipProvider.Instance.Restore(this.Database.GetMembershipCheckpoint(channelId)!);

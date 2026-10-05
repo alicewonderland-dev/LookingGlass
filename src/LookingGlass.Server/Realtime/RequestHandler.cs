@@ -66,7 +66,7 @@ public sealed class RequestHandler(
 
     // Acting through a place in a channel whose keys aren't the account's current ones. The plugin says this in plain words (see PlainMessages).
     private const string OldKeyPlace =
-        "Your place in this channel belongs to the identity key you had before you registered again. A moderator must remove you and invite you again.";
+        "Your place in this channel belongs to an identity key your account no longer has. A moderator must remove you and invite you again.";
 
     /// <summary>Why a server outside Development without <see cref="ServerOptions.PublicUrls"/> doesn't start, and what to set.</summary>
     internal const string PublicUrlsRequired =
@@ -148,6 +148,12 @@ public sealed class RequestHandler(
     /// of the account log in meanwhile.
     /// </summary>
     internal Action? BeforeIdentityRetiredForTests { get; set; }
+
+    /// <summary>
+    /// Plays a server from before key recovery: registering new keys leaves the account's places under the keys they have
+    /// (and needs no consent to move them). Places like that are still about, from then.
+    /// </summary>
+    internal bool KeepPlacesOnNewKeysForTests { get; set; }
 
     public async Task<Response> HandleAsync(ClientConnection connection, ClientFrame frame, CancellationToken ct) {
         try {
@@ -364,6 +370,7 @@ public sealed class RequestHandler(
 
         // Before asking the Lodestone, and before anything is stored: the client holds the key it registers.
         this.CheckRegistrationProof(connection, pending, request);
+        var recovery = this.CheckRecoveryProof(pending, request);
 
         if (!pending.IsDebug) {
             // Each attempt costs a Lodestone request, which is shared by the whole server.
@@ -398,16 +405,31 @@ public sealed class RequestHandler(
         }
 
         connection.PendingRegistration = null;
-        // New keys don't change any channel's members (the log binds them to the old ones), so nothing needs a rekey.
-        UserRow user;
+        // The Lodestone (or, for a debug account, nothing at all: anyone may register any of those) says this is the
+        // account's owner: their places move to the keys registered, with a key recovered entry in each channel's log.
+        Registration registration;
         try {
-            (user, _) = db.RegisterUser(pending.UserId, pending.Name, pending.WorldId, pending.WorldName, pending.Identity, pending.IsDebug);
+            registration = db.RegisterUser(pending.UserId, pending.Name, pending.WorldId, pending.WorldName, pending.Identity, pending.IsDebug,
+                recovery == null ? null : new KeyRecovery(recovery, membership, this._time.GetUtcNow().ToUnixTimeMilliseconds()));
         } catch (KeyRetiredException) {
             // Replaced or retired since this registration started.
             throw new RequestException(ErrorCode.RegistrationFailed, KeyRetired);
         } catch (KeyInUseException) {
             // Registered by another account since this registration started.
             throw new RequestException(ErrorCode.RegistrationFailed, KeyInUse);
+        }
+
+        var user = registration.User;
+        // Old devices were revoked; drop any session still using one, before the members are told (an old key's session
+        // mustn't hear about its own replacement, nor be asked to rekey).
+        registry.Disconnect(user.UserId, "This character registered again");
+        foreach (var place in registration.Recovered) {
+            this.BroadcastEntry(place.ChannelId, place.Entry, user, user);
+            if (place.Member) {
+                // The old keys mustn't read what comes next, and the new ones need the channel's key: a member who is online
+                // makes one (never the recovered member, who can't: see MemberRow.AwaitingKey).
+                this.RequestRekey(place.ChannelId, preferred: null, excluding: user.UserId);
+            }
         }
 
         // Only while the key just registered is still the account's, and not retired: a retirement or another
@@ -417,10 +439,40 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.RegistrationFailed, "This character's keys changed while registering; start again.");
         }
 
-        // Old devices were revoked; drop any session still using one.
-        registry.Disconnect(user.UserId, "This character registered again");
-        logger.LogInformation("Registered {User} ({Kind})", user.UserId, pending.IsDebug ? "debug" : "verified");
-        return new Response { RegistrationComplete = new RegistrationComplete { DeviceToken = token, User = user.ToProto() } };
+        logger.LogInformation("Registered {User} ({Kind}); {Places} places moved to the keys registered", user.UserId, pending.IsDebug ? "debug" : "verified",
+            registration.Recovered.Count);
+        return new Response {
+            RegistrationComplete = new RegistrationComplete { DeviceToken = token, User = user.ToProto(), PlacesRestored = (uint) registration.Recovered.Count },
+        };
+    }
+
+    /// <summary>
+    /// Checks the new keys' consent to take over the account's places (see <see cref="KeyRecoveryProof"/>), which goes into
+    /// each key recovered entry. Without one, a registration that would move places is refused, asking to update: a plugin
+    /// from before recovery, whose user would otherwise be left with places their new keys can't use.
+    /// </summary>
+    /// <returns>The signature, or null if there is none (and nothing to move).</returns>
+    /// <exception cref="RequestException">Not signed by the keys being registered, for this account; or missing where it's needed.</exception>
+    private byte[]? CheckRecoveryProof(PendingRegistration pending, CompleteRegistration request) {
+        if (this.KeepPlacesOnNewKeysForTests) {
+            return null;
+        }
+
+        if (request.RecoverySignature.IsEmpty) {
+            if (db.HasPlacesToRecover(pending.UserId, MemberKeys.Of(pending.Identity))) {
+                throw new RequestException(ErrorCode.RegistrationFailed, UpdateToRegister);
+            }
+
+            return null;
+        }
+
+        if (!KeyRecoveryProof.Verify(pending.Identity.SigningPublicKey.Span, pending.Identity.AgreementPublicKey.Span, pending.UserId, request.RecoverySignature.Span)) {
+            logger.LogInformation("Registration of {User} refused: its consent to move the account's places isn't signed by the keys being registered", pending.UserId);
+            throw new RequestException(ErrorCode.RegistrationFailed,
+                "That registration's consent to move your channels to your new key isn't signed with the identity key being registered, so nothing was registered.");
+        }
+
+        return request.RecoverySignature.ToByteArray();
     }
 
     /// <summary>
@@ -1372,9 +1424,10 @@ public sealed class RequestHandler(
     /// nobody else is online.
     /// </summary>
     private static long? ChooseRekeyer(List<MemberRow> online, long? preferred, long? excluding) {
-        // Only members who can: one whose place belongs to keys they no longer have (they registered again, or reset
-        // their identity) can't sign a rekey, and would leave the channel waiting for one.
-        online = online.Where(member => member is { Forgotten: false, CurrentKeys: true }).ToList();
+        // Only members who can: one whose place belongs to keys they no longer have (from before key recovery) can't sign a
+        // rekey, and one whose place just moved to new keys holds no key and so doesn't know the channel's name to carry
+        // over; either would leave the channel waiting for one.
+        online = online.Where(member => member is { Forgotten: false, CurrentKeys: true, AwaitingKey: false }).ToList();
         var candidates = online.Where(member => member.User.UserId != excluding).ToList();
         if (candidates.Count == 0) {
             candidates = online;
@@ -1458,10 +1511,10 @@ public sealed class RequestHandler(
 
     /// <summary>
     /// Checks the user may do <paramref name="action"/> in the channel: by their place's rank (<see cref="Policy"/>), and
-    /// only through a place under their current keys. A place under keys they no longer have (they registered again, or
-    /// reset their identity, without leaving) has no say: whatever its rank, it can't send, rekey, fetch keys, rename or
-    /// disband, as none of that is signed by the keys the log knows it by (and a disband would end the channel for
-    /// everyone). It can still read the log, which is how the client sees whose place it is; and it can be removed from the
+    /// only through a place under their current keys. A place under keys they no longer have (they registered new keys
+    /// before registering moved places along, or this one couldn't be moved) has no say: whatever its rank, it can't send,
+    /// rekey, fetch keys, rename or disband, as none of that is signed by the keys the log knows it by (and a disband would
+    /// end the channel for everyone). It can still read the log, which is how the client sees whose place it is; and it can be removed from the
     /// user's list (<see cref="ForgetChannel"/>, which doesn't come here). A place removed from the list isn't one at all.
     /// </summary>
     private Rank RequireAllowed(string channelId, UserRow me, ChannelAction action) {

@@ -129,7 +129,7 @@ public sealed class ServerHardeningTests {
             Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
 
             var migrated = new Database(path);
-            Assert.Equal(7L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
+            Assert.Equal(8L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
             Assert.NotNull(migrated.GetUser(user));
             var (channelId, _, _) = CreateChannel(migrated);
             Assert.Null(migrated.GetChannel(channelId)!.Name!.CarriedFrom);
@@ -154,7 +154,7 @@ public sealed class ServerHardeningTests {
             Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
 
             var migrated = new Database(path);
-            Assert.Equal(7L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
+            Assert.Equal(8L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
             Assert.NotNull(migrated.GetChannel(channelId));
             Assert.False(migrated.IsKeyRetired(admin, keys.SigningPublicKey));
 
@@ -182,7 +182,7 @@ public sealed class ServerHardeningTests {
             Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
 
             var migrated = new Database(path);
-            Assert.Equal(7L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
+            Assert.Equal(8L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
             Assert.Single(migrated.GetChannelsForUser(admin));
             Assert.False(Assert.Single(migrated.GetMembers(channelId)).Forgotten);
             Assert.Equal(ForgetResult.Current, migrated.ForgetStaleMembership(channelId, admin));
@@ -192,6 +192,46 @@ public sealed class ServerHardeningTests {
             Assert.Equal(ForgetResult.Forgotten, migrated.ForgetStaleMembership(channelId, admin));
             Assert.Empty(migrated.GetChannelsForUser(admin));
             Assert.Equal(ForgetResult.NotListed, migrated.ForgetStaleMembership(channelId, admin));
+        } finally {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            DeleteDirectory(directory);
+        }
+    }
+
+    /// <summary>
+    /// A database from before key recovery (schema 7) is upgraded in place, channels and all: nobody is waiting for a key,
+    /// and from then on registering new keys moves the account's places, which wait for a rekey to give them the channel's
+    /// key. A place already under old keys then (an account that registered again before) moves at its next registration.
+    /// </summary>
+    [Fact]
+    public void Schema7DatabaseGainsKeyRecovery() {
+        var (db, directory) = NewDatabase();
+        try {
+            var path = Path.Combine(directory, "test.db");
+            var (channelId, admin, keys) = CreateChannel(db);
+            var (member, memberKeys) = RegisterUser(db, "Recovered Member");
+            AddMember(db, channelId, admin, keys, member, memberKeys);
+            // The member registered again before recovery existed: their place is under the old keys.
+            using var between = IdentityKeys.Generate();
+            db.RegisterUser(member, "Recovered Member", 0, ProtocolInfo.DebugWorldName, between.ToBundle(), true);
+            QueryLong(path, "ALTER TABLE members DROP COLUMN awaiting_key; ALTER TABLE invites DROP COLUMN awaiting_key; DELETE FROM schema_version WHERE version >= 8; SELECT 0;");
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+
+            var migrated = new Database(path);
+            Assert.Equal(8L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
+            Assert.All(migrated.GetMembers(channelId), row => Assert.False(row.AwaitingKey));
+            Assert.False(migrated.GetMembers(channelId).Single(row => row.User.UserId == member).CurrentKeys);
+
+            using var newest = IdentityKeys.Generate();
+            var registration = migrated.RegisterUser(member, "Recovered Member", 0, ProtocolInfo.DebugWorldName, newest.ToBundle(), true,
+                new KeyRecovery(KeyRecoveryProof.Sign(newest, member), Membership, 2));
+            var moved = Assert.Single(registration.Recovered);
+            Assert.Equal((channelId, MembershipEntryKind.KeyRecovered, true), (moved.ChannelId, moved.Entry.Kind, moved.Member));
+            Assert.Equal(memberKeys.SigningPublicKey, moved.Entry.Subject.SigningPublicKey.ToByteArray());
+            var place = migrated.GetMembers(channelId).Single(row => row.User.UserId == member);
+            Assert.True(place is { CurrentKeys: true, AwaitingKey: true, Rank: Rank.Member });
+            Assert.True(migrated.GetChannel(channelId)!.RekeyPending);
+            Assert.Equal(MemberKeys.Of(newest), Membership.Restore(migrated.GetMembershipCheckpoint(channelId)!).FindMember(member)!.Keys);
         } finally {
             Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
             DeleteDirectory(directory);
@@ -234,7 +274,7 @@ public sealed class ServerHardeningTests {
             }
 
             var migrated = new Database(path);
-            Assert.Equal(7L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
+            Assert.Equal(8L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
             Assert.Equal(2L, QueryLong(path, "SELECT COUNT(*) FROM retired_keys;"));
             Assert.True(migrated.IsKeyRetired(alice, replaced.SigningPublicKey));
             Assert.True(migrated.IsKeyRetired(mallory, aliceKeys.SigningPublicKey));
@@ -296,7 +336,7 @@ public sealed class ServerHardeningTests {
 
             using var logs = new CapturingLoggerProvider();
             _ = new Database(path, logs.CreateLogger("Database"));
-            Assert.Equal(7L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
+            Assert.Equal(8L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
             var warnings = logs.AtLeast(Microsoft.Extensions.Logging.LogLevel.Warning);
             Assert.Equal(schema == 5 ? 2 : 1, warnings.Count);
 
@@ -344,7 +384,7 @@ public sealed class ServerHardeningTests {
         try {
             var path = Path.Combine(directory, "test.db");
             var (channelId, _, _) = CreateChannel(db);
-            Assert.Equal(7L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
+            Assert.Equal(8L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
 
             // As if the file were left over from the unreleased schema 1.
             QueryLong(path, "DELETE FROM schema_version WHERE version >= 2; SELECT 0;");

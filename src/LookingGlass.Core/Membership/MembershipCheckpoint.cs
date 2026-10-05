@@ -23,6 +23,17 @@ public sealed class MembershipCheckpoint {
 
     public List<CheckpointMember> Members { get; set; } = [];
     public List<CheckpointInvitee> Invitees { get; set; } = [];
+
+    /// <summary>See <see cref="IChannelMembership.KeysAt"/>. Empty in checkpoints saved before it was kept, and in the server's.</summary>
+    public List<CheckpointKeyChange> KeyChanges { get; set; } = [];
+}
+
+/// <summary>A key recovered entry: at <see cref="Seq"/>, the user's place moved away from these keys.</summary>
+public sealed class CheckpointKeyChange {
+    public long UserId { get; set; }
+    public ulong Seq { get; set; }
+    public byte[] SigningPublicKey { get; set; } = [];
+    public byte[] AgreementPublicKey { get; set; } = [];
 }
 
 public sealed class CheckpointMember {

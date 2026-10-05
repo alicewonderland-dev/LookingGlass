@@ -35,7 +35,8 @@ public sealed class SignedLogMembershipProvider : IMembershipProvider {
 /// at that point in the log, its signer was allowed to make it (design doc, "Authenticated
 /// membership"), and only counts if signed by the exact keys the log knows its signer by: a
 /// removed member's key signs nothing that counts, and a member who registers again with new
-/// keys is not a member under them until invited again.
+/// keys is not a member under them unless a key recovered entry (the server's word that they
+/// re-verified their character, signed by the new keys) moves their place to them.
 /// </summary>
 public sealed class SignedLogMembership : IChannelMembership {
     /// <summary>
@@ -45,15 +46,25 @@ public sealed class SignedLogMembership : IChannelMembership {
     /// </summary>
     public const int MaxRecentHashes = 256;
 
+    /// <summary>
+    /// How many of each user's key recoveries are remembered for <see cref="KeysAt"/>. Only names and keys made before the
+    /// newest are checked against older keys, and a client keeps the keys of its last few epochs at most.
+    /// </summary>
+    public const int MaxKeyChangesKept = 4;
+
     private readonly ImmutableDictionary<long, ChannelMember> _members;
     private readonly ImmutableDictionary<long, ChannelInvitee> _invitees;
     // Hashes of entries _recentFrom .. Head.Seq.
     private readonly ImmutableList<byte[]> _recent;
     private readonly ulong _recentFrom;
+    // Per user in the channel, their recent key recoveries, oldest first: at Seq, their place moved away from Before.
+    private readonly ImmutableDictionary<long, ImmutableList<KeyChange>> _keyChanges;
+
+    private sealed record KeyChange(ulong Seq, MemberKeys Before);
 
     private SignedLogMembership(string channelId, LogPosition? head, ulong membersChangedAt, ulong? membersLeftAt,
         ImmutableDictionary<long, ChannelMember> members, ImmutableDictionary<long, ChannelInvitee> invitees,
-        ImmutableList<byte[]> recent, ulong recentFrom) {
+        ImmutableList<byte[]> recent, ulong recentFrom, ImmutableDictionary<long, ImmutableList<KeyChange>> keyChanges) {
         this.ChannelId = channelId;
         this.Head = head;
         this.MembersChangedAt = membersChangedAt;
@@ -62,11 +73,12 @@ public sealed class SignedLogMembership : IChannelMembership {
         this._invitees = invitees;
         this._recent = recent;
         this._recentFrom = recentFrom;
+        this._keyChanges = keyChanges;
     }
 
     public static SignedLogMembership Empty(string channelId) {
         return new SignedLogMembership(channelId, null, 0, null, ImmutableDictionary<long, ChannelMember>.Empty,
-            ImmutableDictionary<long, ChannelInvitee>.Empty, ImmutableList<byte[]>.Empty, 0);
+            ImmutableDictionary<long, ChannelInvitee>.Empty, ImmutableList<byte[]>.Empty, 0, ImmutableDictionary<long, ImmutableList<KeyChange>>.Empty);
     }
 
     public static SignedLogMembership Restore(MembershipCheckpoint checkpoint) {
@@ -92,7 +104,17 @@ public sealed class SignedLogMembership : IChannelMembership {
             recentFrom = checkpoint.Seq;
         }
 
-        return new SignedLogMembership(checkpoint.ChannelId, head, checkpoint.MembersChangedAt, checkpoint.MembersLeftAt, members, invitees, recent, recentFrom);
+        var keyChanges = (checkpoint.KeyChanges ?? [])
+            .Where(change => change.Seq <= checkpoint.Seq && (members.ContainsKey(change.UserId) || invitees.ContainsKey(change.UserId)))
+            .GroupBy(change => change.UserId)
+            .ToImmutableDictionary(
+                group => group.Key,
+                group => group.OrderBy(change => change.Seq).TakeLast(MaxKeyChangesKept)
+                    .Select(change => new KeyChange(change.Seq, new MemberKeys(change.SigningPublicKey, change.AgreementPublicKey)))
+                    .ToImmutableList());
+
+        return new SignedLogMembership(checkpoint.ChannelId, head, checkpoint.MembersChangedAt, checkpoint.MembersLeftAt, members, invitees, recent, recentFrom,
+            keyChanges);
     }
 
     public string ChannelId { get; }
@@ -105,6 +127,22 @@ public sealed class SignedLogMembership : IChannelMembership {
     public ChannelMember? FindMember(long userId) => this._members.GetValueOrDefault(userId);
 
     public ChannelInvitee? FindInvitee(long userId) => this._invitees.GetValueOrDefault(userId);
+
+    public MemberKeys? KeysAt(long userId, ulong seq) {
+        var keys = this.FindMember(userId)?.Keys ?? this.FindInvitee(userId)?.Keys;
+        if (keys != null && this._keyChanges.TryGetValue(userId, out var changes)) {
+            // Newest first: each recovery after seq means they had the keys it moved them from.
+            foreach (var change in changes.Reverse()) {
+                if (change.Seq <= seq) {
+                    break;
+                }
+
+                keys = change.Before;
+            }
+        }
+
+        return keys;
+    }
 
     public bool IsCurrent(LogPosition? position) {
         return position != null && this.Head != null
@@ -124,7 +162,9 @@ public sealed class SignedLogMembership : IChannelMembership {
     public MembershipVerdict Check(MembershipEntry entry) => this.Evaluate(entry, out _);
 
     public bool IsSignedByKnownKeys(MembershipEntry entry) {
-        var keys = this.FindMember(entry.ActorId)?.Keys ?? this.FindInvitee(entry.ActorId)?.Keys;
+        // A key recovered entry is the server's word, signed by the new keys over no position at all: it says nothing
+        // about who signed what where.
+        var keys = entry.Kind == MembershipEntryKind.KeyRecovered ? null : this.FindMember(entry.ActorId)?.Keys ?? this.FindInvitee(entry.ActorId)?.Keys;
         return keys != null && entry.ChannelId == this.ChannelId && entry.Signature.Length == 64
                && entry.ActorKeyHash.Span.SequenceEqual(keys.Hash)
                && IdentityKeys.Verify(keys.SigningPublicKey, MembershipEntries.SigningPayload(entry), entry.Signature.Span);
@@ -157,7 +197,7 @@ public sealed class SignedLogMembership : IChannelMembership {
                 subjectKeys = this.FindMember(subjectId)?.Keys ?? throw new MembershipException(new MembershipVerdict(MembershipVerdictKind.Conflict, "They aren't a member of this channel."));
                 break;
             default:
-                throw new ArgumentOutOfRangeException(nameof(kind), kind, "Genesis entries come from IMembershipProvider.CreateGenesis.");
+                throw new ArgumentOutOfRangeException(nameof(kind), kind, "Genesis entries come from IMembershipProvider.CreateGenesis, key recovered ones from CreateKeyRecovered.");
         }
 
         var entry = new MembershipEntry {
@@ -173,6 +213,26 @@ public sealed class SignedLogMembership : IChannelMembership {
             Invite = invite,
         };
         MembershipEntries.Sign(entry, actor);
+
+        var verdict = this.Check(entry);
+        return verdict.IsValid ? entry : throw new MembershipException(verdict);
+    }
+
+    public MembershipEntry CreateKeyRecovered(long userId, MemberKeys newKeys, byte[] proof, long timestampMs) {
+        var current = this.FindMember(userId)?.Keys ?? this.FindInvitee(userId)?.Keys
+                      ?? throw new MembershipException(new MembershipVerdict(MembershipVerdictKind.Conflict, "They aren't a member of this channel or invited to it."));
+        var entry = new MembershipEntry {
+            ChannelId = this.ChannelId,
+            Seq = this.Head == null ? 0 : this.Head.Seq + 1,
+            PreviousHash = this.Head?.Hash ?? ByteString.Empty,
+            Kind = MembershipEntryKind.KeyRecovered,
+            ActorId = userId,
+            ActorKeyHash = ByteString.CopyFrom(newKeys.Hash),
+            Subject = current.ToProto(userId),
+            NewKeys = newKeys.ToProto(userId),
+            TimestampUnixMs = timestampMs,
+            Signature = ByteString.CopyFrom(proof),
+        };
 
         var verdict = this.Check(entry);
         return verdict.IsValid ? entry : throw new MembershipException(verdict);
@@ -203,6 +263,12 @@ public sealed class SignedLogMembership : IChannelMembership {
                 InviterSigningPublicKey = invitee.InviterKeys.SigningKeyArray(),
                 InviterAgreementPublicKey = invitee.InviterKeys.AgreementKeyArray(),
             }).ToList(),
+            KeyChanges = this._keyChanges.OrderBy(pair => pair.Key).SelectMany(pair => pair.Value.Select(change => new CheckpointKeyChange {
+                UserId = pair.Key,
+                Seq = change.Seq,
+                SigningPublicKey = change.Before.SigningKeyArray(),
+                AgreementPublicKey = change.Before.AgreementKeyArray(),
+            })).ToList(),
         };
     }
 
@@ -247,15 +313,26 @@ public sealed class SignedLogMembership : IChannelMembership {
             _ => entry.Rank == Rank.Unspecified,
         };
         var answersInvite = kind is MembershipEntryKind.Accept or MembershipEntryKind.Decline or MembershipEntryKind.CancelInvite;
-        if (!rankFits || answersInvite != (entry.Invite != null)) {
-            return Invalid("Its rank or invite field doesn't fit its kind.");
+        var recovers = kind == MembershipEntryKind.KeyRecovered;
+        if (!rankFits || answersInvite != (entry.Invite != null) || recovers != (entry.NewKeys != null)) {
+            return Invalid("Its rank, invite or new keys field doesn't fit its kind.");
         }
 
-        // Work out whose keys must have signed it: the log's, never the server's.
+        // Work out whose keys must have signed it: the log's, never the server's. (But for a key recovered entry, which is
+        // the server's word, signed by the new keys.)
         MemberKeys actorKeys;
         ChannelMember? actor = null;
         ChannelInvitee? invitee = null;
         switch (kind) {
+            case MembershipEntryKind.KeyRecovered:
+                // (Present: checked above.)
+                var newKeys = MemberKeys.FromProto(entry.NewKeys)!;
+                if (entry.ActorId != subjectId || entry.NewKeys!.UserId != subjectId || !newKeys.IsWellFormed) {
+                    return Invalid("Only the user's own new keys can take over their place.");
+                }
+
+                actorKeys = newKeys;
+                break;
             case MembershipEntryKind.Genesis:
                 if (entry.ActorId != subjectId) {
                     return Invalid("A channel's creator must be its first member.");
@@ -290,16 +367,61 @@ public sealed class SignedLogMembership : IChannelMembership {
             return Invalid("It isn't signed with the key the log knows its author by.");
         }
 
-        if (!IdentityKeys.Verify(actorKeys.SigningPublicKey, MembershipEntries.SigningPayload(entry), entry.Signature.Span)) {
+        // A key recovered entry's signature is the new keys' consent to be this user, made once for every channel; any
+        // other is over the entry itself.
+        var signed = recovers
+            ? KeyRecoveryProof.Payload(subjectId, actorKeys.SigningPublicKey, actorKeys.AgreementPublicKey)
+            : MembershipEntries.SigningPayload(entry);
+        if (!IdentityKeys.Verify(actorKeys.SigningPublicKey, signed, entry.Signature.Span)) {
             return Invalid("Its signature doesn't verify.");
         }
 
         var members = this._members;
         var invitees = this._invitees;
+        var keyChanges = this._keyChanges;
         var membersChanged = false;
         var position = MembershipEntries.PositionOf(entry);
 
         switch (kind) {
+            case MembershipEntryKind.KeyRecovered: {
+                var member = this.FindMember(subjectId);
+                var invited = member == null ? this.FindInvitee(subjectId) : null;
+                if (member == null && invited == null) {
+                    return Conflict("They aren't a member of this channel or invited to it.");
+                }
+
+                var bound = member?.Keys ?? invited!.Keys;
+                if (subjectKeys != bound) {
+                    return Invalid("It names keys their place isn't bound to.");
+                }
+
+                if (actorKeys == bound) {
+                    return Invalid("Their place is under those keys already.");
+                }
+
+                // As for an invite: one set of keys has one place in a channel.
+                if (members.Values.Any(other => other.Keys == actorKeys) || invitees.Values.Any(other => other.Keys == actorKeys)) {
+                    return Conflict("Those keys already belong to someone in this channel.");
+                }
+
+                if (!IdentityKeys.IsUsableAgreementKey(actorKeys.AgreementPublicKey)) {
+                    return Invalid("The new agreement key can't be sealed to.");
+                }
+
+                // Rank, and an invite's position and inviter, stay as they were: only the keys change.
+                if (member != null) {
+                    members = members.SetItem(subjectId, member with { Keys = actorKeys });
+                    // Keys and names made for the old keys are for another membership now: the channel is rekeyed.
+                    membersChanged = true;
+                } else {
+                    invitees = invitees.SetItem(subjectId, invited! with { Keys = actorKeys });
+                }
+
+                var changes = keyChanges.GetValueOrDefault(subjectId, ImmutableList<KeyChange>.Empty).Add(new KeyChange(entry.Seq, bound));
+                keyChanges = keyChanges.SetItem(subjectId, changes.Count > MaxKeyChangesKept ? changes.RemoveAt(0) : changes);
+                break;
+            }
+
             case MembershipEntryKind.Genesis:
                 if (!IdentityKeys.IsUsableAgreementKey(subjectKeys.AgreementPublicKey)) {
                     return Invalid("The creator's agreement key can't be sealed to.");
@@ -430,6 +552,11 @@ public sealed class SignedLogMembership : IChannelMembership {
                 return Invalid("Unknown kind of entry.");
         }
 
+        // What anyone gone signed is never checked again.
+        if (!keyChanges.IsEmpty) {
+            keyChanges = keyChanges.RemoveRange(keyChanges.Keys.Where(id => !members.ContainsKey(id) && !invitees.ContainsKey(id)).ToList());
+        }
+
         var hash = position.Hash.ToByteArray();
         ImmutableList<byte[]> recent;
         ulong recentFrom;
@@ -447,7 +574,7 @@ public sealed class SignedLogMembership : IChannelMembership {
 
         var left = kind is MembershipEntryKind.Remove or MembershipEntryKind.Leave;
         next = new SignedLogMembership(this.ChannelId, position, membersChanged ? entry.Seq : this.MembersChangedAt, left ? entry.Seq : this.MembersLeftAt,
-            members, invitees, recent, recentFrom);
+            members, invitees, recent, recentFrom, keyChanges);
         return MembershipVerdict.Valid;
     }
 

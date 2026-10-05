@@ -65,14 +65,14 @@ public sealed class ClientSecrets {
     /// <list type="bullet">
     /// <item>Replaced or dropped: the identity keys; the login (device token and user ID), which is the old registration's
     /// and would otherwise log the new keys in as the old identity; every channel key and where it was made (sealed to the
-    /// old keys, and for channels this identity is no longer in); and the pin of your own old keys.</item>
+    /// old keys, which the new ones can't open); and the pin of your own old keys.</item>
     /// <item>Kept, as they are about others or about the channels, not about the old keys: the keys pinned for other users
     /// (so a server can't swap them unnoticed now), blocked users, and per channel the newest verified log position, name
-    /// version and message times (so a server can't roll a channel back, or replay old messages, if the new identity is
-    /// invited again). None of them lets anyone act as the old identity.</item>
+    /// version and message times (so a server can't roll a channel back, or replay old messages, once the new identity's
+    /// places are moved to it). None of them lets anyone act as the old identity.</item>
     /// </list>
     /// Registering the new keys (through the Lodestone) revokes the old identity's logins on the server and stops its keys
-    /// signing in; its channel memberships stay bound to the old keys until someone removes and invites you again.
+    /// signing in; its places in channels (ranks and invites too) move to the new keys, and their members are told.
     /// Copies of the old identity in other files are removed with <see cref="ServerSecretFiles.ResetIdentity"/>.
     /// </summary>
     public void ResetIdentity() {
@@ -121,6 +121,12 @@ public sealed class PinnedIdentity {
 
     /// <summary>The keys changed since they were first seen, and the user hasn't confirmed the new ones yet.</summary>
     public bool KeyChangeUnacknowledged { get; set; }
+
+    /// <summary>
+    /// The keys changed because the user re-verified their character with new ones, as a channel's membership log says (a
+    /// key recovered entry): expected, so not a "key changed" warning, but shown until the user compares the new ones.
+    /// </summary>
+    public bool KeyRecovered { get; set; }
 
     /// <summary>The user confirmed these keys (compared fingerprints). Cleared when the keys change.</summary>
     public bool Compared { get; set; }
