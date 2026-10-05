@@ -35,11 +35,12 @@ Disable ChatTwo in the plugin installer before step 1, and keep it disabled
 for all of Part 1: every step here is about the game's own chat box. (Last
 round's Part 1 results, B and C below, were with ChatTwo disabled.)
 
-The game's chat box has a one-line channel of its own: typing a channel
-command and a space at the start of the input (`/s `, `/p `) switches the
-input to that channel for the next line. While you talk in [sky], doing that
-now stops talking in [sky] at once, with a line, and the chat box shows the
-game channel again.
+Why Part 1 matters most this round: last time, LookingGlass never saw what
+the game's own chat box sent (it only watched the way ChatTwo sends). So
+`hello`, links and `/s test` went to game chat while the label said `[sky]`.
+That is fixed, and every Part 1 step needs B, your second character, to check
+that nothing shows in Say, Party, FC or a linkshell: the label alone proves
+nothing.
 
 ### Starting
 
@@ -48,7 +49,9 @@ game channel again.
   - The chat box's channel name (where it said "Say") now says `[sky]`.
   - The server info bar (top right) shows "LG [sky]". Hovering it shows a
     tooltip.
-- [ ] 2. Type `hello`. It shows only in LookingGlass.
+- [ ] 2. **(changed)** Type `hello`. It shows only in LookingGlass. **B must
+      check Say: `hello` must not appear there.** (Last round this went to Say
+      unseen.)
 - [ ] 3. Press the up arrow. `hello` comes back in the chat box. Clear it.
 - [ ] 4. Type `/lgc sky` (the nickname). It says "Now talking in [sky]" again,
       with no error.
@@ -61,17 +64,18 @@ game channel again.
 
 ### Commands still work while in [sky]
 
+- [ ] 7b. **(changed)** Commands from other plugins still work while in
+      [sky]: type `/lg` (the window opens) and `/xlhelp` (Dalamud's help).
+- [ ] 7c. **(changed)** Run a macro with a line `/em waves` and a line `hello`
+      while in [sky]: the emote plays, and `hello` goes only to LookingGlass
+      (B sees nothing in Say). A macro's text going to the channel is
+      expected.
+
 - [ ] 8. Type `/em waves`. The emote plays.
-- [ ] 9. **(changed)** Type `/p brb` and press Enter. One of these two, and
-      say which:
-      - as soon as you type the space after `/p`: "Stopped talking in
-        [sky].", the label says "Party", and `brb` goes to Party; or
-      - nothing happens while typing, the label stays `[sky]`, and `brb` goes
-        only to LookingGlass.
-      Never: the label says `[sky]` and `brb` reaches Party.
-- [ ] 9b. **(changed)** `/lgc1` if needed, then type `/party brb`. As in 9,
-      either it stops at the space and `brb` goes to Party, or it goes to
-      Party and you are still in [sky] (the label says `[sky]`).
+- [ ] 9. **(changed)** Type `/p brb`. It goes only to LookingGlass, as
+      "brb"; B sees nothing in Party. You are still in [sky].
+- [ ] 9b. **(changed)** Type `/party brb` (the long form). It goes to Party
+      (B sees it there), and you are still in [sky]: the label says `[sky]`.
 - [ ] 10. Type `  /s hi` (with two spaces before the slash). It goes only to
       LookingGlass, as "/s hi", and not to Say.
 - [ ] 11. **(changed, last round's B)** Link an item on its own (no text) and
@@ -79,10 +83,9 @@ game channel again.
       can't be sent)." Nothing appears in Say, Party or any linkshell.
 - [ ] 11c. **(changed, B)** Type `/cwl1` and press Enter (the game is now on
       the cross-world linkshell; it stops talking in [sky]), then `/lgc1`.
-      Link an item on its own, press Enter: the same "Not sent" line, nothing
-      in the linkshell. Then type `/cwl1 ` with a space and link an item:
-      "Stopped talking in [sky]." at the space, and the label names the
-      linkshell; only then may the link go there.
+      Link an item on its own, press Enter: the same "Not sent" line; B sees
+      nothing in the linkshell. Type `/cwl1 ` and link an item after it, press
+      Enter: "Not sent" again, nothing in the linkshell.
 - [ ] 11b. **(changed)** Link a map flag on its own (`<flag>`), press Enter:
       the same "Not sent" line, nothing in game chat. Then type `look ` and
       link an item after it: only LookingGlass gets the line (the link shows as
@@ -94,13 +97,11 @@ game channel again.
       and press Enter. At once a line says "Stopped talking in [sky].", the
       label says "Say" and the info bar entry goes away. Type `test`: it goes
       to Say.
-- [ ] 12b. **(changed, C)** `/lgc1`, then type `/s ` with a space (don't press
-      Enter yet). "Stopped talking in [sky]." appears as you type the space,
-      and the label says "Say". Now type `test` and press Enter: it goes to
-      Say. If instead nothing appears and the label stays `[sky]`, press
-      Enter on `test`: it must go only to LookingGlass.
-- [ ] 12c. **(changed, C)** The same as 12b from the cross-world linkshell
-      (the game on `/cwl1`), typing `/s ` there.
+- [ ] 12b. **(changed, C)** `/lgc1`, then type `/s test` in one line. It goes
+      only to LookingGlass, as "test"; B sees nothing in Say. Still in [sky].
+- [ ] 12c. **(changed, C)** The same as 12 from the cross-world linkshell: the
+      game on `/cwl1`, `/lgc1`, then `/s`. "Stopped talking in [sky].", the
+      label says "Say"; `test` goes to Say.
 - [ ] 12d. **(changed)** At no point in Part 1 may the label say `[sky]` while
       what you type goes to game chat. If it ever does, note the time and the
       step.
