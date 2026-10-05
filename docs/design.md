@@ -1296,14 +1296,15 @@ verified**, key numbers, and the technical wording of every warning.
 
 **Simple mode never hides a warning.** It only says it differently: what
 happened, in everyday words, and what to do, nearly always "check with them
-over /tell". Someone's key changing without explanation becomes "Bob's
-LookingGlass was reinstalled or reset, or someone else may be using their
-name"; a key recovered entry becomes "Bob set up LookingGlass again (new
+over /tell". Someone's key changing without explanation becomes "Bob set up
+LookingGlass again (new computer or reset), or someone else may be using
+their name"; a key recovered entry becomes "Bob set up LookingGlass again (new
 computer or reset)"; a fork or a hidden membership change becomes "the server
 is showing different member lists". A member with a warning still shows the
-warning icon, and **It's really them** clears it as **Mark verified** does,
-for the keys held for them. Without a warning, a member's icon only shows
-whether they're online.
+warning icon, and one with a key recovered entry the circling arrow. **It's
+really them** clears either, for the keys shown when the user opened the
+check, but isn't a comparison: advanced mode still shows those keys as not
+compared. Otherwise a member's icon only shows whether they're online.
 
 How it works:
 

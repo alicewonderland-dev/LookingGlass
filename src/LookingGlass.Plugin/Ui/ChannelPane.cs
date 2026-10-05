@@ -197,7 +197,7 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
         if (channel.RekeyPending) {
             Segment(ref first, advanced ? "New key pending" : "Updating", Widgets.Warning, advanced
                     ? "Someone joined, left or got a new identity key since the key in use was made, so the channel needs a new one before anyone sends. A member makes it automatically."
-                    : "Someone joined or left, so the channel is being updated before anyone sends. This happens by itself.",
+                    : "Its members changed (someone joined, left or set up LookingGlass again), so the channel is being updated before anyone sends. This happens by itself.",
                 FontAwesomeIcon.HourglassHalf);
         } else if (!channel.HasKey) {
             Segment(ref first, advanced ? "Waiting for the key" : "Waiting for a member", Widgets.Warning, advanced
@@ -590,7 +590,7 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
         }
 
         // Verification, as the icon's shape: click it to compare fingerprints. Presence, as its colour,
-        // unless there's a warning to show, which matters more. In simple mode, only a warning changes the shape.
+        // unless there's a warning to show, which matters more. In simple mode, only a warning or a new setup changes the shape.
         var advanced = sessions.AdvancedMode;
         var (icon, warningColour, title, explanation) = advanced ? Verification(member, isMe) : Check(member, isMe);
         var iconColour = warningColour ?? (member.Online ? Widgets.Success : Widgets.Muted);
@@ -598,11 +598,12 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
         var checkable = !isMe && (advanced || Modals.HasSomethingToCheck(member));
         ImGui.SetCursorScreenPos(pos with { X = pos.X + 2 * scale });
         if (ImGui.InvisibleButton("##verification", new Vector2(button, height)) && checkable) {
-            modals.CheckMember(channel.Id, member.User.UserId);
+            modals.CheckMember(channel.Id, member);
         }
 
         Widgets.DrawIcon(drawList, icon, (ImGui.GetItemRectMin() + ImGui.GetItemRectMax()) / 2, ImGui.GetColorU32(iconColour));
-        var tooltip = title == null ? Presence(member) : $"{Presence(member)}\n{title}\n{explanation}";
+        // Simple mode leaves the title or explanation out where there's nothing to say.
+        var tooltip = string.Join("\n", new[] { Presence(member), title, explanation }.OfType<string>());
         Widgets.Tooltip(tooltip, !advanced ? (checkable ? "Click for what to do." : null)
             : isMe ? "Your fingerprint is in Settings." : "Click to compare fingerprints.");
 
@@ -667,7 +668,8 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
 
     /// <summary>
     /// Simple mode's icon and tooltip: the same icon for everyone, coloured by presence, but a warning sign when there is a
-    /// warning, and a plain hint when they set up LookingGlass again. Nothing about fingerprints or comparing.
+    /// warning, and a circling arrow (no warning colour) with a plain hint when they set up LookingGlass again. Nothing about
+    /// fingerprints or comparing.
     /// </summary>
     /// <returns>The icon, a colour only for warnings, and a title and explanation only when there is something to say.</returns>
     private static (FontAwesomeIcon Icon, Vector4? WarningColour, string? Title, string? Explanation) Check(MemberView member, bool isMe) {
@@ -686,7 +688,7 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
 
         if (member.KeyRecovered) {
             // Expected, so no warning sign; but that it's them is the server's word, so it is said.
-            return (FontAwesomeIcon.User, null, "Set up LookingGlass again", Modals.RecoveredText(member.User.Name));
+            return (FontAwesomeIcon.Redo, null, "Set up LookingGlass again", Modals.RecoveredText(member.User.Name));
         }
 
         return (FontAwesomeIcon.User, null, null, null);
@@ -735,11 +737,11 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
 
         var advanced = sessions.AdvancedMode;
         if (advanced && Widgets.MenuItem(FontAwesomeIcon.Fingerprint, "Compare fingerprints...")) {
-            modals.CheckMember(channel.Id, user.UserId);
+            modals.CheckMember(channel.Id, member);
         }
 
         if (!advanced && Modals.HasSomethingToCheck(member) && Widgets.MenuItem(FontAwesomeIcon.UserCheck, "Check it's really them...")) {
-            modals.CheckMember(channel.Id, user.UserId);
+            modals.CheckMember(channel.Id, member);
         }
 
         // The same permissions as the server's: admins promote and demote; moderators and admins remove lower ranks.

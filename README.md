@@ -89,9 +89,9 @@ Select a channel in the main window to see its members and settings.
 - **Removing someone.** Hold **Ctrl** while choosing **Remove from channel** in
   their menu.
 - **Checking it's really them.** A warning sign before a member's name means
-  their LookingGlass was reinstalled or reset, or someone else may be using
-  their name. Ask them over /tell, then click it and press **It's really
-  them**.
+  they set up LookingGlass again (new computer or reset), or someone else may
+  be using their name. Ask them over /tell, then click it and press **It's
+  really them**.
 - **Advanced mode.** Turn it on in Settings, under "Your identity", to see the
   encryption details: fingerprints you can compare over /tell to be sure your
   chats are private. Warnings show either way.

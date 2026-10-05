@@ -397,18 +397,22 @@ public sealed class ClientSession : IAsyncDisposable {
     /// (say, the key someone registered again with, while a row shows the one the log binds them to).
     /// </summary>
     /// <param name="fingerprint">The fingerprint the user was shown, and compared.</param>
+    /// <param name="compared">
+    /// The user compared fingerprints (advanced mode's "Mark verified"). False for simple mode's "It's really them", which
+    /// only says they checked with the person over /tell: the warning or hint goes, but the keys stay "not compared".
+    /// </param>
     /// <exception cref="InvalidOperationException">The keys held for the user now don't have that fingerprint.</exception>
-    public void AcknowledgeKeyChange(long userId, string fingerprint) {
+    public void AcknowledgeKeyChange(long userId, string fingerprint, bool compared = true) {
         lock (this._lock) {
             if (!this._secrets.PinnedIdentities.TryGetValue(userId, out var pinned)
                 || IdentityKeys.FingerprintOf(pinned.SigningPublicKey, pinned.AgreementPublicKey) != fingerprint) {
                 throw PlainMessages.Failure(PlainMessages.VerifiedKeyChanged);
             }
 
-            if (pinned.KeyChangeUnacknowledged || pinned.KeyRecovered || !pinned.Compared) {
+            if (pinned.KeyChangeUnacknowledged || pinned.KeyRecovered || (compared && !pinned.Compared)) {
                 pinned.KeyChangeUnacknowledged = false;
                 pinned.KeyRecovered = false;
-                pinned.Compared = true;
+                pinned.Compared |= compared;
                 this._secretsVersion++;
             }
         }

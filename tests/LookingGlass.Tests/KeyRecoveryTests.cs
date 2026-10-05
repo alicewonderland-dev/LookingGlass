@@ -834,6 +834,77 @@ public sealed class KeyRecoveryTests : IAsyncLifetime {
     }
 }
 
+/// <summary>
+/// Simple mode's "It's really them" clears a warning or hint about someone (here, that they re-verified with a new key), but
+/// isn't a fingerprint comparison: advanced mode still shows them as not compared, and a later recovery doesn't say the
+/// user had compared them. Advanced mode's "Mark verified" does both.
+/// </summary>
+public sealed class ConfirmedWithoutComparingTests : IAsyncLifetime {
+    private Harness _server = null!;
+
+    public ValueTask InitializeAsync() {
+        this._server = new Harness();
+        return ValueTask.CompletedTask;
+    }
+
+    public async ValueTask DisposeAsync() {
+        await this._server.DisposeAsync();
+        DeleteDirectory(this._server.DataDirectory);
+    }
+
+    [Fact]
+    public async Task ItsReallyThemClearsTheHintWithoutCountingAsAComparison() {
+        var alice = await this._server.RegisterAsync("Alice Confirms Bob");
+        var bob = await this._server.RegisterAsync("Bob Moves Twice");
+        var channelId = await alice.Session.CreateChannelAsync("Checked Plainly", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+
+        var bob2 = await KeyRecoveryTests.NewComputerAsync(this._server, bob);
+        var recovered = await WaitFor(() => Member(alice, channelId, bob2.UserId) is { KeyRecovered: true } m ? m : null);
+
+        // Simple mode: the hint goes, but nothing was compared.
+        alice.Session.AcknowledgeKeyChange(bob2.UserId, recovered.Fingerprint!, compared: false);
+        var confirmed = Member(alice, channelId, bob2.UserId)!;
+        Assert.False(confirmed.KeyRecovered);
+        Assert.False(confirmed.KeyChanged);
+        Assert.False(confirmed.FingerprintCompared);
+
+        // So when he moves again, Alice isn't told she had compared him.
+        await WaitFor(() => alice.Session.Snapshot.FindChannel(channelId) is { RekeyPending: false } c ? c : null);
+        var bob3 = await KeyRecoveryTests.NewComputerAsync(this._server, bob2);
+        var again = await WaitFor(() => Member(alice, channelId, bob3.UserId) is { KeyRecovered: true } m ? m : null);
+        var notices = alice.Notices.Where(n => n.Kind == NoticeKind.ReVerified).ToList();
+        Assert.Equal(2, notices.Count);
+        Assert.All(notices, n => Assert.DoesNotContain(PlainMessages.ComparedBefore, n.Text));
+        Assert.All(notices, n => Assert.DoesNotContain("confirmed", n.TextFor(advanced: false)));
+
+        // Advanced mode: "Mark verified" is a comparison.
+        alice.Session.AcknowledgeKeyChange(bob3.UserId, again.Fingerprint!);
+        var compared = Member(alice, channelId, bob3.UserId)!;
+        Assert.False(compared.KeyRecovered);
+        Assert.True(compared.FingerprintCompared);
+    }
+
+    [Fact]
+    public async Task ItsReallyThemStillRefusesAKeyThatChangedSinceItWasShown() {
+        var alice = await this._server.RegisterAsync("Alice Confirms Late");
+        var bob = await this._server.RegisterAsync("Bob Moves Meanwhile");
+        var channelId = await alice.Session.CreateChannelAsync("Checked Too Late", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        var shown = Member(alice, channelId, bob.UserId)!.Fingerprint!;
+
+        var bob2 = await KeyRecoveryTests.NewComputerAsync(this._server, bob);
+        await WaitFor(() => Member(alice, channelId, bob2.UserId) is { KeyRecovered: true } m ? m : null);
+
+        var refused = Assert.Throws<InvalidOperationException>(() => alice.Session.AcknowledgeKeyChange(bob2.UserId, shown, compared: false));
+        Assert.Equal(PlainMessages.VerifiedKeyChanged.Plain, PlainMessages.MessageOf(refused, advanced: false));
+        Assert.True(Member(alice, channelId, bob2.UserId)!.KeyRecovered);
+    }
+
+    private static MemberView? Member(TestClient client, string channelId, long userId) =>
+        client.Session.Snapshot.FindChannel(channelId)?.Members.FirstOrDefault(m => m.User.UserId == userId);
+}
+
 internal static class KeyRecoveryTestExtensions {
     /// <summary>Marks another client's current keys verified, as after comparing fingerprints over /tell.</summary>
     public static Task AcknowledgeKeyChangeAsyncFor(this ClientSession session, TestClient other) {

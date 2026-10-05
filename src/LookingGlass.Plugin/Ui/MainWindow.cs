@@ -38,6 +38,10 @@ public sealed class MainWindow : Window {
     private string _newChannelName = "";
     private float _sidebarWidth = DefaultSidebarWidth;
 
+    // Per invite (channel ID), the inviter's fingerprint as first shown since the invites popup opened: what "Mark verified"
+    // or "It's really them" vouches for, so a key that changes again meanwhile is refused rather than marked unseen.
+    private readonly Dictionary<string, string?> _inviterShown = new();
+
     /// <param name="toggleSettings">Opens the settings window, or closes it if open (the gear).</param>
     /// <param name="openSettings">Opens the settings window, and brings it to the front.</param>
     public MainWindow(Configuration config, SessionManager sessions, UiActions actions, UiFonts fonts, Action toggleSettings, Action openSettings) : base(Title + Id) {
@@ -172,6 +176,10 @@ public sealed class MainWindow : Window {
             return;
         }
 
+        if (ImGui.IsWindowAppearing()) {
+            this._inviterShown.Clear();
+        }
+
         ImGui.TextUnformatted("Invites");
         ImGuiHelpers.ScaledDummy(2);
         if (count == 0) {
@@ -203,6 +211,11 @@ public sealed class MainWindow : Window {
         ImGui.TextColored(Widgets.Muted, $"from {invite.Inviter.Name}@{invite.Inviter.WorldName} · {Ago(invite.Created)}");
 
         var advanced = this._config.AdvancedMode;
+        string? inviterShown = null;
+        if (invite.InviterKeyChanged && !this._inviterShown.TryGetValue(invite.ChannelId, out inviterShown)) {
+            inviterShown = this._inviterShown[invite.ChannelId] = invite.InviterFingerprint;
+        }
+
         if (invite is { Verified: true, ChannelName: null }) {
             ImGui.TextColored(Widgets.Muted, advanced
                 ? "This invite came with you to your new key; its channel's name was sealed to your old one, so it shows once you've joined."
@@ -220,11 +233,11 @@ public sealed class MainWindow : Window {
             ImGui.TextColored(Widgets.Muted,
                 "Their identity key changed, or this name now belongs to a different account. Compare fingerprints with them over /tell before accepting.");
             ImGui.TextColored(Widgets.Muted, "Their fingerprint");
-            Modals.Fingerprint(invite.InviterFingerprint, null);
+            Modals.Fingerprint(inviterShown, null);
             ImGui.TextColored(Widgets.Muted, "Yours");
             Modals.Fingerprint(this._sessions.Snapshot.MyFingerprint, "##copy-mine");
-            ImGui.BeginDisabled(this._actions.Busy || invite.InviterFingerprint == null);
-            if (ImGui.Button("Mark verified") && invite.InviterFingerprint is { } shown) {
+            ImGui.BeginDisabled(this._actions.Busy || inviterShown == null);
+            if (ImGui.Button("Mark verified") && inviterShown is { } shown) {
                 // The fingerprint shown above, and only that.
                 this._actions.Run("Marking verified", () => session.AcknowledgeKeyChange(invite.Inviter.UserId, shown));
             }
@@ -234,10 +247,10 @@ public sealed class MainWindow : Window {
             // The same check in simple mode's words: the user confirms over /tell that it's them, rather than comparing fingerprints.
             Widgets.IconText(FontAwesomeIcon.ExclamationTriangle, "Check it's really them", Widgets.Warning);
             ImGui.TextColored(Widgets.Muted, Modals.ChangedText(invite.Inviter.Name) + " Check with them over /tell before accepting.");
-            ImGui.BeginDisabled(this._actions.Busy || invite.InviterFingerprint == null);
-            if (ImGui.Button("It's really them") && invite.InviterFingerprint is { } shown) {
-                // The keys this invite came with, and only those.
-                this._actions.Run("Confirming it's them", () => session.AcknowledgeKeyChange(invite.Inviter.UserId, shown));
+            ImGui.BeginDisabled(this._actions.Busy || inviterShown == null);
+            if (ImGui.Button("It's really them") && inviterShown is { } shown) {
+                // The keys shown when this warning first showed, and only those. Not a comparison: advanced mode still says "not compared".
+                this._actions.Run("Confirming it's them", () => session.AcknowledgeKeyChange(invite.Inviter.UserId, shown, compared: false));
             }
 
             ImGui.EndDisabled();

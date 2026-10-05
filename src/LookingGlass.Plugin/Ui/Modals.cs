@@ -16,7 +16,9 @@ internal sealed class Modals(UiActions actions, Func<bool> advancedMode) {
 
     private Confirmation? _confirm;
     private bool _openConfirm;
-    private (string ChannelId, long UserId)? _check;
+    // The member being checked, and the fingerprint shown when the dialog opened: what "Mark verified" or "It's really them" vouches
+    // for, and only that, so a key that changes again while it is open is refused rather than marked unseen.
+    private (string ChannelId, long UserId, string? Shown)? _check;
     private bool _openCheck;
 
     /// <summary>Asks before running <paramref name="action"/>.</summary>
@@ -29,10 +31,17 @@ internal sealed class Modals(UiActions actions, Func<bool> advancedMode) {
     /// In advanced mode, shows your fingerprint next to a channel member's, to compare and mark verified. In simple mode,
     /// what a warning about them means and what to do, with a button to clear it once they've confirmed it was them.
     /// </summary>
-    public void CheckMember(string channelId, long userId) {
-        this._check = (channelId, userId);
+    public void CheckMember(string channelId, MemberView member) {
+        this._check = (channelId, member.User.UserId, ShownFingerprintOf(member));
         this._openCheck = true;
     }
+
+    /// <summary>
+    /// The fingerprint to show for a member, and to mark verified: "Mark verified" vouches for the fingerprint shown, and
+    /// only that. For someone who registered again, the warning is about their new key, so that is the one shown and
+    /// marked; the key the log binds them to can't be compared any more (they no longer have it).
+    /// </summary>
+    private static string? ShownFingerprintOf(MemberView member) => member.KeyReplaced ? member.NewFingerprint : member.Fingerprint;
 
     public void Draw(SessionSnapshot snapshot, ClientSession? session) {
         this.DrawConfirm();
@@ -45,7 +54,7 @@ internal sealed class Modals(UiActions actions, Func<bool> advancedMode) {
     public static bool HasSomethingToCheck(MemberView member) => member.KeyChanged || member.KeyReplaced || member.KeyRecovered;
 
     /// <summary>Someone's keys changed without explanation, in simple mode's words (as <see cref="PlainMessages.KeyChanged"/> starts).</summary>
-    public static string ChangedText(string name) => $"{name}'s LookingGlass was reinstalled or reset, or someone else may be using their name.";
+    public static string ChangedText(string name) => $"{name} set up LookingGlass again (new computer or reset), or someone else may be using their name.";
 
     /// <summary>Someone registered again with keys that aren't a member here, in simple mode's words.</summary>
     public static string ReplacedText(string name) =>
@@ -134,9 +143,9 @@ internal sealed class Modals(UiActions actions, Func<bool> advancedMode) {
         if (member == null || session == null) {
             ImGui.TextUnformatted("They're no longer in this channel.");
         } else if (advanced) {
-            DrawComparison(member, snapshot, session, actions);
+            DrawComparison(member, check.Shown, snapshot, session, actions);
         } else {
-            DrawPlainCheck(member, session, actions);
+            DrawPlainCheck(member, check.Shown, session, actions);
         }
 
         ImGui.PopTextWrapPos();
@@ -149,14 +158,8 @@ internal sealed class Modals(UiActions actions, Func<bool> advancedMode) {
         ImGui.EndPopup();
     }
 
-    private static void DrawComparison(MemberView member, SessionSnapshot snapshot, ClientSession session, UiActions actions) {
+    private static void DrawComparison(MemberView member, string? theirs, SessionSnapshot snapshot, ClientSession session, UiActions actions) {
         var name = $"{member.User.Name}@{member.User.WorldName}";
-
-        // "Mark verified" vouches for the fingerprint shown, and only that. For someone who registered again, the
-        // warning is about their new key, so that is the one shown and marked; the key the log binds them to can't
-        // be compared any more (they no longer have it).
-        var theirs = member.KeyReplaced ? member.NewFingerprint : member.Fingerprint;
-
         ImGui.TextUnformatted($"Compare fingerprints with {name}");
         ImGui.Spacing();
         ImGui.TextColored(Widgets.Muted, "Compare these over /tell or in person. If theirs matches what they see as their own fingerprint, mark them verified.");
@@ -203,8 +206,7 @@ internal sealed class Modals(UiActions actions, Func<bool> advancedMode) {
     /// Simple mode's check: what the warning or hint about them means and what to do, without fingerprints. "It's really
     /// them" clears it as "Mark verified" does, for the keys advanced mode would show (the ones held for them now).
     /// </summary>
-    private static void DrawPlainCheck(MemberView member, ClientSession session, UiActions actions) {
-        var theirs = member.KeyReplaced ? member.NewFingerprint : member.Fingerprint;
+    private static void DrawPlainCheck(MemberView member, string? theirs, ClientSession session, UiActions actions) {
         ImGui.TextUnformatted($"{member.User.Name}@{member.User.WorldName}");
         ImGui.Spacing();
 
@@ -212,10 +214,10 @@ internal sealed class Modals(UiActions actions, Func<bool> advancedMode) {
             Widgets.IconText(FontAwesomeIcon.ExclamationTriangle, "Set up LookingGlass again", Widgets.Warning);
             ImGui.TextColored(Widgets.Muted, ReplacedText(member.User.Name));
         } else if (member.KeyChanged) {
-            Widgets.IconText(FontAwesomeIcon.ExclamationTriangle, "LookingGlass reinstalled or reset", Widgets.Warning);
+            Widgets.IconText(FontAwesomeIcon.ExclamationTriangle, "Set up again, or someone else?", Widgets.Warning);
             ImGui.TextColored(Widgets.Muted, ChangedText(member.User.Name) + " If you didn't expect that, check with them over /tell before trusting them.");
         } else if (member.KeyRecovered) {
-            Widgets.IconText(FontAwesomeIcon.InfoCircle, "Set up LookingGlass again");
+            Widgets.IconText(FontAwesomeIcon.Redo, "Set up LookingGlass again");
             ImGui.TextColored(Widgets.Muted, RecoveredText(member.User.Name));
         } else {
             ImGui.TextColored(Widgets.Muted, "Nothing to check: there are no warnings about them.");
@@ -231,7 +233,7 @@ internal sealed class Modals(UiActions actions, Func<bool> advancedMode) {
         ImGui.BeginDisabled(actions.Busy || theirs == null);
         if (ImGui.Button("It's really them") && theirs is { } shown) {
             // The keys held for them now, and only those.
-            actions.Run("Confirming it's them", () => session.AcknowledgeKeyChange(member.User.UserId, shown));
+            actions.Run("Confirming it's them", () => session.AcknowledgeKeyChange(member.User.UserId, shown, compared: false));
         }
 
         ImGui.EndDisabled();

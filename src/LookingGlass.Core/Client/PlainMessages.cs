@@ -6,7 +6,7 @@ namespace LookingGlass.Core.Client;
 /// simple mode says what happened and what to do without the jargon, and never leaves a warning out.
 ///
 /// In simple mode a user's identity keys are "their LookingGlass" or "setup": a key that changed without explanation is
-/// "LookingGlass was reinstalled or reset, or someone else may be using their name", a key recovered entry is "set up
+/// "set up LookingGlass again (new computer or reset), or someone else may be using their name", a key recovered entry is "set up
 /// LookingGlass again (new computer or reset)", and what to do is nearly always "check with them over /tell".
 /// </summary>
 public static class PlainMessages {
@@ -188,7 +188,7 @@ public static class PlainMessages {
     /// <param name="fingerprint">Of the new keys.</param>
     public static Wording KeyChanged(string who, string fingerprint) => new(NoticeKind.KeyChanged,
         $"{who}'s identity key changed (they may have re-registered). Compare fingerprints over /tell before trusting it: {fingerprint}",
-        $"{who}'s LookingGlass was reinstalled or reset, or someone else may be using their name. If you didn't expect that, check with " +
+        $"{who} set up LookingGlass again (new computer or reset), or someone else may be using their name. If you didn't expect that, check with " +
         "them over /tell before trusting them.");
 
     /// <summary>A name and world first seen with another account.</summary>
@@ -206,7 +206,7 @@ public static class PlainMessages {
     /// <param name="names">Their names, joined.</param>
     public static Wording KeysChangedIn(string names) => new(NoticeKind.KeyChanged,
         $"Key changed: {names}. Compare fingerprints.",
-        $"{names}: LookingGlass was reinstalled or reset, or someone else may be using the name. Check with them over /tell.");
+        $"{names}: set up LookingGlass again (new computer or reset), or someone else may be using the name. Check with them over /tell.");
 
     /// <summary>A short warning about members who registered again, for a channel at a glance.</summary>
     public static Wording RegisteredAgainIn(string names) => new(NoticeKind.RegisteredAgain,
@@ -217,7 +217,7 @@ public static class PlainMessages {
     /// <param name="channel">The channel's name, quoted, or "a channel".</param>
     public static Wording InviteFromChangedKey(string who, string channel) => new(NoticeKind.InviteFromChangedKey,
         $"{who} invited you to {channel}, but their identity key changed. Compare fingerprints over /tell before accepting.",
-        $"{who} invited you to {channel}, but their LookingGlass was reinstalled or reset, or someone else may be using their name. " +
+        $"{who} invited you to {channel}, but they set up LookingGlass again (new computer or reset), or someone else may be using their name. " +
         "Check with them over /tell before accepting.");
 
     /// <summary>An invite that didn't check out.</summary>
@@ -388,7 +388,7 @@ public static class PlainMessages {
     /// <summary>For a channel at a glance: it needs a new key before anyone sends, which a member makes by itself.</summary>
     public static readonly Wording NewKeyPending = new(NoticeKind.ChannelNotReady,
         "A new channel key is pending.",
-        "Being updated after someone joined or left.");
+        "Being updated after a change to its members.");
 
     /// <summary>For a channel at a glance: this client holds no key for it yet.</summary>
     public static readonly Wording WaitingForKey = new(NoticeKind.ChannelNotReady,
@@ -564,6 +564,8 @@ public static class PlainMessages {
         yield return RekeyConflicts;
         yield return InvalidKeys(who);
         yield return Rekeying;
+        yield return CheckingMembership;
+        yield return FetchingIdentities;
         yield return Failed(Rekeying, Failure(CantSealTo(who, "invalid point")));
         yield return Failed(Rekeying, new TimeoutException("The server didn't answer in time."));
     }

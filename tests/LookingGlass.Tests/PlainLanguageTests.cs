@@ -60,7 +60,11 @@ public sealed class PlainLanguageTests {
     public void SimpleModeSaysWhatHappenedAndWhatToDo() {
         Assert.Equal("Bob Hatter@Lich set up LookingGlass again (new computer or reset). If you didn't expect that, check with them over /tell.",
             PlainMessages.ReVerifiedWording("Bob Hatter@Lich", false).Plain);
-        Assert.StartsWith("Bob Hatter@Lich's LookingGlass was reinstalled or reset", PlainMessages.KeyChanged("Bob Hatter@Lich", "1 2").Plain);
+        Assert.StartsWith("Bob Hatter@Lich set up LookingGlass again (new computer or reset), or someone else may be using their name.",
+            PlainMessages.KeyChanged("Bob Hatter@Lich", "1 2").Plain);
+        // Only a new setup changes anything, not reinstalling the plugin; and new keys are a change to the members, joining or leaving or not.
+        Assert.All(PlainMessages.Examples(), wording => Assert.DoesNotContain("reinstall", wording.Plain));
+        Assert.Equal("Being updated after a change to its members.", PlainMessages.NewKeyPending.Plain);
 
         // Wherever someone else's identity or a channel's members can't be trusted as shown: check over /tell.
         foreach (var wording in PlainMessages.Examples().Where(wording => wording.Kind is NoticeKind.KeyChanged or NoticeKind.NameNowAnotherAccount
@@ -83,7 +87,7 @@ public sealed class PlainLanguageTests {
         Assert.Equal(notice.Text, notice.TextFor(advanced: true));
         Assert.Equal(notice.Plain, notice.TextFor(advanced: false));
         Assert.StartsWith("Bob Hatter@Lich's identity key changed", notice.TextFor(advanced: true));
-        Assert.StartsWith("Bob Hatter@Lich's LookingGlass was reinstalled", notice.TextFor(advanced: false));
+        Assert.StartsWith("Bob Hatter@Lich set up LookingGlass again", notice.TextFor(advanced: false));
         PlainLanguage.AssertShownInBothModes(notice);
 
         // A notice with no plain words (from elsewhere) is shown as it is in simple mode, never dropped.

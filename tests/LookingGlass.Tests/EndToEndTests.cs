@@ -483,7 +483,7 @@ public sealed class EndToEndTests : IAsyncLifetime {
 
         // The new key is still treated as a change to check, not silently trusted.
         Assert.Contains(carol.Notices, n => n.Level == NoticeLevel.Warning && n.Text.StartsWith($"{bob.Name}@Debug's identity key changed"));
-        Assert.Contains(carol.Notices, n => n.Kind == NoticeKind.KeyChanged && n.TextFor(advanced: false).StartsWith($"{bob.Name}@Debug's LookingGlass was reinstalled or reset"));
+        Assert.Contains(carol.Notices, n => n.Kind == NoticeKind.KeyChanged && n.TextFor(advanced: false).StartsWith($"{bob.Name}@Debug set up LookingGlass again (new computer or reset), or someone else may be using their name"));
         var member = carol.Session.Snapshot.FindChannel(channelId)!.Members.Single(m => m.User.UserId == bobAgain.UserId);
         Assert.True(member.KeyChanged);
         Assert.Equal(bobAgain.Session.Snapshot.MyFingerprint, member.Fingerprint);
