@@ -2,7 +2,6 @@ using Dalamud.Game.Addon.Lifecycle;
 using Dalamud.Game.Addon.Lifecycle.AddonArgTypes;
 using Dalamud.Game.Gui.Dtr;
 using Dalamud.Game.Text.SeStringHandling;
-using Dalamud.Game.Text.SeStringHandling.Payloads;
 using Dalamud.Plugin.Services;
 using LookingGlass.Core.Client;
 using Lumina.Excel.Sheets;
@@ -13,12 +12,21 @@ namespace LookingGlass.Plugin;
 /// Talking in a channel without /lgc (sticky mode): /lgc3 or /lgc sky with no message makes what is typed in the chat
 /// box go to that channel, and never to game chat, until the game's chat channel is switched, the player logs out, the
 /// session ends or they're no longer in the channel (see <see cref="StickyChannel"/>, which holds the rules).
-/// Shows the channel's tag where the chat input names its channel, in ChatTwo's input, and in the server info bar.
+/// Shows the channel's tag where the chat input names its channel, in ChatTwo's input, and in the server info bar, and
+/// keeps all three in step with the state once a frame, whatever ended it.
 /// Everything runs on the game thread: the hooks' detours, commands, Framework.Update and the addon listener.
 /// </summary>
 public sealed class StickyMode : IChatBoxListener, IDisposable {
     private const string ChatLogAddon = "ChatLog";
     private const uint White = 0xFFFFFFFF;
+
+    /// <summary>
+    /// The game's channel commands (TextCommand rows), for their names in the client's language: Say, Party, Alliance,
+    /// Yell, Shout, Free Company, PvP team, Novice Network, cross-world linkshells 1 to 8, linkshells 1 to 8. The rows
+    /// ChatTwo's public source (1.40.9, <c>InputChannelExt.TextCommands</c>) gives for its channels.
+    /// </summary>
+    private static readonly uint[] ChannelCommandRows =
+        [102, 105, 119, 117, 103, 115, 91, 101, .. Enumerable.Range(13, 8).Select(i => (uint) i), .. Enumerable.Range(107, 8).Select(i => (uint) i)];
 
     private readonly Configuration _config;
     private readonly PlayerTracker _player;
@@ -29,7 +37,13 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
     private readonly ChatInterop _interop;
     private readonly ChatTwoIpc _chatTwo = new();
     private readonly IDtrBarEntry? _infoBar;
+    private readonly IReadOnlyCollection<string> _switches;
+    // ChatTwo's label: set while talking in a channel (and sent again now and then), cleared as soon as it stops.
+    private readonly LabelKeeper _chatTwoLabel = new(1000);
+    // The tag and colour shown while talking in a channel, or null.
     private (string Tag, ushort Colour)? _shown;
+    // ChatTwo was loaded when talking in the channel started: its short commands stay the channel's until it ends.
+    private bool _chatTwoAtStart;
     // The game's chat input still shows a tag that must be replaced by the game's own channel name.
     private bool _labelOwed;
     private bool _disposed;
@@ -40,6 +54,7 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
         this._sessions = sessions;
         this._chat = chat;
         this._sender = sender;
+        this._switches = ChatChannelPrefixes.SwitchesWith(GameChannelCommandNames());
         this._interop = new ChatInterop(this);
 
         try {
@@ -60,6 +75,7 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
     /// <summary>/lgc3 or /lgc sky with no message. Call on the framework thread.</summary>
     public void Enter(string channelId) {
         var tag = this.TagOf(channelId);
+        var wasOn = this._state.ChannelId != null;
         var chatTwo = this._chatTwo.Loaded;
         var chatTwoTell = chatTwo && this._chatTwo.InputChannel() == ChatChannelPrefixes.ChatTwoTell;
         var start = this._state.Enter(channelId, tag, this.World(), this._interop.InputHooked, chatTwo, chatTwoTell);
@@ -68,12 +84,19 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
             return;
         }
 
+        this._chatTwoAtStart = chatTwo || (wasOn && this._chatTwoAtStart);
         this._chat.ChannelNotice(start.Text, this._sessions.ColourOf(channelId));
+        if (StickyMessages.ChatTwoNoteFor(tag, chatTwo, this._config.ChatTwoStickyNoteShown) is { } note) {
+            this._chat.Notice(NoticeLevel.Info, note);
+            this._config.ChatTwoStickyNoteShown = true;
+            this._config.Save();
+        }
+
         if (ExtraChatLoaded()) {
             this._chat.Notice(NoticeLevel.Warning, StickyMessages.ExtraChatLoaded);
         }
 
-        this.ShowIndicators();
+        this.SyncIndicators();
     }
 
     /// <inheritdoc/>
@@ -83,15 +106,19 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
         }
 
         var tag = this.TagOf(channelId);
-        var line = SeString.Parse(message);
-        var notOnlyText = line.Payloads.Any(payload => payload is not TextPayload);
-        var route = StickyRoute.For(channelId, tag, line.TextValue, ChatChannelPrefixes.SentAs(this._chatTwo.Loaded), notOnlyText);
+        var line = new ChatBoxLine(message, SeString.Parse(message).TextValue);
+        var route = StickyRoute.For(channelId, tag, line, ChatChannelPrefixes.SentAs(this._chatTwoAtStart || this._chatTwo.Loaded), this._switches);
         switch (route) {
             case StickyRoute.ToChannel send:
                 this._sender.Send(send.ChannelId, send.Text, tag);
                 break;
             case StickyRoute.Dropped { Text: { } notice }:
                 this._chat.Notice(NoticeLevel.Warning, notice);
+                break;
+            case StickyRoute.LeaveThenGame:
+                // /s on its own: stop now, saying so and taking the labels down, then let the game switch. This doesn't
+                // depend on whether, or when, the game calls its channel switch for it (it may not, for the channel already on).
+                this.Leave(StickyEnd.ChannelSwitched);
                 break;
         }
 
@@ -124,21 +151,39 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
         }
     }
 
-    private void OnUpdate(IFramework framework) {
+    /// <summary>The names of the game's channel commands in the client's language (/s, /say and so on), or none if unreadable.</summary>
+    private static IEnumerable<string> GameChannelCommandNames() {
         try {
-            if (this._state.ChannelId is not { } channelId) {
-                return;
+            var sheet = Services.Data.GetExcelSheet<TextCommand>();
+            var names = new List<string>();
+            foreach (var row in ChannelCommandRows) {
+                if (sheet.GetRowOrDefault(row) is { } command) {
+                    names.Add(command.Command.ExtractText());
+                    names.Add(command.ShortCommand.ExtractText());
+                    names.Add(command.Alias.ExtractText());
+                    names.Add(command.ShortAlias.ExtractText());
+                }
             }
 
-            if (this._state.Check(this.World()) is { } end) {
+            return names;
+        } catch (Exception ex) {
+            Services.Log.Warning(ex, "Couldn't read the game's channel commands; only the English ones end talking in a channel when typed on their own");
+            return [];
+        }
+    }
+
+    private void OnUpdate(IFramework framework) {
+        try {
+            if (this._state.ChannelId is { } channelId && this._state.Check(this.World()) is { } end) {
                 this.Ended(channelId, end);
-            } else {
-                this.ShowIndicators();
             }
         } catch (Exception ex) {
             Services.Log.Error(ex, "Error checking the channel being talked in");
             this.Leave(StickyEnd.ChannelUnknown);
         }
+
+        // Whatever happened, the labels say what is so: the tag while talking in a channel, never once it has stopped.
+        this.SyncIndicators();
     }
 
     private void OnChatLogPreDraw(AddonEvent type, AddonArgs args) {
@@ -161,38 +206,56 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
         }
     }
 
-    /// <summary>Talking in the channel has ended: say so (in every case, see docs/design.md), and take the indicators down.</summary>
+    /// <summary>
+    /// Talking in the channel has ended: take the labels down at once, then say so (in every case, see docs/design.md),
+    /// in the same chat channel as "Now talking in". Each step runs even if the other fails.
+    /// </summary>
     private void Ended(string channelId, StickyEnd why) {
         // As last shown: after a logout or a disconnect, the channel's number and nickname are no longer at hand.
         var (tag, colour) = this._shown ?? (this.TagOf(channelId), this._sessions.ColourOf(channelId) ?? ChatOutput.TagColour);
-        this._chat.ChannelNotice(StickyMessages.Ended(tag, why), colour);
-        this.HideIndicators();
+        try {
+            this.SyncIndicators();
+        } finally {
+            try {
+                this._chat.ChannelNotice(StickyMessages.Ended(tag, why), colour);
+            } catch (Exception ex) {
+                Services.Log.Error(ex, $"Couldn't say that talking in a channel stopped ({why})");
+            }
+        }
     }
 
-    private void ShowIndicators() {
-        if (this._state.ChannelId is not { } channelId) {
+    /// <summary>
+    /// Makes the labels match the state: while talking in a channel, its tag in ChatTwo's input and the server info bar
+    /// (sent again if the tag or colour changed, ChatTwo's now and then anyway); otherwise neither. Once a frame, and at
+    /// every start and end. The game chat input's own name is kept in step before each draw (<see cref="OnChatLogPreDraw"/>).
+    /// </summary>
+    private void SyncIndicators() {
+        (string Tag, ushort Colour)? wanted = this._state.ChannelId is { } channelId
+            ? (this.TagOf(channelId), this._sessions.ColourOf(channelId) ?? ChatOutput.TagColour)
+            : null;
+
+        try {
+            if (this._chatTwoLabel.ShouldSend(wanted is { } key ? $"{key.Tag}\n{key.Colour}" : null, Environment.TickCount64)) {
+                this._chatTwo.SetChannelLabel(wanted is { } shown ? $"LookingGlass {shown.Tag}" : null, wanted is { } coloured ? RgbaOf(coloured.Colour) : White);
+            }
+        } catch (Exception ex) {
+            Services.Log.Warning(ex, "Couldn't update ChatTwo's channel name");
+        }
+
+        if (wanted == this._shown) {
             return;
         }
 
-        // Once a frame: only a changed tag or colour (a nickname or colour set meanwhile) is shown again.
-        var shown = (Tag: this.TagOf(channelId), Colour: this._sessions.ColourOf(channelId) ?? ChatOutput.TagColour);
-        if (shown == this._shown) {
+        this._shown = wanted;
+        if (this._infoBar == null) {
             return;
         }
 
-        this._shown = shown;
-        this._chatTwo.SetChannelLabel($"LookingGlass {shown.Tag}", RgbaOf(shown.Colour));
-        if (this._infoBar != null) {
-            this._infoBar.Text = new SeStringBuilder().AddUiForeground($"LG {shown.Tag}", shown.Colour).Build();
-            this._infoBar.Tooltip = $"What you type in chat goes to the LookingGlass channel {shown.Tag}, not to game chat. Click to stop.";
+        if (wanted is { } bar) {
+            this._infoBar.Text = new SeStringBuilder().AddUiForeground($"LG {bar.Tag}", bar.Colour).Build();
+            this._infoBar.Tooltip = $"What you type in chat goes to the LookingGlass channel {bar.Tag}, not to game chat. Click to stop.";
             this._infoBar.Shown = true;
-        }
-    }
-
-    private void HideIndicators() {
-        this._shown = null;
-        this._chatTwo.SetChannelLabel(null, White);
-        if (this._infoBar != null) {
+        } else {
             this._infoBar.Shown = false;
         }
     }
