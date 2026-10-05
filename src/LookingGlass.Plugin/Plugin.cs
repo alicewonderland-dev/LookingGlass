@@ -26,7 +26,7 @@ public sealed class Plugin : IDalamudPlugin {
         this._sessions = new SessionManager(this._config, this._player, chat);
 
         // One action runner for both windows, so the main window's status line shows what Settings started too.
-        var actions = new UiActions(() => this._sessions.Snapshot.PendingChallenge?.Code);
+        var actions = new UiActions(() => this._sessions.Snapshot.PendingChallenge?.Code, () => this._config.AdvancedMode);
         this._fonts = new UiFonts(pluginInterface.UiBuilder);
         this._settingsWindow = new SettingsWindow(this._config, this._sessions, actions);
         this._mainWindow = new MainWindow(this._config, this._sessions, actions, this._fonts, this._settingsWindow.Toggle, () => {

@@ -25,6 +25,13 @@ public sealed class Configuration : IPluginConfiguration {
     /// <summary>A channel with a nickname is tagged [nickname] in chat instead of [LGCn]. See <see cref="ChannelTag"/>.</summary>
     public bool NicknameTags { get; set; } = true;
 
+    /// <summary>
+    /// Show the encryption details: fingerprints to compare and mark verified, keys, and the technical words of warnings.
+    /// Off (simple mode, the default, also for settings saved before it existed), the same warnings are said in everyday
+    /// words (see <see cref="Wording"/>), and nothing technical is shown.
+    /// </summary>
+    public bool AdvancedMode { get; set; }
+
     /// <summary>Per character, keyed by content ID.</summary>
     public Dictionary<ulong, CharacterSettings> Characters { get; set; } = new();
 

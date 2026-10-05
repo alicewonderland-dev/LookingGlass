@@ -46,7 +46,7 @@ public sealed class MainWindow : Window {
         this._actions = actions;
         this._toggleSettings = toggleSettings;
         this._openSettings = openSettings;
-        this._modals = new Modals(actions);
+        this._modals = new Modals(actions, () => config.AdvancedMode);
         this._pane = new ChannelPane(sessions, actions, this._modals, fonts);
         this._pane.Closed += () => this._selectedChannel = null;
 
@@ -107,7 +107,7 @@ public sealed class MainWindow : Window {
         var right = ImGui.GetCursorPosX() + ImGui.GetContentRegionAvail().X;
         var envelope = session != null ? Widgets.GhostIconButtonWidth + 6 * scale : 0;
 
-        var (state, colour, detail) = ConnectionLabel(snapshot, session != null, player != null);
+        var (state, colour, detail) = ConnectionLabel(snapshot, session != null, player != null, this._config.AdvancedMode);
         ImGui.AlignTextToFramePadding();
         ImGui.BeginGroup();
         Widgets.Dot(colour, ImGui.GetFrameHeight());
@@ -131,25 +131,26 @@ public sealed class MainWindow : Window {
         }
     }
 
-    private static (string Text, Vector4 Colour, string Detail) ConnectionLabel(SessionSnapshot snapshot, bool hasSession, bool loggedIn) {
+    private static (string Text, Vector4 Colour, string Detail) ConnectionLabel(SessionSnapshot snapshot, bool hasSession, bool loggedIn, bool advanced) {
+        var status = snapshot.StatusFor(advanced);
         if (!loggedIn) {
             return ("Not logged in", ImGuiColors.DalamudGrey, "Log in to a character to use LookingGlass.");
         }
 
         if (!hasSession) {
-            return ("Not connected", ImGuiColors.DalamudGrey, snapshot.StatusText ?? "Not connected. Connect below, or check the server in Settings (the gear in the title bar).");
+            return ("Not connected", ImGuiColors.DalamudGrey, status ?? "Not connected. Connect below, or check the server in Settings (the gear in the title bar).");
         }
 
         return snapshot.State switch {
-            ConnectionState.Ready => ("Connected", ImGuiColors.HealerGreen, snapshot.StatusText ?? "Connected to the server."),
-            ConnectionState.Connecting => ("Connecting...", ImGuiColors.DalamudOrange, snapshot.StatusText ?? "Waiting for the server."),
-            ConnectionState.Reconnecting => ("Reconnecting...", ImGuiColors.DalamudOrange, snapshot.StatusText ?? "The connection to the server dropped. Trying again."),
-            ConnectionState.LoginNotRecognized => ("Login not recognised", Widgets.Warning, snapshot.StatusText ?? LoginNotRecognisedText),
+            ConnectionState.Ready => ("Connected", ImGuiColors.HealerGreen, status ?? "Connected to the server."),
+            ConnectionState.Connecting => ("Connecting...", ImGuiColors.DalamudOrange, status ?? "Waiting for the server."),
+            ConnectionState.Reconnecting => ("Reconnecting...", ImGuiColors.DalamudOrange, status ?? "The connection to the server dropped. Trying again."),
+            ConnectionState.LoginNotRecognized => ("Login not recognised", Widgets.Warning, status ?? PlainMessages.LoginNotRecognized.For(advanced)),
             ConnectionState.Registering when snapshot.LoginRejected => ("Registering again", Widgets.Warning,
-                snapshot.StatusText ?? "The server didn't recognise your login, so you're registering again. Follow the steps below."),
+                status ?? "The server didn't recognise your login, so you're registering again. Follow the steps below."),
             ConnectionState.Unregistered or ConnectionState.Registering => ("Not registered", ImGuiColors.DalamudOrange,
-                snapshot.StatusText ?? "Connected, but this character isn't registered yet. Register it below."),
-            _ => ("Stopped", ImGuiColors.DalamudGrey, snapshot.StatusText ?? "Not connected."),
+                status ?? "Connected, but this character isn't registered yet. Register it below."),
+            _ => ("Stopped", ImGuiColors.DalamudGrey, status ?? "Not connected."),
         };
     }
 
@@ -201,14 +202,19 @@ public sealed class MainWindow : Window {
         ImGui.TextUnformatted(Widgets.Ellipsize(name, width));
         ImGui.TextColored(Widgets.Muted, $"from {invite.Inviter.Name}@{invite.Inviter.WorldName} · {Ago(invite.Created)}");
 
+        var advanced = this._config.AdvancedMode;
         if (invite is { Verified: true, ChannelName: null }) {
-            ImGui.TextColored(Widgets.Muted, "This invite came with you to your new key; its channel's name was sealed to your old one, so it shows once you've joined.");
+            ImGui.TextColored(Widgets.Muted, advanced
+                ? "This invite came with you to your new key; its channel's name was sealed to your old one, so it shows once you've joined."
+                : "This invite is from before you set up LookingGlass again, so its channel's name shows once you've joined.");
         }
 
         if (!invite.Verified) {
-            Widgets.IconText(FontAwesomeIcon.ExclamationTriangle, "Couldn't verify this invite", Widgets.Warning);
-            ImGui.TextColored(Widgets.Muted, "It isn't signed by the inviter's current key, so it can't be accepted. Decline it, or ask them to invite you again.");
-        } else if (invite.InviterKeyChanged) {
+            Widgets.IconText(FontAwesomeIcon.ExclamationTriangle, advanced ? "Couldn't verify this invite" : "Couldn't check this invite", Widgets.Warning);
+            ImGui.TextColored(Widgets.Muted, advanced
+                ? "It isn't signed by the inviter's current key, so it can't be accepted. Decline it, or ask them to invite you again."
+                : "It couldn't be checked as really from them, so it can't be accepted. Decline it, or ask them to invite you again.");
+        } else if (invite.InviterKeyChanged && advanced) {
             // An inviter whose key changed may not be who they were: make the user check first.
             Widgets.IconText(FontAwesomeIcon.ExclamationTriangle, "Their key changed", Widgets.Warning);
             ImGui.TextColored(Widgets.Muted,
@@ -224,6 +230,18 @@ public sealed class MainWindow : Window {
             }
 
             ImGui.EndDisabled();
+        } else if (invite.InviterKeyChanged) {
+            // The same check in simple mode's words: the user confirms over /tell that it's them, rather than comparing fingerprints.
+            Widgets.IconText(FontAwesomeIcon.ExclamationTriangle, "Check it's really them", Widgets.Warning);
+            ImGui.TextColored(Widgets.Muted, Modals.ChangedText(invite.Inviter.Name) + " Check with them over /tell before accepting.");
+            ImGui.BeginDisabled(this._actions.Busy || invite.InviterFingerprint == null);
+            if (ImGui.Button("It's really them") && invite.InviterFingerprint is { } shown) {
+                // The keys this invite came with, and only those.
+                this._actions.Run("Confirming it's them", () => session.AcknowledgeKeyChange(invite.Inviter.UserId, shown));
+            }
+
+            ImGui.EndDisabled();
+            Widgets.Tooltip("Once they've told you over /tell that they set up LookingGlass again. Clears this warning.");
         }
 
         ImGui.PopTextWrapPos();
@@ -302,10 +320,10 @@ public sealed class MainWindow : Window {
                 this.DrawChannels(snapshot, session);
                 break;
             case ConnectionState.Reconnecting:
-                Widgets.Centred(FontAwesomeIcon.Sync, "Reconnecting...", snapshot.StatusText ?? "The connection to the server dropped. Trying again.");
+                Widgets.Centred(FontAwesomeIcon.Sync, "Reconnecting...", snapshot.StatusFor(this._config.AdvancedMode) ?? "The connection to the server dropped. Trying again.");
                 break;
             default:
-                Widgets.Centred(FontAwesomeIcon.Sync, "Connecting...", snapshot.StatusText ?? "Waiting for the server.");
+                Widgets.Centred(FontAwesomeIcon.Sync, "Connecting...", snapshot.StatusFor(this._config.AdvancedMode) ?? "Waiting for the server.");
                 break;
         }
     }
@@ -317,28 +335,34 @@ public sealed class MainWindow : Window {
         ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + width);
         ImGui.Spacing();
 
+        var advanced = this._config.AdvancedMode;
+
         // The server doesn't list the address in use, so it would refuse the registration (and key login): say so before anything else.
-        if (snapshot.AddressNotListed is { } addressHint) {
+        if (snapshot.AddressNotListedFor(advanced) is { } addressHint) {
             this.DrawAddressNotListed(addressHint);
         }
 
         // A login the server refused: first what may be wrong and what to try, then registering again as the last resort.
         var rejected = snapshot.State == ConnectionState.LoginNotRecognized || snapshot.LoginRejected;
         if (rejected) {
-            this.DrawLoginNotRecognised(session);
+            this.DrawLoginNotRecognised(session, advanced);
         }
 
+        const string howItChecks = "LookingGlass checks that the character is yours with a short code you put in your Lodestone profile for a few minutes.";
         ImGui.TextUnformatted(rejected ? "Register again" : "Register this character");
-        ImGui.TextColored(Widgets.Muted, rejected
-            ? "Only needed if your identity key was lost or replaced, or this server has never known your account; it replaces your login but keeps the identity key the plugin has, so your channels keep working. LookingGlass checks that the character is yours with a short code you put in your Lodestone profile for a few minutes."
-            : "LookingGlass checks that the character is yours with a short code you put in your Lodestone profile for a few minutes.");
+        ImGui.TextColored(Widgets.Muted, !rejected ? howItChecks
+            : advanced ? "Only needed if your identity key was lost or replaced, or this server has never known your account; it replaces your login but keeps the identity key the plugin has, so your channels keep working. " + howItChecks
+            : "Only needed if your LookingGlass was reset or its files were lost, or this server has never known you; it replaces your login, and your channels keep working. " + howItChecks);
         if (!rejected && snapshot.NewIdentity) {
             // No keys this server knows (a new computer, a lost file, a reset): registering is how the account comes back.
             ImGui.Spacing();
             Widgets.IconText(FontAwesomeIcon.InfoCircle, "Been here before?", ImGuiColors.TankBlue);
-            ImGui.TextUnformatted("If this character used LookingGlass on this server before (on another computer, or before its keys were lost or reset), " +
-                                  "registering brings back its channels, invites and ranks, admin included, with a new key. The members are told that you " +
-                                  "re-verified your character and have a new key.");
+            ImGui.TextUnformatted(advanced
+                ? "If this character used LookingGlass on this server before (on another computer, or before its keys were lost or reset), " +
+                  "registering brings back its channels, invites and ranks, admin included, with a new key. The members are told that you " +
+                  "re-verified your character and have a new key."
+                : "If this character used LookingGlass on this server before (on another computer, or before it was reset), registering " +
+                  "brings back its channels, invites and ranks, admin included. The members are told that you set up LookingGlass again.");
         }
 
         ImGui.Spacing();
@@ -429,20 +453,21 @@ public sealed class MainWindow : Window {
         ImGui.Spacing();
     }
 
-    private const string LoginNotRecognisedText =
-        "This server doesn't recognise your login or your identity key. If you changed the server address, check it in Settings. " +
-        "Register again (through the Lodestone) only if your key was lost or replaced, or this server has never known your account. " +
-        PlainMessages.LoginMaybeReplaced;
-
     /// <summary>
     /// Above the registration steps when the server refused the saved login and the identity key: what may be wrong, that
     /// the login is kept and tried again, and buttons to check the server address and to try again now.
     /// </summary>
-    private void DrawLoginNotRecognised(ClientSession session) {
+    private void DrawLoginNotRecognised(ClientSession session, bool advanced) {
         Widgets.IconText(FontAwesomeIcon.ExclamationTriangle, "This server doesn't recognise your login", Widgets.Warning);
-        ImGui.TextUnformatted("It didn't accept your saved login or your identity key. If you changed the server address, check it in Settings.");
-        ImGui.TextUnformatted("Register again (below) only if your identity key was lost or replaced, or this server has never known your account.");
-        ImGui.TextUnformatted(PlainMessages.LoginMaybeReplaced);
+        if (advanced) {
+            ImGui.TextUnformatted("It didn't accept your saved login or your identity key. If you changed the server address, check it in Settings.");
+            ImGui.TextUnformatted("Register again (below) only if your identity key was lost or replaced, or this server has never known your account.");
+        } else {
+            ImGui.TextUnformatted("It didn't accept your saved login. If you changed the server address, check it in Settings.");
+            ImGui.TextUnformatted("Register again (below) only if your LookingGlass was reset or its files were lost, or this server has never known you.");
+        }
+
+        ImGui.TextUnformatted(PlainMessages.LoginMaybeReplacedWording.For(advanced));
         ImGui.TextColored(Widgets.Muted, "Your login is kept and tried again every minute or so, so it works again by itself once the server knows it.");
         ImGui.TextColored(Widgets.Muted, $"Server: {this._config.ServerUrl}");
         ImGui.Spacing();
@@ -452,7 +477,7 @@ public sealed class MainWindow : Window {
         }
 
         ImGui.EndDisabled();
-        Widgets.Tooltip("Try your saved login on this server again now, then your identity key.");
+        Widgets.Tooltip(advanced ? "Try your saved login on this server again now, then your identity key." : "Try signing in to this server again now.");
         ImGui.SameLine();
         if (Widgets.GhostButton("Open settings", "Check the server address. Also behind the gear in the title bar.")) {
             this._openSettings();
@@ -499,7 +524,9 @@ public sealed class MainWindow : Window {
     private void DrawNoChannels(SessionSnapshot snapshot, ClientSession session) {
         this._sessions.Unread.Viewing(null);
         Widgets.Centred(FontAwesomeIcon.Comments, "Create your first channel",
-            "A channel is an end-to-end encrypted group chat. Create one, then invite friends by character name and home world.");
+            this._config.AdvancedMode
+                ? "A channel is an end-to-end encrypted group chat. Create one, then invite friends by character name and home world."
+                : "A channel is a private group chat. Create one, then invite friends by character name and home world.");
         var width = ImGui.GetContentRegionAvail().X;
         Widgets.CentreNext(Widgets.ButtonWidth("Create a channel"), width);
         if (ImGui.Button("Create a channel")) {
@@ -609,7 +636,8 @@ public sealed class MainWindow : Window {
         var nickname = this._sessions.NicknameOf(channel.Id);
         var colour = this._sessions.ColourOf(channel.Id) is { } row ? ChannelPalette.ColourOf(row) : null;
         var unread = this._sessions.Unread.CountOf(channel.Id);
-        var attention = ChannelAttention.Of(channel);
+        var attention = ChannelAttention.Of(channel, this._config.AdvancedMode);
+        var displayName = channel.DisplayNameFor(this._config.AdvancedMode);
 
         var height = MathF.Round(ImGui.GetFrameHeight() + 4 * scale);
         if (ImGui.Selectable($"##row-{channel.Id}", this._selectedChannel == channel.Id, ImGuiSelectableFlags.None, new Vector2(0, height))) {
@@ -659,7 +687,7 @@ public sealed class MainWindow : Window {
         left += numberWidth + 8 * scale;
 
         var room = x - left;
-        var nameWidth = ImGui.CalcTextSize(channel.DisplayName).X;
+        var nameWidth = ImGui.CalcTextSize(displayName).X;
         if (nickname != null && room > 0) {
             var nicknameRoom = Math.Max(0, Math.Min(room * 0.45f, room - nameWidth - 8 * scale));
             var shownNickname = nicknameRoom > ImGui.CalcTextSize("...").X ? Widgets.Ellipsize(nickname, nicknameRoom) : null;
@@ -670,13 +698,13 @@ public sealed class MainWindow : Window {
             }
         }
 
-        var name = Widgets.Ellipsize(channel.DisplayName, Math.Max(room, 0));
+        var name = Widgets.Ellipsize(displayName, Math.Max(room, 0));
         drawList.AddText(new Vector2(MathF.Floor(left), textY), textColour, name);
 
         if (hovered) {
             ImGui.BeginTooltip();
             ImGui.PushTextWrapPos(ImGui.GetFontSize() * 35);
-            ImGui.TextUnformatted(channel.DisplayName);
+            ImGui.TextUnformatted(displayName);
             var commands = slot is { } n ? $"{CommandSlots.Prefix}{n}" : "no number";
             if (nickname != null) {
                 commands += $"  or  {CommandSlots.Prefix} {nickname}";
