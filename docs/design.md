@@ -1679,10 +1679,10 @@ How it could work:
 - **Game chat stays optional.** A per-channel setting decides whether that
   channel's messages also appear in game chat (as today) or only in its
   window.
-- **Messages it can show** start as those received since the plugin started.
-  The server stores no readable history, so anything older needs a local
-  history on the player's computer (encrypted like the secrets file, opt-in,
-  with a size limit). That links to the open question about message history.
+- **Messages it can show** are those received since the player logged in,
+  like the game's own chat log, which keeps nothing between logins either.
+  The owner accepted this (2026-10-05): no local history is planned for the
+  windows.
 - **Typing in the window** takes keyboard focus from the game, as other
   plugin windows do; pressing Escape or clicking away gives it back.
 - **The same send path** as `/lgc`: the same rate limits, "not sent" errors,
@@ -1691,8 +1691,8 @@ How it could work:
 - **Simple and advanced mode** apply as everywhere else.
 
 To decide when it's built: whether windows can be docked together as tabs
-(depends on what Dalamud's ImGui allows), whether to keep a local history at
-all, and how the window looks with Dalamud's transparency.
+(depends on what Dalamud's ImGui allows), and how the window looks with
+Dalamud's transparency.
 
 ### MLS
 
