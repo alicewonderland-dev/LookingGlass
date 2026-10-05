@@ -118,6 +118,97 @@ public static class LodestoneCode {
         return false;
     }
 
+    /// <summary>What <see cref="Redact"/> puts in place of a code.</summary>
+    public const string Removed = "[code removed]";
+
+    /// <summary>
+    /// <paramref name="text"/> with every code in it replaced by <see cref="Removed"/>, except <paramref name="keep"/>. For
+    /// whatever a server (or anyone but this client) wrote that is shown to the user or logged: errors, announcements,
+    /// names. A malicious server M that can't get another server's code past the client's check (see the class
+    /// documentation) could otherwise just write it into its words, as "LGC-… isn't in your Lodestone profile yet",
+    /// and hope the user pastes it. The only code a user should ever see is the one this client derived itself and
+    /// checked, which is <paramref name="keep"/> (none while no registration is under way).
+    /// </summary>
+    /// <remarks>
+    /// A code here is what <see cref="AppearsIn"/> could find in a profile: a literal "LGC-" (in any case), then the
+    /// symbols and hyphens, reading a symbol as AppearsIn does (any case, O as 0, I or L as 1), and also
+    /// with invisible characters in between (control and format characters, such as zero-width spaces, bidi overrides
+    /// or the game's macro bytes), which a display or a copy may drop. Line breaks and tabs aren't skipped: a code
+    /// broken by one doesn't paste as one. This only keeps codes out of what is shown; nothing can stop a server
+    /// describing one in words.
+    /// </remarks>
+    [return: System.Diagnostics.CodeAnalysis.NotNullIfNotNull(nameof(text))]
+    public static string? Redact(string? text, string? keep = null) {
+        if (string.IsNullOrEmpty(text)) {
+            return text;
+        }
+
+        System.Text.StringBuilder? redacted = null;
+        var copied = 0;
+        for (var start = text.IndexOfAny(['L', 'l']);
+             start >= 0;
+             start = start < text.Length ? text.IndexOfAny(['L', 'l'], start) : -1) {
+            if (ReadAt(text, start) is not var (code, end)) {
+                start++;
+                continue;
+            }
+
+            if (!string.IsNullOrEmpty(keep) && code == keep) {
+                start = end;
+                continue;
+            }
+
+            redacted ??= new System.Text.StringBuilder(text.Length);
+            redacted.Append(text, copied, start - copied).Append(Removed);
+            copied = start = end;
+        }
+
+        return redacted == null ? text : redacted.Append(text, copied, text.Length - copied).ToString();
+    }
+
+    /// <summary>The code that starts at <paramref name="start"/>, as <see cref="Redact"/> reads one (in its canonical form), and where it ends.</summary>
+    private static (string Code, int End)? ReadAt(string text, int start) {
+        Span<char> code = stackalloc char[Length];
+        var at = start;
+        for (var i = 0; i < Length; i++) {
+            // Invisible characters only between a code's characters, never before it starts.
+            while (i > 0 && at < text.Length && Invisible(text[at])) {
+                at++;
+            }
+
+            if (at >= text.Length) {
+                return null;
+            }
+
+            var c = text[at++];
+            if (i < Prefix.Length) {
+                code[i] = c is >= 'a' and <= 'z' ? (char) (c - 'a' + 'A') : c;
+                if (code[i] != Prefix[i]) {
+                    return null;
+                }
+            } else if ((i - Prefix.Length) % (GroupSize + 1) == GroupSize) {
+                if (c != '-') {
+                    return null;
+                }
+
+                code[i] = c;
+            } else {
+                code[i] = Canonical(c);
+                if (!Alphabet.Contains(code[i])) {
+                    return null;
+                }
+            }
+        }
+
+        return (new string(code), at);
+    }
+
+    /// <summary>Characters that don't show, which <see cref="Redact"/> reads through: control (but line breaks and tabs) and format characters.</summary>
+    private static bool Invisible(char c) {
+        return c is not ('\n' or '\r' or '\t')
+               && char.GetUnicodeCategory(c) is System.Globalization.UnicodeCategory.Control or System.Globalization.UnicodeCategory.Format;
+    }
+
     private static char Canonical(char c) {
         return char.ToUpperInvariant(c) switch {
             'O' => '0',

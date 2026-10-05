@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using LookingGlass.Core.Crypto;
 
 namespace LookingGlass.Core.Util;
 
@@ -13,7 +14,10 @@ public static class TextSanitizer {
     public const int MaxNameLength = 64;
     public const int MaxMessageLength = 1000;
 
-    /// <summary>Removes control and invisible format characters, collapses line breaks to spaces, and caps the length.</summary>
+    /// <summary>
+    /// Removes control and invisible format characters, collapses line breaks to spaces, caps the length, and removes
+    /// registration codes (see <see cref="LodestoneCode.Redact"/>).
+    /// </summary>
     public static string Clean(string? text, int maxLength = MaxMessageLength) {
         if (string.IsNullOrEmpty(text)) {
             return "";
@@ -38,7 +42,8 @@ public static class TextSanitizer {
             }
         }
 
-        return builder.ToString();
+        // Nobody's text is the place for a registration code: the user's own is shown where registering is.
+        return LodestoneCode.Redact(builder.ToString());
     }
 
     public static string Name(string? text) => Clean(text, MaxNameLength);

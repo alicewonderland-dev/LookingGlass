@@ -359,7 +359,8 @@ public sealed class RequestHandler(
                 case ProfileCheck.ProfileUnavailable:
                     throw new RequestException(ErrorCode.RegistrationFailed, "Couldn't read your Lodestone profile. Is it public?");
                 case ProfileCheck.CodeNotFound:
-                    throw new RequestException(ErrorCode.RegistrationFailed, $"{pending.Code} isn't in your Lodestone profile yet. The Lodestone can take a minute to update.");
+                    // Without the code: the client knows it, and shows no code a server writes into its words (see LodestoneCode.Redact).
+                    throw new RequestException(ErrorCode.RegistrationFailed, "Your code isn't in your Lodestone profile yet. The Lodestone can take a minute to update.");
             }
         }
 

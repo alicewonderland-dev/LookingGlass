@@ -724,6 +724,17 @@ public sealed class TextSanitizerTests {
         Assert.Equal(expected, TextSanitizer.Clean(input));
     }
 
+    /// <summary>Remote text is shown without registration codes in it (see <see cref="LodestoneCode.Redact"/>), however they are written.</summary>
+    [Theory]
+    [InlineData("Paste LGC-0123-4567-89AB-CDEF-GHJK now", "Paste [code removed] now")]
+    [InlineData("lgc-o123-4567-89ab-cdef-ghjk", "[code removed]")]
+    [InlineData("LGC-0123-45​67-89AB-CDEF-GHJK", "[code removed]")]
+    [InlineData("[LGC3] LGC-0123", "[LGC3] LGC-0123")]
+    public void RemovesRegistrationCodes(string input, string expected) {
+        Assert.Equal(expected, TextSanitizer.Clean(input));
+        Assert.Equal(expected, TextSanitizer.Name(input));
+    }
+
     [Fact]
     public void CapsLength() {
         Assert.Equal(TextSanitizer.MaxNameLength + 1, TextSanitizer.Name(new string('x', 500)).Length);

@@ -1,6 +1,7 @@
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface;
+using LookingGlass.Core.Crypto;
 
 namespace LookingGlass.Plugin.Ui;
 
@@ -8,7 +9,11 @@ namespace LookingGlass.Plugin.Ui;
 /// Runs async actions started from the UI off the draw thread and remembers
 /// the result to show next frame. Only one action runs at a time.
 /// </summary>
-public sealed class UiActions {
+/// <param name="shownCode">
+/// The registration code the session checked and shows (if one is under way): the only code an error may show. Errors often
+/// hold what a server said, so every other is removed (see <see cref="LodestoneCode.Redact"/>).
+/// </param>
+public sealed class UiActions(Func<string?>? shownCode = null) {
     /// <summary>How long a success stays in the status bar; the last part of it fades. Errors stay until dismissed or replaced.</summary>
     private const long SuccessShownMs = 8000;
     private const long FadeMs = 1500;
@@ -31,7 +36,7 @@ public sealed class UiActions {
                 await action();
                 this.SetResult($"{description}: done.", false);
             } catch (Exception ex) {
-                this.SetResult($"{description} failed: {ex.Message}", true);
+                this.SetResult(LodestoneCode.Redact($"{description} failed: {ex.Message}", shownCode?.Invoke()), true);
             }
         });
     }

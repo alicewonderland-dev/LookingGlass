@@ -179,8 +179,105 @@ public sealed class RegistrationCodeTests {
 
     /// <summary>Not <paramref name="code"/>, in any case, nor anything shaped like a code.</summary>
     private static void AssertNoCode(string code, string text) {
-        Assert.DoesNotContain(code[LodestoneCode.Prefix.Length..], text, StringComparison.OrdinalIgnoreCase);
+        AssertNotShown(code, text);
         Assert.DoesNotMatch(new System.Text.RegularExpressions.Regex("(?i)LGC-[0-9A-Z]{4}"), text);
+    }
+
+    /// <summary>
+    /// Not <paramref name="code"/> as the Lodestone check would read it: in any case, O as 0, I or L as 1, and with
+    /// invisible characters (which a display or a copy may drop) left out.
+    /// </summary>
+    private static void AssertNotShown(string code, string text) {
+        var read = new string(text
+            .Where(c => char.GetUnicodeCategory(c) is not (System.Globalization.UnicodeCategory.Format or System.Globalization.UnicodeCategory.Control))
+            .Select(c => char.ToUpperInvariant(c) switch {
+                'O' => '0',
+                'I' or 'L' => '1',
+                var upper => upper,
+            })
+            .ToArray());
+        Assert.DoesNotContain(code[LodestoneCode.Prefix.Length..], read);
+    }
+
+    /// <summary>The code as a server could write it so that a plain search doesn't find it: in lower case, with O, I and an invisible space.</summary>
+    private static string Disguised(string code) {
+        var body = code[LodestoneCode.Prefix.Length..].ToLowerInvariant().Replace('0', 'o').Replace('1', 'I');
+        return $"lgc-{body[..3]}​{body[3..]}";
+    }
+
+    /// <summary>
+    /// The relay without a code to relay: M answers registering honestly, but writes B's code into what it says (its
+    /// announcement, the error when verifying fails), as "LGC-… isn't in your Lodestone profile yet", hoping the user
+    /// pastes that one. The client removes every code from what the server says, wherever it is shown or logged, except
+    /// its own, checked one, which it still shows where it should.
+    /// </summary>
+    [Fact]
+    public async Task AnotherCodeInTheServersWordsIsNeverShown() {
+        await using var relay = Relay.Create();
+        var other = (await relay.StartOnBAsync(relay.MalloryKeys)).Code;
+        string? mine = null;
+        relay.Rewrite = frame => {
+            if (frame.Response?.Welcome is { } welcome) {
+                welcome.Announcement = $"Welcome! Registering? Your code is {other}.";
+            }
+
+            if (frame.Response?.Error is { } error) {
+                error.Message = $"{other} isn't in your Lodestone profile yet ({Disguised(other)}). Not {mine} but the other one.";
+            }
+
+            return frame;
+        };
+
+        var user = await relay.StartUserAsync();
+        var challenge = await user.Session.StartRegistrationAsync(Character, Ct);
+        mine = challenge.Code;
+        // The code checked as this server's for this key: shown, as before.
+        Assert.Equal(mine, user.Session.Snapshot.PendingChallenge?.Code);
+        Assert.Contains(mine, user.Session.Snapshot.StatusText);
+
+        var failed = await Assert.ThrowsAsync<ServerErrorException>(() => user.Session.CompleteRegistrationAsync(Ct));
+        Assert.Equal(ErrorCode.RegistrationFailed, failed.Code);
+        Assert.StartsWith($"{LodestoneCode.Removed} isn't in your Lodestone profile yet ({LodestoneCode.Removed}).", failed.ServerMessage);
+        Assert.Contains($"Not {mine} but", failed.ServerMessage);
+
+        var notice = Assert.Single(user.Notices, notice => notice.Text.StartsWith("Welcome!"));
+        Assert.Equal($"Welcome! Registering? Your code is {LodestoneCode.Removed}.", notice.Text);
+        foreach (var text in relay.Logs.Select(entry => entry.Text).Concat(user.Notices.Select(n => n.Text))
+                     .Append(failed.Message).Append(failed.ServerMessage).Append(user.Session.Snapshot.StatusText ?? "")) {
+            AssertNotShown(other, text);
+        }
+    }
+
+    /// <summary>
+    /// Wherever else a server's text reaches the user: announcements sent later, and names (here the user's own, as the
+    /// server says it), with no registration under way, so nothing is kept.
+    /// </summary>
+    [Fact]
+    public async Task ACodeInAnnouncementsOrNamesIsNeverShown() {
+        var server = new Harness();
+        try {
+            await using (server) {
+                using var keys = IdentityKeys.Generate();
+                var code = LodestoneCode.Derive(ServerOrigin.FromUrl(BUrl)!, keys.SigningPublicKey, new byte[RegistrationProof.NonceSize], 1);
+                var logs = new ConcurrentQueue<string>();
+                var user = await server.RegisterAsync("Code Name", options: server.Options(log: (_, text) => logs.Enqueue(text), wrap: inner => new RewritingWebSocket(inner, frame => {
+                    if (frame.Response?.AuthenticateOk is { } ok) {
+                        ok.User.Name = Disguised(code);
+                    }
+
+                    return frame;
+                })));
+
+                await server.SendAndSettleAsync(user, new Event { Announcement = new Announcement { Text = $"Maintenance at 10. Also, {code}" } });
+                Assert.Contains(user.Notices, notice => notice.Text == $"Maintenance at 10. Also, {LodestoneCode.Removed}");
+                Assert.Equal(LodestoneCode.Removed, user.Session.Snapshot.Me?.Name);
+                foreach (var text in logs.Concat(user.Notices.Select(notice => notice.Text)).Append(user.Session.Snapshot.StatusText ?? "")) {
+                    AssertNotShown(code, text);
+                }
+            }
+        } finally {
+            DeleteDirectory(server.DataDirectory);
+        }
     }
 
     /// <summary>

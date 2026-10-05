@@ -2835,7 +2835,7 @@ public sealed class ClientSession : IAsyncDisposable {
     private InviteView ToView(InviteState invite) {
         var inviterId = invite.Info.Inviter.UserId;
         var keyChanged = this._secrets.PinnedIdentities.TryGetValue(inviterId, out var pinned) && pinned.KeyChangeUnacknowledged;
-        return new InviteView(invite.Info.ChannelId, invite.Info.Inviter, invite.Name, invite.Verified,
+        return new InviteView(invite.Info.ChannelId, Shown(invite.Info.Inviter), invite.Name, invite.Verified,
             DateTimeOffset.FromUnixTimeSeconds(invite.Info.CreatedUnix), keyChanged, invite.InviterKeys?.Fingerprint);
     }
 
@@ -3168,12 +3168,14 @@ public sealed class ClientSession : IAsyncDisposable {
         SessionSnapshot snapshot;
         List<SessionNotice> notices;
         lock (this._lock) {
-            notices = [.. this._pendingNotices];
+            // Status texts and notices often hold what the server said: no registration code but this client's own.
+            var keep = this.ShownCode();
+            notices = [.. this._pendingNotices.Select(notice => notice with { Text = LodestoneCode.Redact(notice.Text, keep) })];
             this._pendingNotices.Clear();
             snapshot = new SessionSnapshot(
                 this._state,
-                this._status,
-                this._me,
+                LodestoneCode.Redact(this._status, keep),
+                this._me == null ? null : Shown(this._me),
                 this._identity?.Fingerprint,
                 this._channels.Values
                     .OrderBy(channel => channel.Name ?? channel.Id, StringComparer.OrdinalIgnoreCase)
@@ -3185,7 +3187,7 @@ public sealed class ClientSession : IAsyncDisposable {
                 this._challenge,
                 this._secrets.BlockedUsers
                     .Select(id => this._secrets.PinnedIdentities.TryGetValue(id, out var pinned)
-                        ? new User { UserId = id, Name = pinned.Name, WorldName = pinned.WorldName }
+                        ? Shown(new User { UserId = id, Name = pinned.Name, WorldName = pinned.WorldName })
                         : new User { UserId = id, Name = $"user {id}" })
                     .OrderBy(user => user.Name, StringComparer.OrdinalIgnoreCase)
                     .ToImmutableArray(),
@@ -3222,7 +3224,7 @@ public sealed class ClientSession : IAsyncDisposable {
                 var online = member.Rank >= Rank.Member && (member.UserId == this._me?.UserId
                     ? this._state == ConnectionState.Ready
                     : this._presence.GetValueOrDefault(member.UserId));
-                return new MemberView(user, member.Rank, member.Keys.Fingerprint, pinned is { KeyChangeUnacknowledged: true }, compared, replaced,
+                return new MemberView(Shown(user), member.Rank, member.Keys.Fingerprint, pinned is { KeyChangeUnacknowledged: true }, compared, replaced,
                     replaced ? current!.Fingerprint : null, online);
             })
             .OrderByDescending(member => member.Rank)
@@ -3254,7 +3256,7 @@ public sealed class ClientSession : IAsyncDisposable {
     private async Task<Response> RequestAsync(Connection connection, ClientFrame frame, CancellationToken ct, TimeSpan? timeout = null) {
         var response = await connection.RequestAsync(frame, ct, timeout);
         if (response.Error != null) {
-            throw new ServerErrorException(response.Error.Code, response.Error.Message);
+            throw new ServerErrorException(response.Error.Code, response.Error.Message, this.ShownCode());
         }
 
         return response;
@@ -3322,19 +3324,38 @@ public sealed class ClientSession : IAsyncDisposable {
         }
     }
 
-    private void RaiseMessage(IncomingMessage message) => this.InvokeSafely(this.MessageReceived, message);
+    /// <summary>
+    /// The registration code this client derived and checked (see <see cref="CheckCode"/>), while a registration is under
+    /// way: the only one it shows. Every other is removed from what the server says (see <see cref="LodestoneCode.Redact"/>).
+    /// </summary>
+    private string? ShownCode() {
+        lock (this._lock) {
+            return this._challenge?.Code is { Length: > 0 } code ? code : null;
+        }
+    }
+
+    /// <summary>A user as the server named them, to show: a name is no place for a registration code either.</summary>
+    private static User Shown(User user) {
+        var name = LodestoneCode.Redact(user.Name);
+        var world = LodestoneCode.Redact(user.WorldName);
+        return ReferenceEquals(name, user.Name) && ReferenceEquals(world, user.WorldName)
+            ? user
+            : new User(user) { Name = name, WorldName = world };
+    }
+
+    private void RaiseMessage(IncomingMessage message) => this.InvokeSafely(this.MessageReceived, message with { Sender = Shown(message.Sender) });
 
     /// <summary>
     /// Tells the user something. Notices often contain names, channel names or
     /// server text, so they go only to <see cref="Notice"/>, never to the diagnostic log.
     /// </summary>
     private void RaiseNotice(NoticeLevel level, string text, string? channelId = null) {
-        this.InvokeSafely(this.Notice, new SessionNotice(level, text, channelId));
+        this.InvokeSafely(this.Notice, new SessionNotice(level, LodestoneCode.Redact(text, this.ShownCode()), channelId));
     }
 
     private void Log(NoticeLevel level, string text) {
         try {
-            this._options.Log?.Invoke(level, text);
+            this._options.Log?.Invoke(level, LodestoneCode.Redact(text, this.ShownCode()));
         } catch {
             // Never let logging break the session.
         }

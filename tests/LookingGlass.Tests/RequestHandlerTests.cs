@@ -223,7 +223,10 @@ public sealed class RequestHandlerTests : IDisposable {
         Assert.NotEqual(challenge.Code, other.Code);
         var notFound = await this.CompleteRegistrationAsync(elsewhere, otherKeys, other);
         Assert.Equal(ErrorCode.RegistrationFailed, notFound.Error?.Code);
-        Assert.Contains($"{other.Code} isn't in your Lodestone profile", notFound.Error!.Message);
+        // Without the code: the client knows its own, and a server's words are no place for one (see LodestoneCode.Redact).
+        Assert.Contains("isn't in your Lodestone profile", notFound.Error!.Message);
+        Assert.DoesNotContain(other.Code, notFound.Error.Message);
+        Assert.DoesNotContain("LGC-", notFound.Error.Message);
         Assert.Null(this._db.GetUser(LodestoneId));
 
         // The key the code was issued for registers.

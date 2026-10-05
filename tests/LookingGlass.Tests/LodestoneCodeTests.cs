@@ -158,4 +158,48 @@ public sealed class LodestoneCodeTests {
             Assert.False(LodestoneCode.AppearsIn(changed, code));
         }
     }
+
+    /// <summary>
+    /// Text a server sends, shown to the user: every code in it is removed, however it is written (as
+    /// <see cref="LodestoneCode.AppearsIn"/> would read it, and with characters a display or a copy drops in between),
+    /// except the one this client checked was made for it and its key. A server can't have the user paste another
+    /// server's code by writing it into an error, an announcement or a name.
+    /// </summary>
+    [Fact]
+    public void RedactRemovesEveryCodeButTheOneToKeep() {
+        var code = LodestoneCode.Derive(Origin, Key, Nonce, CharacterId);
+        var other = LodestoneCode.Derive(Origin, Key, Nonce, CharacterId + 1);
+        var body = other[4..];
+
+        Assert.Equal("", LodestoneCode.Redact(""));
+        Assert.Null(LodestoneCode.Redact(null));
+        foreach (var unchanged in new[] { "Hello!", "[LGC3] hi", "LGC-", $"LGC {body}", $"LGC-{body[..^1]}", "LGC-" + body.Replace("-", ""),
+                     $"{other[..10]}\n{other[10..]}", $"LGC-{(char) (body[0] + 0xFEE0)}{body[1..]}" }) {
+            Assert.Equal(unchanged, LodestoneCode.Redact(unchanged));
+        }
+
+        Assert.Equal(LodestoneCode.Removed, LodestoneCode.Redact(other));
+        Assert.Equal($"{LodestoneCode.Removed} isn't in your Lodestone profile yet.", LodestoneCode.Redact($"{other} isn't in your Lodestone profile yet."));
+        Assert.Equal($"a {LodestoneCode.Removed}, b {LodestoneCode.Removed}.", LodestoneCode.Redact($"a {other}, b {code.ToLowerInvariant()}."));
+        foreach (var disguised in new[] {
+                     other.ToLowerInvariant(),
+                     "lGc-" + body.Replace('0', 'o').Replace('1', 'I'),
+                     "LGC-" + body.Replace('0', 'O').Replace('1', 'l'),
+                     // Invisible: zero-width space, soft hyphen, a bidi override, a game macro byte.
+                     $"L​GC-{body[..2]}­{body[2..12]}‮{body[12..]}",
+                     $"LGC-\u0002{body}",
+                 }) {
+            Assert.Equal($"[{LodestoneCode.Removed}]", LodestoneCode.Redact($"[{disguised}]"));
+        }
+
+        // Behind text that looks like the start of one, and a code followed by more symbols.
+        Assert.Equal($"LGC-{LodestoneCode.Removed}", LodestoneCode.Redact($"LGC-{other}"));
+        Assert.Equal($"{LodestoneCode.Removed}XY", LodestoneCode.Redact($"{other}XY"));
+
+        // The one to keep stays, however it is written; others don't.
+        Assert.Equal($"Put {code} in your profile.", LodestoneCode.Redact($"Put {code} in your profile.", code));
+        Assert.Equal(code.ToLowerInvariant(), LodestoneCode.Redact(code.ToLowerInvariant(), code));
+        Assert.Equal($"{code}, not {LodestoneCode.Removed}", LodestoneCode.Redact($"{code}, not {other}", code));
+        Assert.Equal(LodestoneCode.Removed, LodestoneCode.Redact(other, ""));
+    }
 }

@@ -215,7 +215,10 @@ your account there once you put it in your profile): that code was made for
 the other server's address, and the plugin says "This server sent a
 registration code that doesn't belong to it. It may be passing on another
 server's code. Don't put it in your Lodestone profile." instead of showing it.
-If you see that, don't register with that server. The server only gives out a
+If you see that, don't register with that server. Nor can it slip one into
+what it says (an error such as "LGC-... isn't in your Lodestone profile yet", an
+announcement, a name): the plugin shows "[code removed]" in place of any code
+but the one it checked. The server only gives out a
 code for an address it lists as its own, and only lets the key it was made
 for finish the registration. Typed by hand, any case works, and O, I and L
 are read as 0, 1 and 1. A plugin from before codes were checked is asked to
