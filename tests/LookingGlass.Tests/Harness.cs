@@ -295,20 +295,27 @@ public sealed class Harness : IAsyncDisposable {
 
     /// <summary>
     /// Also checks that every notice any client was given, in every test, is shown in simple mode (the default) as well as
-    /// advanced mode, in plain words when it is about something technical (see <see cref="PlainLanguage.AssertShownInBothModes"/>).
+    /// advanced mode, in plain words when it is about something technical (see <see cref="PlainLanguage.AssertShownInBothModes"/>), and
+    /// so is everything each client's last snapshot shows (see <see cref="PlainLanguage.AssertSnapshotInBothModes"/>).
     /// </summary>
     public async ValueTask DisposeAsync() {
+        // As each client last showed itself before stopping.
+        var snapshots = this._clients.Select(client => client.Session.Snapshot).ToList();
         foreach (var disposable in this._disposables) {
             await disposable.DisposeAsync();
         }
 
         await this.Factory.DisposeAsync();
         var names = this._clients.Select(client => client.Name)
-            .Concat(this._clients.SelectMany(client => client.Session.Snapshot.Channels).Select(channel => channel.Name ?? ""))
-            .Concat(this._clients.SelectMany(client => client.Session.Snapshot.Invites).Select(invite => invite.ChannelName ?? ""))
+            .Concat(snapshots.SelectMany(snapshot => snapshot.Channels).Select(channel => channel.Name ?? ""))
+            .Concat(snapshots.SelectMany(snapshot => snapshot.Invites).Select(invite => invite.ChannelName ?? ""))
             .ToHashSet();
         foreach (var notice in this._clients.SelectMany(client => client.Notices)) {
             PlainLanguage.AssertShownInBothModes(notice, names);
+        }
+
+        foreach (var snapshot in snapshots) {
+            PlainLanguage.AssertSnapshotInBothModes(snapshot, names);
         }
     }
 

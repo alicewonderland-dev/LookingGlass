@@ -37,13 +37,61 @@ public static partial class PlainLanguage {
         Assert.False(string.IsNullOrWhiteSpace(notice.TextFor(advanced: false)), "Simple mode would show nothing.");
         if (notice.Kind is not (NoticeKind.General or NoticeKind.BackgroundFailure)) {
             Assert.NotNull(notice.Plain);
-            var text = Quoted().Replace(notice.TextFor(advanced: false), "\"\"");
-            foreach (var name in (names ?? []).Where(name => name.Length > 0).OrderByDescending(name => name.Length)) {
-                text = text.Replace(name, "Someone", StringComparison.Ordinal);
+            AssertPlain(WithoutNames(notice.TextFor(advanced: false), names ?? []));
+        }
+    }
+
+    /// <summary>
+    /// Asserts everything a snapshot shows is shown in both modes: each channel's warning whenever it has one, the channel
+    /// list's reasons whenever it flags a channel (the same warnings, as many, at the same level), the status and the
+    /// address hint; and in plain words in simple mode.
+    /// </summary>
+    /// <param name="names">As for <see cref="AssertShownInBothModes"/>.</param>
+    public static void AssertSnapshotInBothModes(SessionSnapshot snapshot, IReadOnlyCollection<string> names) {
+        foreach (var channel in snapshot.Channels) {
+            if (channel.MembershipWarning != null) {
+                Assert.False(string.IsNullOrWhiteSpace(channel.WarningFor(advanced: true)), "Advanced mode would hide a channel's warning.");
+                Assert.False(string.IsNullOrWhiteSpace(channel.WarningFor(advanced: false)), $"Simple mode would hide a channel's warning: {channel.MembershipWarning}");
+                AssertPlain(WithoutNames(channel.WarningFor(advanced: false)!, names));
             }
 
-            AssertPlain(text);
+            var advanced = ChannelAttention.Of(channel, advanced: true);
+            var simple = ChannelAttention.Of(channel, advanced: false);
+            Assert.Equal(advanced.Level, simple.Level);
+            Assert.Equal(advanced.Reasons.Length, simple.Reasons.Length);
+            if (simple.Level != AttentionLevel.None) {
+                Assert.NotEmpty(simple.Reasons);
+                Assert.All(simple.Reasons, reason => AssertPlain(WithoutNames(reason, names)));
+            }
         }
+
+        foreach (var advanced in new[] { true, false }) {
+            if (snapshot.StatusText != null) {
+                Assert.False(string.IsNullOrWhiteSpace(snapshot.StatusFor(advanced)), "A mode would show no status.");
+            }
+
+            if (snapshot.AddressNotListed != null) {
+                Assert.False(string.IsNullOrWhiteSpace(snapshot.AddressNotListedFor(advanced)), "A mode would hide the address hint.");
+            }
+        }
+
+        if (snapshot.StatusFor(advanced: false) is { } status) {
+            AssertPlain(WithoutNames(status, names));
+        }
+
+        if (snapshot.AddressNotListedFor(advanced: false) is { } hint) {
+            AssertPlain(WithoutNames(hint, names));
+        }
+    }
+
+    /// <summary>The text with names and anything quoted left out, for the jargon check.</summary>
+    private static string WithoutNames(string text, IEnumerable<string> names) {
+        text = Quoted().Replace(text, "\"\"");
+        foreach (var name in names.Where(name => name.Length > 0).OrderByDescending(name => name.Length)) {
+            text = text.Replace(name, "Someone", StringComparison.Ordinal);
+        }
+
+        return text;
     }
 
     [GeneratedRegex("\"[^\"]*\"")]
