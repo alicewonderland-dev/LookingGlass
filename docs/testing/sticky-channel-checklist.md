@@ -5,6 +5,9 @@ with no message). The unit tests cover the rules; only the game can show that
 the hooks, the chat box label and ChatTwo behave as the design says
 ([design.md](../design.md#talking-in-a-channel-without-lgc)).
 
+Steps marked **(changed)** are new, or expect something different since the
+last round: those are the ones to test again. Steps numbered like 11b are new.
+
 ## Before you start
 
 - [ ] Build and load this branch's plugin as a dev plugin.
@@ -22,10 +25,8 @@ the hooks, the chat box label and ChatTwo behave as the design says
 
 ### Starting
 
-- [ ] 1. In Say, type `/lgc1`.
-  - A line in sky's colour: "Now talking in [sky]: what you type in chat goes
-    only to this LookingGlass channel. Type /s (or any chat channel command) to
-    go back."
+- [ ] 1. **(changed)** In Say, type `/lgc1`.
+  - One short line in sky's colour: "Now talking in [sky]."
   - The chat box's channel name (where it said "Say") now says `[sky]`.
   - The server info bar (top right) shows "LG [sky]". Hovering it shows a
     tooltip.
@@ -47,14 +48,19 @@ the hooks, the chat box label and ChatTwo behave as the design says
       [sky]: the label still says `[sky]`.
 - [ ] 10. Type `  /s hi` (with two spaces before the slash). It goes only to
       LookingGlass, as "/s hi", and not to Say.
-- [ ] 11. Link an item on its own (no text) and press Enter. You see "Not sent
-      to [sky]: there was no text to send…". Nothing appears in Say.
+- [ ] 11. **(changed)** Link an item on its own (no text) and press Enter. You
+      see "Not sent to [sky] or game chat: no text (links can't be sent)."
+      Nothing appears in Say, Party or any linkshell.
+- [ ] 11b. **(changed)** Link a map flag on its own (`<flag>`), press Enter:
+      the same "Not sent" line, nothing in game chat. Then type `look ` and
+      link an item after it: only LookingGlass gets the line (the link shows as
+      its name, or as `<item>`), nothing in game chat.
 
 ### Leaving
 
-- [ ] 12. While in Say and in [sky], type `/s`. A line says "Stopped talking in
-      [sky]. What you type goes to game chat again." The label says "Say".
-      Type `test`: it goes to Say.
+- [ ] 12. **(changed)** While in Say and in [sky], type `/s`. At once a line
+      says "Stopped talking in [sky].", the label says "Say" and the info
+      bar entry goes away. Type `test`: it goes to Say.
 - [ ] 13. Go back with `/lgc1`. Type `/p`. It stops, and the label says
       "Party" (not "Say").
 - [ ] 14. `/lgc1`, then press Tab in the chat box to change the channel. It
@@ -68,20 +74,28 @@ the hooks, the chat box label and ChatTwo behave as the design says
 
 ### When something goes wrong (nothing may ever reach Say)
 
-- [ ] 18. `/lgc1`. Open `/lg` and press **Disconnect**. Type `secret`. You see
-      "Not sent to [sky]: not connected to LookingGlass… It didn't go to game
-      chat either." B sees nothing anywhere.
-- [ ] 19. Connect again. A line says "Stopped talking in [sky]: disconnected
-      from LookingGlass." Type `test`: it goes to Say, as the label says.
+- [ ] 18. **(changed)** `/lgc1`. Open `/lg` and press **Disconnect**. At once a
+      line says "Stopped talking in [sky]: disconnected.", the label shows the
+      game channel again and the info bar entry goes away. Type `test`: it goes
+      to that game channel, as the label says.
+- [ ] 19. **(changed)** Connect again, `/lgc1`, then make the connection drop
+      without pressing Disconnect (stop the server, or unplug the network for a
+      moment). No "Stopped" line: you are still in [sky]. Type `secret`: "Not
+      sent to [sky] or game chat: not connected to LookingGlass." B sees
+      nothing anywhere. Once it has reconnected, type `hello`: only in
+      LookingGlass.
 - [ ] 20. `/lgc1`, then type ten quick messages in a row until one is refused
       for going too fast. The refused one says "Not sent to [sky]: …" and
       doesn't appear in Say. Press the up arrow: it comes back, to send again.
-- [ ] 21. `/lgc1`, then leave sky in `/lg` (or have its admin remove you). A
-      line says you're no longer in that channel. The label says "Say" again.
+- [ ] 21. **(changed)** `/lgc1`, then leave sky in `/lg` (or have its admin
+      remove you). A line says "Stopped talking in [sky]: you're no longer in
+      it." The label shows the game channel you were in before (not
+      necessarily Say).
 - [ ] 22. `/lgc1`, then log out to the title screen and back in. It is no
       longer on (no label, no info bar entry).
-- [ ] 23. `/lgc1`, then turn the plugin off (or reload it). A line says "LookingGlass
-      was turned off or updated", and the label shows the real channel.
+- [ ] 23. **(changed)** `/lgc1`, then turn the plugin off (or reload it). A line
+      says "Stopped talking in [sky]: LookingGlass was turned off.", and the
+      label shows the real channel.
 - [ ] 24. Type `/lgc3` for a channel number you don't have. It says "No channel
       is on /lgc3."
 - [ ] 25. Right after logging in, before your channels have loaded, type
@@ -98,10 +112,12 @@ the hooks, the chat box label and ChatTwo behave as the design says
 
 ### The case from the screenshot
 
-- [ ] 28. Switch ChatTwo to Party. Type `/lgc1`.
-  - The "Now talking in [sky]" line also explains ChatTwo: every ChatTwo chat
-    box and pop-out sends to [sky], short commands with a message too, and to
-    use the long command (`/party hi`) to talk in a game channel once.
+- [ ] 28. **(changed)** Switch ChatTwo to Party. Type `/lgc1`.
+  - "Now talking in [sky]." The very first time ever with ChatTwo, one more
+    line follows: ChatTwo's "(Warning: …)" only names the game channel
+    underneath, messages still go only to [sky], and the long form (`/party
+    hi`) talks in a game channel once. `/lgc1` again: only "Now talking in
+    [sky]." this time.
   - ChatTwo's channel name reads "LookingGlass [sky] (Warning: Party)".
   - The server info bar shows "LG [sky]".
 - [ ] 29. Type `hello`. It shows only in LookingGlass. B sees nothing in Party.
@@ -114,6 +130,12 @@ the hooks, the chat box label and ChatTwo behave as the design says
 - [ ] 33. Type `/fc hi`: only LookingGlass. `/freecompany hi`: to FC.
 - [ ] 34. Type `/e note to self`. It shows as an echo, only to you.
 - [ ] 35. Type `/em waves`. The emote plays.
+- [ ] 35b. **(changed)** Switch ChatTwo (and the game) to a cross-world
+      linkshell (or any channel), `/lgc1`, then link an item on its own in
+      ChatTwo's input and press Enter. "Not sent to [sky] or game chat: no text
+      (links can't be sent)." Nothing in the linkshell or anywhere else.
+- [ ] 35c. **(changed)** Type `look ` and link an item after it, in ChatTwo.
+      Only LookingGlass gets it; nothing in the linkshell.
 
 ### Tabs
 
@@ -138,23 +160,36 @@ the hooks, the chat box label and ChatTwo behave as the design says
       nothing in Say.
 - [ ] 42. Set the pop-out to Party and type `hi` again. Only LookingGlass.
 - [ ] 43. Set the pop-out to a tell to B, and type `hi`. It goes to B as a tell
-      (ChatTwo sends tells itself; the "Now talking in" line says so).
+      (ChatTwo sends tells itself; the pop-out's channel name shows the tell).
 
 ### Tells and leaving in ChatTwo
 
-- [ ] 44. Switch ChatTwo's main input to a tell, then type `/lgc1`. It is
-      refused: "Switch ChatTwo away from a /tell first…".
-- [ ] 45. `/lgc1` from Say, then type `/s` in ChatTwo. It stops with a line,
-      and ChatTwo's channel name goes back to plain "Say".
-- [ ] 46. `/lgc1`, then disconnect in `/lg` and type `secret` in ChatTwo. "Not
-      sent…didn't go to game chat either"; nothing in Say.
+- [ ] 44. **(changed)** Switch ChatTwo's main input to a tell, then type
+      `/lgc1`. It is refused: "Switch ChatTwo off the tell first (type /s),
+      then try again."
+- [ ] 45. **(changed)** With ChatTwo and the game on Say, `/lgc1`, then type
+      `/s` in ChatTwo. At once: "Stopped talking in [sky].", ChatTwo's channel
+      name goes back to plain "Say", the info bar entry goes away. Type
+      `test`: it goes to Say, as the label says.
+- [ ] 45b. **(changed)** The same from a cross-world linkshell: ChatTwo on
+      `/cwl1`, `/lgc1`, type `/s` in ChatTwo. The same "Stopped" line, and the
+      label says "Say". Then `/lgc1` again and type `/cwl1` on its own: the
+      same, back to the linkshell.
+- [ ] 45c. **(changed)** At no point in steps 28 to 47 may ChatTwo's channel
+      name say "LookingGlass" while what you type goes to game chat. If it
+      ever does, note the step.
+- [ ] 46. **(changed)** `/lgc1`, then press **Disconnect** in `/lg`. At once
+      "Stopped talking in [sky]: disconnected.", and ChatTwo's channel name is
+      plain again. Type `test` in ChatTwo: it goes to the channel the name
+      shows.
 - [ ] 47. `/lgc1`, then turn ChatTwo off and on again in the plugin installer.
       Its channel name shows "LookingGlass [sky] …" again once it's back.
 
 ## Part 3: ExtraChat
 
 - [ ] 48. Turn ExtraChat (or ExtraChat Reborn) on. `/lgc1`. Besides "Now
-      talking in", a warning says ExtraChat is also on and to turn it off.
+      talking in", a warning says "ExtraChat is on too and may take what you
+      type…".
       Type `hello`: note where it went (LookingGlass, ExtraChat, or both), and
       what ChatTwo's channel name shows.
 - [ ] 49. Turn ExtraChat off again.
