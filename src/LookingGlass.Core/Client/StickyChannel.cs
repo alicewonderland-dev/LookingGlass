@@ -169,28 +169,41 @@ public abstract record StickyRoute {
     /// <param name="sentAs">Commands that stand for plain text (see <see cref="ChatChannelPrefixes.SentAs"/>).</param>
     /// <param name="switches">Channel switches (<see cref="ChatChannelPrefixes.Switches"/> if null).</param>
     public static StickyRoute For(string? channelId, string tag, ChatBoxLine line, IReadOnlyCollection<string> sentAs,
+        IReadOnlyCollection<string>? switches = null) =>
+        Decide(channelId, tag, line, sentAs, switches).Route;
+
+    /// <summary>
+    /// <see cref="For(string?, string, ChatBoxLine, IReadOnlyCollection{string}, IReadOnlyCollection{string}?)"/>, with
+    /// why, in a few fixed words (for the diagnostic log, see <see cref="StickyDiagnostics"/>; never the line's text).
+    /// </summary>
+    public static (StickyRoute Route, string Reason) Decide(string? channelId, string tag, ChatBoxLine line, IReadOnlyCollection<string> sentAs,
         IReadOnlyCollection<string>? switches = null) {
         if (channelId == null) {
-            return Game;
+            return (Game, "not talking in a channel");
         }
 
         if (line.Raw.Length > 0 && line.Raw[0] == (byte) '/') {
             var (command, anythingAfter) = line.Command();
             if (!anythingAfter) {
-                return (switches ?? ChatChannelPrefixes.Switches).Contains(command, StringComparer.OrdinalIgnoreCase) ? Leave : Game;
+                return (switches ?? ChatChannelPrefixes.Switches).Contains(command, StringComparer.OrdinalIgnoreCase)
+                    ? (Leave, "channel command on its own")
+                    : (Game, "command");
             }
 
-            return sentAs.Contains(command, StringComparer.OrdinalIgnoreCase)
-                ? ToChannelOrDropped(channelId, tag, TextAfter(line.Text, command))
-                : Game;
+            if (!sentAs.Contains(command, StringComparer.OrdinalIgnoreCase)) {
+                return (Game, sentAs.Count == 0 ? "command (ChatTwo rule off)" : "command");
+            }
+
+            var after = TextAfter(line.Text, command);
+            return (ToChannelOrDropped(channelId, tag, after), ChatBoxLine.HasText(after) ? "ChatTwo command with text" : "ChatTwo command with no text");
         }
 
         var text = line.Text.Trim();
         if (!ChatBoxLine.HasText(text) && !ChatBoxLine.HasContent(line.Raw)) {
-            return new Dropped(null);
+            return (new Dropped(null), "blank");
         }
 
-        return ToChannelOrDropped(channelId, tag, text);
+        return (ToChannelOrDropped(channelId, tag, text), ChatBoxLine.HasText(text) ? "plain text" : "no text (links only)");
     }
 
     /// <summary>For tests and plain text: <see cref="For(string?, string, ChatBoxLine, IReadOnlyCollection{string}, IReadOnlyCollection{string}?)"/>.</summary>

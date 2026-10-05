@@ -78,13 +78,16 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
         var wasOn = this._state.ChannelId != null;
         var chatTwo = this._chatTwo.Loaded;
         var chatTwoTell = chatTwo && this._chatTwo.InputChannel() == ChatChannelPrefixes.ChatTwoTell;
-        var start = this._state.Enter(channelId, tag, this.World(), this._interop.InputHooked, chatTwo, chatTwoTell);
+        var world = this.World();
+        var start = this._state.Enter(channelId, tag, world, this._interop.InputHooked, chatTwo, chatTwoTell);
         if (!start.Entered) {
+            Log(() => StickyDiagnostics.Refused(start.Text, chatTwo, world.Channel));
             this._chat.Notice(NoticeLevel.Warning, start.Text);
             return;
         }
 
         this._chatTwoAtStart = chatTwo || (wasOn && this._chatTwoAtStart);
+        Log(() => StickyDiagnostics.Started(tag, this._chatTwoAtStart, world.Channel, wasOn));
         this._chat.ChannelNotice(start.Text, this._sessions.ColourOf(channelId));
         if (StickyMessages.ChatTwoNoteFor(tag, chatTwo, this._config.ChatTwoStickyNoteShown) is { } note) {
             this._chat.Notice(NoticeLevel.Info, note);
@@ -107,7 +110,10 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
 
         var tag = this.TagOf(channelId);
         var line = new ChatBoxLine(message, SeString.Parse(message).TextValue);
-        var route = StickyRoute.For(channelId, tag, line, ChatChannelPrefixes.SentAs(this._chatTwoAtStart || this._chatTwo.Loaded), this._switches);
+        var chatTwo = this._chatTwoAtStart || this._chatTwo.Loaded;
+        var (route, reason) = StickyRoute.Decide(channelId, tag, line, ChatChannelPrefixes.SentAs(chatTwo), this._switches);
+        // Before acting on it, so the log has the line even if acting fails. Never the text itself.
+        Log(() => StickyDiagnostics.Line(tag, chatTwo, line, route, reason, this._switches));
         switch (route) {
             case StickyRoute.ToChannel send:
                 this._sender.Send(send.ChannelId, send.Text, tag);
@@ -133,9 +139,31 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
     }
 
     /// <inheritdoc/>
-    void IChatBoxListener.ChannelSwitchCalled(bool fromTypedCommand) {
-        if (this._state.ChannelId is { } channelId && this._state.ChannelSwitchCalled(ChatInterop.CurrentChannel(), fromTypedCommand) is { } end) {
-            this.Ended(channelId, end);
+    void IChatBoxListener.ChannelSwitchCalled(GameChannel? before, bool fromTypedCommand) {
+        var after = ChatInterop.CurrentChannel();
+        if (this._state.ChannelId is not { } channelId) {
+            // Not talking in a channel: only at Debug, so it costs nothing worth noting.
+            Services.Log.Debug(StickyDiagnostics.ChannelSwitch(null, before, after, fromTypedCommand, null));
+            return;
+        }
+
+        var tag = this._shown?.Tag ?? this.TagOf(channelId);
+        var end = this._state.ChannelSwitchCalled(after, fromTypedCommand);
+        Log(() => StickyDiagnostics.ChannelSwitch(tag, before, after, fromTypedCommand, end));
+        if (end is { } why) {
+            this.Ended(channelId, why);
+        }
+    }
+
+    /// <summary>
+    /// A diagnostic line for dalamud.log (see <see cref="StickyDiagnostics"/>: never what was typed). Never throws: it
+    /// runs inside the chat box hook.
+    /// </summary>
+    private static void Log(Func<string> text) {
+        try {
+            Services.Log.Information(text());
+        } catch {
+            // Logging must never decide where a line goes.
         }
     }
 
@@ -213,6 +241,7 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
     private void Ended(string channelId, StickyEnd why) {
         // As last shown: after a logout or a disconnect, the channel's number and nickname are no longer at hand.
         var (tag, colour) = this._shown ?? (this.TagOf(channelId), this._sessions.ColourOf(channelId) ?? ChatOutput.TagColour);
+        Log(() => StickyDiagnostics.Ended(tag, why, ChatInterop.CurrentChannel()));
         try {
             this.SyncIndicators();
         } finally {

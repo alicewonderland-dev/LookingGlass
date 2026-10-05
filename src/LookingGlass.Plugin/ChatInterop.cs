@@ -21,8 +21,9 @@ internal interface IChatBoxListener {
     void Failed(Exception ex);
 
     /// <summary>Something called the game's chat channel switch, which has returned.</summary>
+    /// <param name="before">The game's chat channel before the call, or null if it couldn't be read (for the diagnostic log).</param>
     /// <param name="fromTypedCommand">It was called while a line submitted through the chat box was being run (/s, /p).</param>
-    void ChannelSwitchCalled(bool fromTypedCommand);
+    void ChannelSwitchCalled(GameChannel? before, bool fromTypedCommand);
 }
 
 /// <summary>
@@ -150,9 +151,10 @@ internal sealed unsafe class ChatInterop : IDisposable {
     }
 
     private bool ChangeChannelDetour(RaptureShellModule* shell, int channel, uint linkshellIndex, Utf8String* tellTarget, bool setChatType) {
+        var before = shell == null ? (GameChannel?) null : new GameChannel(shell->ChatType);
         var result = this._changeChannelHook!.Original(shell, channel, linkshellIndex, tellTarget, setChatType);
         try {
-            this._listener.ChannelSwitchCalled(this._linesRunning > 0);
+            this._listener.ChannelSwitchCalled(before, this._linesRunning > 0);
         } catch (Exception ex) {
             Services.Log.Error(ex, "Error handling a chat channel switch");
         }

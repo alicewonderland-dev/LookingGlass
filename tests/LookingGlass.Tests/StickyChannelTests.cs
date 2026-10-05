@@ -586,6 +586,83 @@ public sealed class StickyChannelTests {
         Assert.Null(sticky.ChannelSwitchCalled(Say, fromTypedCommand: true));
     }
 
+    // ---------------------------------------------------------------- the diagnostic log (dalamud.log)
+
+    public static TheoryData<string, string, string> LoggedLines() => new() {
+        // input, token, decision
+        { "my secret plans", "(text)", "to LookingGlass" },
+        { "/s my secret plans", "/s", "to LookingGlass" },
+        { "/cwl1 my secret plans", "/cwl1", "to LookingGlass" },
+        { "/party my secret plans", "/party", "to game" },
+        { "/s", "/s", "stop talking in the channel, then to game" },
+        { "/cwl1 <item>", "/cwl1", "kept from game" },
+        { "<item>", "(link placeholder)", "kept from game" },
+        { "   ", "(blank)", "kept from game" },
+        { "/t Secret Person@Zalera my secret plans", "/t", "to game" },
+        { "/lgc3 my secret plans", "/lgc3", "to game" },
+        // A command nobody knows may be a message typed after a "/" by mistake: not named.
+        { "/mysecretplans are here", "(other command)", "to game" },
+    };
+
+    [Theory]
+    [MemberData(nameof(LoggedLines))]
+    public void TheDiagnosticLogSaysWhatWasDecidedButNeverWhatWasTyped(string input, string token, string decision) {
+        var withChatTwo = ChatChannelPrefixes.SentAs(chatTwo: true);
+        var line = ChatBoxLine.Plain(input);
+        var (route, reason) = StickyRoute.Decide("aaa", Tag, line, withChatTwo);
+        Assert.Equal(route, StickyRoute.For("aaa", Tag, line, withChatTwo));
+
+        var log = StickyDiagnostics.Line(Tag, chatTwo: true, line, route, reason);
+        Assert.StartsWith("[sticky] line: talking in [sky], ChatTwo yes, ", log);
+        Assert.Contains($", {token}, {line.Raw.Length} bytes, payload no -> {decision} (", log);
+        Assert.DoesNotContain("secret", log, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Person", log);
+        Assert.DoesNotContain("plans", log);
+        Assert.DoesNotContain("<item>", log);
+    }
+
+    [Fact]
+    public void TheDiagnosticLogNeverHoldsALinksContents() {
+        var withChatTwo = ChatChannelPrefixes.SentAs(chatTwo: true);
+        foreach (var line in new[] {
+                     Line("/cwl1 ", BareItemLink, "/cwl1 "),
+                     Line("/p secret ", NamedItemLink, "/p secret Potion"),
+                     Line("", NamedItemLink, "Potion"),
+                     Line("", BareItemLink, ""),
+                 }) {
+            var (route, reason) = StickyRoute.Decide("aaa", Tag, line, withChatTwo);
+            var log = StickyDiagnostics.Line(Tag, chatTwo: true, line, route, reason);
+            Assert.Contains("payload yes", log);
+            Assert.Contains($"{line.Raw.Length} bytes", log);
+            Assert.DoesNotContain("Potion", log);
+            Assert.DoesNotContain("secret", log);
+            Assert.DoesNotContain("", log);
+            Assert.All(log, c => Assert.True(c >= ' ' && c < 0x7F, $"Not plain ASCII in the log: {(int) c}"));
+        }
+
+        Assert.Equal("(payload)", StickyDiagnostics.Token(Line("", BareItemLink, "")));
+        Assert.Equal("(text)", StickyDiagnostics.Token(Line("", NamedItemLink, "Potion")));
+        var linkOnly = Line("/cwl1 ", BareItemLink, "/cwl1 ");
+        var decided = StickyRoute.Decide("aaa", Tag, linkOnly, withChatTwo);
+        Assert.Equal("[sticky] line: talking in [sky], ChatTwo yes, /cwl1, 26 bytes, payload yes -> kept from game (ChatTwo command with no text)",
+            StickyDiagnostics.Line(Tag, true, linkOnly, decided.Route, decided.Reason));
+    }
+
+    [Fact]
+    public void TheDiagnosticLogNamesSwitchesStartsAndEnds() {
+        Assert.Equal("[sticky] channel switch: talking in [sky], chat type 1 -> 1, typed line in flight yes -> ended (ChannelSwitched)",
+            StickyDiagnostics.ChannelSwitch(Tag, Say, Say, true, StickyEnd.ChannelSwitched));
+        Assert.Equal("[sticky] channel switch: talking in [sky], chat type 9 -> 9, typed line in flight no -> goes on",
+            StickyDiagnostics.ChannelSwitch(Tag, new GameChannel(9), new GameChannel(9), false, null));
+        Assert.Equal("[sticky] channel switch: not talking in a channel, chat type unknown -> 2, typed line in flight no -> nothing to do",
+            StickyDiagnostics.ChannelSwitch(null, null, Party, false, null));
+        Assert.Equal("[sticky] start: talking in [sky], ChatTwo yes, chat type 1", StickyDiagnostics.Started(Tag, true, Say, false));
+        Assert.Equal("[sticky] end: stopped talking in [sky] (Disconnected), chat type 2", StickyDiagnostics.Ended(Tag, StickyEnd.Disconnected, Party));
+        Assert.StartsWith("[sticky] start refused: ChatTwo no, chat type 1: ", StickyDiagnostics.Refused(StickyMessages.StillLoading, false, Say));
+        // Whether the ChatTwo rule was on is in the log: the gap suspected in the owner's test.
+        Assert.Equal("command (ChatTwo rule off)", StickyRoute.Decide("aaa", Tag, ChatBoxLine.Plain("/s hi"), NoPrefixes).Reason);
+    }
+
     private static void AssertRefused(StickyWorld world, string why, bool chatTwo = false, bool chatTwoTell = false) {
         var sticky = new StickyChannel();
         var start = sticky.Enter("aaa", Tag, world, inputHooked: true, chatTwo, chatTwoTell);
