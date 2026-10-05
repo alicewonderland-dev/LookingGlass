@@ -43,7 +43,9 @@ public sealed record ChannelRow(string ChannelId, ulong Epoch, bool RekeyPending
 public sealed record MemberRow(UserRow User, Rank Rank, bool Forgotten = false, bool CurrentKeys = true);
 
 /// <param name="Entry">The invite's entry in the channel's membership log.</param>
-public sealed record InviteRow(string ChannelId, UserRow Invitee, UserRow Inviter, SealedBox SealedName, byte[] Signature, long CreatedUnix, MembershipEntry? Entry);
+/// <param name="Forgotten">The invitee removed it from their list (see <see cref="Database.ForgetStaleMembership"/>).</param>
+public sealed record InviteRow(string ChannelId, UserRow Invitee, UserRow Inviter, SealedBox SealedName, byte[] Signature, long CreatedUnix, MembershipEntry? Entry,
+    bool Forgotten = false);
 
 public enum RekeyResult {
     Applied,
@@ -51,7 +53,6 @@ public enum RekeyResult {
     MembershipChanged,
 }
 
-/// <summary>A registration names a signing key the account replaced or retired, which it never registers again.</summary>
 /// <summary>What <see cref="Database.ForgetStaleMembership"/> did.</summary>
 public enum ForgetResult {
     /// <summary>The user's places in the channel (all under keys they no longer have) are forgotten.</summary>
@@ -64,7 +65,8 @@ public enum ForgetResult {
     NotListed,
 }
 
-public sealed class KeyRetiredException(): Exception("That identity key was replaced or retired, so it can't be registered again.");
+/// <summary>A registration names a signing key the account replaced or retired, which it never registers again.</summary>
+public sealed class KeyRetiredException() : Exception("That identity key was replaced or retired, so it can't be registered again.");
 
 /// <summary>A registration names a signing key another account is registered with: a key belongs to one account at most.</summary>
 public sealed class KeyInUseException() : Exception("That identity key is registered to another account.");
@@ -647,6 +649,26 @@ public sealed class Database {
         return GetRank(connection, null, channelId, userId);
     }
 
+    /// <returns>
+    /// The user's place in the channel: its rank, as <see cref="GetRank"/> gives it, and whether it is under the keys the user
+    /// is registered with now (<see cref="MemberRow.CurrentKeys"/>; for an invite, the keys it was made for). Null as for <see cref="GetRank"/>.
+    /// </returns>
+    public (Rank Rank, bool CurrentKeys)? GetPlace(string channelId, long userId) {
+        using var connection = this.Open();
+        (string, object)[] who = [("$channel", channelId), ("$user", userId)];
+        var member = Query(connection, null,
+            $"SELECT m.rank, {SameKeys("m")} FROM members m JOIN users u ON u.user_id = m.user_id WHERE m.channel_id = $channel AND m.user_id = $user AND m.forgotten = 0;",
+            reader => ((Rank) reader.GetInt32(0), reader.GetInt64(1) != 0), who);
+        if (member is [var place]) {
+            return place;
+        }
+
+        var invite = Query(connection, null,
+            $"SELECT {SameKeys("i")} FROM invites i JOIN users u ON u.user_id = i.user_id WHERE i.channel_id = $channel AND i.user_id = $user AND i.forgotten = 0;",
+            reader => reader.GetInt64(0) != 0, who);
+        return invite is [var current] ? (Rank.Invited, current) : null;
+    }
+
     /// <summary>
     /// Every member row of the channel, as the log has it: places the user removed from their list (<see cref="MemberRow.Forgotten"/>)
     /// included, as they are still members for the log (and so for rekeys). Who to tell about the channel leaves those out.
@@ -656,10 +678,11 @@ public sealed class Database {
         return GetMembers(connection, null, channelId);
     }
 
+    /// <summary>Every invitee of the channel, as the log has them: invites removed from the invitee's list (<see cref="MemberRow.Forgotten"/>) included.</summary>
     public List<MemberRow> GetInvitees(string channelId) {
         using var connection = this.Open();
         return this.QueryInvites(connection, "WHERE i.channel_id = $id", ("$id", channelId))
-            .Select(invite => new MemberRow(invite.Invitee, Rank.Invited))
+            .Select(invite => new MemberRow(invite.Invitee, Rank.Invited, invite.Forgotten))
             .ToList();
     }
 
@@ -734,9 +757,10 @@ public sealed class Database {
     /// <summary>
     /// Deletes a channel its last member is leaving, only if its log is still at <paramref name="head"/> (where
     /// their leave was checked) and they are still its only member, all in one transaction. Otherwise someone
-    /// joined (or something else changed) meanwhile, and the channel stays.
+    /// joined (or something else changed) meanwhile, and the channel stays. Places removed from their owners' lists (see
+    /// <see cref="ForgetStaleMembership"/>) don't count: they go with the channel.
     /// </summary>
-    /// <returns>Who was invited to it, to tell; or null (and nothing changes) if it changed meanwhile.</returns>
+    /// <returns>Who was invited to it (but for invites removed from the invitee's list), to tell; or null (and nothing changes) if it changed meanwhile.</returns>
     public List<long>? DeleteAbandonedChannel(string channelId, LogPosition head, long lastMemberId) {
         using var connection = this.Open();
         using var tx = connection.BeginTransaction();
@@ -745,12 +769,13 @@ public sealed class Database {
             return null;
         }
 
-        var members = Query(connection, tx, "SELECT user_id FROM members WHERE channel_id = $id;", reader => reader.GetInt64(0), ("$id", channelId));
+        // Places their owners removed from their lists don't keep a channel: nobody would ever see it again.
+        var members = Query(connection, tx, "SELECT user_id FROM members WHERE channel_id = $id AND forgotten = 0;", reader => reader.GetInt64(0), ("$id", channelId));
         if (members is not [var only] || only != lastMemberId) {
             return null;
         }
 
-        var invitees = Query(connection, tx, "SELECT user_id FROM invites WHERE channel_id = $id;", reader => reader.GetInt64(0), ("$id", channelId));
+        var invitees = Query(connection, tx, "SELECT user_id FROM invites WHERE channel_id = $id AND forgotten = 0;", reader => reader.GetInt64(0), ("$id", channelId));
         Execute(connection, tx, "DELETE FROM channels WHERE channel_id = $id;", ("$id", channelId));
         tx.Commit();
         return invitees;
@@ -987,13 +1012,15 @@ public sealed class Database {
 
     /// <summary>
     /// Users who are a member (not just invited) of at least one channel the user is also a member of,
-    /// not counting the user: who is told when the user comes online or goes offline.
+    /// not counting the user: who is told when the user comes online or goes offline. Not through a place its owner removed
+    /// from their list (see <see cref="ForgetStaleMembership"/>): they're told nothing about that channel. The user's own
+    /// place, removed or not, still counts, as the others still have them as a member.
     /// </summary>
     public HashSet<long> GetCoMemberIds(long userId) {
         using var connection = this.Open();
         using var command = Command(connection, null, """
             SELECT DISTINCT m.user_id FROM members m
-            WHERE m.channel_id IN (SELECT channel_id FROM members WHERE user_id = $me) AND m.user_id != $me;
+            WHERE m.channel_id IN (SELECT channel_id FROM members WHERE user_id = $me) AND m.user_id != $me AND m.forgotten = 0;
             """, ("$me", userId));
         using var reader = command.ExecuteReader();
         var ids = new HashSet<long>();
@@ -1102,9 +1129,8 @@ public sealed class Database {
 
     private static List<MemberRow> GetMembers(SqliteConnection connection, SqliteTransaction? tx, string channelId) {
         using var command = Command(connection, tx,
-            """
-            SELECT u.*, m.rank AS member_rank, m.forgotten AS member_forgotten,
-                   (m.signing_key = u.signing_key AND m.agreement_key = u.agreement_key) AS member_current
+            $"""
+            SELECT u.*, m.rank AS member_rank, m.forgotten AS member_forgotten, {SameKeys("m")} AS member_current
             FROM members m JOIN users u ON u.user_id = m.user_id WHERE m.channel_id = $id;
             """, ("$id", channelId));
         using var reader = command.ExecuteReader();
@@ -1117,17 +1143,24 @@ public sealed class Database {
         return members;
     }
 
+    /// <summary>
+    /// SQL: whether a member (or invite) row's keys, those the log admitted the user with, are the keys the user is registered
+    /// with now. <paramref name="row"/> is the row's alias; the user's is <c>u</c>.
+    /// </summary>
+    private static string SameKeys(string row) => $"({row}.signing_key = u.signing_key AND {row}.agreement_key = u.agreement_key)";
+
     private List<InviteRow> QueryInvites(SqliteConnection connection, string where, params (string, object)[] parameters) {
         using var command = Command(connection, null, $"""
-            SELECT i.channel_id, i.user_id, i.inviter_id, i.sealed_ephemeral, i.sealed_ciphertext, i.signature, i.created_at, l.entry
+            SELECT i.channel_id, i.user_id, i.inviter_id, i.sealed_ephemeral, i.sealed_ciphertext, i.signature, i.created_at, l.entry, i.forgotten
             FROM invites i LEFT JOIN membership_log l ON l.channel_id = i.channel_id AND l.seq = i.invite_seq AND l.hash = i.invite_hash
             {where};
             """, parameters);
         using var reader = command.ExecuteReader();
-        var raw = new List<(string Channel, long Invitee, long Inviter, byte[] Ephemeral, byte[] Ciphertext, byte[] Signature, long Created, MembershipEntry? Entry)>();
+        var raw = new List<(string Channel, long Invitee, long Inviter, byte[] Ephemeral, byte[] Ciphertext, byte[] Signature, long Created, MembershipEntry? Entry, bool Forgotten)>();
         while (reader.Read()) {
             var entry = reader.IsDBNull(7) ? null : MembershipEntry.Parser.ParseFrom((byte[]) reader[7]);
-            raw.Add((reader.GetString(0), reader.GetInt64(1), reader.GetInt64(2), (byte[]) reader[3], (byte[]) reader[4], (byte[]) reader[5], reader.GetInt64(6), entry));
+            raw.Add((reader.GetString(0), reader.GetInt64(1), reader.GetInt64(2), (byte[]) reader[3], (byte[]) reader[4], (byte[]) reader[5], reader.GetInt64(6), entry,
+                reader.GetInt64(8) != 0));
         }
 
         var users = raw.Count == 0
@@ -1140,7 +1173,7 @@ public sealed class Database {
             .Where(r => users.ContainsKey(r.Invitee) && users.ContainsKey(r.Inviter))
             .Select(r => new InviteRow(r.Channel, users[r.Invitee], users[r.Inviter],
                 new SealedBox { EphemeralPublicKey = ByteString.CopyFrom(r.Ephemeral), Ciphertext = ByteString.CopyFrom(r.Ciphertext) },
-                r.Signature, r.Created, r.Entry))
+                r.Signature, r.Created, r.Entry, r.Forgotten))
             .ToList();
     }
 
