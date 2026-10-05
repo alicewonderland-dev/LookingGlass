@@ -9,6 +9,10 @@ namespace LookingGlass.Server.Realtime;
 
 /// <summary>A registration started on this connection; only this connection can complete it.</summary>
 /// <param name="Nonce">What the client signs, with the identity key it registers, to complete it.</param>
+/// <param name="Origin">
+/// The address registering was started for, which the code was made for: it completes only through that one (null for a
+/// debug account, which has no code).
+/// </param>
 public sealed record PendingRegistration(
     long UserId,
     string Name,
@@ -18,7 +22,8 @@ public sealed record PendingRegistration(
     string Code,
     DateTimeOffset Expires,
     bool IsDebug,
-    byte[] Nonce);
+    byte[] Nonce,
+    ServerOrigin? Origin);
 
 /// <summary>A key login challenge issued on this connection; only this connection can answer it, once.</summary>
 public sealed record PendingKeyLogin(long UserId, byte[] Challenge, DateTimeOffset Expires);

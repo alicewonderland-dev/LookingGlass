@@ -174,6 +174,59 @@ public sealed class LodestoneCodeTests {
         }
     }
 
+    /// <summary>The hyphens between groups are the code's: nothing else stands in for one, not even a space or another separator.</summary>
+    [Fact]
+    public void AProfileNeedsTheHyphens() {
+        var code = LodestoneCode.Derive(Origin, Key, Nonce, ClientNonce, CharacterId);
+        foreach (var at in new[] { 8, 13, 18, 23 }) {
+            Assert.Equal('-', code[at]);
+            foreach (var separator in new[] { ' ', '_', '.', '\u2010', '0', 'X' }) {
+                Assert.False(LodestoneCode.AppearsIn(code[..at] + separator + code[(at + 1)..], code));
+                Assert.Equal(code[..at] + separator + code[(at + 1)..], LodestoneCode.Redact(code[..at] + separator + code[(at + 1)..]));
+            }
+        }
+    }
+
+    /// <summary>
+    /// A one in the code may be typed as I or L, in either case (and a zero as O): Crockford's base32 reads them so, and a
+    /// code never contains those letters. Found with a code that has a one and a zero (the documented one has no one).
+    /// </summary>
+    [Fact]
+    public void AProfileMayHaveIOrLForAOne() {
+        var code = Enumerable.Range(1, 1000).Select(id => LodestoneCode.Derive(Origin, Key, Nonce, ClientNonce, id))
+            .First(candidate => candidate[4..].Contains('1') && candidate[4..].Contains('0'));
+        var body = code[4..];
+        foreach (var one in new[] { 'I', 'i', 'L', 'l' }) {
+            Assert.True(LodestoneCode.AppearsIn("LGC-" + body.Replace('1', one), code));
+            Assert.Equal(LodestoneCode.Removed, LodestoneCode.Redact("LGC-" + body.Replace('1', one)));
+        }
+
+        Assert.True(LodestoneCode.AppearsIn("LGC-" + body.Replace('1', 'L').Replace('0', 'o'), code));
+        // Another letter isn't.
+        Assert.False(LodestoneCode.AppearsIn("LGC-" + body.Replace('1', 'J'), code));
+    }
+
+    /// <summary>
+    /// Only ASCII is read as a code's characters: no other character counts as one, not even one whose upper case is an
+    /// ASCII letter (a dotless i is I in upper case, a long s is S), or a full-width digit or letter.
+    /// </summary>
+    [Fact]
+    public void NoOtherCharacterCountsAsACodesCharacter() {
+        var code = Enumerable.Range(1, 1000).Select(id => LodestoneCode.Derive(Origin, Key, Nonce, ClientNonce, id))
+            .First(candidate => candidate[4..].Contains('1') && candidate[4..].Contains('S'));
+        var body = code[4..];
+        foreach (var lookalike in new[] {
+                     "LGC-" + body.Replace('1', '\u0131'),                     // dotless i
+                     "LGC-" + body.Replace('S', '\u017F'),                     // long s
+                     "LGC-" + body.Replace('1', '\uFF11'),                     // full-width one
+                     "LGC-" + body.Replace('S', '\uFF33'),                     // full-width S
+                     "\u216CGC-" + body,                                       // Roman numeral fifty
+                 }) {
+            Assert.False(LodestoneCode.AppearsIn(lookalike, code));
+            Assert.Equal(lookalike, LodestoneCode.Redact(lookalike));
+        }
+    }
+
     /// <summary>
     /// Text a server sends, shown to the user: every code in it is removed, however it is written (as
     /// <see cref="LodestoneCode.AppearsIn"/> would read it, and with characters a display or a copy drops in between),

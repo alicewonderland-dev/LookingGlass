@@ -257,7 +257,7 @@ public sealed class RequestHandler(
 
             this.CheckKeyRegistrable(DebugUserId(name), request.Identity);
             connection.PendingRegistration = new PendingRegistration(
-                DebugUserId(name), name, 0, ProtocolInfo.DebugWorldName, request.Identity, "", DateTimeOffset.UtcNow.AddMinutes(minutes), true, NewRegistrationNonce());
+                DebugUserId(name), name, 0, ProtocolInfo.DebugWorldName, request.Identity, "", DateTimeOffset.UtcNow.AddMinutes(minutes), true, NewRegistrationNonce(), null);
             return new Response {
                 RegistrationChallenge = new RegistrationChallenge {
                     Code = "",
@@ -308,7 +308,7 @@ public sealed class RequestHandler(
         var nonce = NewRegistrationNonce();
         var code = LodestoneCode.Derive(origin, request.Identity.SigningPublicKey.Span, nonce, request.ClientNonce.Span, found.Id);
         connection.PendingRegistration = new PendingRegistration(
-            found.Id, found.Name, character.WorldId, found.WorldName, request.Identity, code, DateTimeOffset.UtcNow.AddMinutes(minutes), false, nonce);
+            found.Id, found.Name, character.WorldId, found.WorldName, request.Identity, code, DateTimeOffset.UtcNow.AddMinutes(minutes), false, nonce, origin);
         connection.VerifyAttempts = 0;
 
         return new Response {
@@ -443,6 +443,16 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.RegistrationFailed,
                 this.WrongAddressMessage(connection, request.ServerUrl) +
                 " Nothing was registered: set the server address in Settings to one this server accepts, then register again.");
+        }
+
+        // The address the code was made for: another of this server's would complete a registration whose code the client
+        // checked for an address it isn't using now.
+        if (!pending.IsDebug && ServerOrigin.FromUrl(request.ServerUrl) != pending.Origin) {
+            logger.LogInformation("Registration of {User} from {Address} refused: completed for {Completed}, started for {Started}",
+                pending.UserId, connection.RemoteAddress, ServerOrigin.FromUrl(request.ServerUrl), pending.Origin);
+            throw new RequestException(ErrorCode.RegistrationFailed,
+                $"This registration was started through {pending.Origin}, and its code was made for that address: complete it through the same " +
+                "address, or start again through this one.");
         }
 
         if (!RegistrationProof.Verify(pending.Identity.SigningPublicKey.Span, pending.Nonce, pending.UserId, request.ServerUrl, request.Signature.Span)) {

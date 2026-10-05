@@ -244,6 +244,48 @@ public sealed class RequestHandlerTests : IDisposable {
     }
 
     /// <summary>
+    /// The code is made for the address the client named (and signs for), never the one the connection's Host header
+    /// names: with PublicUrls, that is whatever the connecting side sent, and need not be the address the client uses.
+    /// </summary>
+    [Fact]
+    public async Task TheCodeIsForTheAddressTheClientNamedNotTheHostHeader() {
+        this._handler = this.NewHandler("wss://chat.example.com/ws", "ws://100.64.0.1:5000/ws");
+        foreach (var url in new[] { "wss://chat.example.com/ws", "ws://100.64.0.1:5000/ws" }) {
+            using var keys = IdentityKeys.Generate();
+            var clientNonce = System.Security.Cryptography.RandomNumberGenerator.GetBytes(LodestoneCode.ClientNonceSize);
+            // Reached through a proxy that passes on another Host.
+            var hostHeader = Core.Client.ServerOrigin.FromRequest("http", "localhost:5180")!;
+            var connection = await this.HelloAsync("203.0.113.72", hostHeader);
+            var challenge = (await this.StartRegistrationAsync(connection, keys: keys, url: url, clientNonce: clientNonce)).RegistrationChallenge!;
+
+            Assert.Equal(LodestoneCode.Derive(Core.Client.ServerOrigin.FromUrl(url)!, keys.SigningPublicKey, challenge.Nonce.Span, clientNonce, LodestoneId), challenge.Code);
+            Assert.NotEqual(LodestoneCode.Derive(hostHeader, keys.SigningPublicKey, challenge.Nonce.Span, clientNonce, LodestoneId), challenge.Code);
+        }
+    }
+
+    /// <summary>
+    /// A registration completes through the address it was started for, which its code was made for: another of the
+    /// server's addresses is refused (before the Lodestone is asked), though it is the server's too.
+    /// </summary>
+    [Fact]
+    public async Task ARegistrationCompletesThroughTheAddressItWasStartedFor() {
+        this._handler = this.NewHandler("wss://chat.example.com/ws", "ws://100.64.0.1:5000/ws");
+        using var keys = IdentityKeys.Generate();
+        var connection = await this.HelloAsync("203.0.113.73");
+        var challenge = (await this.StartRegistrationAsync(connection, keys: keys, url: "wss://chat.example.com/ws")).RegistrationChallenge!;
+        this._lodestone.Profile = $"My code: {challenge.Code}";
+
+        var elsewhere = await this.CompleteRegistrationAsync(connection, keys, challenge, "ws://100.64.0.1:5000/ws");
+        Assert.Equal(ErrorCode.RegistrationFailed, elsewhere.Error?.Code);
+        Assert.Contains("wss://chat.example.com", elsewhere.Error!.Message);
+        Assert.Equal(0, connection.VerifyAttempts);
+        Assert.Null(this._db.GetUser(LodestoneId));
+
+        // Any spelling of the same origin does.
+        Assert.NotNull((await this.CompleteRegistrationAsync(connection, keys, challenge, "wss://CHAT.example.com:443/other")).RegistrationComplete);
+    }
+
+    /// <summary>
     /// A registration completes only for the key its code was issued for: it is bound to the pending registration, the
     /// proof of possession must be by it, and another key's registration looks for another code.
     /// </summary>
@@ -433,8 +475,9 @@ public sealed class RequestHandlerTests : IDisposable {
 
     private Task<Response> SendAsync(ClientConnection connection, ClientFrame frame) => this._handler.HandleAsync(connection, frame, Ct);
 
-    private async Task<ClientConnection> HelloAsync(string address) {
-        var connection = new ClientConnection(new ClosedWebSocket(), address, 128 * 1024, 64, NullLogger.Instance);
+    /// <param name="hostHeader">Where the connection says it was made to (its Host header and scheme).</param>
+    private async Task<ClientConnection> HelloAsync(string address, Core.Client.ServerOrigin? hostHeader = null) {
+        var connection = new ClientConnection(new ClosedWebSocket(), address, 128 * 1024, 64, NullLogger.Instance) { RequestOrigin = hostHeader };
         var hello = new Hello();
         hello.ProtocolVersions.Add(ProtocolInfo.CurrentVersion);
         Assert.NotNull((await this.SendAsync(connection, new ClientFrame { Hello = hello })).Welcome);

@@ -238,7 +238,10 @@ but the one it checked. The server only gives out a
 code for an address it lists as its own, and only lets the key it was made
 for finish the registration. Typed by hand, any case works, and O, I and L
 are read as 0, 1 and 1. A plugin from before codes were checked is asked to
-update.
+update by servers that check them, but it is **not protected** against a
+malicious server, which can still show it another server's code (and an old
+plugin shows any code it is sent): update the plugin before registering
+anywhere.
 
 **Moving the server.** Identities are kept per address, so
 `ws://lookingglasschat:5180/ws`, `ws://127.0.0.1:5180/ws` and

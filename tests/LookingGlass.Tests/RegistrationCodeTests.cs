@@ -155,6 +155,85 @@ public sealed class RegistrationCodeTests {
     }
 
     /// <summary>
+    /// "Verification skipped" (a debug account) means no code to check only when there is no code: a challenge saying so
+    /// with a code (here B's, passed on) is checked like any other, and refused.
+    /// </summary>
+    [Fact]
+    public async Task ACodeMarkedAsNeedingNoVerificationIsStillChecked() {
+        await using var relay = Relay.Create();
+        var fromB = await relay.StartOnBAsync(relay.MalloryKeys);
+        relay.Rewrite = frame => {
+            if (frame.Response?.RegistrationChallenge != null) {
+                frame.Response.RegistrationChallenge = fromB.Clone();
+                frame.Response.RegistrationChallenge.VerificationSkipped = true;
+            }
+
+            return frame;
+        };
+
+        var user = await relay.StartUserAsync();
+        await Assert.ThrowsAsync<RelayedRegistrationCodeException>(() => user.Session.StartRegistrationAsync(Character, Ct));
+        Assert.Null(user.Session.Snapshot.PendingChallenge);
+        Assert.NotEqual(ConnectionState.Registering, user.Session.Snapshot.State);
+        AssertNotShown(fromB.Code, user.Session.Snapshot.StatusText ?? "");
+    }
+
+    /// <summary>
+    /// A refused code also ends the registration started before it on the connection (the server replaced it with the
+    /// refused one): its code isn't shown any more, and it can't be completed.
+    /// </summary>
+    [Fact]
+    public async Task ARefusedCodeEndsTheRegistrationBeforeIt() {
+        await using var relay = Relay.Create();
+        var fromB = await relay.StartOnBAsync(relay.MalloryKeys);
+        var relaying = false;
+        relay.Rewrite = frame => {
+            if (relaying && frame.Response?.RegistrationChallenge != null) {
+                frame.Response.RegistrationChallenge = fromB.Clone();
+            }
+
+            return frame;
+        };
+
+        var user = await relay.StartUserAsync();
+        var first = await user.Session.StartRegistrationAsync(Character, Ct);
+        Assert.Equal(first.Code, user.Session.Snapshot.PendingChallenge?.Code);
+        Assert.Equal(ConnectionState.Registering, user.Session.Snapshot.State);
+
+        relaying = true;
+        await Assert.ThrowsAsync<RelayedRegistrationCodeException>(() => user.Session.StartRegistrationAsync(Character, Ct));
+        var snapshot = user.Session.Snapshot;
+        Assert.Null(snapshot.PendingChallenge);
+        Assert.Equal(ConnectionState.Unregistered, snapshot.State);
+        Assert.DoesNotContain(first.Code, snapshot.StatusText ?? "");
+        await Assert.ThrowsAsync<InvalidOperationException>(() => user.Session.CompleteRegistrationAsync(Ct));
+        Assert.DoesNotContain(user.Session.GetTrace(), entry => entry.Outgoing && entry.Summary.EndsWith(" CompleteRegistration"));
+    }
+
+    /// <summary>A server nonce of the wrong size is refused as a code that isn't this server's, not as a crash in deriving it.</summary>
+    [Theory]
+    [InlineData(0)]
+    [InlineData(16)]
+    [InlineData(31)]
+    [InlineData(33)]
+    public async Task AChallengeWithANonceOfTheWrongSizeIsRefused(int size) {
+        await using var relay = Relay.Create();
+        relay.Rewrite = frame => {
+            if (frame.Response?.RegistrationChallenge is { } challenge) {
+                challenge.Nonce = ByteString.CopyFrom(new byte[size]);
+            }
+
+            return frame;
+        };
+
+        var user = await relay.StartUserAsync();
+        var refused = await Assert.ThrowsAnyAsync<Exception>(() => user.Session.StartRegistrationAsync(Character, Ct));
+        Assert.IsType<RelayedRegistrationCodeException>(refused);
+        Assert.Null(user.Session.Snapshot.PendingChallenge);
+        Assert.Contains(relay.Logs, entry => entry.Level == NoticeLevel.Warning && entry.Text.Contains($"a nonce of {size} bytes"));
+    }
+
+    /// <summary>
     /// The refused code is neither logged nor shown, anywhere: the warning names the address the client connected to and
     /// the character, which is enough to look into it, and nothing a user could paste into their profile.
     /// </summary>

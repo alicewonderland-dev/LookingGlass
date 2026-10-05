@@ -108,7 +108,8 @@ public static class LodestoneCode {
     /// Whether a Lodestone profile's text contains <paramref name="code"/>: "LGC-" (in any case), then the code's
     /// characters, in any case, reading a letter O as zero and I or L as one, as Crockford's base32 does (a code never
     /// contains those letters, so this only forgives retyping it). Nothing else is forgiven: the hyphens must be there,
-    /// and every other character must be the code's.
+    /// and every other character must be the code's, in ASCII. No other character counts as one, even where its upper
+    /// case is an ASCII letter (a dotless i, a long s) or it looks like one (full-width letters and digits).
     /// </summary>
     /// <remarks>
     /// Only from where the text has "LGC-" itself: an L never stands for a one there, and a code's characters never
@@ -148,7 +149,7 @@ public static class LodestoneCode {
     /// </summary>
     /// <remarks>
     /// A code here is what <see cref="AppearsIn"/> could find in a profile: a literal "LGC-" (in any case), then the
-    /// symbols and hyphens, reading a symbol as AppearsIn does (any case, O as 0, I or L as 1), and also
+    /// symbols and hyphens, reading a symbol as AppearsIn does (any case, O as 0, I or L as 1, ASCII only), and also
     /// with invisible characters in between (control and format characters, such as zero-width spaces, bidi overrides
     /// or the game's macro bytes), which a display or a copy may drop. Line breaks and tabs aren't skipped: a code
     /// broken by one doesn't paste as one. This only keeps codes out of what is shown; nothing can stop a server
@@ -226,7 +227,12 @@ public static class LodestoneCode {
                && char.GetUnicodeCategory(c) is System.Globalization.UnicodeCategory.Control or System.Globalization.UnicodeCategory.Format;
     }
 
+    /// <summary>A code's character as <see cref="AppearsIn"/> reads it: upper case, O as 0, I or L as 1; anything but ASCII as nothing.</summary>
     private static char Canonical(char c) {
+        if (!char.IsAscii(c)) {
+            return '\0';
+        }
+
         return char.ToUpperInvariant(c) switch {
             'O' => '0',
             'I' or 'L' => '1',
