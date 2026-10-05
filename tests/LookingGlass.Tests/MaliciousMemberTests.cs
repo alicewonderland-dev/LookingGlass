@@ -69,10 +69,10 @@ public sealed class MaliciousMemberTests : IAsyncLifetime {
         var channelId = await alice.Session.CreateChannelAsync("Kicked", Ct);
         await AddMemberAsync(alice, channelId, bob);
         await AddMemberAsync(alice, channelId, carol);
-        // Carol's join made a new key; AddMemberAsync waits for her and Alice, not Bob, so take the
-        // epoch from Carol and wait until Bob holds that key too (else he may still be on the old one).
-        var oldEpoch = carol.Session.Snapshot.FindChannel(channelId)!.Epoch;
-        await WaitFor(() => bob.Store.Load().EpochKeys.GetValueOrDefault(channelId)?.ContainsKey(oldEpoch) == true ? new object() : null);
+        // Carol's join made a new key. AddMemberAsync doesn't wait for Bob to take it, and waits only for Carol to show it,
+        // which can come just before it is saved (and she forges with the saved copy): wait until both have it saved.
+        var oldEpoch = (await this._server.WaitUntilCurrentAsync(carol, channelId)).Epoch;
+        await this._server.WaitUntilCurrentAsync(bob, channelId);
         // Her client forgets the key once she's removed, but she could have kept a copy.
         var fromCarol = carol.ForgeMessage(channelId, oldEpoch, "still here", DateTimeOffset.UtcNow);
 

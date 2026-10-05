@@ -375,7 +375,8 @@ public sealed class MembershipLogTests : IAsyncLifetime {
         var channelId = await alice.Session.CreateChannelAsync("Raced", Ct);
         await AddMemberAsync(alice, channelId, bob);
         await AddMemberAsync(alice, channelId, carol);
-        var epoch = bob.Session.Snapshot.FindChannel(channelId)!.Epoch;
+        // Carol's join made a new key, which Bob may not have yet: else he'd take it after the removal below, as if rekeyed.
+        var epoch = (await this._server.WaitUntilCurrentAsync(bob, channelId)).Epoch;
         var withCarol = PositionOf(bob, channelId);
         // From now on Alice doesn't rekey in the background when the server asks.
         await alice.Session.DisposeAsync();
@@ -530,6 +531,8 @@ public sealed class MembershipLogTests : IAsyncLifetime {
         var channelId = await alice.Session.CreateChannelAsync("Older", Ct);
         await AddMemberAsync(alice, channelId, bob);
         await AddMemberAsync(alice, channelId, carol);
+        // Bob may not have verified Carol's join yet (his head would be her invite): wait, so the stale key is made for her membership.
+        await this._server.WaitUntilCurrentAsync(bob, channelId);
         var withCarol = PositionOf(bob, channelId);
 
         await alice.Session.KickAsync(channelId, carol.UserId, Ct);
