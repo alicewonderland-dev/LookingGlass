@@ -381,7 +381,13 @@ Relative paths, such as the default `data` folder for the database, resolve
 against the install folder.
 
 Production deployment: `deploy/lookingglass.service` (systemd) or the
-`Dockerfile`. By default the server only listens on `127.0.0.1:5180`; put a
+`Dockerfile`. For systemd, `scripts/publish-linux.ps1` builds a self-contained
+Linux server and packs it with the unit and `deploy/install-linux.sh`; on the
+Linux machine, unpack it and run `sudo sh ./install-linux.sh <address>` (every
+address clients use, for example `wss://<machine>.<tailnet>.ts.net/ws` behind
+`tailscale funnel --bg 5180`). Run the same again to update: the database in
+`/var/lib/lookingglass` is kept, and the previous install is kept as
+`/opt/lookingglass.old`. By default the server only listens on `127.0.0.1:5180`; put a
 TLS reverse proxy (for example Caddy) in front and use `wss://` URLs. Outside
 Development the server **won't start until `LookingGlass:PublicUrls` lists
 its addresses** (see "The server's addresses" below), for example
