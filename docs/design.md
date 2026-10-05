@@ -1648,6 +1648,52 @@ What it costs, all accepted:
 - **Crowds.** One copy per recipient is fine for a handful of friends nearby.
   Cap recipients per message (about 50), and rate-limit like channel messages.
 
+### Channel windows (pop-out chat)
+
+Status: planned, not started. Requested by the owner (2026-10-05) for after
+the sticky channel is settled.
+
+A channel can be opened in its own instant-messenger-style window, apart from
+the game's chat log and ChatTwo. What you type there goes only to that
+channel.
+
+Why:
+
+- **No leak path through game chat.** The window's input box is the plugin's
+  own (ImGui), so typed text never passes through the game's chat input or
+  ChatTwo, and never reaches a game channel, whatever state the game or
+  ChatTwo is in.
+- **No wrong-channel mistakes.** Each window belongs to one channel, shown in
+  its title, colour and input box. With ExtraChat, heavy users of several
+  channels sometimes sent sensitive or embarrassing messages to the wrong one;
+  separate windows make the target obvious.
+
+How it could work:
+
+- **Opening:** from the channel's menu in the main window ("Open in window"),
+  and later perhaps a command. Several windows can be open at once; which
+  ones are open, and where, is remembered.
+- **Each window shows:** the channel's name and colour, its messages with
+  sender names and times, an input box, and optionally its members. Its own
+  unread count, and a mark in the main window's channel list.
+- **Game chat stays optional.** A per-channel setting decides whether that
+  channel's messages also appear in game chat (as today) or only in its
+  window.
+- **Messages it can show** start as those received since the plugin started.
+  The server stores no readable history, so anything older needs a local
+  history on the player's computer (encrypted like the secrets file, opt-in,
+  with a size limit). That links to the open question about message history.
+- **Typing in the window** takes keyboard focus from the game, as other
+  plugin windows do; pressing Escape or clicking away gives it back.
+- **The same send path** as `/lgc`: the same rate limits, "not sent" errors,
+  rekey waits and plain-language warnings. The window shows the channel's
+  warnings at the top, as the channel pane does.
+- **Simple and advanced mode** apply as everywhere else.
+
+To decide when it's built: whether windows can be docked together as tabs
+(depends on what Dalamud's ImGui allows), whether to keep a local history at
+all, and how the window looks with Dalamud's transparency.
+
 ### MLS
 
 MLS (RFC 9420) solves the same problems as the membership log and epoch keys,
