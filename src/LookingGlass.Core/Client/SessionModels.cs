@@ -77,6 +77,11 @@ public sealed record SessionSnapshot(
 /// <param name="Members">Members and invitees according to the verified membership log, never the server's list.</param>
 /// <param name="LogHead">The newest membership log entry this client has verified.</param>
 /// <param name="MembershipWarning">Something wrong with the channel's membership the user should know about (a fork, a hidden change).</param>
+/// <param name="OldKeyMembership">
+/// The verified log has this user as a member under identity keys they no longer have (they reset their identity, or
+/// registered again). Nothing can be done here with the current keys: not reading, sending or leaving (a leave must be
+/// signed by the old keys). Offer "Remove from my list" (<see cref="ClientSession.ForgetChannelAsync"/>) instead of Leave.
+/// </param>
 public sealed record ChannelView(
     string Id,
     string? Name,
@@ -87,7 +92,8 @@ public sealed record ChannelView(
     Rank MyRank,
     ImmutableArray<MemberView> Members,
     LogPosition? LogHead = null,
-    string? MembershipWarning = null) {
+    string? MembershipWarning = null,
+    bool OldKeyMembership = false) {
     public string DisplayName => this.Name ?? PlaceholderName(this.Id);
 
     /// <summary>What to show before a channel's name has been decrypted. Safe for IDs of any length.</summary>

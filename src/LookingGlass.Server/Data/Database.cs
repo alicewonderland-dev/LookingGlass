@@ -35,7 +35,12 @@ public sealed record UserRow(
 /// <param name="LogHead">The newest entry in the channel's membership log.</param>
 public sealed record ChannelRow(string ChannelId, ulong Epoch, bool RekeyPending, EncryptedName? Name, LogPosition LogHead);
 
-public sealed record MemberRow(UserRow User, Rank Rank);
+/// <param name="Forgotten">
+/// The user removed the channel from their list ("Remove from my list", see <see cref="Database.ForgetStaleMembership"/>):
+/// still a member as far as the log (and so rekeys) go, but the channel isn't theirs to see or use any more.
+/// </param>
+/// <param name="CurrentKeys">The row's keys (those the log admitted them with) are the user's current keys.</param>
+public sealed record MemberRow(UserRow User, Rank Rank, bool Forgotten = false, bool CurrentKeys = true);
 
 /// <param name="Entry">The invite's entry in the channel's membership log.</param>
 public sealed record InviteRow(string ChannelId, UserRow Invitee, UserRow Inviter, SealedBox SealedName, byte[] Signature, long CreatedUnix, MembershipEntry? Entry);
@@ -47,7 +52,19 @@ public enum RekeyResult {
 }
 
 /// <summary>A registration names a signing key the account replaced or retired, which it never registers again.</summary>
-public sealed class KeyRetiredException() : Exception("That identity key was replaced or retired, so it can't be registered again.");
+/// <summary>What <see cref="Database.ForgetStaleMembership"/> did.</summary>
+public enum ForgetResult {
+    /// <summary>The user's places in the channel (all under keys they no longer have) are forgotten.</summary>
+    Forgotten,
+
+    /// <summary>Nothing: the user is in the channel under their current keys.</summary>
+    Current,
+
+    /// <summary>Nothing: the user isn't listed in the channel (or there is no such channel).</summary>
+    NotListed,
+}
+
+public sealed class KeyRetiredException(): Exception("That identity key was replaced or retired, so it can't be registered again.");
 
 /// <summary>A registration names a signing key another account is registered with: a key belongs to one account at most.</summary>
 public sealed class KeyInUseException() : Exception("That identity key is registered to another account.");
@@ -645,6 +662,8 @@ public sealed class Database {
         InsertEpochKey(connection, tx, channelId, 0, genesis.Subject.UserId, creatorKey);
         tx.Commit();
     }
+
+    public ForgetResult ForgetStaleMembership(string channelId, long userId) => throw new NotImplementedException();
 
     public void DeleteChannel(string channelId) {
         using var connection = this.Open();

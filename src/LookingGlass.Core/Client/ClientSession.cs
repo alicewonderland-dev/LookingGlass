@@ -731,6 +731,12 @@ public sealed class ClientSession : IAsyncDisposable {
         });
     }
 
+    /// <summary>"Remove from my list" (see <see cref="ForgetChannel"/> in the protocol).</summary>
+    public Task ForgetChannelAsync(string channelId, CancellationToken ct = default) => throw new NotImplementedException();
+
+    /// <summary>"Reset my identity", first step: leaves what <see cref="IdentityResetPlan"/> says, with the old key.</summary>
+    public Task<IdentityResetCleanup> LeaveChannelsForResetAsync(CancellationToken ct = default) => throw new NotImplementedException();
+
     public async Task DisbandAsync(string channelId, CancellationToken ct = default) {
         await this.RequestAsync(new ClientFrame { DisbandChannel = new DisbandChannel { ChannelId = channelId } }, ct);
         this.RemoveChannel(channelId);
