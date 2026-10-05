@@ -191,14 +191,21 @@ lost or may have been stolen. It is unavailable while you're the admin of a
 channel on that server: the dialog lists those channels, and for each you first
 make another member admin (their "..." menu, **Make admin (hand over)**: you
 become a moderator), disband it, or, if you're its only member, leave it, so no
-channel is lost without you choosing it. It also needs you connected and logged
-in, to check that; if you can't be (the server is gone for good, or doesn't
-accept your login any more), a checkbox lets you reset anyway, without any of
-the following first. Before anything else, the plugin leaves every channel
-you're in, with a leave signed by the old key while it still exists (so the
-others see you go and their channel isn't left with a place nobody can clear),
-and declines your invites; one that can't be left is reported, and stays in
-your list to remove with **Remove from my list**. Then it asks the
+channel is lost without you choosing it. It also waits until every channel in
+your list has been checked (its membership verified, and as new as what the
+server says), since one that isn't may be one you're the admin of: Settings
+names those, with a button to refresh them. It also needs you connected and
+logged in, to check that; if you can't be (connecting has failed, as when the
+server is gone for good, or it doesn't accept your login any more), a checkbox
+lets you reset anyway, without any of the following first. That leaves every
+channel you're the admin of without an admin for good, which the dialog says,
+naming those you were the admin of when last connected. Before anything else,
+the plugin leaves every channel you're in, with a leave signed by the old key
+while it still exists (so the others see you go and their channel isn't left
+with a place nobody can clear), and declines your invites. If one can't be left
+(or declined), or anything changes meanwhile (a new invite, say), you're told
+and the reset stops there, before your key is retired or anything is replaced,
+so you can try again while the old key still works. Then it asks the
 server to retire the old key (a request signed with that key, for your current
 login and that server's address, so a stolen login alone can't do it, and nor
 can a signature made for another server): every login made with it stops
@@ -220,11 +227,16 @@ channel, someone must invite your new key, and everyone who knows you sees a
 have (after a reset that couldn't leave it, a reset from before the plugin
 left channels first, or registering again with new keys) says so in plain
 words, and its menu offers **Remove from my list...** instead of Leave and
-Disband: a leave can only be signed by the old key. It isn't a membership
-change: the server just stops listing the channel (or the invite) to you and
-sending you its messages, and the plugin forgets its key, number, nickname
-and colour. The others still see your old key as a member until a moderator
-removes it; rekeys still include it, so nothing breaks for them. If you're
+Disband: a leave can only be signed by the old key. (Nor can the old key's
+place do anything else there: whatever its rank, the server refuses sending,
+renaming, disbanding or fetching keys through it, and only lets it read the
+membership log, which is how the plugin sees whose place it is.) It isn't a
+membership change: the server just stops listing the channel (or the invite)
+to you and sending you anything about it (its messages, its members' presence,
+its end), and the plugin forgets its key, number, nickname and colour. The
+others still see your old key as a member until a moderator removes it;
+rekeys still include it, so nothing breaks for them, and when the last other
+member leaves, the channel ends as usual. If you're
 invited again with your new key (after a moderator removed the old one), that
 works as usual. Declining an invite made for your old key removes it the same
 way.
@@ -558,7 +570,9 @@ What it does not do yet (0.2):
   was the admin, nobody can take over the admin role: moderators can still
   invite and remove members, but renames and rank changes are no longer
   possible in that channel. ("Reset my identity" refuses to run while you're
-  an admin, so this only happens by losing your keys.)
+  an admin, so this only happens by losing your keys, or by resetting without
+  a live login, which the plugin only does once you confirm that your admin
+  channels lose their admin for good.)
 - The log only grows. Clients fetch just the new entries, but someone new to a
   channel (or invited to it) replays it from the start.
 - The server sees metadata (who is in which channel, when messages are sent)
