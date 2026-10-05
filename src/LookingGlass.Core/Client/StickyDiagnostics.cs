@@ -59,6 +59,10 @@ public static partial class StickyDiagnostics {
         $"{Prefix} line{SourceOf(source)}: talking in {tag}, ChatTwo {YesNo(chatTwo)}, {Token(line, switches)}, {line.Raw.Length} bytes, " +
         $"payload {YesNo(HasPayload(line))} -> {Decision(route)} ({reason})";
 
+    /// <summary>A line run inside a reply, passed to the game unjudged (see <see cref="NestedLines"/>).</summary>
+    public static string NestedPassed(string tag, int bytes) =>
+        $"{Prefix} nested line: talking in {tag}, {bytes} bytes, inside a reply (/r) -> to game unjudged (the reply's own text)";
+
     /// <summary>A call to the game's channel switch, with the chat type before and after it.</summary>
     /// <param name="tag">The channel being talked in, or null.</param>
     /// <param name="end">Why it ended talking in the channel, if it did.</param>

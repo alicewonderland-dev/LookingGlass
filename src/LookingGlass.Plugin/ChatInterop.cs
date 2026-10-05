@@ -40,6 +40,14 @@ internal interface IChatBoxListener {
 
     /// <summary>The game put a link placeholder (&lt;item&gt; and the like) in the chat input. Only while <see cref="Active"/>.</summary>
     void LinkInserted(uint param);
+
+    /// <summary>
+    /// Whether a line the game runs inside lines already let through goes to the game unjudged (see <see cref="NestedLines"/>:
+    /// a reply's text); says so in the diagnostic log if it does. Only while <see cref="Active"/>.
+    /// </summary>
+    /// <param name="running">The commands of the lines running, outermost first.</param>
+    /// <param name="bytes">The inner line's size, for the log.</param>
+    bool PassNested(IReadOnlyList<string?> running, int bytes);
 }
 
 /// <summary>
@@ -84,6 +92,9 @@ internal sealed unsafe class ChatInterop : IDisposable {
     private int _linesRunning;
     // Lines a plugin is submitting through ProcessChatBoxEntry now (game thread only).
     private int _pluginLines;
+    // The commands of the lines let through that are running now, outermost first (null: not a command, or not talking
+    // in a channel when it started). Game thread only.
+    private readonly List<string?> _running = [];
 
     public ChatInterop(IChatBoxListener listener) {
         this._listener = listener;
@@ -175,16 +186,32 @@ internal sealed unsafe class ChatInterop : IDisposable {
         // couldn't be decided is kept from the game.
         var address = (nint) message;
         var source = this._pluginLines > 0 ? LineSource.Plugin : LineSource.Game;
-        if (message != null && ChatBoxGate.KeepFromGame(this._listener.Active,
-                () => this._listener.KeepFromGame(((Utf8String*) address)->AsSpan().ToArray(), source), this._listener.Failed)) {
+        var active = this._listener.Active;
+        var bytes = active && message != null ? message->AsSpan().ToArray() : null;
+
+        // Run inside a reply the gate let through (the game's /r runs its text this way): the reply's own, unjudged.
+        // Only while talking in a channel, and only if the rule says so (see NestedLines); if asking throws, judged.
+        var passNested = false;
+        if (bytes != null && this._running.Count > 0) {
+            try {
+                passNested = this._listener.PassNested(this._running, bytes.Length);
+            } catch (Exception ex) {
+                Services.Log.Error(ex, "Error checking a line run inside another; it is judged");
+            }
+        }
+
+        if (!passNested && message != null && ChatBoxGate.KeepFromGame(active,
+                () => this._listener.KeepFromGame(bytes!, source), this._listener.Failed)) {
             return;
         }
 
-        // A channel switch while this runs came from the line: a typed /s, /p.
+        // A channel switch while this runs came from the line: a typed /s, /p. Its command is noted for lines run inside it.
         this._linesRunning++;
+        this._running.Add(bytes == null ? null : NestedLines.CommandOf(new ChatBoxLine(bytes, "")));
         try {
             this._commandHook!.Original(module, message, uiModule);
         } finally {
+            this._running.RemoveAt(this._running.Count - 1);
             this._linesRunning--;
         }
 

@@ -1,3 +1,4 @@
+using Dalamud.Game;
 using Dalamud.Game.Addon.Lifecycle;
 using Dalamud.Game.Addon.Lifecycle.AddonArgTypes;
 using Dalamud.Game.Gui.Dtr;
@@ -38,6 +39,8 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
     private readonly ChatTwoIpc _chatTwo = new();
     private readonly IDtrBarEntry? _infoBar;
     private readonly IReadOnlyCollection<string> _switches;
+    // The reply commands (/r): a line the game runs inside one is the reply's (see NestedLines).
+    private readonly IReadOnlyCollection<string> _replies;
     // ChatTwo's label: set while talking in a channel (and sent again now and then), cleared as soon as it stops.
     private readonly LabelKeeper _chatTwoLabel = new(1000);
     // The tag and colour shown while talking in a channel, or null.
@@ -57,6 +60,7 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
         this._chat = chat;
         this._sender = sender;
         this._switches = ChatChannelPrefixes.SwitchesWith(GameChannelCommandNames());
+        this._replies = NestedLines.RepliesWith(GameReplyCommandNames());
         this._interop = new ChatInterop(this);
 
         try {
@@ -155,6 +159,16 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
     }
 
     /// <inheritdoc/>
+    bool IChatBoxListener.PassNested(IReadOnlyList<string?> running, int bytes) {
+        if (this._state.ChannelId is not { } channelId || !NestedLines.PassThrough(running, this._replies)) {
+            return false;
+        }
+
+        Log(() => StickyDiagnostics.NestedPassed(this._shown?.Tag ?? this.TagOf(channelId), bytes));
+        return true;
+    }
+
+    /// <inheritdoc/>
     void IChatBoxListener.LinkInserted(uint param) {
         if (this._state.ChannelId is { } channelId) {
             Log(() => StickyDiagnostics.LinkInserted(this._shown?.Tag ?? this.TagOf(channelId), param, ChatInterop.ReadChatBox()));
@@ -226,6 +240,32 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
             return names;
         } catch (Exception ex) {
             Services.Log.Warning(ex, "Couldn't read the game's channel commands; only the English ones end talking in a channel when typed on their own");
+            return [];
+        }
+    }
+
+    /// <summary>
+    /// The game's names for its reply command (/r, /reply) in the client's language: the TextCommand rows that are "/reply"
+    /// or "/r" in English, read in the client's language. None if unreadable (the English ones still count).
+    /// </summary>
+    private static IEnumerable<string> GameReplyCommandNames() {
+        try {
+            var english = Services.Data.GetExcelSheet<TextCommand>(ClientLanguage.English);
+            var local = Services.Data.GetExcelSheet<TextCommand>();
+            var names = new List<string>();
+            foreach (var row in english) {
+                string[] forms = [row.Command.ExtractText(), row.ShortCommand.ExtractText(), row.Alias.ExtractText(), row.ShortAlias.ExtractText()];
+                if (!forms.Any(form => NestedLines.Replies.Contains(form.Trim(), StringComparer.OrdinalIgnoreCase)) ||
+                    local.GetRowOrDefault(row.RowId) is not { } command) {
+                    continue;
+                }
+
+                names.AddRange([command.Command.ExtractText(), command.ShortCommand.ExtractText(), command.Alias.ExtractText(), command.ShortAlias.ExtractText()]);
+            }
+
+            return names;
+        } catch (Exception ex) {
+            Services.Log.Warning(ex, "Couldn't read the game's reply command; only /r and /reply count as replies");
             return [];
         }
     }

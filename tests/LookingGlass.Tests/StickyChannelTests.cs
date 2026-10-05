@@ -593,6 +593,63 @@ public sealed class StickyChannelTests {
         Assert.Null(sticky.ChannelSwitchCalled(Say, fromTypedCommand: true));
     }
 
+    // ---------------------------------------------------------------- lines the game runs inside another line
+
+    [Fact]
+    public void AReplysTextRunInsideItIsTheGamesNotTheChannels() {
+        // The game's /r sets the tell target, then runs the gate's function again with only the text after "/r". Judged,
+        // that "hello" would go to the whole channel and the tell would never be sent.
+        var replies = NestedLines.Replies;
+        Assert.True(NestedLines.PassThrough(["/r"], replies));
+        Assert.True(NestedLines.PassThrough(["/reply"], replies));
+        Assert.True(NestedLines.PassThrough(["/R"], replies));
+        // The directly enclosing line is the one that counts.
+        Assert.True(NestedLines.PassThrough(["/lgc3", "/r"], replies));
+        Assert.False(NestedLines.PassThrough(["/r", "/lgc3"], replies));
+    }
+
+    [Fact]
+    public void AnyOtherLineRunInsideALineIsStillJudged() {
+        var replies = NestedLines.Replies;
+        // A line on its own (not inside another).
+        Assert.False(NestedLines.PassThrough([], replies));
+        // A plugin command that submits plain text while it runs: still judged, so it goes to the channel, not game chat.
+        Assert.False(NestedLines.PassThrough(["/lgc3"], replies));
+        Assert.False(NestedLines.PassThrough(["/xlhelp"], replies));
+        // The game's own command that runs a stored line, a tell, a channel command: judged.
+        Assert.False(NestedLines.PassThrough(["/t"], replies));
+        Assert.False(NestedLines.PassThrough(["/tell"], replies));
+        Assert.False(NestedLines.PassThrough(["/p"], replies));
+        Assert.False(NestedLines.PassThrough(["/rr"], replies));
+        // The enclosing line was plain text (no command).
+        Assert.False(NestedLines.PassThrough([null], replies));
+    }
+
+    [Fact]
+    public void TheGamesOwnNamesForReplyCountToo() {
+        var replies = NestedLines.RepliesWith(["/antworten", " /a2 ", "", "x", "/"]);
+        Assert.True(NestedLines.PassThrough(["/antworten"], replies));
+        Assert.True(NestedLines.PassThrough(["/A2"], replies));
+        Assert.True(NestedLines.PassThrough(["/r"], replies));
+        Assert.DoesNotContain("/", replies);
+        Assert.DoesNotContain("", replies);
+    }
+
+    [Fact]
+    public void TheEnclosingCommandIsReadFromTheLinesBytes() {
+        Assert.Equal("/r", NestedLines.CommandOf(ChatBoxLine.Plain("/r hello there")));
+        Assert.Equal("/reply", NestedLines.CommandOf(ChatBoxLine.Plain("/reply")));
+        Assert.Null(NestedLines.CommandOf(ChatBoxLine.Plain("hello /r")));
+        Assert.Null(NestedLines.CommandOf(ChatBoxLine.Plain("")));
+    }
+
+    [Fact]
+    public void ANestedPassThroughIsLoggedInFixedWords() {
+        Assert.Equal("[sticky] nested line: talking in [sky], 5 bytes, inside a reply (/r) -> to game unjudged (the reply's own text)",
+            StickyDiagnostics.NestedPassed(Tag, 5));
+        Assert.DoesNotContain("hello", StickyDiagnostics.NestedPassed(Tag, 5));
+    }
+
     // ---------------------------------------------------------------- the diagnostic log (dalamud.log)
 
     [Fact]
