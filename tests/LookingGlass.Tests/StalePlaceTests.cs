@@ -7,7 +7,7 @@ namespace LookingGlass.Tests;
 
 /// <summary>
 /// What the server lets a place under old keys do, and what it tells the account holding it. A stale place (the account
-/// registered again with new keys, or reset its identity, without leaving) has no say in the channel: it can only read the
+/// registered new keys on a server from before key recovery, which left its places with the old ones) has no say in the channel: it can only read the
 /// log (where the client sees the place is the old key's) and be removed from the account's list. A forgotten place
 /// ("Remove from my list") gets nothing about the channel at all, though it stays a member for the log and the others.
 /// </summary>
@@ -35,7 +35,7 @@ public sealed class StalePlaceTests : IAsyncLifetime {
         var bob = await this._server.RegisterAsync("Bob Under Stale");
         var channelId = await alice.Session.CreateChannelAsync("Stale Authority", Ct);
         await AddMemberAsync(alice, channelId, bob);
-        var again = await ForgetChannelTests.ResetWithoutLeavingAsync(this._server, alice);
+        var again = await ForgetChannelTests.RegisterOnAnOldServerAsync(this._server, alice);
         await WaitFor(() => again.Session.Snapshot.FindChannel(channelId) is { OldKeyMembership: true } c ? c : null);
 
         foreach (var request in new[] {
@@ -72,7 +72,7 @@ public sealed class StalePlaceTests : IAsyncLifetime {
         var bob = await this._server.RegisterAsync("Bob Last One");
         var channelId = await alice.Session.CreateChannelAsync("Zombie", Ct);
         await AddMemberAsync(alice, channelId, bob);
-        var again = await ForgetChannelTests.ResetWithoutLeavingAsync(this._server, alice);
+        var again = await ForgetChannelTests.RegisterOnAnOldServerAsync(this._server, alice);
         await WaitFor(() => again.Session.Snapshot.FindChannel(channelId) is { OldKeyMembership: true } c ? c : null);
         await again.Session.ForgetChannelAsync(channelId, Ct);
 
@@ -96,7 +96,7 @@ public sealed class StalePlaceTests : IAsyncLifetime {
         var channelId = await bob.Session.CreateChannelAsync("Busy", Ct);
         await AddMemberAsync(bob, channelId, alice);
         await AddMemberAsync(bob, channelId, carol);
-        var again = await ForgetChannelTests.ResetWithoutLeavingAsync(this._server, alice);
+        var again = await ForgetChannelTests.RegisterOnAnOldServerAsync(this._server, alice);
         await WaitFor(() => again.Session.Snapshot.FindChannel(channelId) is { OldKeyMembership: true } c ? c : null);
         await again.Session.ForgetChannelAsync(channelId, Ct);
         var aliceId = again.UserId;
@@ -145,7 +145,7 @@ public sealed class StalePlaceTests : IAsyncLifetime {
         await carol.Session.InviteAsync(inviterRemoved, alice.Name, ProtocolInfo.DebugWorldName, Ct);
         await WaitFor(() => alice.Session.Snapshot.Invites.Length == 4 ? new object() : null);
 
-        var again = await ForgetChannelTests.ResetWithoutLeavingAsync(this._server, alice);
+        var again = await ForgetChannelTests.RegisterOnAnOldServerAsync(this._server, alice);
         await WaitFor(() => again.Session.Snapshot.Invites.Length == 4 && again.Session.Snapshot.FindChannel(disbanded) != null ? new object() : null);
         foreach (var channelId in new[] { disbanded, cancelled, gone, inviterRemoved, abandoned }) {
             await again.Session.ForgetChannelAsync(channelId, Ct);
@@ -179,7 +179,7 @@ public sealed class StalePlaceTests : IAsyncLifetime {
         await AddMemberAsync(alice, channelId, bob);
         await alice.Session.SetRankAsync(channelId, bob.UserId, Rank.Moderator, Ct);
         await WaitFor(() => bob.Session.Snapshot.FindChannel(channelId) is { MyRank: Rank.Moderator } c ? c : null);
-        var again = await ForgetChannelTests.ResetWithoutLeavingAsync(this._server, alice);
+        var again = await ForgetChannelTests.RegisterOnAnOldServerAsync(this._server, alice);
         await WaitFor(() => again.Session.Snapshot.FindChannel(channelId) is { OldKeyMembership: true } c ? c : null);
         // Online, as the old admin's (highest-ranked) place, the one the server would otherwise ask.
         await using var raw = await this.ListenAsAsync(again);
@@ -208,7 +208,7 @@ public sealed class StalePlaceTests : IAsyncLifetime {
         var invited = await bob.Session.CreateChannelAsync("Was Invited", Ct);
         await bob.Session.InviteAsync(invited, alice.Name, ProtocolInfo.DebugWorldName, Ct);
         await WaitFor(() => alice.Session.Snapshot.Invites.FirstOrDefault(i => i.ChannelId == invited && i.ChannelName != null));
-        var again = await ForgetChannelTests.ResetWithoutLeavingAsync(this._server, alice);
+        var again = await ForgetChannelTests.RegisterOnAnOldServerAsync(this._server, alice);
         await WaitFor(() => again.Session.Snapshot.FindChannel(member) != null && again.Session.Snapshot.Invites.Length == 1 ? new object() : null);
 
         var fetchLog = new ClientFrame { FetchMembershipLog = new FetchMembershipLog { ChannelId = invited } };
@@ -237,7 +237,7 @@ public sealed class StalePlaceTests : IAsyncLifetime {
         var channelId = await bob.Session.CreateChannelAsync("Twice", Ct);
         await bob.Session.InviteAsync(channelId, alice.Name, ProtocolInfo.DebugWorldName, Ct);
         await WaitFor(() => alice.Session.Snapshot.Invites.FirstOrDefault(i => i.ChannelId == channelId && i.ChannelName != null));
-        var again = await ForgetChannelTests.ResetWithoutLeavingAsync(this._server, alice);
+        var again = await ForgetChannelTests.RegisterOnAnOldServerAsync(this._server, alice);
         await WaitFor(() => again.Session.Snapshot.Invites.FirstOrDefault(i => i.ChannelId == channelId));
         await again.Session.ForgetChannelAsync(channelId, Ct);
         Assert.Empty(this._server.Database.GetInvitesForUser(again.UserId));

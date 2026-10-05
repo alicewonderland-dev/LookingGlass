@@ -40,7 +40,12 @@ public sealed record ChannelRow(string ChannelId, ulong Epoch, bool RekeyPending
 /// still a member as far as the log (and so rekeys) go, but the channel isn't theirs to see or use any more.
 /// </param>
 /// <param name="CurrentKeys">The row's keys (those the log admitted them with) are the user's current keys.</param>
-public sealed record MemberRow(UserRow User, Rank Rank, bool Forgotten = false, bool CurrentKeys = true);
+/// <param name="AwaitingKey">
+/// The place moved to the user's new keys (a key recovered entry), and no rekey has given them the channel's key since: they
+/// can't carry the channel's name into a new one, so they aren't asked to, unless nobody else holds the key (then one of
+/// them names it anew; see "When nobody holds the key" in docs/design.md).
+/// </param>
+public sealed record MemberRow(UserRow User, Rank Rank, bool Forgotten = false, bool CurrentKeys = true, bool AwaitingKey = false);
 
 /// <param name="Entry">The invite's entry in the channel's membership log.</param>
 /// <param name="Forgotten">The invitee removed it from their list (see <see cref="Database.ForgetStaleMembership"/>).</param>
@@ -65,6 +70,22 @@ public enum ForgetResult {
     NotListed,
 }
 
+/// <summary>
+/// What a registration needs to move the account's places to the keys it registers (see <see cref="Database.RegisterUser"/>):
+/// the keys' <see cref="Core.Crypto.KeyRecoveryProof"/> signature, the rules each key recovered entry is checked with, and its time.
+/// </summary>
+public sealed record KeyRecovery(byte[] Proof, IMembershipProvider Membership, long TimestampMs);
+
+/// <summary>A place (a membership, or an invite) a registration moved to the new keys, and the key recovered entry that says so.</summary>
+public sealed record RecoveredPlace(string ChannelId, MembershipEntry Entry, bool Member);
+
+/// <summary>What <see cref="Database.RegisterUser"/> did.</summary>
+/// <param name="KeysChanged">The user's identity keys changed.</param>
+public sealed record Registration(UserRow User, bool KeysChanged) {
+    /// <summary>The places moved to the keys registered, oldest first.</summary>
+    public IReadOnlyList<RecoveredPlace> Recovered { get; init; } = [];
+}
+
 /// <summary>A registration names a signing key the account replaced or retired, which it never registers again.</summary>
 public sealed class KeyRetiredException() : Exception("That identity key was replaced or retired, so it can't be registered again.");
 
@@ -79,7 +100,7 @@ public sealed class UnsupportedDatabaseException(string message) : Exception(mes
 /// Methods are synchronous (SQLite is in-process) and short.
 /// </summary>
 public sealed class Database {
-    private const int SchemaVersion = 7;
+    private const int SchemaVersion = 8;
     private const int KeptEpochs = 4;
 
     private readonly string _path;
@@ -242,6 +263,22 @@ public sealed class Database {
             }
 
             Execute(connection, tx, "INSERT INTO schema_version (version) VALUES (7);");
+        }
+
+        if (current < 8) {
+            // Key recovery: a place moved to the user's new keys holds no key for the channel until a rekey gives it one,
+            // so it isn't asked to make one (see MemberRow.AwaitingKey). An invite's carries over when it is accepted.
+            // Nothing else changes: places still under old keys are moved when their user next registers. (Checked, as
+            // tests of older schemas only remove the version rows.)
+            if (!HasColumn(connection, tx, "members", "awaiting_key")) {
+                Execute(connection, tx, "ALTER TABLE members ADD COLUMN awaiting_key INTEGER NOT NULL DEFAULT 0;");
+            }
+
+            if (!HasColumn(connection, tx, "invites", "awaiting_key")) {
+                Execute(connection, tx, "ALTER TABLE invites ADD COLUMN awaiting_key INTEGER NOT NULL DEFAULT 0;");
+            }
+
+            Execute(connection, tx, "INSERT INTO schema_version (version) VALUES (8);");
         }
 
         tx.Commit();
@@ -413,11 +450,17 @@ public sealed class Database {
     /// Creates or replaces a user's registration. Revokes all their devices. A signing key it replaces is retired for
     /// this user (see <see cref="IsKeyRetired"/>), and a key retired for them is never registered for them again. A key
     /// another user is registered with isn't registered for this one.
+    ///
+    /// With <paramref name="recovery"/> (the new keys' consent), every place of the user's in a channel (a membership,
+    /// rank kept, or an invite) under other keys moves to the keys registered, in the same transaction: a key recovered
+    /// entry for each, checked with the log's rules first, appended to the channel's log. Places the user removed from
+    /// their list stay as they are. Without it (or for a place whose entry the rules refuse, which is logged), places stay
+    /// under the keys they have, as before recovery existed.
     /// </summary>
-    /// <returns>The stored user, and whether their identity keys changed.</returns>
+    /// <returns>The stored user, whether their identity keys changed, and the places moved.</returns>
     /// <exception cref="KeyRetiredException">The signing key is retired for this user. Nothing was changed.</exception>
     /// <exception cref="KeyInUseException">Another user is registered with the signing key. Nothing was changed.</exception>
-    public (UserRow User, bool KeysChanged) RegisterUser(long userId, string name, uint worldId, string worldName, IdentityBundle identity, bool isDebug) {
+    public Registration RegisterUser(long userId, string name, uint worldId, string worldName, IdentityBundle identity, bool isDebug, KeyRecovery? recovery = null) {
         using var connection = this.Open();
         using var tx = connection.BeginTransaction();
         var now = Now();
@@ -473,14 +516,53 @@ public sealed class Database {
         Execute(connection, tx, "DELETE FROM devices WHERE user_id = $id;", ("$id", userId));
 
         if (keysChanged) {
-            // The new keys can't open anything sealed to the old ones. Their memberships stay bound to the
-            // old keys (the log says so), and the new ones only join a channel when invited again.
+            // The new keys can't open anything sealed to the old ones; a rekey gives them the channels' keys.
             Execute(connection, tx, "DELETE FROM epoch_keys WHERE recipient_id = $id;", ("$id", userId));
         }
 
+        var recovered = recovery == null ? [] : this.RecoverPlaces(connection, tx, userId, new MemberKeys(signing, agreement), recovery);
         tx.Commit();
         var stored = QueryUsers(connection, null, "SELECT * FROM users WHERE user_id = $id;", ("$id", userId)).Single();
-        return (stored, keysChanged);
+        return new Registration(stored, keysChanged) { Recovered = recovered };
+    }
+
+    /// <summary>
+    /// Whether registering <paramref name="keys"/> for the user would move any place of theirs (see <see cref="RegisterUser"/>):
+    /// one in a channel or an invite, not removed from their list, under other keys.
+    /// </summary>
+    public bool HasPlacesToRecover(long userId, MemberKeys keys) {
+        using var connection = this.Open();
+        return PlacesToRecover(connection, null, userId, keys).Count > 0;
+    }
+
+    private static List<string> PlacesToRecover(SqliteConnection connection, SqliteTransaction? tx, long userId, MemberKeys keys) {
+        return Query(connection, tx, """
+            SELECT channel_id FROM members WHERE user_id = $id AND forgotten = 0 AND NOT (signing_key = $signing AND agreement_key = $agreement)
+            UNION SELECT channel_id FROM invites WHERE user_id = $id AND forgotten = 0 AND NOT (signing_key = $signing AND agreement_key = $agreement)
+            ORDER BY channel_id;
+            """,
+            reader => reader.GetString(0), ("$id", userId), ("$signing", keys.SigningKeyArray()), ("$agreement", keys.AgreementKeyArray()));
+    }
+
+    /// <summary>Moves the user's places to <paramref name="keys"/>, in the registration's transaction (see <see cref="RegisterUser"/>).</summary>
+    private List<RecoveredPlace> RecoverPlaces(SqliteConnection connection, SqliteTransaction tx, long userId, MemberKeys keys, KeyRecovery recovery) {
+        var recovered = new List<RecoveredPlace>();
+        foreach (var channelId in PlacesToRecover(connection, tx, userId, keys)) {
+            var state = recovery.Membership.Restore(ReadCheckpoint(connection, tx, channelId)!);
+            MembershipEntry entry;
+            try {
+                entry = state.CreateKeyRecovered(userId, keys, recovery.Proof, recovery.TimestampMs);
+            } catch (MembershipException ex) {
+                // Say, the keys are someone else's place there already. Left under the keys it has.
+                this._logger?.LogWarning("Couldn't move the place of {User} in channel {Channel} to the keys they registered: {Reason}", userId, channelId, ex.Message);
+                continue;
+            }
+
+            ApplyEntry(connection, tx, channelId, entry, null, null);
+            recovered.Add(new RecoveredPlace(channelId, entry, state.FindMember(userId) != null));
+        }
+
+        return recovered;
     }
 
     /// <summary>
@@ -648,23 +730,37 @@ public sealed class Database {
 
     /// <returns>
     /// The user's place in the channel: its rank, as <see cref="GetRank"/> gives it, and whether it is under the keys the user
-    /// is registered with now (<see cref="MemberRow.CurrentKeys"/>; for an invite, the keys it was made for). Null as for <see cref="GetRank"/>.
+    /// is registered with now (<see cref="MemberRow.CurrentKeys"/>; for an invite, the keys it was made for), and under
+    /// <paramref name="keys"/> too if given. Null as for <see cref="GetRank"/>.
     /// </returns>
-    public (Rank Rank, bool CurrentKeys)? GetPlace(string channelId, long userId) {
+    /// <param name="keys">
+    /// The keys whoever asks signed in with: a session of keys the user no longer has (one a registration with new keys
+    /// should have disconnected) has no say through a place that moved to the new ones.
+    /// </param>
+    public (Rank Rank, bool CurrentKeys)? GetPlace(string channelId, long userId, MemberKeys? keys = null) {
         using var connection = this.Open();
-        (string, object)[] who = [("$channel", channelId), ("$user", userId)];
+        (string, object)[] who = [
+            ("$channel", channelId), ("$user", userId),
+            ("$signing", keys?.SigningKeyArray() ?? (object) DBNull.Value), ("$agreement", keys?.AgreementKeyArray() ?? (object) DBNull.Value),
+        ];
         var member = Query(connection, null,
-            $"SELECT m.rank, {SameKeys("m")} FROM members m JOIN users u ON u.user_id = m.user_id WHERE m.channel_id = $channel AND m.user_id = $user AND m.forgotten = 0;",
+            $"SELECT m.rank, {SameKeys("m")} AND {SessionKeys("m")} FROM members m JOIN users u ON u.user_id = m.user_id " +
+            "WHERE m.channel_id = $channel AND m.user_id = $user AND m.forgotten = 0;",
             reader => ((Rank) reader.GetInt32(0), reader.GetInt64(1) != 0), who);
         if (member is [var place]) {
             return place;
         }
 
         var invite = Query(connection, null,
-            $"SELECT {SameKeys("i")} FROM invites i JOIN users u ON u.user_id = i.user_id WHERE i.channel_id = $channel AND i.user_id = $user AND i.forgotten = 0;",
+            $"SELECT {SameKeys("i")} AND {SessionKeys("i")} FROM invites i JOIN users u ON u.user_id = i.user_id " +
+            "WHERE i.channel_id = $channel AND i.user_id = $user AND i.forgotten = 0;",
             reader => reader.GetInt64(0) != 0, who);
         return invite is [var current] ? (Rank.Invited, current) : null;
     }
+
+    /// <summary>The row's keys are the asking session's (<c>$signing</c>, <c>$agreement</c>), or no session's were given (null).</summary>
+    private static string SessionKeys(string row) =>
+        $"($signing IS NULL OR ({row}.signing_key = $signing AND {row}.agreement_key = $agreement))";
 
     /// <summary>
     /// Every member row of the channel, as the log has it: places the user removed from their list (<see cref="MemberRow.Forgotten"/>)
@@ -808,7 +904,11 @@ public sealed class Database {
     /// </summary>
     public MembershipCheckpoint? GetMembershipCheckpoint(string channelId) {
         using var connection = this.Open();
-        var channel = GetChannel(connection, null, channelId);
+        return ReadCheckpoint(connection, null, channelId);
+    }
+
+    private static MembershipCheckpoint? ReadCheckpoint(SqliteConnection connection, SqliteTransaction? tx, string channelId) {
+        var channel = GetChannel(connection, tx, channelId);
         if (channel == null) {
             return null;
         }
@@ -822,7 +922,7 @@ public sealed class Database {
             RecentFrom = channel.LogHead.Seq,
         };
 
-        using (var command = Command(connection, null, "SELECT user_id, rank, signing_key, agreement_key FROM members WHERE channel_id = $id;", ("$id", channelId))) {
+        using (var command = Command(connection, tx, "SELECT user_id, rank, signing_key, agreement_key FROM members WHERE channel_id = $id;", ("$id", channelId))) {
             using var reader = command.ExecuteReader();
             while (reader.Read()) {
                 checkpoint.Members.Add(new CheckpointMember {
@@ -834,7 +934,7 @@ public sealed class Database {
             }
         }
 
-        using (var command = Command(connection, null, """
+        using (var command = Command(connection, tx, """
                    SELECT user_id, signing_key, agreement_key, invite_seq, invite_hash, inviter_id, inviter_signing_key, inviter_agreement_key
                    FROM invites WHERE channel_id = $id;
                    """, ("$id", channelId))) {
@@ -879,6 +979,16 @@ public sealed class Database {
     public bool AppendEntry(string channelId, MembershipEntry entry, SealedBox? sealedName = null, byte[]? inviteSignature = null) {
         using var connection = this.Open();
         using var tx = connection.BeginTransaction();
+        if (!ApplyEntry(connection, tx, channelId, entry, sealedName, inviteSignature)) {
+            return false;
+        }
+
+        tx.Commit();
+        return true;
+    }
+
+    /// <summary><see cref="AppendEntry"/>, in a transaction the caller commits.</summary>
+    private static bool ApplyEntry(SqliteConnection connection, SqliteTransaction tx, string channelId, MembershipEntry entry, SealedBox? sealedName, byte[]? inviteSignature) {
         var channel = GetChannel(connection, tx, channelId);
         if (channel == null || entry.Seq != channel.LogHead.Seq + 1 || !entry.PreviousHash.Span.SequenceEqual(channel.LogHead.Hash.Span)) {
             return false;
@@ -905,7 +1015,8 @@ public sealed class Database {
                         sealed_ciphertext = excluded.sealed_ciphertext, signature = excluded.signature, created_at = excluded.created_at,
                         signing_key = excluded.signing_key, agreement_key = excluded.agreement_key,
                         invite_seq = excluded.invite_seq, invite_hash = excluded.invite_hash,
-                        inviter_signing_key = excluded.inviter_signing_key, inviter_agreement_key = excluded.inviter_agreement_key, forgotten = 0;
+                        inviter_signing_key = excluded.inviter_signing_key, inviter_agreement_key = excluded.inviter_agreement_key,
+                        forgotten = 0, awaiting_key = 0;
                     """,
                     ("$channel", channelId), ("$user", subject.UserId), ("$inviter", entry.ActorId),
                     ("$ephemeral", sealedName?.EphemeralPublicKey.ToByteArray() ?? []), ("$ciphertext", sealedName?.Ciphertext.ToByteArray() ?? []),
@@ -915,15 +1026,40 @@ public sealed class Database {
                 break;
             }
             case MembershipEntryKind.Accept:
-                Execute(connection, tx, "DELETE FROM invites WHERE channel_id = $channel AND user_id = $user;", who);
+                // An invite moved to new keys knows no name for the channel (it was sealed to the old ones), so its joiner
+                // can't rekey either (see MemberRow.AwaitingKey).
                 Execute(connection, tx, """
-                    INSERT OR REPLACE INTO members (channel_id, user_id, rank, joined_at, signing_key, agreement_key)
-                    VALUES ($channel, $user, $rank, $now, $signing, $agreement);
+                    INSERT OR REPLACE INTO members (channel_id, user_id, rank, joined_at, signing_key, agreement_key, awaiting_key)
+                    VALUES ($channel, $user, $rank, $now, $signing, $agreement,
+                            COALESCE((SELECT awaiting_key FROM invites WHERE channel_id = $channel AND user_id = $user), 0));
                     """,
                     ("$channel", channelId), ("$user", subject.UserId), ("$rank", (long) Rank.Member), ("$now", Now()),
                     ("$signing", subject.SigningPublicKey.ToByteArray()), ("$agreement", subject.AgreementPublicKey.ToByteArray()));
+                Execute(connection, tx, "DELETE FROM invites WHERE channel_id = $channel AND user_id = $user;", who);
                 Execute(connection, tx, "UPDATE channels SET rekey_pending = 1 WHERE channel_id = $channel;", ("$channel", channelId));
                 break;
+            case MembershipEntryKind.KeyRecovered: {
+                (string, object)[] keys = [
+                    ("$channel", channelId), ("$user", subject.UserId),
+                    ("$signing", entry.NewKeys.SigningPublicKey.ToByteArray()), ("$agreement", entry.NewKeys.AgreementPublicKey.ToByteArray()),
+                ];
+                // Rank, joined time, invite and whether it is forgotten stay: only the keys change.
+                if (Execute(connection, tx, """
+                        UPDATE members SET signing_key = $signing, agreement_key = $agreement, awaiting_key = 1
+                        WHERE channel_id = $channel AND user_id = $user;
+                        """, keys) > 0) {
+                    // Nothing sealed to the old keys is any use to the new ones, and the old ones mustn't read what comes next.
+                    Execute(connection, tx, "DELETE FROM epoch_keys WHERE channel_id = $channel AND recipient_id = $user;", who);
+                    Execute(connection, tx, "UPDATE channels SET rekey_pending = 1 WHERE channel_id = $channel;", ("$channel", channelId));
+                } else {
+                    Execute(connection, tx, """
+                        UPDATE invites SET signing_key = $signing, agreement_key = $agreement, awaiting_key = 1
+                        WHERE channel_id = $channel AND user_id = $user;
+                        """, keys);
+                }
+
+                break;
+            }
             case MembershipEntryKind.Decline:
             case MembershipEntryKind.CancelInvite:
                 Execute(connection, tx, "DELETE FROM invites WHERE channel_id = $channel AND user_id = $user;", who);
@@ -956,7 +1092,6 @@ public sealed class Database {
 
         Execute(connection, tx, "UPDATE channels SET log_seq = $seq, log_hash = $hash WHERE channel_id = $channel;",
             ("$seq", (long) entry.Seq), ("$hash", hash), ("$channel", channelId));
-        tx.Commit();
         return true;
     }
 
@@ -1072,6 +1207,9 @@ public sealed class Database {
             InsertEpochKey(connection, tx, channelId, newEpoch, authorId, key);
         }
 
+        // Every member holds the channel's key now, places moved to new keys included.
+        Execute(connection, tx, "UPDATE members SET awaiting_key = 0 WHERE channel_id = $id AND awaiting_key <> 0;", ("$id", channelId));
+
         Execute(connection, tx, "DELETE FROM epoch_keys WHERE channel_id = $id AND epoch + $kept <= $epoch;",
             ("$id", channelId), ("$kept", (long) KeptEpochs), ("$epoch", (long) newEpoch));
         tx.Commit();
@@ -1117,14 +1255,15 @@ public sealed class Database {
     private static List<MemberRow> GetMembers(SqliteConnection connection, SqliteTransaction? tx, string channelId) {
         using var command = Command(connection, tx,
             $"""
-            SELECT u.*, m.rank AS member_rank, m.forgotten AS member_forgotten, {SameKeys("m")} AS member_current
+            SELECT u.*, m.rank AS member_rank, m.forgotten AS member_forgotten, {SameKeys("m")} AS member_current, m.awaiting_key AS member_awaiting
             FROM members m JOIN users u ON u.user_id = m.user_id WHERE m.channel_id = $id;
             """, ("$id", channelId));
         using var reader = command.ExecuteReader();
         var members = new List<MemberRow>();
         while (reader.Read()) {
             members.Add(new MemberRow(ReadUser(reader), (Rank) reader.GetInt32(reader.GetOrdinal("member_rank")),
-                reader.GetInt64(reader.GetOrdinal("member_forgotten")) != 0, reader.GetInt64(reader.GetOrdinal("member_current")) != 0));
+                reader.GetInt64(reader.GetOrdinal("member_forgotten")) != 0, reader.GetInt64(reader.GetOrdinal("member_current")) != 0,
+                reader.GetInt64(reader.GetOrdinal("member_awaiting")) != 0));
         }
 
         return members;

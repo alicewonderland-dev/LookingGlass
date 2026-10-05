@@ -286,6 +286,7 @@ public sealed class KeyLoginTests : IAsyncLifetime {
     [Fact]
     public async Task OutsideDevelopmentTheServerNeedsPublicUrls() {
         var logs = new CapturingLoggerProvider();
+        await ExitCodeGate.WaitAsync(Ct);
         var exitCode = Environment.ExitCode;
         var directory = Path.Combine(Path.GetTempPath(), "lgt-" + Guid.NewGuid().ToString("N"));
         try {
@@ -307,6 +308,7 @@ public sealed class KeyLoginTests : IAsyncLifetime {
         } finally {
             // The server's exit code, which the test process doesn't share.
             Environment.ExitCode = exitCode;
+            ExitCodeGate.Release();
             DeleteDirectory(directory);
         }
     }

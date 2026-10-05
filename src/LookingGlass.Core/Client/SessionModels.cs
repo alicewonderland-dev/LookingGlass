@@ -40,10 +40,10 @@ public enum ConnectionState {
 /// Set while connected to a server that lists its own addresses (Welcome's public_urls) without the one this client uses:
 /// what to tell the user, naming both. Such a server refuses registering, key login and "Reset my identity" through it.
 /// </param>
-/// <param name="ConnectionFailed">
-/// The last attempt to connect failed (the server didn't answer, or the connection broke before logging in), and none has
-/// worked since. While <see cref="ConnectionState.Connecting"/> or <see cref="ConnectionState.Reconnecting"/>, it tells a
-/// server that can't be reached from one that is still being reached.
+/// <param name="NewIdentity">
+/// This client has no identity keys registered on this server yet (none at all, as on a new computer or with a lost file, or
+/// new ones after "Reset my identity"). Registering them takes the character's account over if it has one here: its
+/// channels, ranks and invites move to the new keys.
 /// </param>
 public sealed record SessionSnapshot(
     ConnectionState State,
@@ -59,7 +59,7 @@ public sealed record SessionSnapshot(
     bool ChannelsLoaded,
     bool LoginRejected = false,
     string? AddressNotListed = null,
-    bool ConnectionFailed = false) {
+    bool NewIdentity = false) {
     public static readonly SessionSnapshot Empty = new(
         ConnectionState.Stopped, null, null, null,
         ImmutableArray<ChannelView>.Empty, ImmutableArray<InviteView>.Empty,
@@ -84,13 +84,15 @@ public sealed record SessionSnapshot(
 /// <param name="LogHead">The newest membership log entry this client has verified.</param>
 /// <param name="MembershipWarning">Something wrong with the channel's membership the user should know about (a fork, a hidden change).</param>
 /// <param name="OldKeyMembership">
-/// The verified log has this user as a member under identity keys they no longer have (they reset their identity, or
-/// registered again). Nothing can be done here with the current keys: not reading, sending or leaving (a leave must be
-/// signed by the old keys). Offer "Remove from my list" (<see cref="ClientSession.ForgetChannelAsync"/>) instead of Leave.
+/// The verified log has this user as a member under identity keys they no longer have (they registered again with new
+/// keys before registering moved channels along, or the server didn't move this one). Nothing can be done here with the
+/// current keys: not reading, sending or leaving (a leave must be signed by the old keys). Offer "Remove from my list"
+/// (<see cref="ClientSession.ForgetChannelAsync"/>) instead of Leave.
 /// </param>
-/// <param name="AdminPerServer">
-/// The server last listed this user as the channel's admin, at a point of the log this client hasn't verified up to (yet):
-/// only a hint, but one that holds back "Reset my identity" (see <see cref="IdentityResetPlan"/>) until the log catches up.
+/// <param name="KeyMovedAway">
+/// With <see cref="OldKeyMembership"/>: the log moved this user's place to keys this client doesn't hold (a key recovered
+/// entry: their character was re-verified with other keys, normally their own on another computer). Say so, and that
+/// "Reset my identity" takes it back if it wasn't them (<see cref="PlainMessages.KeyMovedAwayChannel"/>).
 /// </param>
 public sealed record ChannelView(
     string Id,
@@ -104,7 +106,7 @@ public sealed record ChannelView(
     LogPosition? LogHead = null,
     string? MembershipWarning = null,
     bool OldKeyMembership = false,
-    bool AdminPerServer = false) {
+    bool KeyMovedAway = false) {
     public string DisplayName => this.Name ?? PlaceholderName(this.Id);
 
     /// <summary>What to show before a channel's name has been decrypted. Safe for IDs of any length.</summary>
@@ -129,10 +131,22 @@ public sealed record ChannelView(
 /// Connected to the server right now, as the server last said on this connection. Yourself while you are
 /// connected. Always false for invitees (their presence isn't shared until they join) and while disconnected.
 /// </param>
+/// <param name="KeyRecovered">
+/// Their key changed because they re-verified their character with a new one (the channel's membership log says so), and
+/// the user hasn't compared the new one yet. Expected, so not <see cref="KeyChanged"/>'s warning, but worth showing: that it
+/// is really them is the server's word.
+/// </param>
 public sealed record MemberView(User User, Rank Rank, string? Fingerprint, bool KeyChanged, bool FingerprintCompared = false, bool KeyReplaced = false,
-    string? NewFingerprint = null, bool Online = false);
+    string? NewFingerprint = null, bool Online = false, bool KeyRecovered = false);
 
-/// <param name="Verified">The invite is signed by the inviter's current identity key.</param>
+/// <param name="Verified">
+/// The invite is open in the channel's verified log, for this user's current keys, made by the inviter it names, and its
+/// channel name (if it has one) is signed by the key the log says they invited with.
+/// </param>
+/// <param name="ChannelName">
+/// Null until verified, and for an invite made for keys this user had before re-verifying their character (the log moved it to
+/// their new keys, but the name in it was sealed to the old ones): that one shows once they have joined.
+/// </param>
 /// <param name="InviterKeyChanged">
 /// The inviter's identity key changed (or their name moved to another account)
 /// and the user hasn't marked the new one verified. Don't offer Accept until they do.

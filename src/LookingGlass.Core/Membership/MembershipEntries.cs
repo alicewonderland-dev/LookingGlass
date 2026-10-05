@@ -29,11 +29,18 @@ public static class MembershipEntries {
             payload.Add(1L).Add(entry.Subject.UserId).Add(entry.Subject.SigningPublicKey.Span).Add(entry.Subject.AgreementPublicKey.Span);
         }
 
-        return payload
+        payload
             .Add((long) entry.Rank)
             .Add(entry.TimestampUnixMs)
-            .Add(entry.Invite)
-            .ToArray();
+            .Add(entry.Invite);
+
+        // Only key recovered entries have new keys. Added after the rest, only when present, so every other entry (and
+        // every log written before) signs and hashes as it always did.
+        if (entry.NewKeys != null) {
+            payload.Add(entry.NewKeys.UserId).Add(entry.NewKeys.SigningPublicKey.Span).Add(entry.NewKeys.AgreementPublicKey.Span);
+        }
+
+        return payload.ToArray();
     }
 
     /// <summary>The entry's hash, which the next entry chains to. Covers the signature too.</summary>

@@ -147,11 +147,17 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
     /// <summary>One muted line under the name: your rank, the members, and the key.</summary>
     private void DrawSummary(ChannelView channel) {
         var first = true;
+        if (channel.OldKeyMembership && channel.KeyMovedAway) {
+            // Re-verified with another key (normally on another computer): this one can do nothing here any more.
+            Segment(ref first, "Moved to another key", Widgets.Warning, PlainMessages.KeyMovedAwayChannel, FontAwesomeIcon.ExclamationTriangle);
+            return;
+        }
+
         if (channel.OldKeyMembership) {
             // Nothing else here means anything for the current key: no key is coming, and nothing can be done but removing it.
             Segment(ref first, "Your old key's place", Widgets.Warning,
-                "Your place here belongs to the identity key you had before you reset your identity (or registered again). Your current key " +
-                "isn't a member: use \"Remove from my list\" in the channel's menu.", FontAwesomeIcon.ExclamationTriangle);
+                "Your place here belongs to an identity key you no longer have, from before registering again brought channels along to the new " +
+                "key. Your current key isn't a member: use \"Remove from my list\" in the channel's menu.", FontAwesomeIcon.ExclamationTriangle);
             return;
         }
 
@@ -173,7 +179,7 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
 
         if (channel.RekeyPending) {
             Segment(ref first, "New key pending", Widgets.Warning,
-                "Someone joined or left since the key in use was made, so the channel needs a new one before anyone sends. A member makes it automatically.",
+                "Someone joined, left or got a new identity key since the key in use was made, so the channel needs a new one before anyone sends. A member makes it automatically.",
                 FontAwesomeIcon.HourglassHalf);
         } else if (!channel.HasKey) {
             Segment(ref first, "Waiting for the key", Widgets.Warning,
@@ -236,9 +242,9 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
             if (Widgets.MenuItem(FontAwesomeIcon.EyeSlash, "Remove from my list...", enabled)) {
                 modals.Confirm("Remove from my list",
                     $"Remove \"{name}\" from your channel list?\n\n" +
-                    "Your place in it belongs to the identity key you had before you reset your identity (or registered again), so you can't " +
-                    "leave it, read it or send to it. This only takes it off your list: the others still see your old key as a member until " +
-                    "a moderator removes it. To come back, ask a moderator to remove your old key and invite you again.",
+                    "Your place in it belongs to an identity key you no longer have, so you can't leave it, read it or send to it. This only " +
+                    "takes it off your list: the others still see your old key as a member until a moderator removes it, and registering " +
+                    "again won't bring it back. To come back, ask a moderator to remove your old key and invite you again.",
                     "Remove", () => {
                         actions.Run($"Removing {name} from your list", () => session.ForgetChannelAsync(channel.Id));
                         this.Closed?.Invoke();
@@ -642,6 +648,12 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
         if (member.KeyChanged) {
             return (FontAwesomeIcon.ExclamationTriangle, Widgets.Warning, "Key changed",
                 "Their identity key changed, or this name now belongs to a different account. Compare fingerprints with them over /tell, then mark it verified.");
+        }
+
+        // Expected (the channel's membership says why), so no warning colour; but the server vouches for it, so it shows.
+        if (member.KeyRecovered) {
+            return (FontAwesomeIcon.Redo, null, "New key",
+                "They re-verified their character through the Lodestone and have a new identity key, as the server says. Compare fingerprints with them over /tell to be sure it's them, then mark them verified.");
         }
 
         if (member.FingerprintCompared) {

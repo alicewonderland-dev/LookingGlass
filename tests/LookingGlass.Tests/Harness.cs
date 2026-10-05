@@ -106,6 +106,12 @@ public sealed class Harness : IAsyncDisposable {
 
     public static CancellationToken Ct => TestContext.Current.CancellationToken;
 
+    /// <summary>
+    /// Held by tests of a server that refuses to start: it sets the process's exit code, which they check and then put back,
+    /// and which every test running at the same time shares (two at once would put back each other's).
+    /// </summary>
+    public static readonly SemaphoreSlim ExitCodeGate = new(1, 1);
+
     /// <summary>A StartRegistration's client nonce, as a client makes it: 32 random bytes.</summary>
     public static ByteString NewClientNonce() => ByteString.CopyFrom(System.Security.Cryptography.RandomNumberGenerator.GetBytes(LodestoneCode.ClientNonceSize));
 
@@ -205,6 +211,20 @@ public sealed class Harness : IAsyncDisposable {
         await client.Session.CompleteRegistrationAsync(Ct);
         await WaitFor(() => client.Session.Snapshot.State == ConnectionState.Ready ? new object() : null);
         return client;
+    }
+
+    /// <summary>
+    /// <see cref="RegisterAsync"/> on a server from before key recovery: an account registering new keys keeps its places in
+    /// channels under its old ones (see <see cref="RequestHandler.KeepPlacesOnNewKeysForTests"/>). Places like that are
+    /// still about, from then.
+    /// </summary>
+    public async Task<TestClient> RegisterOnAnOldServerAsync(string name, ISecretStore? store = null, ClientSessionOptions? options = null) {
+        this.Handler.KeepPlacesOnNewKeysForTests = true;
+        try {
+            return await this.RegisterAsync(name, store, options);
+        } finally {
+            this.Handler.KeepPlacesOnNewKeysForTests = false;
+        }
     }
 
     /// <summary>The channel's membership as the server's database has it, as a misbehaving member would build on.</summary>

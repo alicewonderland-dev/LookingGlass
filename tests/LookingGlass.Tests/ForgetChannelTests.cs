@@ -9,8 +9,8 @@ namespace LookingGlass.Tests;
 
 /// <summary>
 /// "Remove from my list" (ForgetChannel): a channel whose place belongs to identity keys the account no longer has (it
-/// reset its identity, or registered again) can't be left (only the old keys could sign that), so the server stops
-/// listing it instead. The log isn't touched: the others still see the old keys as a member, and rekey and chat as before.
+/// registered new keys on a server from before key recovery) can't be left (only the old keys could sign that), so the
+/// server stops listing it instead. The log isn't touched: the others still see the old keys as a member, and rekey and chat as before.
 /// </summary>
 public sealed class ForgetChannelTests : IAsyncLifetime {
     private Harness _server = null!;
@@ -26,10 +26,10 @@ public sealed class ForgetChannelTests : IAsyncLifetime {
     }
 
     /// <summary>
-    /// A reset as before this fix (or by an older plugin): the key is retired and replaced, and nothing was left first, so
-    /// the channels stay with the old key.
+    /// A reset on a server from before key recovery: the key is retired and replaced, and registering the new one leaves the
+    /// account's places with the old key, as such a server did. Places like that are still about, from then.
     /// </summary>
-    internal static async Task<TestClient> ResetWithoutLeavingAsync(Harness server, TestClient client) {
+    internal static async Task<TestClient> RegisterOnAnOldServerAsync(Harness server, TestClient client) {
         await client.Session.RetireIdentityAsync(Ct);
         await client.Session.DisposeAsync();
         var secrets = client.Store.Load();
@@ -38,8 +38,14 @@ public sealed class ForgetChannelTests : IAsyncLifetime {
 
         var reset = server.StartClient(client.Name, client.Store);
         await WaitFor(() => reset.Session.Snapshot.State == ConnectionState.Unregistered ? new object() : null);
-        await reset.Session.StartRegistrationAsync(new Character { Name = client.Name, WorldName = ProtocolInfo.DebugWorldName }, Ct);
-        await reset.Session.CompleteRegistrationAsync(Ct);
+        server.Handler.KeepPlacesOnNewKeysForTests = true;
+        try {
+            await reset.Session.StartRegistrationAsync(new Character { Name = client.Name, WorldName = ProtocolInfo.DebugWorldName }, Ct);
+            await reset.Session.CompleteRegistrationAsync(Ct);
+        } finally {
+            server.Handler.KeepPlacesOnNewKeysForTests = false;
+        }
+
         await WaitFor(() => reset.Session.Snapshot is { State: ConnectionState.Ready, ChannelsLoaded: true } ? new object() : null);
         return reset;
     }
@@ -54,7 +60,7 @@ public sealed class ForgetChannelTests : IAsyncLifetime {
         await AddMemberAsync(bob, channelId, carol);
         var oldKeys = alice.Keys();
 
-        var again = await ResetWithoutLeavingAsync(this._server, alice);
+        var again = await RegisterOnAnOldServerAsync(this._server, alice);
 
         // Listed, but the place belongs to the old key: said in plain words, and Leave can't work.
         var stale = await WaitFor(() => again.Session.Snapshot.FindChannel(channelId) is { OldKeyMembership: true } c ? c : null);
@@ -101,7 +107,7 @@ public sealed class ForgetChannelTests : IAsyncLifetime {
     }
 
     /// <summary>
-    /// The owner's case: the only admin resets, so nobody can remove the old key or invite the new one. The channel can
+    /// The owner's case before key recovery: the only admin resets, so nobody can remove the old key or invite the new one. The channel can
     /// still be removed from the list, and the plain member left behind can still chat and rekey with the admin's old key
     /// counted as a member.
     /// </summary>
@@ -112,7 +118,7 @@ public sealed class ForgetChannelTests : IAsyncLifetime {
         var channelId = await alice.Session.CreateChannelAsync("No Admin Left", Ct);
         await AddMemberAsync(alice, channelId, bob);
 
-        var again = await ResetWithoutLeavingAsync(this._server, alice);
+        var again = await RegisterOnAnOldServerAsync(this._server, alice);
         await WaitFor(() => again.Session.Snapshot.FindChannel(channelId) is { OldKeyMembership: true } c ? c : null);
         await again.Session.ForgetChannelAsync(channelId, Ct);
         Assert.Null(again.Session.Snapshot.FindChannel(channelId));
@@ -133,7 +139,7 @@ public sealed class ForgetChannelTests : IAsyncLifetime {
         await bob.Session.InviteAsync(channelId, alice.Name, ProtocolInfo.DebugWorldName, Ct);
         await WaitFor(() => alice.Session.Snapshot.Invites.FirstOrDefault(i => i.ChannelId == channelId && i.ChannelName != null));
 
-        var again = await ResetWithoutLeavingAsync(this._server, alice);
+        var again = await RegisterOnAnOldServerAsync(this._server, alice);
         await WaitFor(() => again.Session.Snapshot.Invites.FirstOrDefault(i => i.ChannelId == channelId));
 
         await again.Session.RespondToInviteAsync(channelId, accept: false, Ct);
@@ -188,7 +194,7 @@ public sealed class ForgetChannelTests : IAsyncLifetime {
         var bob = await this._server.RegisterAsync("Bob Still Member");
         var channelId = await alice.Session.CreateChannelAsync("Forgotten", Ct);
         await AddMemberAsync(alice, channelId, bob);
-        var again = await ResetWithoutLeavingAsync(this._server, alice);
+        var again = await RegisterOnAnOldServerAsync(this._server, alice);
         await WaitFor(() => again.Session.Snapshot.FindChannel(channelId) is { OldKeyMembership: true } c ? c : null);
         await again.Session.ForgetChannelAsync(channelId, Ct);
 
@@ -217,7 +223,7 @@ public sealed class ForgetChannelTests : IAsyncLifetime {
         var alice = await this._server.RegisterAsync("Alice Two Devices");
         var channelId = await bob.Session.CreateChannelAsync("Forgotten Elsewhere", Ct);
         await AddMemberAsync(bob, channelId, alice);
-        var again = await ResetWithoutLeavingAsync(this._server, alice);
+        var again = await RegisterOnAnOldServerAsync(this._server, alice);
         await WaitFor(() => again.Session.Snapshot.FindChannel(channelId) is { OldKeyMembership: true } c ? c : null);
         Assert.Equal(ForgetResult.Forgotten, this._server.Database.ForgetStaleMembership(channelId, again.UserId));
 
@@ -236,7 +242,7 @@ public sealed class ForgetChannelTests : IAsyncLifetime {
         var bob = await this._server.RegisterAsync("Bob Not Removed");
         var channelId = await alice.Session.CreateChannelAsync("Old Admin", Ct);
         await AddMemberAsync(alice, channelId, bob);
-        var again = await ResetWithoutLeavingAsync(this._server, alice);
+        var again = await RegisterOnAnOldServerAsync(this._server, alice);
         await WaitFor(() => again.Session.Snapshot.FindChannel(channelId) is { OldKeyMembership: true } c ? c : null);
         var head = this._server.Database.GetChannel(channelId)!.LogHead;
 

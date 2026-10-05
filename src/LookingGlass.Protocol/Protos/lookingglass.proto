@@ -1,5 +1,9 @@
 // LookingGlass wire protocol, version 1.
 //
+// (Spoken as protocol version 3 now: version 2 brought the signed membership log, and version 3
+// key recovered entries, which a version 2 client would refuse as an unknown kind of entry. See
+// ProtocolInfo.CurrentVersion.)
+//
 // Rules for changing this file (see the design doc, "Versioning policy"):
 //   * Within protocol version 1, changes are additive only: new fields, new
 //     oneof cases, new enum values. Never renumber or reuse a field number.
@@ -246,11 +250,20 @@ message CompleteRegistration {
   // nonce, the user ID (RegistrationChallenge.lodestone_id) and the server URL (see
   // LookingGlass.Core.Crypto.RegistrationProof).
   bytes signature = 2;
+  // Ed25519 signature by the identity signing key being registered over the user ID and the keys (see
+  // LookingGlass.Core.Crypto.KeyRecoveryProof): the keys' consent to take over the account's places in its channels,
+  // which goes into each key recovered entry the registration appends. Every place of the account (but for those removed
+  // from its list) under other keys moves to these, rank kept. The server refuses a registration that would move any
+  // without it, asking to update. Added in protocol version 3.
+  bytes recovery_signature = 3;
 }
 
 message RegistrationComplete {
   string device_token = 1;
   User user = 2;
+  // How many places in channels (memberships and invites) moved to the keys just registered: the account had them
+  // under other keys (see MEMBERSHIP_ENTRY_KIND_KEY_RECOVERED). Added in protocol version 3.
+  uint32 places_restored = 3;
 }
 
 message Authenticate {
@@ -367,10 +380,17 @@ enum MembershipEntryKind {
   MEMBERSHIP_ENTRY_KIND_SET_RANK = 8;
   // By the admin: the subject becomes admin and the actor a moderator.
   MEMBERSHIP_ENTRY_KIND_TRANSFER_ADMIN = 9;
+  // Appended by the server, never sent by a client: the subject re-verified their character through the Lodestone with
+  // new identity keys (a new computer, a lost secrets file, "Reset my identity"), so their place (a member's, rank kept,
+  // or an open invite) moves from the keys in subject to new_keys. Its signature is new_keys' over the user ID and the
+  // new keys (see LookingGlass.Core.Crypto.KeyRecoveryProof), not over the entry: whoever holds them agrees to be that
+  // user. That the user is who they say is the server's word (it checked the Lodestone), which clients can't check:
+  // see the design doc, "Recovering an identity". Added in protocol version 3.
+  MEMBERSHIP_ENTRY_KIND_KEY_RECOVERED = 10;
 }
 
 // A user as the log knows them: the identity keys that membership is bound to.
-// A member who registers again has new keys, which aren't a member until invited again.
+// A member who registers again with new keys keeps their place only through a key recovered entry.
 message MemberKey {
   int64 user_id = 1;
   bytes signing_public_key = 2;
@@ -398,7 +418,11 @@ message MembershipEntry {
   int64 timestamp_unix_ms = 9;
   // Accept, decline and cancel: the invite entry they answer.
   LogPosition invite = 10;
-  // The actor's signature over everything above (see MembershipEntries.SigningPayload).
+  // Key recovered: the keys the subject's place moves to (user_id the subject's). The actor is the subject, by these
+  // keys (actor_key_hash is theirs); subject has the keys the place had. Absent otherwise.
+  MemberKey new_keys = 11;
+  // The actor's signature over everything above (see MembershipEntries.SigningPayload); for a key recovered entry,
+  // new_keys' signature over the user ID and those keys (see KeyRecoveryProof), made when registering them.
   bytes signature = 15;
 }
 
@@ -488,6 +512,8 @@ message ChannelInfo {
   // Log entries after the position the client gave in ListChannels (from 0 if none), at
   // most a few (ProtocolInfo.MaxLogEntriesInChannelInfo): fetch the rest with FetchMembershipLog.
   repeated MembershipEntry log = 9;
+  // With rekey_pending: as RekeyNeeded's no_key_holder.
+  bool no_key_holder = 10;
 }
 
 // How much of a channel's log the client already has.
@@ -572,9 +598,10 @@ message DisbandChannel {
 }
 
 // "Remove from my list", for a channel (or an invite) whose place belongs to identity keys the account no longer has: it
-// registered again, or reset its identity, so the keys the log knows it by are gone and can't sign a leave (or a
-// decline) any more. Not a membership log entry: the log, and every other member's view of it, stay as they are (the
-// old keys stay a member, or invited, until a moderator removes them, and rekeys still include them). The server only
+// registered again with new keys before registering moved places along (protocol version 3), so the keys the log knows
+// it by are gone and can't sign a leave (or a decline) any more. Not a membership log entry: the log, and every other
+// member's view of it, stay as they are (the old keys stay a member, or invited, until a moderator removes them, and
+// rekeys still include them). A place removed so is never moved to the account's new keys either. The server only
 // stops listing the channel (or invite) to the account and sending it the channel's events, and no longer counts it
 // towards the account's limits; the stale place can do nothing else. Refused (FORBIDDEN) while the account is listed in
 // the channel under its current keys: leave it, or decline the invite, instead. NOT_FOUND if the account isn't listed in
@@ -677,6 +704,11 @@ message RekeyNeeded {
   uint64 current_epoch = 2;
   // The member the server asks to perform the rekey. Any member may do it.
   int64 designated_user_id = 4;
+  // No member who could make the new key holds the channel's key: every place under its owner's current keys moved there
+  // by a key recovered entry (or joined through an invite that moved) and has had no key since, and the rest belong to
+  // keys their owners no longer have. Nobody can tell the channel's name, so the member asked makes the new key under a
+  // name of its own (which the admin can change). Added with key recovery, in protocol version 3.
+  bool no_key_holder = 5;
 }
 
 message EpochAdvanced {

@@ -178,9 +178,10 @@ public sealed class EndToEndTests : IAsyncLifetime {
         var before = await WaitFor(() => bob.Session.Snapshot.Invites.FirstOrDefault(i => i.ChannelId == first && i.ChannelName != null));
         Assert.False(before.InviterKeyChanged);
 
-        // Alice (or someone who took over her account) registers again with new keys.
+        // Alice (or someone who took over her account) registers again with new keys, on a server that says nothing about
+        // it in a log (one from before key recovery): an unexplained change.
         await alice.Session.DisposeAsync();
-        var aliceAgain = await this._server.RegisterAsync("Alice Changed");
+        var aliceAgain = await this._server.RegisterOnAnOldServerAsync("Alice Changed");
         var second = await aliceAgain.Session.CreateChannelAsync("After", Ct);
         await aliceAgain.Session.InviteAsync(second, bob.Name, ProtocolInfo.DebugWorldName, Ct);
 
@@ -341,8 +342,9 @@ public sealed class EndToEndTests : IAsyncLifetime {
     /// <summary>
     /// Replaces "ReRegisteredMemberGetsKeySealedToNewIdentity". In 0.1 a member who registered again was
     /// sent the channel key under their new identity key straight away: the server's word that the new
-    /// key was theirs was enough. Now their membership stays bound to the key they joined with, and the
-    /// new key only gets in through a fresh invite and accept, signed in the log.
+    /// key was theirs was enough. Now a membership stays bound to the key it was admitted with unless the
+    /// log moves it (a key recovered entry, see <see cref="KeyRecoveryTests"/>); on a server from before
+    /// that, which these re-registrations play, the new key only gets in through a fresh invite and accept.
     /// </summary>
     [Fact]
     public async Task ReRegisteredMembersNewKeyIsNotAMemberUntilInvitedAgain() {
@@ -352,8 +354,8 @@ public sealed class EndToEndTests : IAsyncLifetime {
         await AddMemberAsync(alice, channelId, carol);
         await carol.Session.DisposeAsync();
 
-        // Carol loses her config and registers again from a fresh install: new identity keys.
-        var carolAgain = await this._server.RegisterAsync("Carol Rereg");
+        // Carol loses her config and registers again from a fresh install: new identity keys, which this (old) server doesn't move her place to.
+        var carolAgain = await this._server.RegisterOnAnOldServerAsync("Carol Rereg");
         Assert.Equal(carol.Name, carolAgain.Name);
         var listed = await WaitFor(() => carolAgain.Session.Snapshot.FindChannel(channelId));
         Assert.Equal(Rank.Unspecified, listed.MyRank);
@@ -404,7 +406,7 @@ public sealed class EndToEndTests : IAsyncLifetime {
         var channelId = await alice.Session.CreateChannelAsync("Vouching", Ct);
         await AddMemberAsync(alice, channelId, carol);
         await carol.Session.DisposeAsync();
-        var carolAgain = await this._server.RegisterAsync(carol.Name);
+        var carolAgain = await this._server.RegisterOnAnOldServerAsync(carol.Name);
         var newFingerprint = carolAgain.Session.Snapshot.MyFingerprint;
 
         await alice.Session.RefreshAsync(Ct);
@@ -440,7 +442,7 @@ public sealed class EndToEndTests : IAsyncLifetime {
         var channelId = await alice.Session.CreateChannelAsync("Shown", Ct);
         await AddMemberAsync(alice, channelId, carol);
         await carol.Session.DisposeAsync();
-        var carolAgain = await this._server.RegisterAsync(carol.Name);
+        var carolAgain = await this._server.RegisterOnAnOldServerAsync(carol.Name);
 
         await alice.Session.RefreshAsync(Ct);
         var row = alice.Session.Snapshot.FindChannel(channelId)!.Members.Single(m => m.User.UserId == carolAgain.UserId);
@@ -461,16 +463,16 @@ public sealed class EndToEndTests : IAsyncLifetime {
     }
 
     /// <summary>
-    /// Adapted: in 0.1 Bob's new key counted as soon as a member rekeyed to it. Now it counts once he is
-    /// removed and invited again. Carol, who has his old key, must take the new one from the log without
-    /// restarting, and still be warned that his key changed.
+    /// Adapted: in 0.1 Bob's new key counted as soon as a member rekeyed to it. On a server from before key
+    /// recovery it counts once he is removed and invited again. Carol, who has his old key, must take the new
+    /// one from the log without restarting, and still be warned that his key changed.
     /// </summary>
     [Fact]
     public async Task OtherMembersPickUpAReRegisteredMembersNewKeyWithoutRestarting() {
         var (alice, bob, carol, channelId) = await this.ThreeMembersAsync("Stale");
         await bob.Session.DisposeAsync();
 
-        var bobAgain = await this._server.RegisterAsync(bob.Name);
+        var bobAgain = await this._server.RegisterOnAnOldServerAsync(bob.Name);
         await alice.Session.KickAsync(channelId, bobAgain.UserId, Ct);
         await AddMemberAsync(alice, channelId, bobAgain);
         await WaitFor(() => carol.Session.Snapshot.FindChannel(channelId)?.Members.FirstOrDefault(m => m.User.UserId == bobAgain.UserId && m.Rank == Rank.Member));
@@ -488,15 +490,15 @@ public sealed class EndToEndTests : IAsyncLifetime {
     }
 
     /// <summary>
-    /// Adapted: Bob registering again no longer makes anyone rekey (his membership stays bound to his
-    /// old key), so there is nothing to wait for but the registration. Reconnecting must still fetch
-    /// identities again and notice his new key.
+    /// Adapted: Bob registering again on a server from before key recovery makes nobody rekey (his
+    /// membership stays bound to his old key), so there is nothing to wait for but the registration.
+    /// Reconnecting must still fetch identities again and notice his new key.
     /// </summary>
     [Fact]
     public async Task ReconnectingFetchesIdentitiesAgain() {
         var (_, bob, carol, channelId) = await this.ThreeMembersAsync("Reconnect");
         await bob.Session.DisposeAsync();
-        var bobAgain = await this._server.RegisterAsync(bob.Name);
+        var bobAgain = await this._server.RegisterOnAnOldServerAsync(bob.Name);
         Assert.False(carol.Session.Snapshot.FindChannel(channelId)!.Members.Single(m => m.User.UserId == bobAgain.UserId).KeyChanged);
 
         // Nothing from Bob has arrived, but reconnecting is enough to notice his new key.
@@ -512,8 +514,9 @@ public sealed class EndToEndTests : IAsyncLifetime {
     /// Replaces "NameSignedWithAnAuthorsNewKeyIsShownAfterFetchingItAgain" and the two
     /// "MessageIsDelivered...ItsAuthorsNewIdentity" tests (R5-3). Those checked that a name or message
     /// signed with a member's new keys, after they registered again, was shown once the client had
-    /// fetched their identity again, however those fetches raced. Now a new key signs nothing that
-    /// counts until its owner is invited again, so both are refused, and fetching the identity again
+    /// fetched their identity again, however those fetches raced. Now a new key the log hasn't moved their
+    /// place to (on a server from before key recovery) signs nothing that counts until its owner is invited
+    /// again, so both are refused, and fetching the identity again
     /// only explains why. What R5-3 protected still matters for that: a name's fetch must not leave
     /// the message with a bare "failed checks", nor cost a second lookup. (Names and messages are now
     /// handled in one queue, in order, so the old tests' way of holding one while the other ran no
@@ -529,7 +532,7 @@ public sealed class EndToEndTests : IAsyncLifetime {
         var epoch = carol.Session.Snapshot.FindChannel(channelId)!.Epoch;
         var position = PositionOf(carol, channelId);
         await alice.Session.DisposeAsync();
-        var aliceAgain = await this._server.RegisterAsync(alice.Name);
+        var aliceAgain = await this._server.RegisterOnAnOldServerAsync(alice.Name);
         int Lookups() => carol.Session.GetTrace().Count(entry => entry.Outgoing && entry.Summary.EndsWith(" GetIdentities"));
         var before = Lookups();
 
@@ -573,7 +576,7 @@ public sealed class EndToEndTests : IAsyncLifetime {
         var epoch = carol.Session.Snapshot.FindChannel(channelId)!.Epoch;
         var position = PositionOf(carol, channelId);
         await alice.Session.DisposeAsync();
-        var aliceAgain = await this._server.RegisterAsync(alice.Name);
+        var aliceAgain = await this._server.RegisterOnAnOldServerAsync(alice.Name);
         int Lookups() => carol.Session.GetTrace().Count(entry => entry.Outgoing && entry.Summary.EndsWith(" GetIdentities"));
         var before = Lookups();
 

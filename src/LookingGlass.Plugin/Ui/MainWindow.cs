@@ -195,10 +195,15 @@ public sealed class MainWindow : Window {
         var width = 360 * Widgets.Scale;
         ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + width);
 
-        var name = invite.ChannelName ?? "(couldn't verify)";
+        // A verified invite without a name was made for the key you had before re-verifying your character.
+        var name = invite.ChannelName ?? (invite.Verified ? "(name shows once you join)" : "(couldn't verify)");
         ImGui.Spacing();
         ImGui.TextUnformatted(Widgets.Ellipsize(name, width));
         ImGui.TextColored(Widgets.Muted, $"from {invite.Inviter.Name}@{invite.Inviter.WorldName} · {Ago(invite.Created)}");
+
+        if (invite is { Verified: true, ChannelName: null }) {
+            ImGui.TextColored(Widgets.Muted, "This invite came with you to your new key; its channel's name was sealed to your old one, so it shows once you've joined.");
+        }
 
         if (!invite.Verified) {
             Widgets.IconText(FontAwesomeIcon.ExclamationTriangle, "Couldn't verify this invite", Widgets.Warning);
@@ -327,6 +332,15 @@ public sealed class MainWindow : Window {
         ImGui.TextColored(Widgets.Muted, rejected
             ? "Only needed if your identity key was lost or replaced, or this server has never known your account; it replaces your login but keeps the identity key the plugin has, so your channels keep working. LookingGlass checks that the character is yours with a short code you put in your Lodestone profile for a few minutes."
             : "LookingGlass checks that the character is yours with a short code you put in your Lodestone profile for a few minutes.");
+        if (!rejected && snapshot.NewIdentity) {
+            // No keys this server knows (a new computer, a lost file, a reset): registering is how the account comes back.
+            ImGui.Spacing();
+            Widgets.IconText(FontAwesomeIcon.InfoCircle, "Been here before?", ImGuiColors.TankBlue);
+            ImGui.TextUnformatted("If this character used LookingGlass on this server before (on another computer, or before its keys were lost or reset), " +
+                                  "registering brings back its channels, invites and ranks, admin included, with a new key. The members are told that you " +
+                                  "re-verified your character and have a new key.");
+        }
+
         ImGui.Spacing();
         ImGui.Spacing();
 
@@ -417,7 +431,8 @@ public sealed class MainWindow : Window {
 
     private const string LoginNotRecognisedText =
         "This server doesn't recognise your login or your identity key. If you changed the server address, check it in Settings. " +
-        "Register again (through the Lodestone) only if your key was lost or replaced, or this server has never known your account.";
+        "Register again (through the Lodestone) only if your key was lost or replaced, or this server has never known your account. " +
+        PlainMessages.LoginMaybeReplaced;
 
     /// <summary>
     /// Above the registration steps when the server refused the saved login and the identity key: what may be wrong, that
@@ -427,6 +442,7 @@ public sealed class MainWindow : Window {
         Widgets.IconText(FontAwesomeIcon.ExclamationTriangle, "This server doesn't recognise your login", Widgets.Warning);
         ImGui.TextUnformatted("It didn't accept your saved login or your identity key. If you changed the server address, check it in Settings.");
         ImGui.TextUnformatted("Register again (below) only if your identity key was lost or replaced, or this server has never known your account.");
+        ImGui.TextUnformatted(PlainMessages.LoginMaybeReplaced);
         ImGui.TextColored(Widgets.Muted, "Your login is kept and tried again every minute or so, so it works again by itself once the server knows it.");
         ImGui.TextColored(Widgets.Muted, $"Server: {this._config.ServerUrl}");
         ImGui.Spacing();

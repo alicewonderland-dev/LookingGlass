@@ -78,8 +78,6 @@ public sealed class ClientSession : IAsyncDisposable {
     private readonly Dictionary<string, ChannelState> _channels = new();
     // _channels holds the server's complete list, fetched on the current connection.
     private bool _channelsLoaded;
-    // The last attempt to connect failed, and none has worked since.
-    private bool _connectionFailed;
     private readonly Dictionary<string, InviteState> _invites = new();
     // Verified membership per channel (and per channel invited to). Saved in _secrets.Memberships.
     private readonly Dictionary<string, IChannelMembership> _memberships = new();
@@ -94,6 +92,10 @@ public sealed class ClientSession : IAsyncDisposable {
     private readonly Dictionary<long, MemberKeys> _staleNameAuthors = new();
     // Channels with a name made at a log position this client hasn't reached; Publish has their logs fetched.
     private readonly Dictionary<string, ulong> _namePositionsAhead = new();
+    // Users whose identity held here is older than the keys a log just moved them to; Publish has them fetched again.
+    private readonly HashSet<long> _identitiesToRefresh = new();
+    // The user was told a log moved their own place away from this client's keys (see PlainMessages.ReVerifiedElsewhere).
+    private bool _toldKeyMovedAway;
     // When each channel's whole log was last fetched to look into a fork, the checks under way, the claims
     // still to look into (made too soon after a check, or whose check failed), and the re-checks scheduled.
     private readonly Dictionary<string, DateTimeOffset> _forkCheckedAt = new();
@@ -343,11 +345,15 @@ public sealed class ClientSession : IAsyncDisposable {
     /// <summary>
     /// Finishes registering, replacing any saved login (even one the server didn't recognise), and logs in. Signed with
     /// the identity key being registered (see <see cref="RegistrationProof"/>), over the challenge and the address this
-    /// client connected to, so the server knows the key is this client's and not someone else's public one.
+    /// client connected to, so the server knows the key is this client's and not someone else's public one. Also signed,
+    /// with the same keys, is their consent to take over the account's places (see <see cref="KeyRecoveryProof"/>): if the
+    /// account had other keys (a lost file, a new computer, "Reset my identity"), its channels, ranks and invites move to
+    /// these, and the user is told.
     /// </summary>
     /// <exception cref="InvalidOperationException">No registration was started.</exception>
     public async Task CompleteRegistrationAsync(CancellationToken ct = default) {
         var connection = this.RequireConnection();
+        uint restored;
         // Never alongside a try of the old login: its answer could otherwise land after the new login's.
         await this._loginGate.WaitAsync(ct);
         try {
@@ -362,9 +368,11 @@ public sealed class ClientSession : IAsyncDisposable {
                 CompleteRegistration = new CompleteRegistration {
                     ServerUrl = serverUrl,
                     Signature = ByteString.CopyFrom(RegistrationProof.Sign(identity, challenge.Nonce.Span, challenge.LodestoneId, serverUrl)),
+                    RecoverySignature = ByteString.CopyFrom(KeyRecoveryProof.Sign(identity, challenge.LodestoneId)),
                 },
             }, ct, RegistrationRequestTimeout);
             var complete = response.RegistrationComplete ?? throw Unexpected(response);
+            restored = complete.PlacesRestored;
 
             lock (this._lock) {
                 this._secrets.DeviceToken = complete.DeviceToken;
@@ -377,6 +385,10 @@ public sealed class ClientSession : IAsyncDisposable {
             await this.AuthenticateAsync(connection, ct);
         } finally {
             this._loginGate.Release();
+        }
+
+        if (restored > 0) {
+            this.RaiseNotice(NoticeLevel.Info, PlainMessages.PlacesRestored(restored));
         }
     }
 
@@ -396,8 +408,9 @@ public sealed class ClientSession : IAsyncDisposable {
                     "That fingerprint isn't the identity key held for them now: they registered again, or their key changed since it was shown. Nothing was marked verified.");
             }
 
-            if (pinned.KeyChangeUnacknowledged || !pinned.Compared) {
+            if (pinned.KeyChangeUnacknowledged || pinned.KeyRecovered || !pinned.Compared) {
                 pinned.KeyChangeUnacknowledged = false;
+                pinned.KeyRecovered = false;
                 pinned.Compared = true;
                 this._secretsVersion++;
             }
@@ -609,7 +622,7 @@ public sealed class ClientSession : IAsyncDisposable {
             if (membership.FindMember(invitee.User.UserId) is { } existing) {
                 throw new InvalidOperationException(existing.Keys == inviteeKeys
                     ? $"{who} is already a member."
-                    : $"{who} is a member under the identity key they had before registering again. Remove them, then invite them again.");
+                    : $"{who} is a member under an identity key they no longer have. Remove them, then invite them again.");
             }
 
             var entry = membership.Create(MembershipEntryKind.Invite, invitee.User.UserId, identity, me.UserId, this.NowMs(), inviteeKeys);
@@ -670,12 +683,13 @@ public sealed class ClientSession : IAsyncDisposable {
 
         if (accept) {
             await this.EnsureChannelReadyAsync(channelId, ct);
-            var (hasKey, pending, nameKnown) = this.Read(() => {
+            var (hasKey, pending, canName) = this.Read(() => {
                 var channel = this._channels.GetValueOrDefault(channelId);
-                return (this.HasCurrentKey(channelId), channel != null && this.NeedsRekey(channel), channel?.Name != null);
+                // An invite moved to new keys knows no name; if nobody holds the key, this client names it (see RekeyAsync).
+                return (this.HasCurrentKey(channelId), channel != null && this.NeedsRekey(channel), channel?.Name != null || this.NamesNewKeyItself(channelId));
             });
-            if (designated && pending && nameKnown) {
-                // Nobody else is online to share the key. (The server's RekeyNeeded arrived before
+            if (designated && pending && canName) {
+                // Nobody else who could is online to share the key. (The server's RekeyNeeded arrived before
                 // this response, while the channel was unknown, so it was ignored.)
                 if (this._options.AutoRekeyWhenDesignated) {
                     this.RaiseNotice(NoticeLevel.Info, "Joined. No other member is online, so you're making the channel a new key.", channelId);
@@ -696,7 +710,7 @@ public sealed class ClientSession : IAsyncDisposable {
             var invited = membership.FindInvitee(me.UserId)
                           ?? throw new MembershipException(new MembershipVerdict(MembershipVerdictKind.Conflict, "That invite is no longer open."));
             if (invited.Keys != MemberKeys.Of(identity)) {
-                throw new InvalidOperationException("That invite was made for the identity key you had before you registered again. Ask to be invited again.");
+                throw new InvalidOperationException("That invite was made for an identity key you no longer have. Ask to be invited again.");
             }
 
             var entry = membership.Create(accept ? MembershipEntryKind.Accept : MembershipEntryKind.Decline, me.UserId, identity, me.UserId, this.NowMs());
@@ -733,6 +747,12 @@ public sealed class ClientSession : IAsyncDisposable {
         }
 
         this.Publish();
+        if (removed && this.Read(() => this._channels.GetValueOrDefault(channelId)?.Name == null && !this.NamesNewKeyItself(channelId))) {
+            // Back with new keys and no key for the channel yet (so not knowing its name): another member makes the new
+            // key, as the server asks one who can.
+            return;
+        }
+
         if (removed) {
             // The remover rotates the key straight away, so the removed member is cut off. (The server
             // asks a member to rekey before it answers, so a background rekey may already be done.)
@@ -782,48 +802,6 @@ public sealed class ClientSession : IAsyncDisposable {
         this.RemoveChannel(channelId);
     }
 
-    /// <summary>
-    /// "Reset my identity", first step, while the old key still exists: leaves every channel <see cref="IdentityResetPlan"/>
-    /// says to (with a leave signed by that key) and declines every invite, one by one. One that fails is reported, and the
-    /// rest go on; but then (or if anything changed meanwhile) the cleanup says to stop before the key is retired
-    /// (<see cref="IdentityResetCleanup.StopReason"/>), so the user can try again while the old key can still sign. Refused
-    /// unless the plan allows a reset: never while this user is the admin of a channel (handing that on, disbanding or
-    /// leaving is the user's own choice), and only connected and logged in, with the complete channel list, every channel checked.
-    /// </summary>
-    /// <exception cref="InvalidOperationException">The plan doesn't allow a reset now (see <see cref="IdentityResetPlan.Readiness"/>).</exception>
-    public async Task<IdentityResetCleanup> LeaveChannelsForResetAsync(CancellationToken ct = default) {
-        var plan = IdentityResetPlan.Of(this.Snapshot);
-        if (plan.Readiness != ResetReadiness.Ready) {
-            throw new InvalidOperationException(plan.Explanation);
-        }
-
-        var left = ImmutableArray.CreateBuilder<ChannelView>();
-        var declined = ImmutableArray.CreateBuilder<InviteView>();
-        var failed = ImmutableArray.CreateBuilder<ResetFailure>();
-        foreach (var channel in plan.ToLeave) {
-            try {
-                await this.LeaveAsync(channel.Id, ct);
-                left.Add(channel);
-            } catch (Exception ex) when (ex is not OperationCanceledException) {
-                failed.Add(new ResetFailure(channel.Id, channel.DisplayName, PlainMessages.Of(ex is ServerErrorException server ? server.ServerMessage : ex.Message)));
-            }
-        }
-
-        foreach (var invite in plan.Declines) {
-            try {
-                await this.RespondToInviteAsync(invite.ChannelId, accept: false, ct);
-                declined.Add(invite);
-            } catch (Exception ex) when (ex is not OperationCanceledException) {
-                failed.Add(new ResetFailure(invite.ChannelId, invite.ChannelName ?? ChannelView.PlaceholderName(invite.ChannelId),
-                    PlainMessages.Of(ex is ServerErrorException server ? server.ServerMessage : ex.Message)));
-            }
-        }
-
-        // The plan again, as things are now that the channels were left.
-        return new IdentityResetCleanup(left.ToImmutable(), declined.ToImmutable(), plan.Kept.ToImmutableArray(), failed.ToImmutable(),
-            IdentityResetPlan.Of(this.Snapshot).WhyStopAfterLeaving(failed));
-    }
-
     public async Task DisbandAsync(string channelId, CancellationToken ct = default) {
         await this.RequestAsync(new ClientFrame { DisbandChannel = new DisbandChannel { ChannelId = channelId } }, ct);
         this.RemoveChannel(channelId);
@@ -846,8 +824,8 @@ public sealed class ClientSession : IAsyncDisposable {
                 }
 
                 if (channel.EncryptedName is { } offered && offered.Epoch == keyEpoch
-                    && membership.FindMember(offered.AuthorId) is { } author
-                    && this._groupKeys.VerifyName(offered, channelId, author.Keys.SigningPublicKey)) {
+                    && SignerKeys(membership, offered.AuthorId, offered.LogPosition) is { } author
+                    && this._groupKeys.VerifyName(offered, channelId, author.SigningPublicKey)) {
                     current = Math.Max(current, offered.Revision);
                 }
 
@@ -943,7 +921,11 @@ public sealed class ClientSession : IAsyncDisposable {
                     return;
                 }
 
-                if (name == null) {
+                if (name == null && this.Read(() => this.NamesNewKeyItself(channelId))) {
+                    // Back with new keys where nobody else holds the key (or nobody else is in the channel): nobody can share
+                    // it, or tell its name, so it gets a name of its own, which can be changed.
+                    name = PlainMessages.RestoredChannelName;
+                } else if (name == null) {
                     throw new InvalidOperationException("You don't have this channel's key yet, so you can't rekey it. Another member needs to.");
                 }
 
@@ -991,6 +973,7 @@ public sealed class ClientSession : IAsyncDisposable {
                     if (this._channels.TryGetValue(channelId, out var channel)) {
                         channel.ServerEpoch = Math.Max(channel.ServerEpoch, newEpoch);
                         channel.RekeyPending = false;
+                        channel.NoKeyHolder = false;
                         if (this.KeyEpochOf(channelId) == newEpoch) {
                             channel.EncryptedName = request.Name;
                             channel.Name = name;
@@ -1170,11 +1153,6 @@ public sealed class ClientSession : IAsyncDisposable {
                     ev => this.OnEvent(connection, ev), response => this.OnResponse(connection, response), this.AddTrace);
                 this._connection = connection;
                 connection.Start();
-                lock (this._lock) {
-                    // Reached: this attempt hasn't failed (yet). Set again below if the handshake does.
-                    this._connectionFailed = false;
-                }
-
                 await this.HandshakeAsync(connection, ct);
                 delay = this._options.ReconnectMinDelay;
                 await this.RetryRejectedLoginAsync(connection, ct);
@@ -1187,7 +1165,6 @@ public sealed class ClientSession : IAsyncDisposable {
                 this.Log(NoticeLevel.Warning, failure);
                 lock (this._lock) {
                     this._status = failure;
-                    this._connectionFailed = true;
                 }
             } finally {
                 this._connection = null;
@@ -1296,7 +1273,7 @@ public sealed class ClientSession : IAsyncDisposable {
     private const string LoginNotRecognizedStatus =
         "This server doesn't recognise your login or your identity key. If you changed the server address, check it in Settings. " +
         "You only need to register again (through the Lodestone) if your identity key was lost or replaced, or this server has never known your account; " +
-        "otherwise your login is tried again by itself.";
+        "otherwise your login is tried again by itself. " + PlainMessages.LoginMaybeReplaced;
 
     /// <summary>
     /// The server refused the saved login, and signing in with the identity key didn't work either (or there is no key).
@@ -1581,10 +1558,13 @@ public sealed class ClientSession : IAsyncDisposable {
         this.Publish();
 
         if (rekeyIfDesignated && this._options.AutoRekeyWhenDesignated) {
-            // Without the name (say, after registering again with new keys) this client can't rekey; another member must.
+            // Without the name (say, after re-verifying with new keys) this client can't rekey; another member must. Unless
+            // nobody else is in the channel, or nobody else who could holds its key: then it is this client's to do, under
+            // a name of its own (see RekeyAsync).
             var designated = this.Read(() => channels
-                .Where(info => info.RekeyPending && info.RekeyDesignated && this.IsMember(info.ChannelId)
-                               && this._channels.GetValueOrDefault(info.ChannelId)?.Name != null)
+                .Where(info => info.RekeyPending && this.IsMember(info.ChannelId)
+                               && ((info.RekeyDesignated && (this._channels.GetValueOrDefault(info.ChannelId)?.Name != null || this.NamesNewKeyItself(info.ChannelId)))
+                                   || (this.IsAloneIn(info.ChannelId) && !this.HasCurrentKey(info.ChannelId))))
                 .Select(info => info.ChannelId)
                 .ToList());
             foreach (var channelId in designated) {
@@ -2044,6 +2024,7 @@ public sealed class ClientSession : IAsyncDisposable {
                 MembershipEntryKind.Leave => $"{who} left {name}.",
                 MembershipEntryKind.SetRank => $"{who} is now {RankName(entry.Rank)} in {name}.",
                 MembershipEntryKind.TransferAdmin => $"{who} is now admin in {name}, and {actor.Name}@{actor.WorldName} a moderator.",
+                // Said as the log is verified (see PinRecoveredKeys), whether the entry came as an event or not.
                 _ => null,
             };
         }
@@ -2079,6 +2060,13 @@ public sealed class ClientSession : IAsyncDisposable {
                 invite.Name = null;
                 invite.Verified = false;
                 invite.InviterKeys = null;
+            } else if (MemberKeys.FromProto(entry.Subject) != invited.Keys) {
+                // Made for keys this user had before re-verifying their character, and moved to these by the log (a key
+                // recovered entry): the invite is the log's, but the name in it was sealed to the old keys. It shows once
+                // they have joined and hold the channel's key.
+                invite.InviterKeys = invited.InviterKeys;
+                invite.Name = null;
+                invite.Verified = true;
             } else {
                 invite.InviterKeys = invited.InviterKeys;
                 invite.Name = this._groupKeys.OpenInvite(invite.Info, invited.InviterKeys.SigningPublicKey, this._identity, this._me.UserId);
@@ -2262,12 +2250,15 @@ public sealed class ClientSession : IAsyncDisposable {
                 var who = $"{view.Inviter.Name}@{view.Inviter.WorldName}";
                 this.RaiseNotice(NoticeLevel.Info,
                     !view.Verified ? $"{who} sent an invite that failed verification."
-                    : view.InviterKeyChanged ? $"{who} invited you to \"{view.ChannelName}\", but their identity key changed. Compare fingerprints over /tell before accepting."
-                    : $"{who} invited you to \"{view.ChannelName}\".",
+                    : view.InviterKeyChanged ? $"{who} invited you to {Quoted(view.ChannelName)}, but their identity key changed. Compare fingerprints over /tell before accepting."
+                    : $"{who} invited you to {Quoted(view.ChannelName)}.",
                     invite.ChannelId);
             }
         });
     }
+
+    /// <summary>An invite's channel name, quoted, or what to say for one not known (an invite moved to new keys).</summary>
+    private static string Quoted(string? channelName) => channelName == null ? "a channel" : $"\"{channelName}\"";
 
     private void OnRekeyNeeded(RekeyNeeded rekey) {
         bool designated;
@@ -2280,6 +2271,7 @@ public sealed class ClientSession : IAsyncDisposable {
 
             channel.ServerEpoch = Math.Max(channel.ServerEpoch, rekey.CurrentEpoch);
             channel.RekeyPending = true;
+            channel.NoKeyHolder = rekey.NoKeyHolder;
             designated = rekey.DesignatedUserId == this._me?.UserId && this.IsMember(rekey.ChannelId);
         }
 
@@ -2310,10 +2302,11 @@ public sealed class ClientSession : IAsyncDisposable {
 
             var membership = this.MembershipOf(advanced.ChannelId);
             var author = membership.FindMember(advanced.AuthorId);
+            var authorKeys = SignerKeys(membership, advanced.AuthorId, position);
             byte[]? key = null;
-            var check = advanced.MyKey == null || author == null
+            var check = advanced.MyKey == null || authorKeys == null
                 ? EpochKeyCheck.BadSignature
-                : this._groupKeys.OpenEpochKey(advanced.MyKey, advanced.ChannelId, advanced.Epoch, advanced.AuthorId, author.Keys.SigningPublicKey, this._identity, this._me.UserId, out key);
+                : this._groupKeys.OpenEpochKey(advanced.MyKey, advanced.ChannelId, advanced.Epoch, advanced.AuthorId, authorKeys.SigningPublicKey, this._identity, this._me.UserId, out key);
             var alreadyHeld = key != null && this.GetEpochKey(advanced.ChannelId, advanced.Epoch) is { } existing && existing.AsSpan().SequenceEqual(key);
 
             // The same key may already have been fetched while this event waited in the queue: not a replay.
@@ -2321,7 +2314,7 @@ public sealed class ClientSession : IAsyncDisposable {
                 rejected = this.CheckEpochKeyAuthor(channel, advanced.Epoch, author);
                 if (rejected == null && check == EpochKeyCheck.BadSignature) {
                     rejected = "it failed signature or decryption checks";
-                    failedSigner = author?.Keys;
+                    failedSigner = authorKeys;
                 } else if (rejected == null && position != null && membership.Head is { } head && position.Seq > head.Seq) {
                     rejected = $"it was made at membership log entry #{position.Seq}, which the server hasn't shown you";
                 } else if (rejected == null && !membership.IsCurrent(position)) {
@@ -2342,6 +2335,8 @@ public sealed class ClientSession : IAsyncDisposable {
 
                 channel.ServerEpoch = Math.Max(channel.ServerEpoch, advanced.Epoch);
                 channel.RekeyPending = false;
+                // Someone held (or made) a key: the server says again if nobody does next time.
+                channel.NoKeyHolder = false;
                 if (advanced.Name != null) {
                     channel.EncryptedName = advanced.Name;
                 }
@@ -2659,7 +2654,8 @@ public sealed class ClientSession : IAsyncDisposable {
                     continue;
                 }
 
-                var check = this._groupKeys.OpenEpochKey(entry.Key, channelId, entry.Epoch, entry.AuthorId, author!.Keys.SigningPublicKey, this._identity, this._me.UserId, out var key);
+                var check = this._groupKeys.OpenEpochKey(entry.Key, channelId, entry.Epoch, entry.AuthorId, SignerKeys(membership, entry.AuthorId, entry.Key.LogPosition)!.SigningPublicKey,
+                    this._identity, this._me.UserId, out var key);
                 if (check == EpochKeyCheck.BadSignature) {
                     this.Log(NoticeLevel.Warning, $"Epoch {entry.Epoch} key for {channelId} failed verification ({check})");
                     continue;
@@ -2697,6 +2693,7 @@ public sealed class ClientSession : IAsyncDisposable {
             if (this.KeyEpochOf(channelId) is { } newest && newest > channel.ServerEpoch) {
                 channel.ServerEpoch = newest;
                 channel.RekeyPending = false;
+                channel.NoKeyHolder = false;
             }
 
             this.TryDecryptName(channelId);
@@ -2808,12 +2805,16 @@ public sealed class ClientSession : IAsyncDisposable {
         return current;
     }
 
-    /// <summary>Fetches again the identities of names' authors that <see cref="TryDecryptName"/> couldn't verify, and logs that names were made for.</summary>
+    /// <summary>
+    /// Fetches again the identities of names' authors that <see cref="TryDecryptName"/> couldn't verify, and of users a log moved
+    /// to new keys (see <see cref="PinRecoveredKeys"/>), and logs that names were made for.
+    /// </summary>
     private void FollowUpNames() {
         List<KeyValuePair<long, MemberKeys>> authors;
         List<string> logs;
+        List<long> recovered;
         lock (this._lock) {
-            if (this._connection == null || (this._staleNameAuthors.Count == 0 && this._namePositionsAhead.Count == 0)) {
+            if (this._connection == null || (this._staleNameAuthors.Count == 0 && this._namePositionsAhead.Count == 0 && this._identitiesToRefresh.Count == 0)) {
                 return;
             }
 
@@ -2821,6 +2822,15 @@ public sealed class ClientSession : IAsyncDisposable {
             this._staleNameAuthors.Clear();
             logs = [.. this._namePositionsAhead.Keys];
             this._namePositionsAhead.Clear();
+            recovered = [.. this._identitiesToRefresh];
+            this._identitiesToRefresh.Clear();
+        }
+
+        if (recovered.Count > 0) {
+            this.RunBackground("Fetching new identity keys", async ct => {
+                await this.EnsureIdentitiesAsync(recovered, ct, refresh: true);
+                this.Publish();
+            });
         }
 
         foreach (var (authorId, checkedAgainst) in authors) {
@@ -2894,6 +2904,7 @@ public sealed class ClientSession : IAsyncDisposable {
                 pinned.SigningPublicKey = keys.SigningKeyArray();
                 pinned.AgreementPublicKey = keys.AgreementKeyArray();
                 pinned.KeyChangeUnacknowledged = true;
+                pinned.KeyRecovered = false;
                 pinned.Compared = false;
                 changed = true;
                 warning = $"{who}'s identity key changed (they may have re-registered). Compare fingerprints over /tell before trusting it: {keys.Fingerprint}";
@@ -2958,6 +2969,7 @@ public sealed class ClientSession : IAsyncDisposable {
         // Only hints: they decide when to fetch keys, logs or rekey, never which key is used or who is a member.
         channel.ServerEpoch = info.Epoch;
         channel.RekeyPending = info.RekeyPending;
+        channel.NoKeyHolder = info.RekeyPending && info.NoKeyHolder;
         if (info.LogHead != null) {
             channel.LogHead = info.LogHead;
         }
@@ -2972,10 +2984,6 @@ public sealed class ClientSession : IAsyncDisposable {
             channel.EncryptedName = info.Name;
         }
 
-        // Only a hint too, but one that holds back a reset (see ChannelView.AdminPerServer).
-        channel.ServerAdminAt = this._me != null && info.Members.Any(member => member.User?.UserId == this._me.UserId && member.Rank == Rank.Admin)
-            ? info.LogHead?.Seq ?? 0
-            : null;
         this.TryDecryptName(info.ChannelId);
         return channel;
     }
@@ -2998,6 +3006,9 @@ public sealed class ClientSession : IAsyncDisposable {
     /// is warned about). Saved if this user is in it, or it was saved before.
     /// </summary>
     private void SetMembership(string channelId, IChannelMembership membership, IReadOnlyList<MembershipEntry> applied) {
+        // Entries that follow a membership already verified here happened since this client last looked; a log replayed
+        // from its start is history.
+        var followsOn = this.MembershipOf(channelId).Head != null;
         this._memberships[channelId] = membership;
         var me = this._me?.UserId;
         if (this._secrets.Memberships.ContainsKey(channelId)
@@ -3016,8 +3027,79 @@ public sealed class ClientSession : IAsyncDisposable {
             }
         }
 
+        foreach (var entry in applied.Where(entry => entry.Kind == MembershipEntryKind.KeyRecovered)) {
+            if (entry.Subject.UserId != me) {
+                this.PinRecoveredKeys(channelId, membership, entry, followsOn);
+            } else if (this._myKeys != null && MemberKeys.FromProto(entry.Subject) == this._myKeys && MemberKeys.FromProto(entry.NewKeys) != this._myKeys) {
+                // This user's own place, moved away from the keys this client holds: their character was re-verified with
+                // others (normally their own, on another computer; if not, the server or someone else did it). Said once.
+                if (!this._toldKeyMovedAway) {
+                    this._toldKeyMovedAway = true;
+                    this._pendingNotices.Add(new SessionNotice(NoticeLevel.Warning, PlainMessages.ReVerifiedElsewhere, channelId));
+                }
+            }
+        }
+
         if (this._channels.TryGetValue(channelId, out var channel)) {
             this.TryDecryptName(channel.Id);
+        }
+    }
+
+    /// <summary>
+    /// Someone re-verified their character with new keys, and the log moved their place to them (a key recovered entry): pins
+    /// the new keys as expected, not as an unexplained change ("key changed"), but as not compared yet, which stays shown
+    /// until the user compares them. That the change is theirs is the server's word (it checked the Lodestone), so it is
+    /// said in the channel, in plain words, whenever it happened since this client last looked, and whenever it changes
+    /// what this client held for them (a key pinned before, compared or not, or a "key changed" warning it now explains),
+    /// even in a log read from its start. Call inside the lock.
+    /// </summary>
+    /// <param name="followsOn">The entry follows a membership verified here before, rather than a log replayed from its start.</param>
+    private void PinRecoveredKeys(string channelId, IChannelMembership membership, MembershipEntry entry, bool followsOn) {
+        var userId = entry.Subject.UserId;
+        var keys = MemberKeys.FromProto(entry.NewKeys)!;
+        if ((membership.FindMember(userId)?.Keys ?? membership.FindInvitee(userId)?.Keys) != keys) {
+            // Moved again (or gone) since, in the same batch: those keys aren't theirs any more.
+            return;
+        }
+
+        // News whenever it follows what this client verified, or changes what it held for them; a log replayed from its start
+        // to someone who never saw them is history.
+        var tell = followsOn;
+        var wasCompared = false;
+        if (this._secrets.PinnedIdentities.TryGetValue(userId, out var pinned)) {
+            var sameKeys = pinned.SigningPublicKey.AsSpan().SequenceEqual(keys.SigningPublicKey) && pinned.AgreementPublicKey.AsSpan().SequenceEqual(keys.AgreementPublicKey);
+            if (!sameKeys) {
+                wasCompared = pinned.Compared;
+                pinned.SigningPublicKey = keys.SigningKeyArray();
+                pinned.AgreementPublicKey = keys.AgreementKeyArray();
+                pinned.Compared = false;
+                pinned.KeyChangeUnacknowledged = false;
+                pinned.KeyRecovered = true;
+                this._secretsVersion++;
+                tell = true;
+            } else if (pinned.KeyChangeUnacknowledged) {
+                // Seen first from the server's identities, as an unexplained change: the log explains it now.
+                pinned.KeyChangeUnacknowledged = false;
+                pinned.KeyRecovered = true;
+                this._secretsVersion++;
+                tell = true;
+            }
+        } else {
+            // Trusted on first use, as anyone first seen in a log.
+            this.Pin(userId, keys, this.KnownUser(userId));
+        }
+
+        // The identity held for them is the old one: fetched again, so they don't show as "registered again" meanwhile.
+        if (this._identities.TryGetValue(userId, out var identity) && MemberKeys.Of(identity.Identity) != keys) {
+            this._identities.Remove(userId);
+            this._users[userId] = identity.User;
+            this._identitiesToRefresh.Add(userId);
+        }
+
+        if (tell) {
+            var who = this.UserOf(userId);
+            this._pendingNotices.Add(new SessionNotice(NoticeLevel.Info,
+                $"{who.Name}@{who.WorldName} {PlainMessages.ReVerified}" + (wasCompared ? $" {PlainMessages.ComparedBefore}" : ""), channelId));
         }
     }
 
@@ -3038,6 +3120,17 @@ public sealed class ClientSession : IAsyncDisposable {
     private bool IsMember(string channelId) {
         return this._me != null && this._myKeys != null && this.MembershipOf(channelId).FindMember(this._me.UserId)?.Keys == this._myKeys;
     }
+
+    /// <summary>True if this user is the channel's only member, under their current identity keys. Call inside the lock.</summary>
+    private bool IsAloneIn(string channelId) => this.IsMember(channelId) && this.MembershipOf(channelId).Members.Count == 1;
+
+    /// <summary>
+    /// Without the channel's name, this client makes the channel's next key itself, under a name of its own (see
+    /// <see cref="PlainMessages.RestoredChannelName"/>): it is the channel's only member, or the server says nobody who could
+    /// make the key holds it (see <see cref="ChannelState.NoKeyHolder"/>), so nobody can ever share the key or tell the name.
+    /// Call inside the lock.
+    /// </summary>
+    private bool NamesNewKeyItself(string channelId) => this.IsAloneIn(channelId) || this._channels.GetValueOrDefault(channelId)?.NoKeyHolder == true;
 
     /// <summary>
     /// The channel needs a new key before anyone sends: the server says so, or the newest key held
@@ -3069,9 +3162,12 @@ public sealed class ClientSession : IAsyncDisposable {
 
         var key = this.GetEpochKey(channelId, offered.Epoch);
         var membership = this.MembershipOf(channelId);
-        if (key == null || offered.LogPosition is not { } position || membership.FindMember(offered.AuthorId) is not { } author) {
+        if (key == null || offered.LogPosition is not { } position || membership.FindMember(offered.AuthorId) == null) {
             return;
         }
+
+        // Signed with the keys its author had where it was made: a member who re-verified since signed it with their old ones.
+        var authorKeys = membership.KeysAt(offered.AuthorId, position.Seq)!;
 
         if (membership.Head is { } head && position.Seq > head.Seq) {
             // Made after the newest entry this client has: fetch the log, then try again.
@@ -3094,11 +3190,11 @@ public sealed class ClientSession : IAsyncDisposable {
             return;
         }
 
-        var name = this._groupKeys.DecryptName(offered, channelId, key, author.Keys.SigningPublicKey);
+        var name = this._groupKeys.DecryptName(offered, channelId, key, authorKeys.SigningPublicKey);
         if (name == null) {
-            if (!this._groupKeys.VerifyName(offered, channelId, author.Keys.SigningPublicKey)) {
+            if (!this._groupKeys.VerifyName(offered, channelId, authorKeys.SigningPublicKey)) {
                 // Perhaps signed with keys they registered since; they're told if so.
-                this._staleNameAuthors[offered.AuthorId] = author.Keys;
+                this._staleNameAuthors[offered.AuthorId] = authorKeys;
             }
 
             return;
@@ -3117,6 +3213,19 @@ public sealed class ClientSession : IAsyncDisposable {
 
         channel.Name = name;
         this.SetNameVersion(channelId, version);
+    }
+
+    /// <summary>
+    /// The keys a member signed something made at <paramref name="position"/> with: the ones they had there (a member who
+    /// re-verified their character since signed it with their old keys; see <see cref="IChannelMembership.KeysAt"/>), or their
+    /// keys now if it names no position. Null if they aren't a member now.
+    /// </summary>
+    private static MemberKeys? SignerKeys(IChannelMembership membership, long userId, LogPosition? position) {
+        if (membership.FindMember(userId) is not { } member) {
+            return null;
+        }
+
+        return position == null ? member.Keys : membership.KeysAt(userId, position.Seq);
     }
 
     /// <summary>Records the version of the name just accepted for a channel. Call inside the lock.</summary>
@@ -3320,7 +3429,8 @@ public sealed class ClientSession : IAsyncDisposable {
                 this._loginRejected && this._state is ConnectionState.LoginNotRecognized or ConnectionState.Registering,
                 // As the server said on this connection; nothing while there is none.
                 this._state is ConnectionState.Stopped or ConnectionState.Connecting or ConnectionState.Reconnecting ? null : this._addressNotListed,
-                this._connectionFailed);
+                // Never registered here: what a registration would do is take an account over, not keep a key.
+                this._secrets.UserId == null);
             this._snapshot = snapshot;
         }
 
@@ -3342,8 +3452,10 @@ public sealed class ClientSession : IAsyncDisposable {
                 var user = this.UserOf(member.UserId);
                 var pinned = this._secrets.PinnedIdentities.GetValueOrDefault(member.UserId);
                 var isMe = member.UserId == this._me?.UserId && member.Keys == this._myKeys;
-                var compared = isMe || (pinned is { Compared: true } && pinned.SigningPublicKey.AsSpan().SequenceEqual(member.Keys.SigningPublicKey)
-                                                                     && pinned.AgreementPublicKey.AsSpan().SequenceEqual(member.Keys.AgreementPublicKey));
+                var pinnedHere = pinned != null && pinned.SigningPublicKey.AsSpan().SequenceEqual(member.Keys.SigningPublicKey)
+                                                && pinned.AgreementPublicKey.AsSpan().SequenceEqual(member.Keys.AgreementPublicKey);
+                var compared = isMe || (pinnedHere && pinned!.Compared);
+                var recovered = !isMe && pinnedHere && pinned!.KeyRecovered && !pinned.Compared;
                 var current = this._identities.TryGetValue(member.UserId, out var identity) ? MemberKeys.Of(identity.Identity) : null;
                 var replaced = current != null && current != member.Keys;
                 // Invitees' presence isn't shared. You are online while logged in.
@@ -3351,7 +3463,7 @@ public sealed class ClientSession : IAsyncDisposable {
                     ? this._state == ConnectionState.Ready
                     : this._presence.GetValueOrDefault(member.UserId));
                 return new MemberView(Shown(user), member.Rank, member.Keys.Fingerprint, pinned is { KeyChangeUnacknowledged: true }, compared, replaced,
-                    replaced ? current!.Fingerprint : null, online);
+                    replaced ? current!.Fingerprint : null, online, recovered);
             })
             .OrderByDescending(member => member.Rank)
             .ThenBy(member => member.User.Name, StringComparer.OrdinalIgnoreCase)
@@ -3359,16 +3471,18 @@ public sealed class ClientSession : IAsyncDisposable {
 
         var mine = this._me == null ? null : membership.FindMember(this._me.UserId);
         var oldKey = mine != null && this._myKeys != null && mine.Keys != this._myKeys;
+        // Not keys this user had before: the log moved their place (a key recovered entry) to keys this client doesn't hold, so
+        // their character was re-verified elsewhere.
+        var movedAway = oldKey && membership.KeysAt(mine!.UserId, 0) != mine.Keys;
         var warning = channel.MembershipWarning ?? channel.RemovalWarning;
         if (warning == null && oldKey) {
-            warning = PlainMessages.OldKeyChannel;
+            warning = movedAway ? PlainMessages.KeyMovedAwayChannel : PlainMessages.OldKeyChannel;
         }
 
         var keyEpoch = this.KeyEpochOf(channel.Id);
-        var adminPerServer = channel.ServerAdminAt is { } adminAt && (membership.Head == null || membership.Head.Seq < adminAt);
         return new ChannelView(channel.Id, channel.Name, keyEpoch ?? channel.ServerEpoch, channel.ServerEpoch,
             this.HasCurrentKey(channel.Id), this.NeedsRekey(channel), mine != null && mine.Keys == this._myKeys ? mine.Rank : Rank.Unspecified,
-            members, membership.Head?.Clone(), warning, oldKey, adminPerServer);
+            members, membership.Head?.Clone(), warning, oldKey, movedAway);
     }
 
     // ================================================================ plumbing
@@ -3531,11 +3645,14 @@ public sealed class ClientSession : IAsyncDisposable {
         public ulong ServerEpoch { get; set; }
         public bool RekeyPending { get; set; }
 
+        /// <summary>
+        /// The server last said nobody who could make the channel's next key holds its key (see <see cref="RekeyNeeded.NoKeyHolder"/>):
+        /// a client that doesn't know the channel's name makes it under a name of its own. Only a hint, as the server says it.
+        /// </summary>
+        public bool NoKeyHolder { get; set; }
+
         /// <summary>The newest membership log position the server reported. A hint for when to fetch the log.</summary>
         public LogPosition? LogHead { get; set; }
-
-        /// <summary>The log position at which the server last listed this user as the channel's admin, or null if it didn't.</summary>
-        public ulong? ServerAdminAt { get; set; }
 
         /// <summary>A fork or hidden change seen in the channel's membership, to keep showing.</summary>
         public string? MembershipWarning { get; set; }

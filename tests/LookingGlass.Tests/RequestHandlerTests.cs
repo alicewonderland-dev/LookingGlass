@@ -455,13 +455,16 @@ public sealed class RequestHandlerTests : IDisposable {
     /// <summary>
     /// v0.2 changed the wire protocol (log positions in signatures, entries on membership requests), so a
     /// 0.1 plugin, which only offers protocol version 1, must be turned away at Hello with a clear message,
-    /// not let in to fail confusingly later.
+    /// not let in to fail confusingly later. So must one offering version 2 only: it would take a key
+    /// recovered entry (version 3) for a membership log it can't verify.
     /// </summary>
-    [Fact]
-    public async Task HelloOfferingOnlyProtocolVersion1IsAskedToUpdate() {
+    [Theory]
+    [InlineData(1u)]
+    [InlineData(2u)]
+    public async Task HelloOfferingOnlyAnOlderProtocolVersionIsAskedToUpdate(uint version) {
         var connection = new ClientConnection(new ClosedWebSocket(), "203.0.113.50", 128 * 1024, 64, NullLogger.Instance);
         var hello = new Hello { ClientVersion = "0.1.0" };
-        hello.ProtocolVersions.Add(1);
+        hello.ProtocolVersions.Add(version);
 
         var response = await this.SendAsync(connection, new ClientFrame { Hello = hello });
 

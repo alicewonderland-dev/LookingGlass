@@ -151,6 +151,10 @@ internal sealed class Modals(UiActions actions) {
         } else if (member.KeyChanged) {
             Widgets.IconText(FontAwesomeIcon.ExclamationTriangle, "Key changed", Widgets.Warning);
             ImGui.TextColored(Widgets.Muted, "Their identity key changed, or this name now belongs to a different account.");
+        } else if (member.KeyRecovered) {
+            Widgets.IconText(FontAwesomeIcon.Redo, "New key");
+            ImGui.TextColored(Widgets.Muted,
+                "They re-verified their character through the Lodestone and have a new key. That it's them is the server's word: compare to be sure.");
         }
 
         if (!needsVerifying) {
