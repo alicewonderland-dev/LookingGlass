@@ -1,263 +1,1310 @@
-# LookingGlass — Rewrite Design
+# How LookingGlass works
 
-Renamed from WonderlandChat to LookingGlass on 2026-10-04.
+This document explains the design of LookingGlass: what each part does, what
+the encryption protects, and why things are the way they are. It is for
+technical readers. To use the plugin, see the [README](../README.md). To run a
+server, see [server.md](server.md).
 
-Exported from the working design document. Diagrams are described in text.
+## Overview
 
-This document describes the target design. Not all of it is built yet: see the README's "Security model" section for what the current version actually guarantees.
+LookingGlass adds cross-world chat channels to Final Fantasy XIV. It is a
+clean-room rewrite of the ExtraChat plugin and server: it keeps ExtraChat's
+core ideas, shares no code with it, and doesn't talk to ExtraChat's servers.
 
-## Summary
+### The parts
 
-LookingGlass is a from-scratch rewrite of the ExtraChat plugin and server. It keeps the original's core ideas: a server that only relays ciphertext, Lodestone as the identity root, and native in-game chat. It fixes the original's trust, threading and reliability flaws, and adds a versioned, capability-based protocol so new features can be added without breaking existing clients.
+| Part | Path | What it does |
+| --- | --- | --- |
+| Plugin | `src/LookingGlass.Plugin` | The Dalamud plugin: commands, chat output and windows. A thin shell around the core library |
+| Core library | `src/LookingGlass.Core` | Cryptography, the membership log and the client session. It has no Dalamud dependency, so the echo bot, `lgdev` and the tests use it too |
+| Server | `src/LookingGlass.Server` | Relays encrypted messages, stores the membership logs and sealed keys, checks every request, and looks characters up on the Lodestone. ASP.NET Core with SQLite |
+| Protocol | `src/LookingGlass.Protocol` | One Protocol Buffers schema (`Protos/lookingglass.proto`) that every part shares |
+
+### The trust model in brief
+
+- **The Lodestone proves who you are, once.** Registering shows that a
+  character is yours. After that, the plugin signs in with keys it holds.
+- **Each character has long-term identity keys** on the player's computer.
+  Other players see a fingerprint of them and can compare it over /tell.
+- **Only members can read a channel.** Messages and channel names are
+  encrypted with a channel key that only members hold. The server stores and
+  relays ciphertext it can't read.
+- **Members decide who is a member.** Membership comes from a log of changes
+  that members sign. Every client checks the log itself, so the server can't
+  add members or change ranks.
+- **The server is trusted for identity recovery.** When a player re-verifies
+  their character through the Lodestone with new keys, the server moves their
+  places in channels to the new keys. A malicious server could use this to
+  swap any member's keys for its own. It can't do it quietly: every member of
+  the channel is told. This trade-off was chosen so that losing your keys
+  doesn't lose your channels.
+- **The server sees metadata.** It knows who is in which channel, when
+  messages are sent and who is online, and it can drop or delay anything.
+
+### Status
+
+The current version is 0.2. It has registration, key login, identity recovery,
+channels, invites, ranks, automatic rekeys, encrypted messages, the signed
+membership log, online indicators, blocking and debug tooling. ChatTwo
+integration and the import wizard come next. Local chat and a move to MLS are
+planned (see [Planned features](#planned-features)).
+
+## Glossary
+
+| Term | Meaning |
+| --- | --- |
+| Account | A character on one server, identified by its Lodestone ID |
+| Identity keys | A character's long-term keys for one server address: an Ed25519 signing key and an X25519 key for receiving sealed keys |
+| Fingerprint | A 25-digit number made from a user's identity keys, for comparing over /tell |
+| Pinning | Remembering a user's keys the first time they're seen, and warning if they change (trust on first use) |
+| Device token | The login a server gives one device after registering or key login |
+| Key login | Signing in by signing a server challenge with the identity key, when the device token is refused |
+| Membership log | A channel's append-only, hash-chained list of signed membership changes |
+| Log position, head | An entry's sequence number and hash; the head is the newest entry |
+| Place | A user's member or invite row in a channel: their rank or invite, under particular keys |
+| Epoch, epoch key | The channel key for one stretch between membership changes |
+| Rekey | Making the next epoch key and sealing a copy to each member |
+| Sealing | Encrypting something to one recipient's X25519 key, so only they can open it |
+| Key recovered entry | A log entry that moves a user's place to new keys after they re-verify through the Lodestone |
+| Origin | The scheme, host and port of a server address (`wss://host:port`) |
+| `PublicUrls` | The server's configured list of its own addresses |
+| Development server | A server in ASP.NET Core's Development mode, with debug accounts and the echo bot |
+
+## Goals and non-goals
 
 ### Goals
 
-- **Encryption that holds against the server, short of swapping keys.** A malicious or compromised server cannot read channels, forge senders or obtain channel keys without it showing: the one way in is to replace a member's keys through identity recovery, which every member is told about (see "Recovering an identity"). That trade, for players getting their channels back on a new computer, was a deliberate choice.
-- **Removal means removal.** A member who leaves or is kicked cannot read anything sent afterwards.
-- **A reliable client.** No game-object access off the main thread, no requests that hang, and every failure shown to the user.
-- **A server you run and can defend.** Rate limits, size limits, and no global lock that can stall everyone.
-- **ChatTwo integration kept.** ChatTwo users get channel names, colours and context-menu actions as before.
-- **Room to grow.** New features are added as modules, and most can ship as client-only changes.
+- **Encryption that holds against the server, short of swapping keys.** A
+  malicious or compromised server can't read channels, forge senders or get
+  channel keys without it showing. The one way in is replacing a member's keys
+  through identity recovery, which every member is told about.
+- **Removal means removal.** A member who leaves or is removed can't read
+  anything sent afterwards.
+- **A reliable client.** No game-object access off the main thread, no
+  requests that hang, and every failure shown to the user.
+- **A server one person can run and defend.** Rate limits, size limits, and no
+  global lock that can stall everyone.
+- **ChatTwo integration.** ChatTwo users get channel names, colours and
+  context-menu actions, as with ExtraChat.
+- **Room to grow.** New features are added as modules, and most can ship as
+  client-only changes.
 
 ### Non-goals
 
-- Wire compatibility with the original ExtraChat server or protocol.
-- Server-side moderation of message content. The server cannot read it, by design.
+- Wire compatibility with ExtraChat's server or protocol.
+- Server-side moderation of message content. The server can't read it, by
+  design.
 - Clients outside the game (web, mobile) in the first release.
-- Copying code from the original. This design describes behaviour, and the implementation is written fresh.
+- Copying code from ExtraChat. This design describes behaviour; the
+  implementation is written fresh.
 
-## Lessons from the original
+## Lessons from ExtraChat
 
-The original's principles were sound. Its failures came from trusting the server with key distribution and from unsafe concurrency on both sides.
+ExtraChat's principles were sound. Its failures came from trusting the server
+with key distribution, and from unsafe concurrency on both sides.
 
-| Area | Original behaviour | Consequence | Rewrite |
+| Area | ExtraChat's behaviour | Consequence | LookingGlass |
 | --- | --- | --- | --- |
-| Key exchange | New key pair on every plugin load, relayed by the server and never verified | Server can sit in the middle of any invite and read the channel | Long-term identity keys with fingerprints that users can verify |
-| Secret requests | Client encrypts the channel secret to any key the server names, without asking | Server can simply request any channel's secret | Keys only go to verified members, sealed to their identity key |
-| Membership changes | No rekeying; invitees get the secret before accepting | Kicked members and declined invitees read the channel forever | New channel key (epoch) on every membership change |
-| Sender identity | Server asserts who sent each message | Server can re-attribute or replay messages | Every message signed by the sender's identity key |
-| Registration | Challenge not tied to the requesting connection, no expiry on verify | Anyone can claim the key during the verification window | Challenge bound to session and identity key, 15-minute expiry |
-| Client threading | Shared dictionaries changed from thread-pool tasks while the UI reads them | Crashes, corrupted state, "Not on main thread" failures | One network actor owns state; UI reads immutable snapshots |
-| Server locking | Global lock held across awaits and re-entered | Whole-server deadlock under contention | No lock held across an await; bounded, non-blocking fan-out |
-| Requests | No timeouts; waiters dropped on reconnect | UI stuck "busy" forever | Every request completes with a result, an error or a timeout |
+| Key exchange | New key pair on every plugin load, relayed by the server and never verified | The server can sit in the middle of any invite and read the channel | Long-term identity keys with fingerprints users can compare |
+| Secret requests | The client encrypts the channel secret to any key the server names, without asking | The server can simply ask for any channel's secret | Keys only go to members in the verified log, sealed to their identity keys |
+| Membership changes | No rekeying; invitees get the secret before accepting | Removed members and declined invitees read the channel forever | A new channel key (epoch) on every membership change |
+| Sender identity | The server says who sent each message | The server can re-attribute or replay messages | Every message is signed by its sender |
+| Registration | Challenge not tied to the requesting connection; no expiry on verify | Anyone can claim the key during the verification window | Challenge bound to the connection and identity key, with an expiry |
+| Client threading | Shared dictionaries changed from thread-pool tasks while the UI reads them | Crashes, corrupted state, "Not on main thread" failures | One session owns the state; the UI reads immutable snapshots |
+| Server locking | A global lock held across awaits and re-entered | Whole-server deadlock under contention | No lock held across an await; bounded, non-blocking fan-out |
+| Requests | No timeouts; waiters dropped on reconnect | UI stuck "busy" forever | Every request ends in a result, an error or a timeout |
 | Errors | Swallowed on the client; any error drops the server connection | Silent message loss, reconnect loops | Typed error codes shown to the user; only protocol violations disconnect |
-| Limits | No rate, size or count limits | Easy to flood the server and Lodestone | Limits advertised in the handshake and enforced server-side |
-| Secret recovery | Serialiser missing two request kinds | Feature never worked | Server stores sealed epoch keys so members can catch up |
-| Upkeep | Stale CI, example config that doesn't load, frozen dependencies | Hard to build, hard to trust | CI for both halves, pinned toolchains, automated dependency updates |
+| Limits | No rate, size or count limits | Easy to flood the server and the Lodestone | Limits advertised in the handshake and enforced by the server |
+| Secret recovery | The serialiser was missing two request kinds | The feature never worked | The server stores sealed epoch keys, so members can catch up |
+| Upkeep | Stale CI, an example config that doesn't load, frozen dependencies | Hard to build, hard to trust | The plugin's package versions are locked; CI and automated dependency updates are planned |
 
 ## Core principles
 
-### Kept from the original
+Kept from ExtraChat:
 
-1. **The server relays and does not read.** It knows who is in which channel. Channel names, messages and keys are opaque to it.
-2. **Lodestone is the identity root.** A character proves ownership through its Lodestone profile. The Lodestone ID is the stable account key.
-3. **It feels like native chat.** Channels are used through the game's own chat input and appear in the game's own chat log.
-4. **One protocol, defined once.** Client and server share one schema instead of hand-written mirrors on each side.
-5. **Small enough for one person to run.** A single server process and a single database file are enough.
+1. **The server relays and doesn't read.** It knows who is in which channel.
+   Channel names, messages and keys are opaque to it.
+2. **The Lodestone is the identity root.** A character proves ownership
+   through its Lodestone profile. The Lodestone ID is the account's stable
+   key.
+3. **It feels like native chat.** Channels are used through the game's own
+   chat input and appear in the game's own chat log.
+4. **One protocol, defined once.** Client and server share one schema instead
+   of hand-written copies on each side.
+5. **Small enough for one person to run.** One server process and one
+   database file.
 
-### New in the rewrite
+New in LookingGlass:
 
-6. **Trust keys, not the server.** The server distributes public keys; clients verify them and warn when one changes.
-7. **Every membership change is a new epoch.** Joining, leaving, kicks and disbanding rotate the channel key.
-8. **The main thread owns the game; one actor owns the network.** Nothing else touches either.
-9. **Every request completes.** It ends in success, a typed error or a timeout, never silence.
-10. **Version and negotiate everything.** Features are capabilities that client and server agree on at connect time.
-11. **Everything is bounded.** Message size, rates, queues, channel sizes and pending invites all have limits.
+6. **Trust keys, not the server.** The server hands out public keys. Clients
+   verify them and warn when one changes.
+7. **Every membership change is a new epoch.** Joins, leaves, removals and
+   recoveries rotate the channel key.
+8. **The main thread owns the game; one session owns the network.** Nothing
+   else touches either.
+9. **Every request completes.** It ends in success, a typed error or a
+   timeout, never silence.
+10. **Version and negotiate everything.** Features are capabilities that
+    client and server agree on when they connect.
+11. **Everything is bounded.** Message size, rates, queues, channel sizes and
+    pending invites all have limits.
 
-## Architecture overview
+## Architecture
 
-The client splits into a game-thread shell, a single network actor and a game-independent core library. The server splits into a gateway, a policy-and-router layer, a Lodestone worker and SQLite. Only ciphertext and public keys cross between them.
+The client has three layers:
 
-Diagram (in words): on the client, the game thread (hooks, chat output, commands, ImGui, player snapshot) sends commands to the network actor and reads snapshots back; the actor uses the core library (protocol, crypto, identity and epoch keys), which stores keys in an encrypted store. ChatTwo talks to the game-thread side over IPC. The actor connects over a TLS WebSocket, carrying only ciphertext, to the server's gateway (handshake, auth, limits), which passes authenticated requests to the policy-and-router layer (one authorization check per request, fan-out to members). The router uses SQLite transactionally and queues Lodestone lookups for a rate-limited worker that talks to the Lodestone over HTTPS.
+- **The game thread** runs hooks, chat output, commands, the ImGui windows,
+  and captures a snapshot of the player each frame.
+- **The session** (one per connection) owns the socket and all session state.
+  The game thread sends it commands and reads its snapshots.
+- **The core library** does the protocol, cryptography and key handling. It
+  keeps keys in an encrypted store on disk.
 
-## Identity and registration
+ChatTwo will talk to the game-thread side over IPC.
 
-Registration links a Lodestone character to an identity key, and only the session that asked for the challenge can complete it.
+The server has four:
 
-1. On first run, the client generates the character's identity key pair.
-2. The client asks to register, sending name, home world, its identity public key, the server URL it connected to and a fresh 32-byte random client nonce.
-3. The server checks the URL's origin as for key login (not for debug accounts), resolves the Lodestone ID through a queued, cached Lodestone lookup, and issues a 32-byte random nonce bound to that session and identity key, expiring after 15 minutes (`Lodestone:ChallengeMinutes`, 1 to 60: the server doesn't start with anything else), and the code derived from them: `LGC-` + Crockford base32 of the first 100 bits of SHA-256(`SigningPayload("lookingglass/lodestone-code/v1")` + origin (`wss://host:port`, as `ServerOrigin` normalises it) + identity signing key + nonce + client nonce + Lodestone ID), in five groups of four (`LGC-XXXX-XXXX-XXXX-XXXX-XXXX`). Debug accounts get no code. A StartRegistration without the URL or the client nonce (an older plugin) is refused, asking to update; a client nonce of any other length is an invalid request.
-4. The client recomputes the code from the origin of its own server URL, its own identity key, the nonce it was sent, its own client nonce and the Lodestone ID it was sent, and refuses to show any other (see "Relay protection").
-5. The user pastes the code into their Lodestone profile and clicks Verify on the same session. The client signs the nonce, the Lodestone ID and the server URL it connected to with the identity signing key (`lookingglass/registration/v1`).
-6. The server checks the binding and expiry, the signature against the key being registered, which is the key the code was derived for (and, as for key login, the signed URL, which must have the origin registering was started for, the one the code was made for; not for debug accounts), fetches the profile, confirms the code (case-insensitive, O read as 0 and I or L as 1, from a literal `LGC-`; ASCII only, so no other character counts as one of the code's, even one whose upper case is ASCII), records Lodestone ID → identity key and issues a device token.
-7. The client stores the token and identity key. The user can delete the code from their profile.
+- **The gateway** handles the WebSocket, the handshake, logging in and limits.
+- **The policy and router layer** makes one authorization check per request
+  and fans events out to members.
+- **SQLite** stores everything, with each multi-step change in one
+  transaction.
+- **A Lodestone worker** makes rate-limited, cached Lodestone lookups over
+  HTTPS.
 
-Rules:
+The client and server talk over one WebSocket (TLS in production). Only
+ciphertext and public keys cross it.
 
-- **Registering proves holding the key.** A user's public identity bundle (binding signature included) is served to everyone sharing a channel with them, so without the signature in step 5 anyone could register another user's key for their own character, then register again with new keys and so have the server retire it. A request without one (a plugin from before 0.2) is refused, asking to update; the protocol version is unchanged. A failed check stores nothing and leaves the registration open on the connection.
-- **One account per key.** A signing key that is another account's current key is refused, when registering starts (once the account is known) and in the transaction that registers it. With the proof above only the key's owner could try it, by registering a second character with one character's keys, which the plugin never does. Not repaired: a database from before registrations were signed may still hold one key for two accounts (or, from schema 5, a key retired for one account that another holds); the upgrade to schema 6 leaves them and logs each at Warning (the accounts and a short hash of the key), since the server can't tell which account owns the key. Until an operator removes the wrong registration, neither account can register that key again (the owner resets their identity instead), and a schema 5 retirement dropped as a duplicate is lost.
-- **Re-registering is allowed**, and revokes old device tokens. It keeps the key the client has; only a client without one (lost config, new PC) publishes a new key, and then the account's places in its channels move to that key (see "Recovering an identity" below). A signing key the account replaces is retired for that account: it can't sign in to it, and registering it for it again is refused (the user is told to reset their identity), so a stale copy can't take the account back from its new key. Retirement is per account (`retired_keys` is keyed by user ID and key, schema 6), so nothing one account does with a key affects another. Keys replaced before the server kept this aren't known.
-- **Reset my identity** (Settings), only for a lost or stolen key: new keys, nothing of the old identity kept for that server (login, channel keys), registering again through the Lodestone. That publishes the new key, revokes old tokens, stops the old key signing in, and moves the account's places (ranks, admin included, and invites) to the new key, as any registration with new keys does (see "Recovering an identity"). Nothing is left or declined first, and it doesn't wait for anything: the channels stay the user's.
-  - First, while logged in, the client sends `RetireIdentity`, signed by the current key over the user ID, the hash of the connection's device token and the server URL it connected to (so a stolen token alone can't wreck the identity, and a signature made for one login, or for another server, doesn't work here: user IDs are Lodestone IDs, the same on every server; the URL is checked as for key login; no challenge is needed, since it only ever retires the key that signed it). The server retires the key and deletes every device of the account in one transaction, and logs the connection out. Until the new keys are registered the account has no working login (Lodestone needed), and others still see the old key. If the client isn't logged in, or the server refuses or is too old, the reset goes on locally, and the user is told the old key and login work until they register again (which retires the old key then).
-  - Locally, the old identity is removed from every file of the character whose signing key is the one being reset: the address's own, other addresses it was carried to by a move, the old-style file, and every `.bak` (each rewritten twice, so the backup holds the new contents too). Those files keep what they hold about others and the channels (pins, blocks, verified log positions), so a vouched move can carry the new identity there later, and the channels carry on from the positions verified.
-  - Until 2026-10-05 a reset left the user's channels first (with leaves signed by the old key), and waited while they were the admin of any, since a place under the old key could never be used or cleared again. Recovery makes that unnecessary, and it was removed.
-- **Device tokens** are 256-bit random values, hashed at rest, and revocable.
-- **A refused device token is kept.** A server that doesn't recognise it may be the wrong one, or one reset or restored from a backup, so the client keeps the token, stays connected (to allow registering again), and tries it again: on that connection with a backoff up to a minute apart, and on every reconnect. Only registering again, or "Forget account" in the debug window, replaces it. Login and registration requests go through one gate, and the old token isn't tried while a registration challenge is pending, so a try of it never races registering again.
-- **Key login.** The Lodestone is the initial proof of identity, and the fallback only when the key is lost (or the server has never seen the user); otherwise the client signs in with its identity key. When the server refuses its device token, the client signs a fresh challenge (single use, bound to the connection, 60 s) together with its user ID and the server URL it connected to, under the account's current key, and gets a new device token, which replaces the refused one; other devices keep theirs. Key logins are rate-limited per connection, per address (challenges; and failures, a challenge counting as one until answered correctly) and per account and address (failed answers only, half the address's allowance). Nothing is limited per account alone: a signature can't be guessed, so the limits only stop spam, and failures from other addresses must never lock an account out of key login from its own. Every answer that reaches the account check verifies one signature (unknown accounts against a key nobody holds), so timing doesn't reveal accounts. A user keeps their 20 most recently used devices.
-- **Relay protection.** A malicious server the user also connects to could fetch another server's challenge, have the user sign it, and replay the signature there. For a registration that is an account takeover: the target registers whatever key signed it (the user's key for the relay, so separate keys per address don't help) and hands the relay the new device token. Key logins, registrations through the Lodestone and retirements all name the URL, and the signed URL stops this only against the server's configured `PublicUrls`, so outside Development the server refuses to start without them (logging what to set), and a handler built without them accepts no signed URL. Since an honest client connected through an unlisted address (say the tailnet IP, with only the machine name listed) is refused too, the client warns as soon as it connects when Welcome lists addresses (`public_urls`) without its own, naming them; the server's refusal names the address used and the accepted ones (public anyway), and logs it at Warning. The checks tell servers apart by address alone, so each listed address must be this server's only: a single-label name (a short MagicDNS or LAN name), a local-network suffix (`.local`, `.lan`, ...), a private, CGNAT, loopback or link-local IP, or plain `ws://` (whoever answers at the name) can be another server's too, and a malicious server a user reaches under the same address can relay to this one. That is fine on a private network the operator controls; elsewhere, list `wss://` addresses with fully qualified names. The server logs a Warning at startup for each listed address that may not be its alone (`RequestHandler.WhyNotUnique`). A Development server without them accepts the connection's scheme and Host header, which a relay sets to whatever the user signed for: there, the plugin's separate keys per server address still stop a relayed key login (the key a user signs with for the relay isn't registered on the target), but nothing stops a relayed registration; it is for private test servers. The Lodestone code is bound too: a malicious server M could otherwise start a registration on another server B for the user's character with M's own key, show the user B's code as its own, and complete it on B (signing the proof itself, for B's address) once the user put the code in their profile. The code is derived from the server's origin, the key being registered, the nonce and the Lodestone ID (step 3), B only issues one for an origin it accepts and only lets the key it was derived for complete, and the client recomputes it from its own origin and key (step 4): B's code for M's key and B's origin isn't the code for the user's key and M's origin, so the client refuses it, shows no code, drops the challenge, logs a warning (naming the origin and the character, never the code) and tells the user that the server "sent a registration code that doesn't belong to it" and not to put it in their profile. Nor can M write a code into its words ("LGC-… isn't in your Lodestone profile yet", an announcement, a user name) for the user to paste: the client replaces every code in what a server says (errors, announcements, status texts, notices, names, its log, and chat text through `TextSanitizer`) with "[code removed]", reading codes as the Lodestone check does and through invisible characters, except the code it checked itself (`LodestoneCode.Redact`); the server's own "not found" message names no code. A StartRegistration without the URL (an older plugin) is refused, asking to update; the protocol version is unchanged. M can only get a relayed code accepted by finding its own nonce and ID whose truncated hash, with the user's client nonce, equals one B issued (M can't choose B's nonce): a second preimage of 100 bits, against however many of B's codes M holds open at once (one per connection, a few an hour per IP, with IPv6 /64s plentiful; each for at most an hour, the longest `ChallengeMinutes` allows). The client nonce is fresh and random for each StartRegistration, so M can only start once the user's client asks, and must answer before the client stops waiting (60 s): nothing can be precomputed, although the user's key is stable per server (so M may know it). Even 2^20 codes held leave 2^80 hashes in a minute (about 2*10^22 a second, more than all Bitcoin mining). At 80 bits that would be 2^60 hashes in a minute, possible for a large operation, so 100 bits it is, five characters more. (Without the client nonce, M could have ground for the user's key beforehand, for as long as it liked, and needed only to hold B's codes against a table.) Profile matching starts only at a literal `LGC-`, and no code contains an L, so a pasted code can't be read as another starting inside it. In Development without `PublicUrls`, B accepts whatever origin the Host header names, so M can have B derive the code for M's origin and the user's key and relay the whole registration (as for signatures above): private test servers only. The plugin binds each secrets file to its address (stored inside, 128-bit file name hash) and never follows redirects, so one server's keys and login are never used with another. An old-style file (48-bit name) is moved to its new name only if it names no address yet, as read from the file itself (never its `.bak`, which a move leaves holding the unstamped original); once moved (and stamped), or if it can't be read as it is, it is a backup, offered in Settings and restored only when the user confirms, never by itself.
-- **Moving address.** Identities are per address. When the user changes the server address, the plugin copies an identity to the new address only if the new address is `wss://`, the server at the old address (already trusted with the login) lists the new one in `PublicUrls` (sent in Welcome), the server at the new address lists the old one, and the user confirms; the new address's word alone never counts. The servers vouch for names, and only TLS proves who answers at one: over plain `ws://` (or a name the local network resolves), whoever answers at the new name could confirm the old one, receive the copied login in the clear and relay key login challenges. A server key in Welcome wouldn't help without channel binding, since a relay forwards its proofs unchanged. The check is made again when the user confirms, and a copy needs one at most a minute old. The old address's identity is kept.
-- **Names and worlds** are keyed by Lodestone ID; name lookups go through an index updated on rename.
-- **Lodestone traffic** goes through one worker with a global rate limit and a result cache. Registration is rate-limited per IP, and verification attempts per connection. A registration refused for naming an address that isn't the server's costs neither, but logs a warning, so those are counted per IP on their own (`RefusedRegistrationsPerHourPerIp`, 10 an hour) and refused unlogged past that; names and worlds that aren't plain text (control, format or unassigned characters, line or paragraph separators) are refused before anything is logged.
+## Identity
 
-### Recovering an identity
+### Identity keys and fingerprints
 
-**Decision (2026-10-05): re-verifying a character through the Lodestone with new identity keys is proof of identity, and restores everything.** The account keeps its places in every channel, rank included (admin too), and its open invites, under the new keys. There is no per-channel opt-out, delay or veto. This is the trade-off Signal and WhatsApp make: the server vouches for the key change, and the other members are told, in plain words, that the person has a new key because they re-verified their character. In the owner's words: at some point a user has to trust whatever server they connect to, and someone whose account was hacked likely has bigger issues.
+Each character has one Ed25519 signing key and one X25519 key. The signing
+key vouches for the X25519 key with a binding signature. The keys are made
+once and kept across sessions.
 
-It covers a lost secrets file, a new computer (DPAPI-protected files don't move between Windows machines) and "Reset my identity" alike. When a registration completes (the Lodestone code found, or, for a debug account, nothing at all) for an account that has places under keys other than the ones registered, the server, in one transaction:
+The plugin makes separate keys for each character and each server address. A
+key is registered to at most one account on a server.
 
-- replaces the account's keys, retires the old signing key for the account and deletes every device of it (as any registration with new keys does: the old key can't sign in or be registered again, and every login made with it stops working), and deletes the channel keys sealed to the account;
-- for every channel where the account has a member or invite row that isn't forgotten ("Remove from my list") and isn't under the new keys (a place still under older keys, from before recovery, included: it is the same account), checks a key recovered entry with the rules clients use, appends it to the log and moves the row to the new keys, rank and invite kept. One the rules refuse is logged and left as it was. A moved member row waits for a key (`awaiting_key`, schema 8) and its channel needs a rekey; a moved invite row waits too, which carries over when it is accepted.
+Others see a 25-digit fingerprint of a user's keys. Clients pin each user's
+keys, name and world the first time they see them:
 
-Then it disconnects the account's other sessions, sends each channel's members the entry, and asks a member who is online to rekey: never one waiting for a key, who holds none for the channel and so doesn't know the name to carry into the new epoch (the flag clears with the next rekey), unless nobody who holds the key is left (see "When nobody holds the key"). That rekey gives the new keys the channel's key, and the old ones nothing more. `RegistrationComplete.places_restored` says how many places moved, and the plugin tells the user.
+| Shown for a member | Meaning |
+| --- | --- |
+| Question mark, "not compared" | Pinned on first use; you haven't compared fingerprints yet |
+| Check mark | You compared fingerprints and marked them verified |
+| Circling arrow, "New key" | They re-verified their character through the Lodestone; you haven't compared the new key yet |
+| Warning, "key changed" | Their key changed without explanation, or their name now belongs to a different account |
 
-**When nobody holds the key.** Waiting for a member who holds the key only works while one exists. Everyone who held it may have re-verified (Alice recovers while Bob is offline, then Bob recovers on a new computer before his old one comes back), or the only others may be places under old keys (from before recovery, or removed from their owners' lists), which can't rekey. So whenever no member row that isn't forgotten, is under its owner's current keys and isn't waiting for a key exists (online or not), the server asks a member who is waiting instead, and says so: `RekeyNeeded.no_key_holder`, and `ChannelInfo.no_key_holder` with `rekey_pending`, for a member who comes online later. That member's client, not knowing the name, makes the new key under the placeholder name "Restored channel", as a recovered member alone in a channel does. The rule is the same at every point a rekey is asked for (a registration moving places, an accept, a leave, a removal, a member coming online), so every mix of members waiting, under old keys and forgotten gets a key, and a channel only waits while someone who holds the key may still come back. If a member who holds the key does join or come back before that rekey (an invite made before everyone recovered, accepted meanwhile), they are asked instead, with no flag, and a placeholder rekey made for the earlier position is refused as stale. The flag is the server's word, like the rest of rekey scheduling: a server that lies can only rename the channel to the placeholder, which every member sees. Once a placeholder rekey has happened the channel's real name is gone for good (later keys carry the placeholder over, and a member who still knew the real name, if one ever came back, would see it replaced); the admin can rename it. A member who holds the key but never comes back keeps the channel waiting; an admin back with a new key can remove them, and the new key then comes from whoever is left, under the placeholder if nobody left holds it.
+The warning stays until the user marks the new key verified. To compare,
+users click the icon before a member's name (or choose **Compare
+fingerprints...** in the member's menu), compare over an in-game /tell, which
+doesn't pass through the LookingGlass server, then press **Mark verified**.
 
-**The entry.** `MEMBERSHIP_ENTRY_KIND_KEY_RECOVERED` (protocol version 3): the actor is the subject, `actor_key_hash` is the new keys' hash, `subject` names the keys the place had and `new_keys` the keys it moves to; the timestamp is the server's. Its signature isn't over the entry: it is the new keys' signature over `lookingglass/key-recovery/v1`, the user ID and both new public keys (`KeyRecoveryProof`), which the plugin makes once, with the registration (`CompleteRegistration.recovery_signature`), and the server puts into every channel's entry. It only proves that whoever holds the new keys agreed to be that user, so the server can't bind keys someone else holds (fetched from a channel they share, say) to another user's place. A registration that would move places without it is refused, asking to update; one signed by other keys, or for another account, registers nothing. The new keys are in the entry's signed payload (added only when present, so every other entry signs and hashes as it always did), so its hash covers them and it is chained like any other entry.
+### Registering through the Lodestone
 
-A client replaying the log accepts a key recovered entry only if, at that point: the subject is a member or invitee under exactly the keys it names; the new keys are well formed, can be sealed to, aren't the keys the place has and aren't anyone else's in the channel (member or invitee); the actor is the subject, `actor_key_hash` is the new keys' and the signature is theirs over the user ID and those keys; and it has no rank or invite field. Applying it moves the place: a member keeps their rank, an invitee their invite (its position and inviter). A member's move is a membership change (keys and names made before it are for another membership, so the channel is rekeyed before anyone sends); an invitee's isn't. Each client remembers each user's last four moves (`KeysAt`), so a name or key a member signed before moving is checked against the keys they had where it was made: without that, a member who restarted before the rekey couldn't show the channel's name, and so couldn't make the new key.
+Registering links a Lodestone character to identity keys. Only the connection
+that asked for the challenge can complete it.
 
-**What members see.** Each other member gets a line in the channel: "Alice@World re-verified their character and has a new key." It comes whenever the entry follows a position they had verified, live or when catching up after being offline, and whenever it changes what the client held for that user, even in a log replayed from its start (an invite's, say): a key pinned before, from another channel, is replaced (if the user had compared it, the line adds that the comparison was for the old key), or a "key changed" warning is explained. A log replayed from its start to someone who never saw them says nothing (a new member reads history, not news). The new key is pinned as expected, not as an unexplained change: no "key changed" warning, but the member shows "New key", not compared, until the user compares fingerprints over /tell and marks them verified. A "key changed" warning raised first by the server's identities is turned into that once the log explains it.
+1. The plugin makes the character's identity keys, if it has none for this
+   server.
+2. It asks to register (`StartRegistration`), sending the character's name and
+   home world, its identity public keys, the server URL it connected to, and a
+   fresh 32-byte random client nonce.
+3. The server:
+   - checks that the URL's origin is one of its own (see
+     [Server addresses and relay protection](#server-addresses-and-relay-protection));
+     debug accounts skip this;
+   - looks up the Lodestone ID, through a queued, cached lookup;
+   - issues a 32-byte random nonce, bound to this connection and identity key;
+   - works out the registration code (see [The registration code](#the-registration-code)).
 
-**What the member whose keys moved sees.** An honest server disconnects every session of the old keys before it tells anyone, and they can't sign in again, so the old computer only sees "Login not recognised", which now says that a character re-verified on another computer has had its key replaced and its channels moved, and that if it wasn't them, "Reset my identity" (Settings) re-verifies them through the Lodestone and takes the channels back; registering the old key again is refused with the same advice. If a client does see a key recovered entry moving its own place away from the keys it holds (a server that swaps keys without shutting the old ones out), it says the same once, as a warning, and every such channel shows "Moved to another key" with it instead of the old key's place. A moved invite shows without its channel name (sealed to the old key) until it is accepted and a member shares the channel's key. A recovered member alone in a channel, or one asked to rekey where nobody holds the key (see "When nobody holds the key" above), makes its new key themselves, under the placeholder name "Restored channel" (nobody can tell them the real one), which the admin can rename.
+   The challenge expires after `Lodestone:ChallengeMinutes` (15 by default; the
+   server only starts with 1 to 60). Debug accounts get no code.
+4. The plugin works out the code again from its own server address, its own
+   keys, the nonce, its client nonce and the Lodestone ID it was sent. It
+   refuses to show any other code.
+5. The user pastes the code into their Lodestone profile and presses
+   **Verify**, on the same connection. The plugin signs the nonce, the
+   Lodestone ID and the server URL with the identity signing key
+   (`lookingglass/registration/v1`).
+6. The server checks:
+   - the challenge belongs to this connection and hasn't expired;
+   - the signature is made by the key being registered, which is the key the
+     code was made for;
+   - the signed URL has the origin the registration was started for (not for
+     debug accounts);
+   - the code is in the Lodestone profile.
 
-**The trust model, honestly.** Clients can't check the Lodestone, so a key recovered entry is the server's word. A malicious or compromised server can therefore replace any member's keys with keys it holds, whenever it likes, in any channel: after the next rekey it reads that channel's messages, and it can act as that member, with their rank (as admin, say). The new keys' signature stops it binding someone else's keys, not its own. It can also show different members different recoveries, since these entries carry no member's signature: a client only notices by comparing the whole log, not from a single entry. The only defence is visibility: every member is told in the channel, and the member shows "New key" until fingerprints are compared over /tell, which doesn't pass through the server. The member whose keys were swapped is warned if their client sees the entry, or finds its login refused, with what to do if it wasn't them (see "What the member whose keys moved sees"); a server can hide that from them, but not from everyone else. Before this, a re-registered key had no place until a moderator invited it again, so the server could do none of this (it could, and still can, hand out its own key when someone is invited by name). Debug accounts, which anyone can register on a Development server, now take their channels along too.
+   It then records Lodestone ID → identity keys and issues a device token.
+7. The plugin stores the token and keys. The user can delete the code from
+   their profile.
 
-This was a deliberate choice: players are expected to trust the server they connect to (the default one is run by the project), and someone who controls a player's Lodestone page already has their game account. It does mean an honest server is only as safe as its operation: whoever breaks into it can swap any member's keys, so the server's host, its updates and its hardening now protect every account's channels, not only their availability.
+A failed check stores nothing, and the registration stays open on the
+connection.
 
-**Places still under old keys.** A place can still belong to keys the account no longer has: one from before recovery (the account registered again on an older server), one whose entry the rules refused, or one removed from the list (a forgotten row is never moved). The account's next registration through the Lodestone moves the first (and tries the second again). "Remove from my list" removes any of them from the list (see "Stale places and "Remove from my list"").
+Requests from older plugins are refused with a request to update: a
+`StartRegistration` without the URL or the client nonce, or a registration
+without the signature (a plugin from before 0.2). A client nonce of any other
+length is an invalid request. None of these changed the protocol version.
 
-## Cryptography and key management
+### The registration code
 
-Each character has a long-term identity key that its contacts verify, and each channel has an epoch key that rotates whenever membership changes.
+The code is `LGC-` and five groups of four characters
+(`LGC-XXXX-XXXX-XXXX-XXXX-XXXX`). It is the first 100 bits, in Crockford
+base32, of SHA-256 over:
 
-### Identity keys
+- `SigningPayload("lookingglass/lodestone-code/v1")`;
+- the server's origin (`wss://host:port`, as `ServerOrigin` normalises it);
+- the identity signing key being registered;
+- the server's nonce and the client's nonce;
+- the Lodestone ID.
 
-- One Ed25519 signing key and one X25519 key per character, the latter vouched for by the former. Generated once and kept across sessions.
-- **Verification:** every member shows a 25-digit fingerprint. Clients trust a key on first use and pin it with the user's name and world. A changed key, or a name now held by a different account, shows a persistent warning until the user marks it verified. A key a channel's log says changed because they re-verified their character (see "Recovering an identity") shows as "New key", not compared, instead of the warning.
-- Users can compare fingerprints over an in-game /tell, which doesn't pass through the LookingGlass server.
+When the server reads the profile:
 
-### Channel keys (epochs)
+- matching starts only at a literal `LGC-`;
+- case doesn't matter, and O is read as 0, I and L as 1, so a code typed by
+  hand works;
+- only ASCII counts: no other character counts as one of the code's, even one
+  whose upper case is ASCII;
+- no code contains an L, so a pasted code can't be read as another one
+  starting inside it.
 
-- Each channel has a 256-bit key per epoch. Epoch 0 is created with the channel.
-- On any membership change, a member's client generates the next epoch key, seals one copy to each member's X25519 key, signs each copy, and uploads them. The server requires one key per current member and the next epoch number.
-- The server stores sealed copies per member and epoch, so a member who was offline fetches theirs on login.
-- Invitees receive the channel name sealed to them, but no key until they accept.
-- The channel name is encrypted with the current epoch key and re-encrypted on rotation.
+Why the code is bound to the address and key is explained under
+[The code is bound too](#the-code-is-bound-too).
 
-### Messages
+### Registration rules
 
-- XChaCha20-Poly1305 under the epoch key, with a random 192-bit nonce.
-- Associated data binds the channel ID, epoch, sender, message ID and timestamp.
-- The sender signs ciphertext and associated data. Clients reject unsigned, mis-signed, duplicate, or far-from-now (more than 10 minutes) messages.
+- **Registering proves you hold the key.** A user's public identity keys,
+  binding signature included, are served to everyone who shares a channel
+  with them. Without the signature in step 5, anyone could register another
+  user's keys for their own character. They could then register again with
+  new keys, and so have the server retire the victim's key.
+- **One account per key.** A signing key that is another account's current
+  key is refused. This is checked when registering starts (once the account
+  is known) and again in the transaction that registers it. With the proof
+  above, only the key's owner could try this, by registering a second
+  character with one character's keys. The plugin never does that.
+- **Registering again is allowed.** It revokes the account's old device
+  tokens. It keeps the key the plugin has. Only a plugin without keys (a lost
+  file, a new computer) publishes new keys, and then the account's places
+  move to them (see [Recovering an identity](#recovering-an-identity)).
+- **A replaced key is retired.** When an account's signing key is replaced, by
+  registering new keys or by [Reset my identity](#reset-my-identity), the old
+  key is retired for that account. It can't sign in, and registering it again
+  is refused with advice to reset the identity instead. So a stale copy can't
+  take the account back from its new key.
+- **Retirement is per account.** `retired_keys` is keyed by user ID and key
+  (schema 6). Nothing one account does with a key affects another. Keys
+  replaced before the server kept this list aren't known.
+- **Names and worlds** are keyed by Lodestone ID. Name lookups go through an
+  index that is updated on rename.
 
-### Storage on the client
+**Old databases.** A database from before registrations were signed may hold
+one key for two accounts, or (from schema 5) a key retired for one account
+that another holds. The upgrade to schema 6 leaves these, and logs each at
+Warning with the accounts and a short hash of the key, since the server can't
+tell which account owns the key. Until an operator removes the wrong
+registration, neither account can register that key again (the owner resets
+their identity instead). A schema 5 retirement dropped as a duplicate is
+lost.
 
-- The identity private key, epoch keys and device token are stored encrypted: DPAPI on Windows, or a random local key file where DPAPI is unavailable (Wine/Proton), which guards against accidental sharing rather than a local attacker.
+## Signing in
 
-## Authenticated membership (v0.2, revised)
+### Device tokens
 
-Every membership change becomes a signed entry in a hash-chained log for the channel, and clients replay that log to work out who the members are. Every epoch key commits to the log position it was made for. The second code review showed the first version of this design was unsound: trust only ever grew, and ranks and removals weren't signed, so a removed member's key could keep vouching for new ghosts, and any member could add one. **Status: implemented on 2026-10-04 (revised design approved on 2026-10-03), as an interim step before MLS (see below).**
+- A device token is a 256-bit random value. The server stores only its hash,
+  and can revoke it.
+- Each user keeps their 20 most recently used devices. Older ones are dropped
+  as new ones are added.
+- **A refused token is kept.** A server that doesn't recognise it may be the
+  wrong server, or one that was reset or restored from a backup. So the
+  plugin keeps the token, stays connected (so the user can register again),
+  and tries it again: on the same connection, backing off to once a minute,
+  and on every reconnect.
+- Only registering again, or **Forget account** in the debug window, replaces
+  the token.
+- Logging in and registering go through one gate. The old token isn't tried
+  while a registration challenge is pending, so a retry never races
+  registering again.
 
-### The membership log
+### Key login
 
-Each channel has an append-only log. Every entry carries the channel ID, a sequence number, the hash of the previous entry, its kind, the actor (user ID and key fingerprint), the subject (user ID and identity keys), a rank where relevant, and a timestamp. It is signed by the actor.
+The Lodestone is the first proof of identity. After that it is only the
+fallback for a lost key, or a server that has never seen the user. Otherwise
+the plugin signs in with its identity key:
+
+1. The server refuses the device token.
+2. The plugin asks for a challenge. It is single use, bound to the
+   connection, and lasts 60 seconds.
+3. The plugin signs the challenge, its user ID and the server URL it connected
+   to, with the account's current key.
+4. The server checks the signature and issues a new device token, which
+   replaces the refused one. Other devices keep theirs.
+
+A retired key can't key-login. Every answer that reaches the account check
+verifies one signature (unknown accounts against a key nobody holds), so the
+timing doesn't reveal which accounts exist.
+
+**Limits.** Key logins are limited:
+
+- per connection: 3 challenges;
+- per IP address: challenges, and failures (a challenge counts as a failure
+  until it is answered correctly, so an address that only asks for challenges
+  is stopped too);
+- per account from each address: failed answers only, half the address's
+  allowance, rounded up.
+
+Nothing is limited per account alone. A signature can't be guessed, so the
+limits only stop spam, and failures from other addresses must never lock an
+account out of key login from its own. An address shared with an attacker
+(one NAT, say) still shares its per-address limits. The numbers are in
+[server.md](server.md#limits-worth-knowing).
+
+**What the user sees.** "Login not recognised" appears only when the server
+refuses both the token and the key. That happens when:
+
+- the server has never known the account;
+- the identity was reset elsewhere, or re-verified on another computer;
+- the key is gone;
+- the plugin connects through an address the server doesn't list (the plugin
+  warns about this separately).
+
+The plugin keeps trying the login every minute or so, so it works again by
+itself once the right server is back. **Retry now** tries the token and the
+key at once. The message also says that if the character was re-verified on
+another computer and it wasn't the user, **Reset my identity** takes the
+channels back.
+
+## Server addresses and relay protection
+
+### The threat
+
+A user may use more than one server. A malicious server M could fetch a
+challenge from another server B, have the user sign it, and replay the
+signature to B.
+
+For key login, that would give M a login on B. For a registration, it is an
+account takeover: B registers whatever key signed (the user's key for M, so
+separate keys per address don't help) and hands M the new device token.
+
+### The defence: signed addresses
+
+Key logins, registrations through the Lodestone and identity retirements all
+sign the server URL the plugin connected to. A server only accepts a
+signature for one of its own origins, as listed in `PublicUrls`.
+
+- **Outside Development, `PublicUrls` is required.** The server refuses to
+  start without it, and logs what to set. A request handler built without it
+  accepts no signed URL at all.
+- **Plugins are told the list.** An honest plugin connected through an
+  unlisted address (say, the tailnet IP when only the machine name is listed)
+  would be refused too. So the server's `Welcome` lists its addresses
+  (`public_urls`), and the plugin warns as soon as it connects if its own
+  address isn't among them, naming the listed ones.
+- **Refusals say why.** The server's refusal names the address used and the
+  accepted ones (they're public anyway), and the server logs it at Warning.
+
+### Each address must be the server's alone
+
+The checks tell servers apart by address only. An address that another server
+can also have protects nothing against that server:
+
+- a single-label name (a short MagicDNS or LAN name);
+- a local-network suffix (`.local`, `.lan` and the like);
+- a private, CGNAT, loopback or link-local IP;
+- any plain `ws://` address (whoever answers at the name).
+
+A malicious server that a user reaches under the same address can relay to
+this one. That is fine on a private network the operator controls. Elsewhere,
+list `wss://` addresses with fully qualified names. The server logs a Warning
+at startup for each listed address that may not be its alone
+(`RequestHandler.WhyNotUnique`).
+
+### Development servers without `PublicUrls`
+
+A Development server without `PublicUrls` accepts the scheme and `Host`
+header of each connection. A relay sets these to whatever the user signed
+for. There:
+
+- the plugin's separate keys per server address still stop a relayed key
+  login (the key the user signs with for the relay isn't registered on the
+  target);
+- nothing stops a relayed registration, which registers whatever key signed
+  it;
+- nothing stops a relayed registration code, since the server makes the code
+  for whatever origin the `Host` header names.
+
+So this is for private test servers only.
+
+### The code is bound too
+
+**The attack.** Without binding, a malicious server M could start a
+registration on another server B for the user's character, with M's own key.
+It would show the user B's code as its own. Once the user put the code in
+their profile, M would complete the registration on B, signing the proof
+itself for B's address.
+
+**The defence.**
+
+- The code is made from the server's origin, the key being registered, both
+  nonces and the Lodestone ID.
+- B only issues a code for an origin it accepts, and only lets the key it was
+  made for finish.
+- The plugin works the code out from its own server address and its own key.
+  B's code for M's key and B's origin isn't the code for the user's key and
+  M's origin.
+
+So the plugin refuses it. It shows no code, drops the challenge, and logs a
+warning naming the origin and the character, never the code. It tells the
+user: "This server sent a registration code that doesn't belong to it. It may
+be passing on another server's code. Don't put it in your Lodestone profile."
+
+**Codes in the server's words.** M can't slip a code into what it says either
+(an error like "LGC-… isn't in your Lodestone profile yet", an announcement, a
+user name). The plugin replaces every code in server text with "[code
+removed]", except the code it checked itself (`LodestoneCode.Redact`). This
+covers errors, announcements, status texts, notices, names, the plugin's log,
+and chat text through `TextSanitizer`. It reads codes the way the Lodestone
+check does, and sees through invisible characters. The server's own "not
+found" message names no code.
+
+**Why 100 bits.** To get a relayed code accepted, M must find its own nonce
+and Lodestone ID whose truncated hash, with the user's client nonce, equals a
+code B issued. M can't choose B's nonce. That is a 100-bit second preimage
+against however many of B's codes M holds open at once:
+
+- one per connection, a few an hour per IP (IPv6 /64s are plentiful);
+- each for at most an hour, the longest `ChallengeMinutes` allows.
+
+The client nonce is fresh and random for each `StartRegistration`. So M can
+only start once the user's plugin asks, and must answer before the plugin
+stops waiting (60 seconds). Nothing can be precomputed, even though the user's
+key is stable per server and M may know it.
+
+Even with 2^20 codes held, M would need 2^80 hashes in a minute: about
+2×10^22 a second, more than all Bitcoin mining. At 80 bits it would be 2^60
+hashes in a minute, possible for a large operation. So 100 bits it is, five
+characters more. Without the client nonce, M could grind for the user's key
+in advance, for as long as it liked, and only need to hold B's codes against
+a table.
+
+**Older plugins.** Servers that check codes ask a plugin from before codes
+were checked to update. Such a plugin is **not protected** against a
+malicious server: it shows any code it is sent.
+
+## Secrets on the client
+
+Each character's secrets for one server address live in one file,
+`secrets-<character>-<address hash>.bin`, in the plugin's config folder
+(under XIVLauncher's `pluginConfigs`). The file holds:
+
+- the identity private keys and the device token;
+- channel epoch keys;
+- what the plugin knows about others and the channels: pinned keys, blocked
+  users, the log positions it has verified, the newest channel names it has
+  accepted, and the newest message times per sender (see
+  [Replay protection](#replay-protection)).
+
+**Bound to its address.** The file records the address it belongs to, and
+its name holds a 128-bit hash of it. The plugin refuses to use a file for any
+other address, so one server's keys and login are never sent to another. The
+plugin also never follows redirects, so a server can't hand the connection
+and login to another.
+
+**Encryption.** The file is encrypted with Windows DPAPI, which doesn't move
+between machines. Where DPAPI is unavailable (Wine, Proton) it uses a random
+local key file instead, which guards against accidental sharing rather than a
+local attacker. Settings shows which is in use.
+
+**Backups.** Every save keeps the previous version next to it as
+`secrets-….bin.bak`. If the file is missing or damaged, the plugin loads the
+backup and says so in chat. No file is ever deleted.
+
+**Old file names.** Earlier versions named these files after a 48-bit hash
+(12 hex digits). The plugin moves each one to its new name the first time its
+address is used (at startup, for the configured address), and keeps the old
+file as a backup.
+
+- It moves a file only if the file names no address yet, as read from the
+  file itself, never from its `.bak` (which a move leaves holding the
+  unstamped original).
+- It moves a file only once. If the new file and its `.bak` are lost later,
+  the plugin doesn't go back to the old file by itself: it may hold an older
+  login, older channel keys, or a key reset since.
+- Instead, Settings says "A backup of your identity from <date> exists.
+  Restore it?", and restores it only if the user confirms. An old file that
+  can't be read as it is is treated the same way.
+
+Channel numbers, nicknames and colours are plugin settings, kept per
+character, and never sent to the server.
+
+## Moving to a new server address
+
+Identities are kept per address. So `ws://<machine>:5180/ws`,
+`ws://127.0.0.1:5180/ws` and `wss://<machine>.<tailnet>.ts.net/ws` count as
+different servers.
+
+When the user changes the address in Settings, and a character has an
+identity for the old address but none for the new one, the plugin:
+
+1. asks the server at the old address (already trusted with the login)
+   whether the new address is one of its own;
+2. asks the server at the new address whether the old one is one of its own;
+3. if the new address is `wss://` and both servers list the other in
+   `PublicUrls`, offers "This is the same server. Keep your identity?";
+4. if the user agrees, asks both servers once more (the dialog may have been
+   open a while; a copy needs a check at most a minute old) and, if they still
+   agree, copies the character's keys, login and channels to the new address.
+
+Otherwise it says why: the new address isn't `wss://`, one server doesn't
+list the other, one of them can't be reached, or the server lists no
+addresses. The new address then counts as a different server, where the user
+registers with new keys.
+
+Either way, the identity for the old address is kept, so switching back
+works. Channel numbers, nicknames and colours belong to the character and the
+channels, so they follow along.
+
+**Why both servers, and why only `wss://`.**
+
+- The new address's word alone never counts. A server at a new address can
+  never get an identity by claiming to be the old one: the old server has to
+  say so.
+- The servers vouch for names, not for whoever answers at them. Over plain
+  `ws://`, or a short name the local network resolves, someone else could
+  answer at the new name, repeat the real server's addresses, receive the
+  copied login in the clear and relay key login challenges. Only TLS proves
+  which server answers.
+- A server key in `Welcome` wouldn't help without channel binding, since a
+  relay forwards its proofs unchanged.
+
+## Lodestone traffic
+
+- All Lodestone requests go through one worker, with a server-wide rate limit
+  and a result cache.
+- Registration is rate-limited per IP address, and verification attempts per
+  connection (once every 10 seconds, 10 per challenge).
+- A registration refused for naming an address that isn't the server's costs
+  neither of those, but logs a warning. So those refusals are counted per IP
+  on their own (`RefusedRegistrationsPerHourPerIp`, 10 an hour), and refused
+  without logging past that.
+- Names and worlds that aren't plain text (control, format or unassigned
+  characters, line or paragraph separators) are refused before anything is
+  logged.
+
+## Recovering an identity
+
+**Re-verifying a character through the Lodestone with new identity keys
+restores everything.** The account keeps its places in every channel, rank
+included (admin too), and its open invites, under the new keys. There is no
+per-channel opt-out, delay or veto. The other members are told, in plain
+words, that the person re-verified their character and has a new key.
+
+This covers a lost secrets file, a new computer (DPAPI-protected files don't
+move between Windows machines) and [Reset my identity](#reset-my-identity)
+alike.
+
+### What the server does
+
+A registration completes when the Lodestone code is found (or, for a debug
+account, straight away). If the account then has places under keys other
+than the ones just registered, the server does this in one transaction:
+
+1. It replaces the account's keys, retires the old signing key for the
+   account, and deletes every device of the account. The old key can't sign in
+   or be registered again, and every login made with it stops working.
+2. It deletes the channel keys sealed to the account.
+3. For every channel where the account has a member or invite row that isn't
+   forgotten ("Remove from my list") and isn't under the new keys, it checks a
+   key recovered entry with the same rules clients use, appends it to the log,
+   and moves the row to the new keys, keeping the rank or invite. This
+   includes places still under older keys, from before recovery existed: they
+   are the same account. An entry the rules refuse is logged, and the row is
+   left as it was.
+4. A moved member row is marked as waiting for a key (`awaiting_key`, schema
+   8), and its channel needs a rekey. A moved invite row waits too, and that
+   carries over when the invite is accepted.
+
+Then the server:
+
+- disconnects the account's other sessions;
+- sends each channel's members the new entry;
+- asks a member who is online to rekey. This is never a member who is waiting
+  for a key: they hold none for the channel, so they don't know the name to
+  carry into the new epoch. The exception is when nobody who holds the key is
+  left (see [When nobody holds the key](#when-nobody-holds-the-key)).
+
+That rekey gives the new keys the channel's key, and the old ones nothing
+more. The waiting flag clears with the next rekey.
+`RegistrationComplete.places_restored` says how many places moved, and the
+plugin tells the user. The main window says before registering that this will
+happen.
+
+### When nobody holds the key
+
+Waiting for a member who holds the key only works while one exists. Everyone
+who held it may have re-verified: Alice recovers while Bob is offline, then
+Bob recovers on a new computer before his old one comes back. Or the only
+others may be places under old keys, which can't rekey.
+
+**The rule.** If no member row exists, online or not, that:
+
+- isn't forgotten,
+- is under its owner's current keys, and
+- isn't waiting for a key,
+
+then the server asks a member who is waiting instead, and says so:
+`RekeyNeeded.no_key_holder`, and `ChannelInfo.no_key_holder` with
+`rekey_pending` for a member who comes online later. That member's client
+doesn't know the channel's name, so it makes the new key under the placeholder
+name "Restored channel".
+
+The rule is the same everywhere a rekey is asked for: a registration moving
+places, an accept, a leave, a removal, a member coming online. So every mix of
+members (waiting, under old keys, forgotten) gets a key, and a channel only
+waits while someone who holds the key may still come back.
+
+**Details.**
+
+- If a member who holds the key joins or comes back before that rekey (say,
+  accepting an invite made before everyone recovered), they are asked
+  instead, with no flag. A placeholder rekey made for the earlier position is
+  then refused as stale.
+- The flag is the server's word, like the rest of rekey scheduling. A server
+  that lies can only rename the channel to the placeholder, which every member
+  sees.
+- Once a placeholder rekey has happened, the channel's real name is gone for
+  good. Later keys carry the placeholder over. A member who still knew the
+  real name, if one came back, would see it replaced. The admin can rename the
+  channel.
+- A member who holds the key but never comes back keeps the channel waiting.
+  An admin who is back with a new key can remove them. The new key then comes
+  from whoever is left, under the placeholder if nobody left holds it.
+
+### The key recovered entry
+
+`MEMBERSHIP_ENTRY_KIND_KEY_RECOVERED` (protocol version 3):
+
+| Field | Value |
+| --- | --- |
+| Actor | The subject |
+| `actor_key_hash` | The hash of the new keys |
+| `subject` | The keys the place had |
+| `new_keys` | The keys the place moves to |
+| Timestamp | The server's |
+| Signature | The new keys' signature over `lookingglass/key-recovery/v1`, the user ID and both new public keys (`KeyRecoveryProof`) |
+
+The signature isn't over the entry. The plugin makes it once, with the
+registration (`CompleteRegistration.recovery_signature`), and the server puts
+it into every channel's entry. It only proves that whoever holds the new keys
+agreed to be that user. So the server can't bind keys someone else holds (taken
+from a channel they share, say) to another user's place.
+
+A registration that would move places without the signature is refused, with
+a request to update. One signed by other keys, or for another account,
+registers nothing.
+
+The new keys are in the entry's signed payload, so the entry's hash covers
+them, and it is chained like any other entry. (They are added only when
+present, so every other kind of entry signs and hashes as before.)
+
+**How clients check it.** A client replaying the log accepts a key recovered
+entry only if, at that point in the log:
+
+- the subject is a member or invitee under exactly the keys it names;
+- the new keys are well formed and can be sealed to;
+- the new keys aren't the place's keys, and aren't anyone else's in the
+  channel (member or invitee);
+- the actor is the subject, `actor_key_hash` is the new keys' hash, and the
+  signature is theirs over the user ID and those keys;
+- it has no rank or invite field.
+
+**Applying it** moves the place. A member keeps their rank; an invitee keeps
+their invite (its position and inviter). A member's move is a membership
+change: keys and names made before it are for another membership, so the
+channel is rekeyed before anyone sends. An invitee's move isn't.
+
+Each client remembers each user's last four moves (`KeysAt`). So a name or key
+a member signed before moving is checked against the keys they had when they
+signed it. Without that, a member who restarted before the rekey couldn't
+show the channel's name, and so couldn't make the new key.
+
+### What other members see
+
+Each other member gets a line in the channel: "Alice@World re-verified their
+character and has a new key." It appears:
+
+- whenever the entry follows a log position they had verified, live or when
+  catching up after being offline;
+- whenever it changes what the client held for that user, even in a log
+  replayed from the start (an invite's, say). A key pinned before, from
+  another channel, is replaced; if the user had compared it, the line adds
+  that the comparison was for the old key. Or a "key changed" warning is
+  explained.
+
+A log replayed from the start to someone who never saw the user before says
+nothing: a new member reads history, not news.
+
+The new key is pinned as expected, not as an unexplained change. There is no
+"key changed" warning, but the member shows "New key", not compared, until the
+user compares fingerprints over /tell and marks them verified. A "key changed"
+warning raised first from the server's identity lookup turns into "New key"
+once the log explains it.
+
+### What the member whose keys moved sees
+
+An honest server disconnects every session of the old keys before it tells
+anyone, and they can't sign in again. So the old computer only sees "Login
+not recognised". That message says that a character re-verified on another
+computer has had its key replaced and its channels moved. It adds that if it
+wasn't them, **Reset my identity** (Settings) re-verifies them through the
+Lodestone and takes the channels back. Registering the old key again is
+refused with the same advice.
+
+If a client does see a key recovered entry moving its own place away from the
+keys it holds (a server that swaps keys without shutting the old ones out), it
+says the same once, as a warning. Every such channel shows "Moved to another
+key" instead of the old key's place.
+
+On the new keys:
+
+- A moved invite shows without its channel name (that was sealed to the old
+  key) until it is accepted and a member shares the channel's key.
+- Until a member gives the channel a new key, the user can already remove
+  members and change ranks (as their rank allows), but can't read, send,
+  invite or rename.
+- A recovered member alone in a channel, or one asked to rekey where nobody
+  holds the key, makes the new key themselves, under the placeholder name
+  "Restored channel". The admin can rename it.
+
+### The trust this needs
+
+Clients can't check the Lodestone, so a key recovered entry is the server's
+word. A malicious or compromised server can therefore:
+
+- replace any member's keys with keys it holds, in any channel, whenever it
+  likes;
+- after the next rekey, read that channel's messages and act as that member,
+  with their rank (as admin, say);
+- show different members different recoveries, since these entries carry no
+  member's signature. A client only notices by comparing the whole log, not
+  from a single entry.
+
+The new keys' signature stops it binding someone else's keys, not its own.
+
+The only defence is visibility:
+
+- every member is told in the channel;
+- the member shows "New key" until fingerprints are compared over /tell, which
+  doesn't pass through the server;
+- the member whose keys were swapped is warned if their client sees the entry
+  or finds its login refused, with what to do. A server can hide that from
+  them, but not from everyone else.
+
+Debug accounts, which anyone can register on a Development server, take their
+channels along too.
+
+This means an honest server is only as safe as its operation. Whoever breaks
+into it can swap any member's keys. So the server's host, its updates and its
+hardening protect every account's channels, not only their availability.
+
+### Places still under old keys
+
+A place can still belong to keys the account no longer has:
+
+- one from before recovery existed (the account registered again on an older
+  server);
+- one whose entry the rules refused;
+- one removed from the user's list (a forgotten row is never moved).
+
+The account's next registration through the Lodestone with new keys moves the
+first kind, and tries the second again. Meanwhile the place stays with the
+old key until a moderator removes it. "Remove from my list" removes any of
+them from the user's list (see
+[Stale places and "Remove from my list"](#stale-places-and-remove-from-my-list)).
+
+## Reset my identity
+
+**Reset my identity** (Settings, under "Your identity") is for a key that was
+lost or may have been stolen. It makes new keys, keeps nothing of the old
+identity for that server, and then the user registers again through the
+Lodestone. Registering publishes the new keys, revokes old tokens, stops the
+old key signing in, and moves the account's places (ranks, admin included, and
+invites) to the new keys, as any registration with new keys does. Nothing is
+left or declined first, and the user doesn't need to hand admin on: the
+channels stay theirs.
+
+**1. Retiring the old key on the server.** While logged in, the plugin sends
+`RetireIdentity`, signed by the current key over:
+
+- the user ID;
+- the hash of the connection's device token;
+- the server URL it connected to (checked as for key login).
+
+So a stolen token alone can't wreck the identity, and a signature made for
+one login, or for another server, doesn't work here. (User IDs are Lodestone
+IDs, the same on every server.) No challenge is needed, since a retirement
+only ever retires the key that signed it.
+
+The server retires the key and deletes every device of the account in one
+transaction, then logs the connection out. Until the new keys are registered,
+the account has no working login (the Lodestone is needed), and others still
+see the old key.
+
+If the plugin isn't logged in, or the server refuses or is too old to know
+how, the reset goes on locally. The user is told that the old key and its
+logins keep working on the server until they register again, which retires
+the old key then.
+
+**2. Removing the old identity locally.** The plugin removes the old identity
+(login and channel keys) from every file of the character whose signing key
+is the one being reset:
+
+- the address's own file;
+- copies a move made for the server's other addresses;
+- the old-style file;
+- every `.bak`. Each file is rewritten twice, so the backup holds the new
+  contents too.
+
+Those files keep what they hold about others and the channels (pinned keys,
+blocked users, verified log positions). So a vouched move can carry the new
+identity there later, and the channels carry on from the positions verified.
+
+The user's identity on other servers isn't affected.
+
+## Channels and the membership log
+
+Every membership change is a signed entry in a hash-chained log for the
+channel. Clients replay the log to work out who the members are and what rank
+each has. Every epoch key and channel name commits to the log position it
+was made for.
+
+### Ranks
+
+Ranks are ordered Invited < Member < Moderator < Admin. One table on the
+server (`Policy`) decides every channel request, and is unit-tested over every
+rank and action.
+
+| Action | Who may |
+| --- | --- |
+| Read the membership log | Anyone with a place, invitees included (to check an invite before answering it) |
+| Send, fetch epoch keys, rekey | Members and above |
+| Leave | Members and above, except the admin while others remain |
+| Invite, cancel an invite | Moderators and above |
+| Remove a member | Moderators and above, for members ranked strictly below them |
+| Change ranks, hand over admin | The admin |
+| Rename, disband | The admin |
+
+A place under keys the account no longer has may only read the log (see
+[An old key's place has no say](#an-old-keys-place-has-no-say)).
+
+### Entries
+
+Each channel has an append-only log. Every entry carries:
+
+- the channel ID and a sequence number;
+- the hash of the previous entry;
+- its kind;
+- the actor (user ID and key fingerprint);
+- the subject (user ID and identity keys);
+- a rank, where relevant;
+- a timestamp.
+
+It is signed by the actor.
 
 | Entry | Signed by | Valid only if, at that point in the log |
 | --- | --- | --- |
-| Genesis | Creator | It is entry 0; the creator becomes admin |
-| Invite | Inviter | The inviter is a moderator or admin; the invitee isn't a member or invited |
-| Accept | Invitee | It names the exact invite entry, and is signed by the exact key that invite names |
-| Decline / Cancel invite | Invitee / a moderator or admin | There is an open invite |
-| Remove | Moderator or admin | The subject's rank is below the actor's |
-| Leave | The leaving member | They are a member and not the last admin of a non-empty channel |
-| Set rank / Transfer admin | Admin | The subject is a member |
-| Key recovered (protocol version 3) | Appended by the server; signed by the new keys, over the user ID and those keys only | The subject is a member or invitee under the keys it names; the new keys are usable, aren't those, and aren't anyone else's in the channel; their place moves to them, rank or invite kept (see "Recovering an identity") |
+| Genesis | The creator | It is entry 0. The creator becomes admin |
+| Invite | The inviter | The inviter is a moderator or admin; the invitee isn't a member or invited |
+| Accept | The invitee | It names the exact invite entry, and is signed by the exact key that invite names |
+| Decline | The invitee | There is an open invite |
+| Cancel invite | A moderator or admin | There is an open invite |
+| Remove | A moderator or admin | The subject's rank is below the actor's |
+| Leave | The leaving member | They are a member, and not the admin of a channel with others in it |
+| Set rank, transfer admin | The admin | The subject is a member |
+| Key recovered (protocol version 3) | Appended by the server; signed by the new keys over the user ID and those keys only | See [The key recovered entry](#the-key-recovered-entry) |
 
-The server stores and serves the log and checks each entry before appending it, but clients never rely on that check. The server can't forge an entry, because that needs a member's signature, and it can't reorder entries, because of the hash chain. The exception is a key recovered entry, which is the server's word that a user re-verified their character: it can move any member's place to keys it holds (see "Recovering an identity" for what that means, and what shows it). A removed member's key can't sign anything that counts after their removal. A re-registered user's new key isn't a member until a key recovered entry moves their place to it, or a fresh invite and accept.
+An open invite lapses when whoever made it is removed, leaves or is demoted.
 
-**Stale places and "Remove from my list".** A place under keys the user no longer has (from before recovery, or one recovery couldn't move: see "Places still under old keys") can't be left (only the old key can sign a leave), so the client offers `ForgetChannel` instead. It is not a log entry: the server marks the account's member and invite rows for the channel `forgotten` (schema 7), only if none of them is under the account's current keys (checked in the transaction). The rows stay, because they are the log's state: entries are checked against them, and `ApplyRekey` still requires a key for every member at the head, so clients (who seal to every member of their verified log, the old key included) keep rekeying. A forgotten row isn't listed or counted towards the user's limits, has no rank for any request (so it can't fetch, send, rename or disband), and gets nothing about the channel: not its events (messages, log entries, renames, rekey requests, new epoch keys), not the presence of its members (coming online, going offline, joining) unless they share another channel, and not its end (removal, a cancelled invite, an invite that goes with its inviter, disbanding, the last member leaving). It is never asked to rekey (nor is any member whose row keys aren't their current ones). The others may still see a forgotten member's presence: it follows the log's members, as for any old-key member. It goes when the log removes the place (Remove or Cancel invite); a re-invite of the new key then works as usual. A recovery never moves it: the user chose to drop it. Other members still see the old key as a member, as before. The last member whose place isn't forgotten leaving deletes the channel, as the last member leaving does: nobody would ever see it again. `ForgetChannel` is charged to the per-user read budget.
+### What clients rely on
 
-**An old key's place has no say.** Even before it is forgotten, a member row whose keys aren't the account's current ones (`MemberRow.CurrentKeys`; the user registered new keys before recovery existed) can't send, rekey, fetch epoch keys, rename or disband, whatever its rank: none of that is signed by the key the log knows it by, and a disband would end the channel for everyone. The server's single authorization check (`RequireAllowed`) refuses every channel action through it but reading the log (which is how the client sees whose place it is), with the message clients turn into plain words; `ForgetChannel` doesn't go through it, so a stale place can always be removed. Log entries made through it fail anyway (the actor key isn't the log's). The place must also be under the keys the connection signed in with: a registration with new keys disconnects the old keys' sessions before it tells anyone, but should one outlive that, the place (which moved to the new keys with its rank, admin included) is no more its own than an old key's place is.
+The server stores and serves the log, and checks each entry before appending
+it. Clients never rely on that check:
 
-### Freshness and rekeys
+- The server can't forge an entry: that needs a member's signature.
+- It can't reorder entries: that breaks the hash chain.
+- Members are bound to the keys the log admitted them with. A removed
+  member's key signs nothing that counts after the removal.
+- A new key of a member's counts for nothing until a key recovered entry moves
+  their place to it, or a fresh invite and accept admits it.
 
-- Each client keeps, and persists, the newest log position (sequence number and hash) it has verified for each channel.
-- Every sealed epoch key and every channel name signs the log position it was made for. A client rejects a key or name made for an older position than its own; for a newer one, it fetches and verifies the log first.
-- A rekey seals to exactly the members at that position, and the server checks that the position is the current head. A key commitment (one shared hash of the key in every copy) stops a member sealing different or junk keys to different people.
+The exception is the key recovered entry, which is the server's word that a
+user re-verified their character (see
+[The trust this needs](#the-trust-this-needs)).
 
-### What this stops
+### Freshness
 
-| Attack (from the review) | Result |
+- Each client keeps, and saves, the newest log position (sequence number and
+  hash) it has verified for each channel. It carries on from there after a
+  restart, and fetches only new entries.
+- Every sealed epoch key and every channel name signs the log position it was
+  made for. A client rejects a key or name made for an older position than its
+  own. For a newer one, it fetches and verifies the log first.
+- **Forks.** If a client sees two different, validly signed versions of the
+  log (someone is being shown a different member list), it says so, keeps
+  what it verified, and marks the channel "check members".
+- **Rollbacks.** If the server shows a client an older log than it has already
+  verified (it may be hiding a change, such as a removal), the client does the
+  same.
+
+### Stale places and "Remove from my list"
+
+A place under keys the user no longer has can't be left: only the old key can
+sign a leave. Such a place comes from before recovery existed, or is one
+recovery couldn't move (see [Places still under old keys](#places-still-under-old-keys)).
+The plugin explains this in plain words ("Your old key's place"), and the
+channel's menu offers **Remove from my list...** instead of Leave and Disband.
+That sends `ForgetChannel`.
+
+`ForgetChannel` isn't a log entry. The server marks the account's member and
+invite rows for the channel `forgotten` (schema 7), but only if none of them is
+under the account's current keys (checked in the transaction). The plugin
+forgets the channel's key, number, nickname and colour. Declining an invite
+made for an old key removes it the same way.
+
+The rows stay, because they are the log's state. Entries are checked against
+them, and a rekey still needs a key for every member at the head. Clients seal
+to every member of their verified log, the old key included, so rekeys go on
+working for the others.
+
+A forgotten row:
+
+- isn't listed, and doesn't count towards the user's limits;
+- has no rank for any request, so it can't fetch, send, rename or disband;
+- gets nothing about the channel: not its events (messages, log entries,
+  renames, rekey requests, new epoch keys), not its members' presence (coming
+  online, going offline, joining) unless they share another channel, and not
+  its end (removal, a cancelled invite, an invite that goes with its inviter,
+  disbanding, the last member leaving);
+- is never asked to rekey (nor is any member whose row isn't under their
+  current keys);
+- is never moved by a recovery: the user chose to drop it.
+
+The other members still see the old key as a member, and may still see its
+presence, which follows the log's members. The forgotten row goes when the log
+removes the place (Remove or Cancel invite), and a fresh invite of the new key
+then works as usual. When the last member whose place isn't forgotten leaves,
+the channel is deleted, as when the last member leaves: nobody would ever see
+it again. `ForgetChannel` is charged to the per-user read budget.
+
+### An old key's place has no say
+
+A member row whose keys aren't the account's current ones
+(`MemberRow.CurrentKeys`) can't send, rekey, fetch epoch keys, rename or
+disband, whatever its rank. None of that would be signed by the key the log
+knows it by, and a disband would end the channel for everyone.
+
+- The server's single authorization check (`RequireAllowed`) refuses every
+  channel action through such a place except reading the log, which is how the
+  plugin sees whose place it is. The refusal carries the message the plugin
+  turns into plain words.
+- `ForgetChannel` doesn't go through that check, so a stale place can always
+  be removed.
+- Log entries made through such a place fail anyway: the actor key isn't the
+  log's.
+- The place must also be under the keys the connection signed in with. A
+  registration with new keys disconnects the old keys' sessions before it
+  tells anyone. Should one outlive that, the place (which moved to the new
+  keys, rank and all) is no more its own than an old key's place is.
+
+### Attacks the log stops
+
+| Attack | Result |
 | --- | --- |
-| Server inserts a ghost member | No valid invite and accept chain, so it isn't a member, and nobody seals to it |
-| Former member signs invites for ghosts | Invalid: the inviter isn't a member at that point in the log |
-| Ordinary member invites ghosts | Invalid: rank is part of the signed log |
-| Server hides a removal | The remover's client, and everyone who saw the removal, reject keys made for the older position, and warn that the server may be hiding a change |
-| Server shows different member lists to different clients | Needs a member to sign two different entries at the same position; a client that sees both reports a fork. (Key recovered entries are the exception: the server can show different ones to different clients, which only comparing whole logs reveals.) |
-| Old key reused after re-registration | The old key stopped being a member when they were removed, or when a key recovered entry moved their place to the new key |
-| Old channel name replayed | Names are bound to the log position and a revision counter |
+| The server inserts a ghost member | No valid invite and accept chain, so it isn't a member, and nobody seals to it |
+| A former member signs invites for ghosts | Invalid: the inviter isn't a member at that point in the log |
+| An ordinary member invites ghosts | Invalid: rank is part of the signed log |
+| The server hides a removal | The remover's client, and everyone who saw the removal, reject keys made for the older position, and warn that the server may be hiding a change |
+| The server shows different member lists to different clients | Needs a member to sign two different entries at the same position; a client that sees both reports a fork. Key recovered entries are the exception: the server can show different ones to different clients, which only comparing whole logs reveals |
+| An old key is reused after registering again | The old key stopped being a member when it was removed, or when a key recovered entry moved the place to the new key |
+| An old channel name is replayed | Names are bound to the log position and a revision counter |
 
-### Remaining limits (documented, not fixed)
+## Channel keys and messages
 
-- **You trust the keys of the people you invite on first use.** When you invite "Bob" by name, the server supplies Bob's key and could substitute its own. Each member therefore shows "fingerprint not compared" until you compare over /tell and confirm. A strict mode can refuse to invite, or seal to, anyone not yet compared.
-- **A removal takes effect when the remover's client publishes it.** The remover's client rekeys immediately. A server that suppresses that rekey stops the channel working for everyone else, but can't hide the removal from the remover, who is warned.
-- **The server vouches for re-verified keys.** A key recovered entry is the server's word, so a malicious server can replace any member's keys with its own (see "Recovering an identity"). Every member is told, and the member shows "New key" until fingerprints are compared over /tell.
-- **Metadata and availability.** The server still sees who is in which channel and can drop or delay anything.
+### Epoch keys
 
-### MLS
+- Each channel has a 256-bit key per epoch. Epoch 0 is created with the
+  channel.
+- Any join, leave, removal or member's key move makes a member's client
+  generate the next epoch key. It seals one copy to each member at the log's
+  head (to the X25519 keys the log has for them), and signs each copy together
+  with that log position and a commitment to the key (one hash of the key,
+  the same in every copy).
+- The server accepts a rekey only for the next epoch number and the log's
+  head, with one copy per current member, all carrying the same commitment.
+  A member who hands someone a different or unreadable key is named in a
+  warning by the client that got it, and that client rekeys.
+- The server stores the sealed copies per member and epoch, so a member who
+  was offline fetches theirs on login. It can't open them.
+- Invitees receive the channel name sealed to them, but no key until they
+  accept.
 
-MLS (RFC 9420) solves the same problems with an audited standard, and scales better. There is no mature C# implementation, so adopting it would mean shipping a Rust library (OpenMLS) through native interop in both the plugin and the server.
+**Who rekeys.** The server asks a member who is online (`RekeyNeeded`), or the
+first to come online. It never asks a forgotten place, a place under old keys,
+or a member waiting for a key, unless nobody holds the key (see
+[When nobody holds the key](#when-nobody-holds-the-key)). A remover's client
+rekeys straight away.
 
-**Decision (2026-10-03): build the log design for v0.2 as an interim step, then move to MLS once core functionality is confirmed in real use.** The group-key and membership layers stay behind interfaces so the switch replaces them without touching chat, UI or server routing.
+**What clients accept.** A client accepts a new epoch key only:
 
-### Protocol and tests
+- from a member in its verified log;
+- for a newer epoch than it holds;
+- made for the current membership. A key made before the last join or leave
+  is refused, with a warning that the server may be hiding a change. For a key
+  made at a newer position, the client fetches and checks the log first.
 
-- New protocol pieces: a membership entry message; channel info carries the log (or the part after the client's position); a log-fetch request; invite, accept, decline, remove, leave and rank requests each carry their signed entry; epoch keys and names carry the log position. These changes moved the unreleased protocol to version 2, so a 0.1 plugin is told to update instead of failing later. `ForgetChannel` ("Remove from my list") was added later without a version change; an older server answers "Unknown request.". Key recovered entries moved it to version 3 (2026-10-05): a version 2 plugin would refuse them as an unknown kind of entry, and with them every later entry of the channel's log, so it is told to update at Hello. `no_key_holder` (on `RekeyNeeded` and `ChannelInfo`) came with them, in the same version. Plugin and server are always updated together.
-- Acceptance tests:
-    1. A server-inserted ghost never receives a key.
-    2. A former member's invite is rejected.
-    3. A non-moderator's invite is rejected.
-    4. A hidden removal is detected by the remover.
-    5. A forked log is reported.
-    6. All existing malicious-server tests still pass.
-    7. A key recovered entry that doesn't check out (someone not in the channel, keys their place isn't under, keys they or someone else already have, not signed by the new keys) is refused; one that does is shown to every member.
+Clients send with the newest key they hold, whatever epoch the server claims,
+and rekey first if that key predates the last join or leave.
+
+### Channel names
+
+- The name is encrypted with the current epoch key, and re-encrypted on each
+  rekey, which carries it into the new epoch.
+- Each name carries a signed epoch, revision and log position.
+- A client accepts a name only if it is encrypted under the key it uses,
+  signed by a member, made for the current membership, and not older than the
+  newest name it has accepted (remembered across restarts). So a server can't
+  roll a name back to one from an older epoch, an earlier rename or an older
+  membership.
+- Only the admin renames. Clients warn if a member's rekey changed the name.
+
+### Messages
+
+- Messages are encrypted with XChaCha20-Poly1305 under the epoch key, with a
+  random 192-bit nonce.
+- The associated data binds the channel ID, epoch, sender, message ID and
+  timestamp.
+- The sender signs the ciphertext and associated data. The server can't read
+  messages, alter them, or attribute them to someone else.
+- A message is accepted only from a member in the verified log, signed with
+  the key the log has for them. A message under an older epoch is accepted
+  only within 2 minutes of the client getting the newer key.
+- Inside the ciphertext, each message has a content kind (text today). A
+  client shows a kind it doesn't know as an unsupported message.
+- The plugin sanitises all remote text before it reaches the chat log.
+
+### Replay protection
+
+- Clients remember the IDs of recent verified messages (in memory) and drop
+  duplicates.
+- They drop messages dated more than 10 minutes from their own clock.
+- They save, per channel and sender, the timestamp of the newest message
+  accepted, and drop messages more than 2 minutes older than that, even after
+  a restart.
+- Those timestamps are saved with other changes, on shutdown, and while
+  messages keep arriving, at least every 5 minutes. A crash can lose up to
+  about 5 minutes of them.
+- Your own messages aren't recorded this way. After a restart, the server
+  could replay one you sent in the last 10 minutes back to you.
+
+### Online status
+
+Members who share a channel see when each other are online. The server tells
+them when a fellow member connects (their first connection) or disconnects
+(their last), and when someone online joins. Invitees and people you share no
+channel with aren't told, and you aren't shown to them. This is the server's
+word, and it could lie.
+
+### Blocking and invites
+
+- A user can block others. Their invites are declined unseen, and their
+  messages hidden.
+- An invite is shown as verified only once the client has checked it against
+  the channel's log.
+- An invite from someone whose identity key changed can't be accepted until
+  the user marks them verified. One not signed by the inviter's current key
+  can't be accepted at all.
+
+## Security model
+
+### What the encryption protects
+
+- The server can't read channel names or messages.
+- The server can't forge, alter or re-attribute messages.
+- The server can't add members, change ranks or reorder the membership log.
+- Removed members and declined invitees get no later keys, so they can't read
+  anything sent afterwards.
+- The server can't roll back channel names or replay old keys without the
+  client noticing.
+- A malicious server can't pass on registrations, key logins, retirements or
+  registration codes from another server, as long as both list only addresses
+  that are theirs alone.
+
+### Known limitations
+
+- **You trust the keys of the people you invite on first use.** When you
+  invite someone by name, the server supplies their key and could substitute
+  its own. Each member shows "not compared" until you compare fingerprints
+  over /tell and mark them verified. There is no strict mode yet that refuses
+  to invite, or seal keys to, anyone not compared.
+- **The server vouches for re-verified keys.** See
+  [The trust this needs](#the-trust-this-needs).
+- **A removal takes effect when the remover's client publishes it.** The
+  remover's client rekeys straight away. A server that suppresses that rekey
+  stops the channel working for everyone else, and the remover is warned. But
+  members who never saw the removal can be shown the old membership, and a key
+  they make for it reaches the removed member. Anyone who did see the removal
+  refuses that key.
+- **Key commitments rely on the server checking them.** A member colluding
+  with the server can still give different members different keys. That shows
+  up as messages some members can't decrypt.
+- **Rekeys seal to every member in the log**, including one whose "key
+  changed" warning you haven't cleared.
+- **Old places linger.** A place under a key its owner no longer has stays
+  with that key until its owner registers new keys again (which moves it) or
+  a moderator removes it. Its owner can remove it from their own list
+  meanwhile.
+- **The log only grows.** Clients fetch just the new entries, but someone new
+  to a channel (or invited to it) replays it from the start.
+- **Metadata and availability.** The server sees who is in which channel, when
+  messages are sent and who is online, and can drop or delay anything.
+- **Replays of your own messages** within 10 minutes of a restart, and up to 5
+  minutes of replay timestamps lost in a crash (see
+  [Replay protection](#replay-protection)).
+- **Debug accounts** on a Development server can be taken over by anyone who
+  can reach it, channels and all.
+- **The local key file** used where DPAPI is unavailable guards only against
+  accidental sharing.
 
 ## Protocol and extensibility
 
-New features fit into two layers. Features the server must take part in are negotiated capabilities. Features that live only inside encrypted messages need no server change at all.
+### Transport and requests
 
-- **Transport:** WebSocket over TLS, one connection per logged-in character, Protocol Buffers frames defined in one schema file.
-- **Handshake:** the client sends Hello (protocol versions, client version, capabilities); the server answers Welcome (chosen version, agreed capabilities, limits, announcement); the client then authenticates with its device token.
-- **Requests and events:** every request has an ID and a timeout and ends in a result or a typed error. Errors never close the connection; only protocol violations and failed authentication do. Server events carry a per-connection sequence number.
+- **Transport.** A WebSocket (TLS in production), one connection per
+  logged-in character, carrying Protocol Buffers frames defined in one schema
+  file.
+- **Handshake.** The client sends `Hello` (protocol versions, client version,
+  capabilities). The server answers `Welcome` (the chosen version, agreed
+  capabilities, limits, an announcement, whether debug accounts are on, and
+  its `public_urls`). The client then logs in with its device token, a key
+  login or a registration.
+- **Requests and events.** Every request has an ID and a timeout, and ends in
+  a result or a typed error. Errors never close the connection; only protocol
+  violations and failed authentication do. Server events carry a
+  per-connection sequence number.
 
-| Layer | Examples | Needs a server change? | How it is added |
+### Versions
+
+The current protocol version is 3. Plugin and server are always updated
+together, and an older plugin is told to update at `Hello`.
+
+| Version | What it added |
+| --- | --- |
+| 1 | 0.1: registration, channels, invites, epoch keys, messages |
+| 2 | The signed membership log: a membership entry message; channel info carries the log (or the part after the client's position); a log-fetch request; invite, accept, decline, remove, leave and rank requests carry their signed entry; epoch keys and names carry the log position |
+| 3 | Key recovered entries, and `no_key_holder` on `RekeyNeeded` and `ChannelInfo`. A version 2 plugin would refuse the new entry kind, and with it every later entry of the channel's log |
+
+Some additions needed no new version:
+
+- `ForgetChannel` ("Remove from my list"). An older server answers "Unknown
+  request.".
+- Signed registrations, the registration client nonce and signed URLs. Older
+  plugins are refused with a request to update.
+
+### Adding features
+
+New features fit into one of three layers. Features the server must take part
+in are negotiated capabilities. Features that live only inside encrypted
+messages need no server change at all.
+
+| Layer | Examples | Server change? | How it is added |
 | --- | --- | --- | --- |
-| Server capability | Presence, message history, channel bans, file attachments | Yes | New capability string and message types; old clients never see them |
-| Encrypted content kind | Text, emotes, replies, reactions, polls, typing state | No | New inner `kind` inside the ciphertext; unknown kinds render as "unsupported message" |
-| Client-only feature | Chat filters, notifications, colours, sounds | No | Plugin update only |
+| Server capability | Message history, channel bans, file attachments, local chat | Yes | A new capability string and message types; old clients never see them |
+| Encrypted content kind | Emotes, replies, reactions, polls, typing state | No | A new content kind inside the ciphertext; older clients show "unsupported message" |
+| Client-only feature | Chat filters, notifications, colours, sounds | No | A plugin update only |
 
-Versioning: changes within a major version are additive only; removing or changing a field's meaning needs a new major version.
+Within a major version, changes are additive only. Removing a field, or
+changing its meaning, needs a new major version.
 
 ## Client design
 
-The client is a thin Dalamud shell around a core library with no Dalamud dependency.
+The client is a thin Dalamud shell around the core library, which has no
+Dalamud dependency.
 
-- **Game thread:** hooks, chat printing, commands, ImGui, and capturing the player snapshot each frame. Nothing else reads game objects.
-- **Session:** owns the socket and all session state, publishes an immutable snapshot after every change; the UI reads only snapshots. Anything that must touch the game is queued with `Framework.RunOnFrameworkThread`.
-- **Chat:** `/lgc1`–`/lgc50` commands today; a chat-input hook for a sticky channel later. Sending fails closed: an error never falls through to plain game chat. All remote text is sanitised before it reaches the chat log.
-- **Game interop:** signatures live in one module; a missing one disables only its feature.
-- **ChatTwo:** the original exposed `ExtraChat.ChannelNames`, `ExtraChat.ChannelCommandColours` and `ExtraChat.OverrideChannelColour` to ChatTwo, and added an invite item to ChatTwo's context menu via `ChatTwo.Register`/`Invoke`. LookingGlass keeps equivalent integration (IPC naming is an open question).
+- **Game thread.** Hooks, chat output, commands, ImGui, and capturing the
+  player snapshot each frame. Nothing else reads game objects.
+- **Session.** Owns the socket and all session state, and publishes an
+  immutable snapshot after every change. The UI reads only snapshots.
+  Anything that must touch the game is queued with
+  `Framework.RunOnFrameworkThread`.
+- **Sending.** `/lgc1` to `/lgc50` and `/lgc <nickname>`. A sticky channel
+  through a chat-input hook may come later. Sending fails closed: an error
+  never falls through to ordinary game chat.
+- **Game interop.** Signatures live in one module. A missing one disables
+  only its feature.
+- **ChatTwo (planned).** ExtraChat exposed `ExtraChat.ChannelNames`,
+  `ExtraChat.ChannelCommandColours` and `ExtraChat.OverrideChannelColour` to
+  ChatTwo, and added an invite item to ChatTwo's context menu through
+  `ChatTwo.Register` and `Invoke`. LookingGlass will keep equivalent
+  integration; the IPC names are an open question.
+
+### Channel numbers, nicknames and colours
+
+These are plugin settings, kept per character, and never sent to the server.
+
+- **Numbers.** Each channel gets a number from 1 to 50 automatically, and
+  keeps it across restarts until the user leaves it (or it is disbanded, or
+  they are removed). The freed number then goes to the next channel without
+  one. Choosing a number another channel has swaps the two. Typing a number
+  with no channel on it says so.
+- **Commands.** Only `/lgc` is listed in Dalamud's command help; the fifty
+  numbered commands are hidden to keep the list short. `/lgc` on its own
+  explains how to use it.
+- **Nicknames.** 1 to 16 letters, digits, `-` or `_`. A nickname can't be only
+  digits, so `/lgc 3` is never confused with `/lgc3`. It must differ from the
+  user's other nicknames, ignoring case. A channel's nickname goes away when
+  the user leaves it.
+- **Chat tags.** A channel with a nickname is tagged with it, as in `[sky]`,
+  unless **Show nicknames in chat tags** is off; otherwise with its number, as
+  in `[LGC3]`. A channel with neither (more than fifty channels, or a message
+  that arrives before the channel list is in) is tagged `[LGC]`.
+- **Colours.** Any of the game's own chat colours. The channel's lines take
+  the colour, or only the tag if **Colour the whole line in a channel's
+  colour** is off. The bar beside the channel in the list takes it too.
+  **Default** colours only the tag.
+- **Chat channel.** Messages appear in one of the game's chat channels, chosen
+  in Settings, so chat tabs can show or hide them.
+- **Unread counts.** The channel list counts messages from others since the
+  user last looked at a channel in the main window or talked in it. The
+  window's title shows the total. The counts start from zero at each login.
+- **Member icons.** Besides the fingerprint state (see
+  [Identity keys and fingerprints](#identity-keys-and-fingerprints)), the
+  icon's colour shows presence: green while connected, grey when not. A
+  warning keeps its orange either way, and invitees stay grey until they join.
+- **Confirmations.** Removing a member needs **Ctrl** held. Leaving or
+  disbanding asks first. Cancelling an invite happens straight away.
 
 ## Server design
 
-A single process with an embedded database, built around three rules: no lock held across an await, one authorization function for every action, and one transaction for every multi-step change.
+The server is one process with an embedded database, built around three rules:
+no lock held across an await, one authorization function for every action, and
+one transaction for every multi-step change.
 
-- **Concurrency:** one task per connection with a bounded outbound queue; a full queue disconnects that client rather than blocking senders.
-- **Authorization:** one rank table (Invited < Member < Moderator < Admin) decides every request, with unit tests over every rank × action pair; a place under keys the account no longer has may only read the log (see "An old key's place has no say"), and one just moved to new keys isn't asked to rekey until a rekey gives it the channel's key, unless nobody else holds it (see "Recovering an identity" and "When nobody holds the key").
-- **Storage:** SQLite in WAL mode; conditional updates (epoch, rank) guard against races.
-- **Errors:** typed errors map to protocol error codes.
+- **Concurrency.** One task per connection, with a bounded outbound queue. A
+  full queue disconnects that client rather than blocking senders.
+- **Authorization.** One rank table decides every request (see
+  [Ranks](#ranks)). A place under keys the account no longer has may only read
+  the log. A place just moved to new keys isn't asked to rekey until a rekey
+  gives it the channel's key, unless nobody else holds it.
+- **Storage.** SQLite in WAL mode. Conditional updates (on epoch and rank)
+  guard against races. The schema is upgraded in place at startup; the
+  current schema version is 8.
+- **Errors.** Typed errors map to protocol error codes.
+- **Addresses.** The server refuses to start outside Development without
+  `PublicUrls`, and with a `ChallengeMinutes` outside 1 to 60.
 
-## Abuse limits and operations
+## Abuse limits
 
 | Limit | Value | Why |
 | --- | --- | --- |
@@ -265,62 +1312,195 @@ A single process with an embedded database, built around three rules: no lock he
 | Frame size (any request) | 128 KiB | Bounds rekey bundles and list responses; a rekey for 500 members is about 100 KB |
 | Messages per user | 5 per second burst, 1 per second sustained | Stops floods without affecting normal chat |
 | Rekeys per user | 5 burst, 1 every 2 seconds | Each rekey costs every member's client work |
-| Members per channel | 500 | Keeps rekey bundles small |
+| Members per channel | 500, counting pending invites | Keeps rekey bundles small |
 | Channels per user | 50 | Bounds login and list cost |
 | Pending invites per channel | 50 | Stops invite spam |
-| Registration attempts | 5 per hour per IP; verify once per 10 s, 10 per challenge | Protects Lodestone and the challenge flow |
-| Lodestone requests (server-wide) | 1 every 2 seconds, cached | Avoids being blocked by Lodestone |
+| Pending invites per user | 20 | Stops one person being flooded |
+| Registration attempts | 5 per hour per IP; verify once per 10 seconds, 10 per challenge | Protects the Lodestone and the challenge flow |
+| Lodestone requests (server-wide) | 1 every 2 seconds, cached | Avoids being blocked by the Lodestone |
 | Connections per IP | 20; unauthenticated connections close after 20 minutes | Bounds idle and unauthenticated load |
 | Outbound queue per connection | 256 events | A slow client is disconnected, not waited on |
+| Devices per user | 20 most recently used | Bounds stored logins |
 
-Operations: the server runs on Linux and Windows (.NET 10), listens on localhost by default behind a TLS reverse proxy, and trusts `X-Forwarded-For` only from configured proxies. The first tester server runs as a systemd service on a Linux machine behind Tailscale Funnel (`scripts/publish-linux.ps1`, `deploy/install-linux.sh`); a cloud host comes later.
+Invites sent and received, channel creation, renames, disbands, identity
+lookups and heavy reads have their own per-user rate limits. Key login limits
+are under [Key login](#key-login). Operators can change some of these (see
+[server.md](server.md#settings)).
 
-## Migration from the original
+## Operations
 
-LookingGlass uses a new server and protocol, so users re-register once and channels are rebuilt through a planned import wizard. It has its own internal name and `/lgc` commands, so it can be installed beside the original.
+- The server runs on Linux and Windows (.NET 10).
+- It listens on localhost by default, behind a TLS reverse proxy, and trusts
+  `X-Forwarded-For` only from proxies on the same machine or configured ones.
+- The first tester server runs as a systemd service on a Linux machine behind
+  Tailscale Funnel. A cloud host comes later.
+
+How to build, configure and deploy a server is in [server.md](server.md).
 
 ## Testing and debug tooling
 
-- **Debug accounts:** with `Dev:AllowDebugAccounts` on, characters on the fake world "Debug" register without Lodestone. Never on a public server.
-- **Echo bot:** a headless client that accepts invites, takes part in rekeys and echoes messages; runs inside the server (`Dev:HostEchoBot`) or via `lgdev bot`.
-- **`/lgdebug`:** connection state, protocol trace, notices, and tools to ping, force a rekey, or simulate an incoming message.
-- **Automated tests:** crypto, the policy table, end-to-end flows, and a malicious-server suite that injects forged and replayed events.
+- **Debug accounts.** With `Dev:AllowDebugAccounts` on, characters on the fake
+  world "Debug" register without the Lodestone. Never on a public server.
+- **Echo bot.** A headless client that accepts invites, takes part in rekeys
+  and echoes messages. It runs inside the server (`Dev:HostEchoBot`) or
+  through `lgdev bot`.
+- **`lgdev smoke`.** Checks a server end to end with a throwaway debug user
+  and the echo bot.
+- **`/lgdebug`.** Connection state, protocol trace, notices, and tools to ping,
+  force a rekey, or simulate an incoming message.
+- **Automated tests.** Cryptography, the policy table, the membership log and
+  its rules, key login, recovery, identity resets, server moves, secrets
+  files, limits, end-to-end flows, and malicious-server and malicious-member
+  suites that inject forged and replayed events.
+
+Acceptance tests for the membership log:
+
+1. A server-inserted ghost never receives a key.
+2. A former member's invite is rejected.
+3. A non-moderator's invite is rejected.
+4. A hidden removal is detected by the remover.
+5. A forked log is reported.
+6. All earlier malicious-server tests still pass.
+7. A key recovered entry that doesn't check out is refused (someone not in the
+   channel, keys their place isn't under, keys they or someone else already
+   have, not signed by the new keys). One that does is shown to every member.
+
+## Migration from ExtraChat
+
+LookingGlass uses a new server and protocol, so users register once, and
+channels are rebuilt through a planned import wizard. It has its own internal
+name and `/lgc` commands, so it can be installed beside ExtraChat.
 
 ## Planned features
 
 ### Local chat (friends only)
 
-Status: planned, not started. Decided 2026-10-05: friends only, with no party or Free Company option, since those can include people a player doesn't trust.
+Status: planned, not started.
 
-A `/say`-like chat for players who stand near each other and both use the plugin: nobody without the plugin sees it, and only players on the sender's in-game friends list can read it.
+A `/say`-like chat for players who stand near each other and both use the
+plugin. Nobody without the plugin sees it, and only players on the sender's
+in-game friends list can read it.
 
-- **The sender's plugin picks the recipients.** When a player sends a local message, their plugin takes the players near them in the game (the object table, at about `/say` range), keeps those on their in-game friends list, and looks up their LookingGlass keys (the same lookup as inviting by name, using pinned keys). It encrypts the message separately to each recipient's identity key, as epoch keys are sealed today, signs it with the sender's identity key, and asks the server to deliver the copies to those accounts.
-- **The receiving plugin checks too.** A message is shown only if it decrypts, its signature is the sender's known key, the sender is on this player's friends list, and the sender's character is near them. FFXIV friendships are mutual and both checks run in the players' own plugins, so the server can't add anyone and can't forge one.
-- **The server never learns locations.** It holds no zones, instances or rooms: it only delivers sealed copies to the user IDs the sender named, and stores nothing.
-- **Shown in game chat** with its own tag and command (for example `/lgl`; check in game that it's free) and its own colour, like a channel.
-- **A new server capability** (`local`) with its own message types. It doesn't touch channels, the membership log or epochs, and an old client never sees it.
+- **The sender's plugin picks the recipients.** It takes the players near the
+  sender in the game (the object table, at about `/say` range), keeps those on
+  the sender's friends list, and looks up their LookingGlass keys (the same
+  lookup as inviting by name, using pinned keys). It encrypts the message
+  separately to each recipient's identity key, as epoch keys are sealed today,
+  signs it with the sender's identity key, and asks the server to deliver the
+  copies to those accounts.
+- **The receiving plugin checks too.** It shows a message only if it decrypts,
+  its signature is the sender's known key, the sender is on this player's
+  friends list, and the sender's character is near them. FFXIV friendships are
+  mutual, and both checks run in the players' own plugins, so the server can't
+  add anyone and can't forge a message.
+- **The server never learns locations.** It holds no zones, instances or
+  rooms. It only delivers sealed copies to the user IDs the sender named, and
+  stores nothing.
+- **Shown in game chat** with its own tag, command (for example `/lgl`; check
+  in game that it's free) and colour, like a channel.
+- **A new server capability** (`local`) with its own message types. It
+  doesn't touch channels, the membership log or epochs, and an old client
+  never sees it.
 
 What it costs, all accepted:
-- **No meeting strangers.** It is chat among friends who use the plugin. An open, signed-only local chat is out of scope.
-- **Metadata.** The server sees who sent to whom and when, which implies those players were together.
-- **The friends list must be loaded.** The game may only fill it in once the Friends window has been opened in a session; if so, the plugin says plainly to open it once. Check in game.
-- **Crowds.** One copy per recipient is fine for a handful of friends nearby; cap recipients per message (about 50), and rate-limit like channel messages.
+
+- **No meeting strangers.** It is chat among friends who use the plugin. An
+  open, signed-only local chat is out of scope.
+- **Metadata.** The server sees who sent to whom and when, which implies those
+  players were together.
+- **The friends list must be loaded.** The game may only fill it in once the
+  Friends window has been opened in a session. If so, the plugin says plainly
+  to open it once. Check in game.
+- **Crowds.** One copy per recipient is fine for a handful of friends nearby.
+  Cap recipients per message (about 50), and rate-limit like channel messages.
+
+### MLS
+
+MLS (RFC 9420) solves the same problems as the membership log and epoch keys,
+with an audited standard, and scales better. There is no mature C#
+implementation, so adopting it means shipping a Rust library (OpenMLS)
+through native interop in both the plugin and the server.
+
+The group-key and membership layers sit behind interfaces
+(`IGroupKeyProvider`, `IMembershipProvider`), so the switch replaces them
+without touching chat, UI or server routing.
 
 ## Milestones
 
-Diagram (in words): five milestones with three gates.
-M0 Foundations (repo, schema, CI, core library) → gate: crypto spec reviewed → M1 Identity (registration, identity keys, tokens) → M2 Channels and chat (invites, rekeying, signed messages) → gate: two clients chat while a hostile test server tries to read, forge and replay → M3 Integrations and UI (ChatTwo, import wizard, key-verification UI) → M4 Hardening and beta → gate: no open high-severity findings → 1.0 release.
+| Milestone | Contents | Gate after it |
+| --- | --- | --- |
+| M0 Foundations | Repository, schema, CI, core library | The cryptography spec is reviewed |
+| M1 Identity | Registration, identity keys, tokens | |
+| M2 Channels and chat | Invites, rekeying, signed messages | Two clients chat while a hostile test server tries to read, forge and replay |
+| M3 Integrations and UI | ChatTwo, import wizard, key-verification UI | |
+| M4 Hardening and beta | Hardening, beta testing | No open high-severity findings, then the 1.0 release |
+
+Version 0.2 covers M1 and M2 and the key-verification UI of M3. CI (from M0),
+ChatTwo and the import wizard aren't built yet.
+
+## Decisions
+
+The owner's decisions, and why.
+
+- **Sealed epoch keys now, MLS later (2026-10-03).** Build the signed
+  membership log for v0.2 as an interim step, then move to MLS once core
+  functionality is confirmed in real use. The second code review had shown the
+  first design unsound: trust only ever grew, and ranks and removals weren't
+  signed, so a removed member's key could keep vouching for new ghosts, and
+  any member could add one. The revised log design was approved on
+  2026-10-03 and built on 2026-10-04.
+- **Protocol Buffers** for the schema.
+- **C# on .NET 10** for the server, sharing the core library with the plugin
+  and the echo bot.
+- **Name and commands.** `LookingGlass` (renamed from WonderlandChat on
+  2026-10-04), with `/lgc1` to `/lgc50`.
+- **Recovery restores everything (2026-10-05).** Re-verifying through the
+  Lodestone with new keys is proof of identity, and brings back every place,
+  rank (admin too) and invite. There is no opt-out, delay or veto. This is the
+  trade-off Signal and WhatsApp make: the server vouches for the key change,
+  and the other members are told. In the owner's words, at some point a user
+  has to trust whatever server they connect to, and someone whose account was
+  hacked likely has bigger issues. Players are expected to trust the server
+  they connect to (the default one is run by the project), and someone who
+  controls a player's Lodestone page already has their game account. Before
+  recovery, a re-registered key had no place until a moderator invited it
+  again, so the server couldn't swap keys at all (it could, and still can,
+  hand out its own key when someone is invited by name).
+- **Reset keeps your channels (2026-10-05).** "Reset my identity" used to
+  leave the user's channels first (with leaves signed by the old key), and
+  refuse while they were the admin of any, since a place under the old key
+  could never be used or cleared again. Recovery made that unnecessary, and it
+  was removed.
+- **Stale places can be removed from your list.** A place under an old key
+  can't be left, so `ForgetChannel` takes it off the user's list without
+  touching the log.
+- **Friends-only local chat (2026-10-05).** No party or Free Company option,
+  since those can include people a player doesn't trust.
+- **Key-change policy for re-verified keys.** Keys re-verified through the
+  Lodestone take over the user's places, and members are told. Other key
+  changes warn and continue (still open, below).
+- **Signed addresses are required.** Outside Development, the server won't
+  start without `PublicUrls`, because signed addresses are what stop relayed
+  registrations.
+- **Identity moves need `wss://` and both servers' word**, because only TLS
+  proves who answers at a name.
+- **100-bit registration codes**, with a client nonce, so a relayed code
+  can't be found in time (see [The code is bound too](#the-code-is-bound-too)).
+- **First deployment.** The first tester server runs as a systemd service on
+  a Linux machine behind Tailscale Funnel; a cloud host comes later.
 
 ## Open questions
 
-- [x] **Group keys:** sealed epoch keys for v1, behind an interface so MLS can replace them later.
-- [x] **Schema format:** Protocol Buffers.
-- [x] **Server language:** C# on .NET 10, sharing the core library with the plugin and the echo bot.
-- [ ] **Secret storage on Wine/Proton:** is the local key-file fallback enough?
-- [ ] **Key-change policy:** warn and continue (current), or block until re-verified? (Decided for keys a user re-verified through the Lodestone: they take over the user's places, and members are told; see "Recovering an identity".)
-- [ ] **ChatTwo IPC names:** reuse `ExtraChat.*` or use `LookingGlass.*` and ask ChatTwo to support them?
-- [x] **Command prefix and internal name:** `LookingGlass`, `/lgc1` to `/lgc50`.
-- [ ] **Message history:** in 1.0, or later?
-- [ ] **Limits:** confirm after beta load testing.
-- [ ] **Public hosting:** who runs it, cost, privacy note, and acceptable Lodestone volume.
-- [ ] **Move to MLS (RFC 9420)** once core functionality is confirmed in real use. The v0.2 signed membership log is the interim design; plan the switch as its own milestone, including how existing channels migrate.
+- **Secret storage on Wine and Proton:** is the local key-file fallback
+  enough?
+- **Key-change policy:** warn and continue (current), or block until
+  re-verified? (Decided for keys re-verified through the Lodestone; see
+  Decisions.)
+- **ChatTwo IPC names:** reuse `ExtraChat.*`, or use `LookingGlass.*` and ask
+  ChatTwo to support them?
+- **Message history:** in 1.0, or later?
+- **Limits:** confirm after beta load testing.
+- **Public hosting:** who runs it, the cost, a privacy note, and an acceptable
+  Lodestone volume.
+- **Moving to MLS:** plan the switch as its own milestone, including how
+  existing channels migrate.
