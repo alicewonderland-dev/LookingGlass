@@ -105,7 +105,7 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
     }
 
     /// <inheritdoc/>
-    bool IChatBoxListener.KeepFromGame(byte[] message) {
+    bool IChatBoxListener.KeepFromGame(byte[] message, LineSource source) {
         if (this._state.ChannelId is not { } channelId) {
             return false;
         }
@@ -115,7 +115,7 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
         var chatTwo = this._chatTwo.Loaded;
         var (route, reason) = StickyRoute.Decide(channelId, tag, line, ChatChannelPrefixes.SentAs(), this._switches);
         // Before acting on it, so the log has the line even if acting fails. Never the text itself.
-        Log(() => StickyDiagnostics.Line(tag, chatTwo, line, route, reason, this._switches));
+        Log(() => StickyDiagnostics.Line(tag, chatTwo, line, route, reason, this._switches, source));
         switch (route) {
             case StickyRoute.ToChannel send:
                 this._sender.Send(send.ChannelId, send.Text, tag);
@@ -243,13 +243,13 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
             // drawn over a channel that what is typed would go to.
             this.CheckNow("draw");
             if (this._state.ChannelId is { } channelId) {
-                // The game's chat input may be naming a one-line channel the switch check can't be sure of: show the game's
+                // The game's chat input may be naming a one-off channel the switch check can't be sure of: show the game's
                 // own name then, never the tag over it (what is typed still goes to the LookingGlass channel).
                 var unsettled = ChatBoxState.Unsettled(this._state.ChatBoxBaseline, ChatInterop.ReadChatBox());
                 if (unsettled != this._labelHeldBack) {
                     this._labelHeldBack = unsettled;
                     Log(() => $"{StickyDiagnostics.Prefix} label: talking in {this._shown?.Tag ?? this.TagOf(channelId)}, " +
-                              (unsettled ? "the chat box's one-line channel changed, so the game's own name is shown" : "the tag is shown again"));
+                              (unsettled ? "the saved channel changed (a one-off switch?), so the game's own name is shown" : "the tag is shown again"));
                 }
 
                 ChatInterop.SetChannelLabel(args.Addon.Address, unsettled ? null : this.TagOf(channelId));
@@ -283,7 +283,7 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
                     lineInFlight ? $"{where}, while a line runs" : where, before, world.ChatBox));
             }
 
-            // A line let through to the game (a command, a one-off "/party hi") may set the chat box's one-line channel
+            // A line let through to the game (a command, a one-off "/party hi") may set the saved channel
             // while it runs: measured again once it is done (LinePassed), not counted as the player switching.
             if (this._state.Check(lineInFlight ? world with { ChatBox = null } : world) is { } end) {
                 this.Ended(channelId, end);

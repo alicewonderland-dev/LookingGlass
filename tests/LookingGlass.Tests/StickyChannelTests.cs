@@ -171,8 +171,9 @@ public sealed class StickyChannelTests {
 
     [Fact]
     public void InTheGamesChatBoxAShortCommandWithALinkIsKeptFromTheGameToo() {
-        // The owner's test, ChatTwo off: a link alone reached the cross-world linkshell. As sent from the chat box's one-line
-        // channel, "/cwl1 <item>", or with the link's bytes: kept from the game, saying so.
+        // The owner's test, ChatTwo off: a link alone reached the cross-world linkshell (the game's chat box went past the
+        // old gate entirely). Now that its lines are caught, a short command with a link and no text, as "<item>" or the
+        // link's bytes, is kept from the game, saying so.
         var notSent = new StickyRoute.Dropped(StickyMessages.NotSent(Tag, StickyMessages.NoTextReason));
         Assert.Equal(notSent, StickyRoute.For("aaa", Tag, ChatBoxLine.Plain("/cwl1 <item>"), ChatChannelPrefixes.SentAs()));
         Assert.Equal(notSent, StickyRoute.For("aaa", Tag, Line("/cwl1 ", BareItemLink, "/cwl1 "), ChatChannelPrefixes.SentAs()));
@@ -211,8 +212,7 @@ public sealed class StickyChannelTests {
         Assert.Equal(StickyRoute.Leave, StickyRoute.For("aaa", Tag, prefix, withChatTwo));
         Assert.Equal(StickyRoute.Leave, StickyRoute.For("aaa", Tag, $"{prefix}   ", withChatTwo));
 
-        // The rule is the same in the game's own chat box: its one-line channel ("/s " then text) sends the line with the
-        // command in front too, and a typed "/p hi" can't be told apart from it.
+        // The rule is the same in the game's own chat box: one rule for every line, wherever it was typed.
         Assert.Equal(new StickyRoute.ToChannel("aaa", "hello"), StickyRoute.For("aaa", Tag, ChatBoxLine.Plain($"{prefix} hello"), ChatChannelPrefixes.SentAs()));
 
         // Not talking in a channel: the game's, ChatTwo or not.
@@ -595,6 +595,17 @@ public sealed class StickyChannelTests {
 
     // ---------------------------------------------------------------- the diagnostic log (dalamud.log)
 
+    [Fact]
+    public void TheDiagnosticLogSaysWhichWayALineCame() {
+        // The game's own chat box, macros and gear sets reach the gate directly; ChatTwo (and other plugins) through
+        // ProcessChatBoxEntry first. Telling them apart is what showed the game's chat box had gone past the old gate.
+        var line = ChatBoxLine.Plain("hello");
+        var (route, reason) = StickyRoute.Decide("aaa", Tag, line, ChatChannelPrefixes.SentAs());
+        Assert.Equal("[sticky] line from the game: talking in [sky], ChatTwo no, (text), 5 bytes, payload no -> to LookingGlass (plain text)",
+            StickyDiagnostics.Line(Tag, false, line, route, reason, source: LineSource.Game));
+        Assert.StartsWith("[sticky] line from a plugin (ProcessChatBoxEntry): ", StickyDiagnostics.Line(Tag, true, line, route, reason, source: LineSource.Plugin));
+    }
+
     public static TheoryData<string, string, string> LoggedLines() => new() {
         // input, token, decision
         { "my secret plans", "(text)", "to LookingGlass" },
@@ -651,7 +662,7 @@ public sealed class StickyChannelTests {
         Assert.Equal("(text)", StickyDiagnostics.Token(Line("", NamedItemLink, "Potion")));
         var linkOnly = Line("/cwl1 ", BareItemLink, "/cwl1 ");
         var decided = StickyRoute.Decide("aaa", Tag, linkOnly, withChatTwo);
-        Assert.Equal("[sticky] line: talking in [sky], ChatTwo yes, /cwl1, 26 bytes, payload yes -> kept from game (ChatTwo command with no text)",
+        Assert.Equal("[sticky] line: talking in [sky], ChatTwo yes, /cwl1, 26 bytes, payload yes -> kept from game (short command with no text)",
             StickyDiagnostics.Line(Tag, true, linkOnly, decided.Route, decided.Reason));
     }
 
@@ -664,23 +675,23 @@ public sealed class StickyChannelTests {
         Assert.Equal("[sticky] channel switch: not talking in a channel, chat type unknown -> 2, typed line in flight no -> nothing to do",
             StickyDiagnostics.ChannelSwitch(null, null, Party, false, null));
         Assert.Equal("[sticky] start: talking in [sky], ChatTwo yes, chat type 1", StickyDiagnostics.Started(Tag, true, Say, false));
-        Assert.Equal("[sticky] end: stopped talking in [sky] (Disconnected), chat type 2, one-line type 0, one-line command (none), agent channel 2, label #0012",
+        Assert.Equal("[sticky] end: stopped talking in [sky] (Disconnected), chat type 2, saved type 0, saved command (none), agent channel 2, label #0012",
             StickyDiagnostics.Ended(Tag, StickyEnd.Disconnected, new ChatBoxState(2, 0, "", 2, 0x12)));
         Assert.Equal("[sticky] end: stopped talking in [sky] (Stopped), chat box unreadable", StickyDiagnostics.Ended(Tag, StickyEnd.Stopped, null));
         Assert.StartsWith("[sticky] start refused: ChatTwo no, chat type 1: ", StickyDiagnostics.Refused(StickyMessages.StillLoading, false, Say));
-        // Whether the ChatTwo rule was on is in the log: the gap suspected in the owner's test.
-        Assert.Equal("command (ChatTwo rule off)", StickyRoute.Decide("aaa", Tag, ChatBoxLine.Plain("/s hi"), NoPrefixes).Reason);
+        // Whether the short-command rule was on is in the log.
+        Assert.Equal("command (short-command rule off)", StickyRoute.Decide("aaa", Tag, ChatBoxLine.Plain("/s hi"), NoPrefixes).Reason);
     }
 
-    // ---------------------------------------------------------------- the game chat box's own one-line channel
+    // ---------------------------------------------------------------- a one-off switch (the channel the game saves to go back to)
 
     private static readonly ChatBoxState Idle = new(1, 0, "", 1, 7);
 
     [Fact]
-    public void TypingAChannelCommandAndASpaceInTheGamesChatBoxEndsIt() {
-        // The owner's test, ChatTwo off: "/s" typed, no "Stopped" line, the tag still shown, and the next line went to
-        // Say. The game's chat box keeps a one-line channel of its own (RaptureShellModule.TempChatType and
-        // TempChatCommand): switching to it is the player switching, and ends it, saying so.
+    public void AOneOffSwitchEndsIt() {
+        // For a one-off switch (a tell from a menu, a channel for one line), the game saves the channel it is on to go back
+        // to (RaptureShellModule.TempChatType and TempChatCommand), then switches without making it its channel. That is
+        // a switch: it ends, saying so.
         var session = new object();
         var sticky = new StickyChannel();
         Assert.True(sticky.Enter("aaa", Tag, World(session) with { ChatBox = Idle }, true, false, false).Entered);
@@ -695,7 +706,7 @@ public sealed class StickyChannelTests {
         Assert.Null(sticky.ChannelId);
         Assert.Equal("Stopped talking in [sky].", StickyMessages.Ended(Tag, StickyEnd.ChatBoxSwitched));
 
-        // The same for a command alone (one-line channel type unchanged) or another channel.
+        // The same for a command saved alone (its type unchanged) or another channel.
         foreach (var switched in new[] { Idle with { TempCommand = "/cwl1" }, Idle with { TempChatType = 9, TempCommand = "/party" } }) {
             sticky = new StickyChannel();
             Assert.True(sticky.Enter("aaa", Tag, World(session) with { ChatBox = Idle }, true, false, false).Entered);
@@ -705,7 +716,7 @@ public sealed class StickyChannelTests {
 
     [Fact]
     public void ALineLetThroughToTheGameIsMeasuredAgainAfterItRan() {
-        // "/party hi" or "/em waves" may leave the one-line state set: that is the line's, not the player switching.
+        // "/party hi" or "/em waves" may leave the saved channel set: that is the line's, not the player switching.
         var session = new object();
         var sticky = new StickyChannel();
         Assert.True(sticky.Enter("aaa", Tag, World(session) with { ChatBox = Idle }, true, false, false).Entered);
@@ -726,7 +737,7 @@ public sealed class StickyChannelTests {
     }
 
     [Fact]
-    public void TheOneLineStateIsSwitchedOnlyWithACommandAndUnsettledOnAnyChange() {
+    public void TheSavedChannelIsASwitchOnlyWithACommandAndUnsettledOnAnyChange() {
         Assert.False(ChatBoxState.Switched(Idle, Idle));
         Assert.False(ChatBoxState.Unsettled(Idle, Idle));
         Assert.False(ChatBoxState.Switched(Idle, Idle with { TempChatType = 4 }));
@@ -737,10 +748,10 @@ public sealed class StickyChannelTests {
         Assert.False(ChatBoxState.Unsettled(Idle, null));
 
         // In the log: numbers, and a known command only.
-        Assert.Equal("chat type 1, one-line type 1, one-line command /s, agent channel 1, label #0007", (Idle with { TempChatType = 1, TempCommand = "/s" }).ToString());
-        Assert.Contains("one-line command (other command)", (Idle with { TempCommand = "/secret words" }).ToString());
+        Assert.Equal("chat type 1, saved type 1, saved command /s, agent channel 1, label #0007", (Idle with { TempChatType = 1, TempCommand = "/s" }).ToString());
+        Assert.Contains("saved command (other command)", (Idle with { TempCommand = "/secret words" }).ToString());
         Assert.DoesNotContain("secret", (Idle with { TempCommand = "/secret words" }).ToString());
-        Assert.EndsWith(", one-line channel switched", StickyDiagnostics.ChatBoxChanged(Tag, "frame", Idle, Idle with { TempCommand = "/s" }));
+        Assert.EndsWith(", one-off switch", StickyDiagnostics.ChatBoxChanged(Tag, "frame", Idle, Idle with { TempCommand = "/s" }));
         Assert.Equal("[sticky] link put in the chat input: talking in [sky], kind 3, chat box unreadable", StickyDiagnostics.LinkInserted(Tag, 3, null));
     }
 

@@ -52,9 +52,11 @@ public static partial class StickyDiagnostics {
         _ => "to game",
     };
 
-    /// <summary>One line seen by the chat box hook while talking in a channel, and what was decided.</summary>
-    public static string Line(string tag, bool chatTwo, ChatBoxLine line, StickyRoute route, string reason, IReadOnlyCollection<string>? switches = null) =>
-        $"{Prefix} line: talking in {tag}, ChatTwo {YesNo(chatTwo)}, {Token(line, switches)}, {line.Raw.Length} bytes, " +
+    /// <summary>One line seen by the gate while talking in a channel, and what was decided.</summary>
+    /// <param name="source">Which way it came, if known.</param>
+    public static string Line(string tag, bool chatTwo, ChatBoxLine line, StickyRoute route, string reason, IReadOnlyCollection<string>? switches = null,
+        LineSource? source = null) =>
+        $"{Prefix} line{SourceOf(source)}: talking in {tag}, ChatTwo {YesNo(chatTwo)}, {Token(line, switches)}, {line.Raw.Length} bytes, " +
         $"payload {YesNo(HasPayload(line))} -> {Decision(route)} ({reason})";
 
     /// <summary>A call to the game's channel switch, with the chat type before and after it.</summary>
@@ -86,7 +88,7 @@ public static partial class StickyDiagnostics {
     /// </summary>
     public static string ChatBoxChanged(string tag, string what, ChatBoxState? before, ChatBoxState? after) =>
         $"{Prefix} chat box ({what}): talking in {tag}, {StateOf(before)} -> {StateOf(after)}" +
-        (ChatBoxState.Switched(before, after) ? ", one-line channel switched" : "");
+        (ChatBoxState.Switched(before, after) ? ", one-off switch" : "");
 
     /// <summary>The game put a link placeholder in its chat input (only its number: which kind of link).</summary>
     public static string LinkInserted(string tag, uint param, ChatBoxState? chatBox) =>
@@ -94,7 +96,25 @@ public static partial class StickyDiagnostics {
 
     private static string StateOf(ChatBoxState? state) => state is { } known ? known.ToString() : "chat box unreadable";
 
+    private static string SourceOf(LineSource? source) => source switch {
+        LineSource.Game => " from the game",
+        LineSource.Plugin => " from a plugin (ProcessChatBoxEntry)",
+        _ => "",
+    };
+
     private static string YesNo(bool value) => value ? "yes" : "no";
 
     private static string TypeOf(GameChannel? channel) => channel is { } known ? known.ChatType.ToString() : "unknown";
+}
+
+/// <summary>Which way a line reached the gate (<c>ShellCommandModule.ExecuteCommandInner</c>), for the diagnostic log.</summary>
+public enum LineSource {
+    /// <summary>
+    /// Straight from the game: its own chat box (which never goes through <c>UIModule.ProcessChatBoxEntry</c>), a macro
+    /// line, a gear set, and the like.
+    /// </summary>
+    Game,
+
+    /// <summary>Through <c>UIModule.ProcessChatBoxEntry</c>: a plugin's chat box, such as ChatTwo.</summary>
+    Plugin,
 }

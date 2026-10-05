@@ -4,36 +4,38 @@ using FFXIVClientStructs.FFXIV.Client.System.String;
 using FFXIVClientStructs.FFXIV.Client.UI;
 using FFXIVClientStructs.FFXIV.Client.UI.Agent;
 using FFXIVClientStructs.FFXIV.Client.UI.Shell;
+using FFXIVClientStructs.FFXIV.Component.Shell;
 using InteropGenerator.Runtime;
 using LookingGlass.Core.Client;
 
 namespace LookingGlass.Plugin;
 
-/// <summary>Told what the game's chat box submits and when its channel is switched. Called on the game thread.</summary>
+/// <summary>Told what the game is about to run from a chat line, and when its channel is switched. Called on the game thread.</summary>
 internal interface IChatBoxListener {
-    /// <summary>True while submitted text may have to be kept from the game. A field read, checked before anything else runs.</summary>
+    /// <summary>True while lines may have to be kept from the game. A field read, checked before anything else runs.</summary>
     bool Active { get; }
 
-    /// <summary>Decides what happens to a submitted line (its raw bytes, payloads and all), and acts on it.</summary>
+    /// <summary>Decides what happens to a line (its raw bytes, payloads and all), and acts on it.</summary>
+    /// <param name="source">Which way it came (for the diagnostic log).</param>
     /// <returns>True to keep it from the game.</returns>
-    bool KeepFromGame(byte[] message);
+    bool KeepFromGame(byte[] message, LineSource source);
 
     /// <summary><see cref="KeepFromGame"/> threw while <see cref="Active"/>: the line was kept from the game.</summary>
     void Failed(Exception ex);
 
     /// <summary>Something called the game's chat channel switch, which has returned.</summary>
     /// <param name="before">The game's chat channel before the call, or null if it couldn't be read (for the diagnostic log).</param>
-    /// <param name="fromTypedCommand">It was called while a line submitted through the chat box was being run (/s, /p).</param>
+    /// <param name="fromTypedCommand">It was called while a line was being run by the game (/s, /p).</param>
     void ChannelSwitchCalled(GameChannel? before, bool fromTypedCommand);
 
-    /// <summary>A line from the chat box was run by the game (<see cref="KeepFromGame"/> let it through). Only while <see cref="Active"/>.</summary>
+    /// <summary>A line was run by the game (<see cref="KeepFromGame"/> let it through). Only while <see cref="Active"/>.</summary>
     void LinePassed();
 
     /// <summary>
-    /// The game renamed its chat input's channel (<c>AgentChatLog.ChangeChannelName</c>): the chat box switched channel,
-    /// for good or for one line. Only while <see cref="Active"/>.
+    /// The game renamed its chat input's channel (<c>AgentChatLog.ChangeChannelName</c>): it switched channel, for good or
+    /// for a one-off. Only while <see cref="Active"/>.
     /// </summary>
-    /// <param name="before">The chat box state before the call.</param>
+    /// <param name="before">The shell's channel state before the call.</param>
     void ChatBoxRenamed(ChatBoxState? before);
 
     /// <summary>The game put a link placeholder (&lt;item&gt; and the like) in the chat input. Only while <see cref="Active"/>.</summary>
@@ -42,69 +44,83 @@ internal interface IChatBoxListener {
 
 /// <summary>
 /// The one module that touches the game's chat functions, for sticky mode (see <see cref="StickyMode"/>). Addresses
-/// come from FFXIVClientStructs, resolved by Dalamud; a missing one disables sticky mode only.
+/// come from FFXIVClientStructs, resolved by Dalamud; a missing required one disables sticky mode only.
 /// <list type="bullet">
-/// <item><c>UIModule.ProcessChatBoxEntry</c>: what the chat box calls with the line typed when Enter is pressed (and
-/// what ChatTwo calls to send, see docs/design.md). Commands go on from there to the shell, plain text to the current
-/// channel. While talking in a channel, the detour asks the listener first and doesn't call the game for a line it
-/// keeps; if deciding throws, the line is kept (fail closed, see <see cref="ChatBoxGate"/>). A kept line still goes into
-/// the chat input's history when the game would have put it there.</item>
-/// <item><c>RaptureShellModule.ChangeChatChannel</c>: switches the game's chat channel (/s, /p, ChatTwo's picker and
-/// tabs). Seen even when the channel switched to is the one it was on; the listener is told whether a typed line
-/// (/s, /p) made the call, as ChatTwo also calls it with the channel already on at every tab change.</item>
-/// <item><c>AgentChatLog.ChangeChannelName</c> (optional): the game renaming its chat input's channel, also when the
-/// chat box switches to a one-line channel ("/s " typed); checked at once rather than at the next frame, and logged.</item>
+/// <item><c>ShellCommandModule.ExecuteCommandInner</c> (required): the gate. Every chat line the game runs goes through
+/// it: the game's own chat box (Enter goes from the ChatLog addon to a UIModule handler that adds the line to the input
+/// history and calls this directly; it never calls <c>ProcessChatBoxEntry</c>), <c>UIModule.ProcessChatBoxEntry</c>
+/// (what ChatTwo calls), and the game's other callers: macro lines, gear sets and the like. While talking in a channel,
+/// the detour asks the listener first and doesn't call the game for a line it keeps; if deciding throws, the line is
+/// kept (fail closed, see <see cref="ChatBoxGate"/>). Commands go on to the game unchanged, so Dalamud's plugin commands
+/// (/lgc included) still run: Dalamud dispatches them from its own hook on <c>ShellCommands.TryInvokeDebugCommand</c>,
+/// which the game calls while running a command it doesn't know, inside this function, and runs the handler right
+/// there. Another plugin hooking this same function is chained by Dalamud: whichever runs first passes the line on.</item>
+/// <item><c>RaptureShellModule.ChangeChatChannel</c> (required): switches the game's chat channel (/s, /p, ChatTwo's
+/// picker and tabs). Seen even when the channel switched to is the one it was on; the listener is told whether a line
+/// being run made the call, as ChatTwo also calls it with the channel already on at every tab change. Some of the
+/// game's own commands set the channel by another function ClientStructs doesn't name; the channel is also read once a
+/// frame and before each draw of the chat log, which sees those, and a channel command on its own is caught by the gate.</item>
+/// <item><c>UIModule.ProcessChatBoxEntry</c> (optional, pass-through): only notes that a line came from a plugin, for
+/// the diagnostic log.</item>
+/// <item><c>AgentChatLog.ChangeChannelName</c> (optional): the game renaming its chat input's channel; checked at once
+/// rather than at the next frame, and logged.</item>
 /// <item><c>AgentChatLog.InsertTextCommandParam</c> (optional): the game putting a link placeholder (&lt;item&gt;) in its
 /// chat input; logged only.</item>
 /// </list>
 /// All stay enabled while the plugin is loaded; unless talking in a channel, their detours only call the game (and count
-/// a running line). Reading the channel, the chat box's one-line channel (<see cref="ReadChatBox"/>) and the chat input's
-/// label needs no hook.
+/// a running line). Reading the channel, the shell's saved channel (<see cref="ReadChatBox"/>) and the chat input's label
+/// needs no hook. A line kept from the game is in the input history already when it came from the game's own chat box,
+/// which adds it before running it; ChatTwo keeps its own.
 /// </summary>
 internal sealed unsafe class ChatInterop : IDisposable {
     private readonly IChatBoxListener _listener;
-    private Hook<UIModule.Delegates.ProcessChatBoxEntry>? _chatBoxHook;
+    private Hook<ShellCommandModule.Delegates.ExecuteCommandInner>? _commandHook;
     private Hook<RaptureShellModule.Delegates.ChangeChatChannel>? _changeChannelHook;
-    // Optional, for seeing the chat box switch its own one-line channel at once, and for the diagnostic log.
+    // Optional: which way a line came, seeing a switch at once, and the diagnostic log.
+    private Hook<UIModule.Delegates.ProcessChatBoxEntry>? _chatBoxHook;
     private Hook<AgentChatLog.Delegates.ChangeChannelName>? _renameHook;
     private Hook<AgentChatLog.Delegates.InsertTextCommandParam>? _insertParamHook;
-    // Lines from the chat box being run by the game now (game thread only).
+    // Lines being run by the game now (game thread only).
     private int _linesRunning;
+    // Lines a plugin is submitting through ProcessChatBoxEntry now (game thread only).
+    private int _pluginLines;
 
     public ChatInterop(IChatBoxListener listener) {
         this._listener = listener;
-        this._chatBoxHook = TryHook<UIModule.Delegates.ProcessChatBoxEntry>(
-            "UIModule.ProcessChatBoxEntry", UIModule.Addresses.ProcessChatBoxEntry.Value, this.ChatBoxDetour);
+        this._commandHook = TryHook<ShellCommandModule.Delegates.ExecuteCommandInner>(
+            "ShellCommandModule.ExecuteCommandInner", ShellCommandModule.Addresses.ExecuteCommandInner.Value, this.CommandDetour);
         this._changeChannelHook = TryHook<RaptureShellModule.Delegates.ChangeChatChannel>(
             "RaptureShellModule.ChangeChatChannel", RaptureShellModule.Addresses.ChangeChatChannel.Value, this.ChangeChannelDetour);
 
-        // Both or neither: catching typed text without seeing channel switches would keep talking in a channel after /s.
-        if (this._chatBoxHook == null || this._changeChannelHook == null) {
+        // Both or neither: catching lines without seeing channel switches would keep talking in a channel after /s.
+        if (this._commandHook == null || this._changeChannelHook == null) {
             this.DisposeHooks();
             Services.Log.Warning("Talking in a channel without /lgc is unavailable: a chat function wasn't found in this game version");
             return;
         }
 
         this._changeChannelHook.Enable();
-        this._chatBoxHook.Enable();
+        this._commandHook.Enable();
 
-        // Not needed for sticky mode to be safe (the chat box state is also read once a frame and before each draw), so a
-        // missing one only costs the early sight of a switch and its log lines.
+        // Not needed for sticky mode to be safe, so a missing one only costs a log detail or the early sight of a switch.
+        this._chatBoxHook = TryHook<UIModule.Delegates.ProcessChatBoxEntry>(
+            "UIModule.ProcessChatBoxEntry", UIModule.Addresses.ProcessChatBoxEntry.Value, this.ChatBoxDetour);
         this._renameHook = TryHook<AgentChatLog.Delegates.ChangeChannelName>(
             "AgentChatLog.ChangeChannelName", AgentChatLog.Addresses.ChangeChannelName.Value, this.RenameDetour);
         this._insertParamHook = TryHook<AgentChatLog.Delegates.InsertTextCommandParam>(
             "AgentChatLog.InsertTextCommandParam", AgentChatLog.Addresses.InsertTextCommandParam.Value, this.InsertParamDetour);
+        this._chatBoxHook?.Enable();
         this._renameHook?.Enable();
         this._insertParamHook?.Enable();
     }
 
-    /// <summary>A line from the chat box is being run by the game now (game thread only).</summary>
+    /// <summary>A line is being run by the game now (game thread only).</summary>
     public bool LineInFlight => this._linesRunning > 0;
 
-    /// <summary>Both hooks are in place: typed text can be kept from game chat, and channel switches are seen.</summary>
-    public bool InputHooked => this._chatBoxHook != null && this._changeChannelHook != null;
+    /// <summary>Both required hooks are in place: lines can be kept from game chat, and channel switches are seen.</summary>
+    public bool InputHooked => this._commandHook != null && this._changeChannelHook != null;
 
-    /// <summary>The game chat box's own channel state (see <see cref="ChatBoxState"/>), or null if it can't be read. Game thread only.</summary>
+    /// <summary>The shell's channel state (see <see cref="ChatBoxState"/>), or null if it can't be read. Game thread only.</summary>
     public static ChatBoxState? ReadChatBox() {
         var shell = RaptureShellModule.Instance();
         if (shell == null) {
@@ -154,28 +170,25 @@ internal sealed unsafe class ChatInterop : IDisposable {
         }
     }
 
-    private void ChatBoxDetour(UIModule* module, Utf8String* message, nint a4, bool saveToHistory) {
+    private void CommandDetour(ShellCommandModule* module, Utf8String* message, UIModule* uiModule) {
         // The decision lives in Core (ChatBoxGate), where it is tested: while talking in a channel, a line whose fate
         // couldn't be decided is kept from the game.
         var address = (nint) message;
+        var source = this._pluginLines > 0 ? LineSource.Plugin : LineSource.Game;
         if (message != null && ChatBoxGate.KeepFromGame(this._listener.Active,
-                () => this._listener.KeepFromGame(((Utf8String*) address)->AsSpan().ToArray()), this._listener.Failed)) {
-            if (saveToHistory) {
-                AddToChatHistory(module, message);
-            }
-
+                () => this._listener.KeepFromGame(((Utf8String*) address)->AsSpan().ToArray(), source), this._listener.Failed)) {
             return;
         }
 
         // A channel switch while this runs came from the line: a typed /s, /p.
         this._linesRunning++;
         try {
-            this._chatBoxHook!.Original(module, message, a4, saveToHistory);
+            this._commandHook!.Original(module, message, uiModule);
         } finally {
             this._linesRunning--;
         }
 
-        // After the line (which may have been /lgc1, starting it): the chat box's one-line channel may have been set and reset.
+        // After the line (which may have been /lgc1, starting it): the saved channel may have been set and reset.
         try {
             if (this._listener.Active) {
                 this._listener.LinePassed();
@@ -185,23 +198,13 @@ internal sealed unsafe class ChatInterop : IDisposable {
         }
     }
 
-    /// <summary>
-    /// Puts a line kept from the game in the chat input's history anyway, as the game would have, so the up arrow brings
-    /// it back (to send again after "Not sent"). Best effort: the history the game chat input uses, if it can be found.
-    /// </summary>
-    private static void AddToChatHistory(UIModule* module, Utf8String* message) {
+    /// <summary>A plugin (ChatTwo) submitting a line: only noted; the line is decided in <see cref="CommandDetour"/>.</summary>
+    private void ChatBoxDetour(UIModule* module, Utf8String* message, nint a4, bool saveToHistory) {
+        this._pluginLines++;
         try {
-            var addon = (AddonChatLog*) Services.GameGui.GetAddonByName("ChatLog").Address;
-            if (module == null || addon == null || addon->TextInput == null) {
-                return;
-            }
-
-            int index = addon->TextInput->AtkHistoryIndex;
-            if (index >= 0 && index < module->AtkHistory.Length) {
-                module->AddAtkHistoryEntry(message, index);
-            }
-        } catch (Exception ex) {
-            Services.Log.Warning(ex, "Couldn't add a line to the chat input's history");
+            this._chatBoxHook!.Original(module, message, a4, saveToHistory);
+        } finally {
+            this._pluginLines--;
         }
     }
 
@@ -259,6 +262,8 @@ internal sealed unsafe class ChatInterop : IDisposable {
     }
 
     private void DisposeHooks() {
+        this._commandHook?.Dispose();
+        this._commandHook = null;
         this._renameHook?.Dispose();
         this._renameHook = null;
         this._insertParamHook?.Dispose();

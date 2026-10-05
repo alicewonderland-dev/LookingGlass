@@ -59,10 +59,8 @@ public static class ChatChannelPrefixes {
     /// <summary>
     /// The commands that, followed by anything, stand for plain text while talking in a channel (see
     /// <see cref="StickyRoute.For"/>): <see cref="ChatTwo"/>, whichever chat box is in use. ChatTwo sends plain text that
-    /// way; the game's own chat box sends a line typed in its one-line channel ("/s " then text) with the channel's
-    /// command in front too, as far as can be told (see <see cref="ChatBoxState"/>), and a typed "/p hi" can't be told
-    /// apart from it. So in both, "/p hi" goes to the LookingGlass channel, and the long form ("/party hi") is the way to
-    /// talk in a game channel once.
+    /// way, and a typed "/p hi" can't be told apart from it, so one rule holds for every line: "/p hi" goes to the
+    /// LookingGlass channel, and the long form ("/party hi") is the way to talk in a game channel once.
     /// </summary>
     public static IReadOnlyCollection<string> SentAs() => ChatTwo;
 
@@ -195,11 +193,11 @@ public abstract record StickyRoute {
             }
 
             if (!sentAs.Contains(command, StringComparer.OrdinalIgnoreCase)) {
-                return (Game, sentAs.Count == 0 ? "command (ChatTwo rule off)" : "command");
+                return (Game, sentAs.Count == 0 ? "command (short-command rule off)" : "command");
             }
 
             var after = TextAfter(line.Text, command);
-            return (ToChannelOrDropped(channelId, tag, after), ChatBoxLine.HasText(after) ? "ChatTwo command with text" : "ChatTwo command with no text");
+            return (ToChannelOrDropped(channelId, tag, after), ChatBoxLine.HasText(after) ? "short command with text" : "short command with no text");
         }
 
         var text = line.Text.Trim();
@@ -296,8 +294,8 @@ public enum StickyEnd {
     ChannelSwitched,
 
     /// <summary>
-    /// The game chat box switched its own one-line channel: in the game's chat box, a channel command followed by a
-    /// space (/s, /p) does that before anything is sent (see <see cref="ChatBoxState"/>).
+    /// The game made a one-off switch (a tell from a menu, a channel for one line), saving the channel it was on to go
+    /// back to (see <see cref="ChatBoxState"/>).
     /// </summary>
     ChatBoxSwitched,
 
@@ -331,7 +329,7 @@ public enum StickyEnd {
 /// <param name="ContentId">The logged-in character, or 0.</param>
 /// <param name="Channel">The game's chat channel, or null if it can't be read.</param>
 public sealed record StickyWorld(object? Session, ulong ContentId, SessionSnapshot Snapshot, GameChannel? Channel) {
-    /// <summary>The game chat box's own state (its one-line channel), or null if it can't be read.</summary>
+    /// <summary>The game chat box's own state (the channel saved for a one-off switch), or null if it can't be read.</summary>
     public ChatBoxState? ChatBox { get; init; }
 }
 
@@ -428,8 +426,8 @@ public sealed class StickyChannel {
     }
 
     /// <summary>
-    /// A line the chat box submitted has been run by the game (a command, or a one-off line to a game channel): its own
-    /// one-line channel may have been set and reset meanwhile, so what it is now counts as unchanged.
+    /// A line the chat box submitted has been run by the game (a command, or a one-off line to a game channel): the channel
+    /// saved for a one-off switch may have been set and reset meanwhile, so what it is now counts as unchanged.
     /// </summary>
     public void LinePassed(ChatBoxState? chatBox) {
         if (this.ChannelId != null) {
