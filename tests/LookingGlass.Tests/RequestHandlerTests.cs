@@ -266,6 +266,73 @@ public sealed class RequestHandlerTests : IDisposable {
             .RegistrationChallenge);
     }
 
+    /// <summary>
+    /// A name or world with characters that aren't text (line breaks, control and format characters, line separators)
+    /// is no character's, and is refused before anything is looked up or logged: a refused registration logs both, and
+    /// a line break there could forge log lines.
+    /// </summary>
+    [Theory]
+    [InlineData("Test\nPerson", World)]
+    [InlineData("Test\r\n[WRN] Forged", World)]
+    [InlineData("Test\u0002Person", World)]
+    [InlineData("Test\u202EPerson", World)]
+    [InlineData("Test\u200BPerson", World)]
+    [InlineData("Test\u2028Person", World)]
+    [InlineData("Test\uFFFEPerson", World)]
+    [InlineData("Test Person", "Gilga\nmesh")]
+    [InlineData("Test Person", "Gilga\u0085mesh")]
+    [InlineData("Test\nPerson", ProtocolInfo.DebugWorldName)]
+    public async Task ANameOrWorldThatIsntPlainTextIsRefusedBeforeAnythingIsLogged(string name, string world) {
+        this._handler = this.NewHandler("wss://chat.example.com/ws");
+        var connection = await this.HelloAsync("203.0.113.67");
+
+        // For another server's address, which would be logged with the name and world.
+        var refused = await this.StartRegistrationAsync(connection, name, world, url: "wss://evil.example/ws");
+        Assert.Equal(ErrorCode.InvalidRequest, refused.Error?.Code);
+        Assert.Null(connection.PendingRegistration);
+        Assert.Empty(this._logs.AtLeast(Microsoft.Extensions.Logging.LogLevel.Information));
+        Assert.Equal(0, this._lodestone.Requests);
+
+        // And for this one's, which would ask the Lodestone.
+        Assert.Equal(ErrorCode.InvalidRequest, (await this.StartRegistrationAsync(connection, name, world, url: "wss://chat.example.com/ws")).Error?.Code);
+        Assert.Equal(0, this._lodestone.Requests);
+    }
+
+    /// <summary>
+    /// Starting a registration for an address that isn't this server's costs no registration and no Lodestone request,
+    /// but logs a warning, so those are counted on their own, per address (10 an hour): past that, they are refused
+    /// without a warning. Refused completions count too. Other addresses, and real registrations, aren't affected.
+    /// </summary>
+    [Fact]
+    public async Task RegistrationsForAnotherServersAddressAreLimitedPerAddress() {
+        this._handler = this.NewHandler("wss://chat.example.com/ws");
+        using var keys = IdentityKeys.Generate();
+        var connection = await this.HelloAsync("203.0.113.68");
+        for (var i = 0; i < 9; i++) {
+            Assert.Equal(ErrorCode.RegistrationFailed, (await this.StartRegistrationAsync(connection, keys: keys, url: "wss://evil.example/ws")).Error?.Code);
+        }
+
+        // A completion for another address counts too: the tenth.
+        var started = (await this.StartRegistrationAsync(connection, keys: keys, url: "wss://chat.example.com/ws")).RegistrationChallenge!;
+        Assert.Equal(ErrorCode.RegistrationFailed, (await this.CompleteRegistrationAsync(connection, keys, started, "wss://evil.example/ws")).Error?.Code);
+        Assert.Equal(10, this._logs.AtLeast(Microsoft.Extensions.Logging.LogLevel.Warning).Count);
+
+        var limited = await this.StartRegistrationAsync(connection, keys: keys, url: "wss://evil.example/ws");
+        Assert.Equal(ErrorCode.RateLimited, limited.Error?.Code);
+        Assert.Equal(ErrorCode.RateLimited, (await this.CompleteRegistrationAsync(connection, keys, started, "wss://evil.example/ws")).Error?.Code);
+        Assert.Equal(10, this._logs.AtLeast(Microsoft.Extensions.Logging.LogLevel.Warning).Count);
+
+        // Another address is counted on its own.
+        var other = await this.StartRegistrationAsync(await this.HelloAsync("203.0.113.69"), keys: keys, url: "wss://evil.example/ws");
+        Assert.Equal(ErrorCode.RegistrationFailed, other.Error?.Code);
+        Assert.Equal(11, this._logs.AtLeast(Microsoft.Extensions.Logging.LogLevel.Warning).Count);
+
+        // The real registration started above is still there, and two more of the address's three an hour.
+        for (var i = 0; i < 2; i++) {
+            Assert.NotNull((await this.StartRegistrationAsync(await this.HelloAsync("203.0.113.68"), keys: keys, url: "wss://chat.example.com/ws")).RegistrationChallenge);
+        }
+    }
+
     [Fact]
     public async Task SecondAuthenticateOnAConnectionIsRejected() {
         var firstToken = await this.RegisterDebugAsync("Reauth One");

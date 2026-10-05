@@ -6,6 +6,7 @@ using Microsoft.Extensions.Options;
 using LookingGlass.Core.Client;
 using LookingGlass.Core.Crypto;
 using LookingGlass.Core.Membership;
+using LookingGlass.Core.Util;
 using LookingGlass.Protocol;
 using LookingGlass.Server.Data;
 using LookingGlass.Server.Services;
@@ -80,6 +81,10 @@ public sealed class RequestHandler(
     private const int MaxSealedNameBytes = 128;
 
     private readonly WindowCounter _registrations = new(options.Value.Limits.RegistrationsPerHourPerIp, TimeSpan.FromHours(1));
+    // Registrations refused for naming an address that isn't this server's, when starting or completing. They cost no
+    // registration and no Lodestone request (the honest client that names one is misconfigured, and is told what to
+    // set), but each logs a warning, so they are counted on their own; past the limit they are refused unlogged.
+    private readonly WindowCounter _refusedRegistrations = new(options.Value.Limits.RefusedRegistrationsPerHourPerIp, TimeSpan.FromHours(1));
     // Key login: challenges per address; failures per address, where a challenge counts as one from when it is issued
     // until it is answered correctly (so asking and never answering is limited like failing); and failed answers per
     // account and address. Each challenge allows one attempt, so these bound attempts per connection too.
@@ -220,7 +225,8 @@ public sealed class RequestHandler(
         var character = request.Character ?? throw new RequestException(ErrorCode.InvalidRequest, "Missing character.");
         var name = character.Name.Trim();
         var worldName = character.WorldName.Trim();
-        if (name.Length is 0 or > 32 || worldName.Length is 0 or > 32) {
+        // Before anything is logged: they are, as the client sent them, when the registration is refused.
+        if (name.Length is 0 or > 32 || worldName.Length is 0 or > 32 || !TextSanitizer.IsPlain(name) || !TextSanitizer.IsPlain(worldName)) {
             throw new RequestException(ErrorCode.InvalidRequest, "Invalid character name or world.");
         }
 
@@ -257,6 +263,7 @@ public sealed class RequestHandler(
         // address that isn't this server's is what a malicious server passing this server's code on to its users would
         // name (to have them accept it). Checked as when completing, before anything is counted or looked up.
         if (this.NotThisServer(connection, request.ServerUrl) is { } elsewhere) {
+            this.CountRefusedRegistration(connection);
             logger.LogWarning("Registration of {Name} on {World} from {Address} refused when starting: {Reason}", name, worldName, connection.RemoteAddress, elsewhere);
             throw new RequestException(ErrorCode.RegistrationFailed,
                 this.WrongAddressMessage(connection, request.ServerUrl) +
@@ -301,6 +308,15 @@ public sealed class RequestHandler(
                 Nonce = ByteString.CopyFrom(connection.PendingRegistration.Nonce),
             },
         };
+    }
+
+    /// <summary>Counts a registration refused for its address (see <see cref="_refusedRegistrations"/>), before it is logged.</summary>
+    /// <exception cref="RequestException">Too many from this address: refused without a warning.</exception>
+    private void CountRefusedRegistration(ClientConnection connection) {
+        if (!this._refusedRegistrations.TryAdd(connection.RemoteAddress)) {
+            throw new RequestException(ErrorCode.RateLimited,
+                "Too many registration attempts for addresses this server doesn't accept; set the server address in Settings to one it accepts, and try again later.");
+        }
     }
 
     private static byte[] NewRegistrationNonce() => RandomNumberGenerator.GetBytes(RegistrationProof.NonceSize);
@@ -411,6 +427,7 @@ public sealed class RequestHandler(
         }
 
         if (!pending.IsDebug && this.NotThisServer(connection, request.ServerUrl) is { } elsewhere) {
+            this.CountRefusedRegistration(connection);
             logger.LogWarning("Registration of {User} from {Address} refused: {Reason}", pending.UserId, connection.RemoteAddress, elsewhere);
             throw new RequestException(ErrorCode.RegistrationFailed,
                 this.WrongAddressMessage(connection, request.ServerUrl) +

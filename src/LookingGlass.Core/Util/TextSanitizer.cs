@@ -47,4 +47,23 @@ public static class TextSanitizer {
     }
 
     public static string Name(string? text) => Clean(text, MaxNameLength);
+
+    /// <summary>
+    /// Whether <paramref name="text"/> is plain text, as a name is: nothing <see cref="Clean"/> would drop or turn into
+    /// a space (control and format characters, line breaks and tabs, unassigned code points, broken surrogate pairs),
+    /// nor a line or paragraph separator. Text that isn't can't be logged as it is: a line break there forges log lines.
+    /// </summary>
+    public static bool IsPlain(string text) {
+        for (var at = 0; at < text.Length;) {
+            if (Rune.DecodeFromUtf16(text.AsSpan(at), out var rune, out var used) != System.Buffers.OperationStatus.Done
+                || Rune.GetUnicodeCategory(rune) is UnicodeCategory.Control or UnicodeCategory.Format or UnicodeCategory.Surrogate
+                    or UnicodeCategory.OtherNotAssigned or UnicodeCategory.LineSeparator or UnicodeCategory.ParagraphSeparator) {
+                return false;
+            }
+
+            at += used;
+        }
+
+        return true;
+    }
 }

@@ -54,6 +54,12 @@ public sealed class DevOptions {
 public sealed class LimitOptions {
     public int RegistrationsPerHourPerIp { get; set; } = 5;
 
+    /// <summary>
+    /// Registrations one IP address may have refused in an hour for naming an address this server doesn't list (each is
+    /// logged as a warning); past that they are refused without one. Counted apart from <see cref="RegistrationsPerHourPerIp"/>.
+    /// </summary>
+    public int RefusedRegistrationsPerHourPerIp { get; set; } = 10;
+
     /// <summary>Key login challenges one IP address may ask for in an hour.</summary>
     public int KeyLoginsPerHourPerIp { get; set; } = 30;
 
