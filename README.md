@@ -45,7 +45,8 @@ server info bar; click that to stop. If a message can't be sent, you're told,
 and it doesn't go to game chat either. Links can't be sent, only text.
 
 Even `/p hi` (and a macro's text) goes to the channel; `/party hi` talks in
-Party once. To go back, type `/s` (or any channel) on its own. With ChatTwo,
+Party once, and tells (`/t`, `/r`) still go as tells. To go back, type `/s` (or
+any channel) on its own. With ChatTwo,
 every ChatTwo chat box not set to a tell sends to the channel too; its
 "(Warning: ...)" only names the game channel underneath. Turn ExtraChat off while you do this.
 

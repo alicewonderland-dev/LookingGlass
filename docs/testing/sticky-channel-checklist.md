@@ -70,6 +70,14 @@ nothing.
       while in [sky]: the emote plays, and `hello` goes only to LookingGlass
       (B sees nothing in Say). A macro's text going to the channel is
       expected.
+- [ ] 7d. **(changed)** A macro with the line `/p Pull in 5`, run while in
+      [sky]: it goes to LookingGlass, not Party. That is expected: for raid
+      macros, use the long form, `/party Pull in 5`, which goes to Party.
+- [ ] 7e. **(changed)** Have B send A a tell. While in [sky], A types `/r hi`.
+      B gets the tell "hi", and nothing reaches LookingGlass (B sees nothing
+      in the channel). Still in [sky], or a "Stopped" line if the game's
+      reply switched channel: either is fine, as long as the tell arrived and
+      the channel got nothing.
 
 - [ ] 8. Type `/em waves`. The emote plays.
 - [ ] 9. **(changed)** Type `/p brb`. It goes only to LookingGlass, as
@@ -180,6 +188,8 @@ nothing.
       (links can't be sent)." Nothing in the linkshell or anywhere else.
 - [ ] 35c. **(changed)** Type `look ` and link an item after it, in ChatTwo.
       Only LookingGlass gets it; nothing in the linkshell.
+- [ ] 35d. **(changed)** Have B send A a tell. While in [sky], type `/r hi` in
+      ChatTwo. B gets the tell "hi", and nothing reaches LookingGlass.
 
 ### Tabs
 

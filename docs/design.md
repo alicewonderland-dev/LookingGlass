@@ -1344,7 +1344,24 @@ FFXIVClientStructs gives (Dalamud resolves them at startup), hooked with
   - about twenty other callers in the game: macro lines, gear sets, battle
     mode, general actions, joining the novice network. Their commands pass
     through unchanged. A macro's plain text (or `/p text`) while sticky goes to
-    the LookingGlass channel instead of game chat: private, so it fails safe.
+    the LookingGlass channel instead of game chat: private, so it fails safe. A
+    raid macro's `/p Pull in 5` therefore goes to the channel while sticky; macros
+    meant for Party should use the long form, `/party`.
+
+*Lines run inside a line (a reviewer's reading of the game's code).* Two of
+the game's command handlers run the gate's function again while their own
+line is running. The reply command (`/r`, `/reply`, `ShellCommandChatReply`)
+sets the tell target, then runs only the text after "/r" that way. Judged,
+that text is plain text, so a private reply would go to the whole channel and
+the tell would never be sent. So a line run directly inside a reply the gate
+let through goes to the game unjudged (`NestedLines`; English names and the
+client's own from the `TextCommand` sheet, found by the English name), and the
+log says so. Every other line run inside another is judged as usual: a
+plugin command that submits plain text while it runs, and the game's command
+that runs a stored line (`ShellCommandCommand`, contents unknown; low risk,
+and judged means kept from game chat). The game's other chat commands (Say,
+Party, Tell, FC, the linkshells, Alliance, Novice Network, PvP team) send
+directly, with nothing run inside.
 - `RaptureShellModule.ChangeChatChannel`, which switches the game's chat
   channel (`/s`, `/p`, `/l1`, ChatTwo's channel picker and tabs). Some of the
   game's own commands set the channel through another function that
@@ -1639,7 +1656,8 @@ written at Debug only. Also logged while sticky: every change of the shell's
 saved channel (`ChatBoxState`: numbers, and its command only if known),
 where it was seen (a frame, a draw, the game renaming its channel, after a
 line), and whether it counted as a one-off switch; the tag being held back from the
-label and shown again; a link placeholder put in the chat input
+label and shown again; a line run inside a reply passed to the game unjudged
+(its size only); a link placeholder put in the chat input
 (`AgentChatLog.InsertTextCommandParam`, hooked for the log only: just its
 number); and the chat box state at start and end. A line typed while sticky
 that reached game chat with no `[sticky] line` entry at that time went past the
