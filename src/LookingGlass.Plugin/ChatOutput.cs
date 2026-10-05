@@ -69,6 +69,15 @@ public sealed class ChatOutput(Configuration config) {
         });
     }
 
+    /// <summary>A line about a channel (talking in it, or stopping), all in its colour, or the tag colour for the default.</summary>
+    public void ChannelNotice(string text, ushort? colour) {
+        text = TextSanitizer.Clean(text);
+        RunOnFramework(() => {
+            var builder = new SeStringBuilder().AddUiForeground("[LookingGlass] ", TagColour).AddUiForeground(text, colour ?? TagColour);
+            Services.Chat.Print(new XivChatEntry { Type = config.ChatType, Message = builder.Build() });
+        });
+    }
+
     private static void RunOnFramework(Action action) {
         _ = Services.Framework.RunOnFrameworkThread(() => {
             try {

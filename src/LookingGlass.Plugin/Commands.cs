@@ -4,9 +4,9 @@ using LookingGlass.Core.Client;
 namespace LookingGlass.Plugin;
 
 /// <summary>
-/// /lgc1 to /lgc50 and /lgc &lt;nickname&gt; send to a channel; /lookingglass (or /lg) and
-/// /lgdebug open the windows. Handlers run on the framework thread; they read only the
-/// session manager's immutable copies of the slots and nicknames, and send in the background.
+/// /lgc1 to /lgc50 and /lgc &lt;nickname&gt; send to a channel, or with no message, talk in it from now on (see
+/// <see cref="StickyMode"/>); /lookingglass (or /lg) and /lgdebug open the windows. Handlers run on the framework thread;
+/// they read only the session manager's immutable copies of the slots and nicknames, and send in the background.
 /// </summary>
 public sealed class Commands : IDisposable {
     private const string MainCommand = "/lookingglass";
@@ -15,26 +15,31 @@ public sealed class Commands : IDisposable {
 
     private readonly SessionManager _sessions;
     private readonly ChatOutput _chat;
+    private readonly ChannelSender _sender;
+    private readonly StickyMode _sticky;
     private readonly Action _toggleMain;
     private readonly Action _toggleDebug;
 
-    public Commands(SessionManager sessions, ChatOutput chat, Action toggleMain, Action toggleDebug) {
+    public Commands(SessionManager sessions, ChatOutput chat, ChannelSender sender, StickyMode sticky, Action toggleMain, Action toggleDebug) {
         this._sessions = sessions;
         this._chat = chat;
+        this._sender = sender;
+        this._sticky = sticky;
         this._toggleMain = toggleMain;
         this._toggleDebug = toggleDebug;
 
         // Fifty numbered commands would swamp Dalamud's command list, so only /lgc is listed, and explains them.
         for (var slot = 1; slot <= Configuration.SlotCount; slot++) {
             Services.Commands.AddHandler(CommandSlots.Prefix + slot, new CommandInfo(this.OnSlotCommand) {
-                HelpMessage = $"Send a message to the channel on {CommandSlots.Prefix}{slot}.",
+                HelpMessage = $"Send a message to the channel on {CommandSlots.Prefix}{slot}, or with no message, talk in it.",
                 ShowInHelp = false,
             });
         }
 
         Services.Commands.AddHandler(CommandSlots.Prefix, new CommandInfo(this.OnNicknameCommand) {
             HelpMessage = $"Send a message to a channel: {CommandSlots.Prefix}<N> <message> by its number ({CommandSlots.Prefix}1 to {CommandSlots.Prefix}{Configuration.SlotCount}), " +
-                          $"or {CommandSlots.Prefix} <nickname> <message> by its nickname. Set both in {ShortMainCommand}.",
+                          $"or {CommandSlots.Prefix} <nickname> <message> by its nickname. Leave out the message to talk in that channel until you " +
+                          $"switch back (for example with /s). Set both in {ShortMainCommand}.",
         });
         Services.Commands.AddHandler(MainCommand, new CommandInfo((_, _) => this._toggleMain()) {
             HelpMessage = "Open LookingGlass (register, create and manage channels).",
@@ -59,11 +64,16 @@ public sealed class Commands : IDisposable {
         this.Run(ChannelCommand.ForNickname(this._sessions.Nicknames, arguments));
     }
 
-    /// <summary>The one send path for both kinds of channel command.</summary>
+    /// <summary>The one path for both kinds of channel command.</summary>
     private void Run(ChannelCommand command) {
-        if (command is ChannelCommand.Usage usage) {
-            this._chat.Notice(NoticeLevel.Info, usage.Text);
-            return;
+        switch (command) {
+            case ChannelCommand.Usage usage:
+                this._chat.Notice(NoticeLevel.Info, usage.Text);
+                return;
+            case ChannelCommand.TalkIn talk:
+                // Checks the connection and the membership itself, and says why not.
+                this._sticky.Enter(talk.ChannelId);
+                return;
         }
 
         var session = this._sessions.Session;
@@ -77,16 +87,7 @@ public sealed class Commands : IDisposable {
                 this._chat.Notice(NoticeLevel.Warning, notFound.Text);
                 break;
             case ChannelCommand.Send send:
-                // Talking in a channel means you've caught up with it.
-                this._sessions.Unread.MarkRead(send.ChannelId);
-                _ = Task.Run(async () => {
-                    try {
-                        await session.SendTextAsync(send.ChannelId, send.Text);
-                    } catch (Exception ex) {
-                        var advanced = this._sessions.AdvancedMode;
-                        this._chat.Notice(NoticeLevel.Error, PlainMessages.Of($"Not sent: {PlainMessages.MessageOf(ex, advanced)}", advanced));
-                    }
-                });
+                this._sender.Send(send.ChannelId, send.Text);
                 break;
         }
     }

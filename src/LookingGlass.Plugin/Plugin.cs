@@ -8,6 +8,7 @@ public sealed class Plugin : IDalamudPlugin {
     private readonly Configuration _config;
     private readonly PlayerTracker _player;
     private readonly SessionManager _sessions;
+    private readonly StickyMode _sticky;
     private readonly Commands _commands;
     private readonly WindowSystem _windows = new("LookingGlass");
     private readonly MainWindow _mainWindow;
@@ -24,6 +25,8 @@ public sealed class Plugin : IDalamudPlugin {
         var chat = new ChatOutput(this._config);
         this._player = new PlayerTracker();
         this._sessions = new SessionManager(this._config, this._player, chat);
+        var sender = new ChannelSender(this._sessions, chat);
+        this._sticky = new StickyMode(this._config, this._player, this._sessions, chat, sender);
 
         // One action runner for both windows, so the main window's status line shows what Settings started too.
         var actions = new UiActions(() => this._sessions.Snapshot.PendingChallenge?.Code, () => this._config.AdvancedMode);
@@ -38,7 +41,7 @@ public sealed class Plugin : IDalamudPlugin {
         this._windows.AddWindow(this._settingsWindow);
         this._windows.AddWindow(this._debugWindow);
 
-        this._commands = new Commands(this._sessions, chat, this._mainWindow.Toggle, this._debugWindow.Toggle);
+        this._commands = new Commands(this._sessions, chat, sender, this._sticky, this._mainWindow.Toggle, this._debugWindow.Toggle);
 
         pluginInterface.UiBuilder.Draw += this._windows.Draw;
         pluginInterface.UiBuilder.OpenMainUi += this._mainWindow.Toggle;
@@ -46,6 +49,9 @@ public sealed class Plugin : IDalamudPlugin {
     }
 
     public void Dispose() {
+        // First: what is typed must stop going anywhere but game chat before anything else goes away, and the hooks come off.
+        this._sticky.Dispose();
+
         var ui = Services.PluginInterface.UiBuilder;
         ui.Draw -= this._windows.Draw;
         ui.OpenMainUi -= this._mainWindow.Toggle;
