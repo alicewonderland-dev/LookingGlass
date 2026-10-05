@@ -12,7 +12,8 @@ namespace LookingGlass.Plugin;
 /// is why what ChatTwo sends is recognised by its channel commands instead (see <see cref="ChatChannelPrefixes"/>).</item>
 /// <item><c>ExtraChat.OverrideChannelColour</c>: ChatTwo's only way for another plugin to name the channel its input
 /// box shows. ChatTwo subscribes to it by that name (it was made for ExtraChat); LookingGlass sends its own channel's tag
-/// on it while talking in a channel, and null when it stops. It changes what ChatTwo shows, not where ChatTwo sends.</item>
+/// on it while talking in a channel (again every second, in case ChatTwo missed it), and null as soon as it stops, checked
+/// once a frame (see <c>StickyMode.SyncIndicators</c>). It changes what ChatTwo shows, not where ChatTwo sends.</item>
 /// <item><c>ChatTwo.Available</c>: ChatTwo (re)loaded, so the override is sent again.</item>
 /// </list>
 /// Game thread only.
@@ -49,7 +50,7 @@ internal sealed class ChatTwoIpc : IDisposable {
         }
     }
 
-    /// <summary>The chat type (ChatTwo's numbering, see <see cref="ChatChannelPrefixes.ForChatTwoChatType"/>) ChatTwo's input sends to, or null if it doesn't say.</summary>
+    /// <summary>The chat type (ChatTwo's numbering: 12 is a tell, <see cref="ChatChannelPrefixes.ChatTwoTell"/>) ChatTwo's input sends to, or null if it doesn't say.</summary>
     public int? InputChannel() {
         try {
             return this._inputState.InvokeFunc().Item6;

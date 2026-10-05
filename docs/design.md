@@ -1312,40 +1312,135 @@ another channel moves to that one. If ExtraChat (or a fork of it) is loaded
 too, one more line warns that it watches the same chat box and ChatTwo label,
 and to turn it off while doing this.
 
-**The hooks.** Two game functions, by the addresses FFXIVClientStructs gives
-(Dalamud resolves them at startup), hooked with `IGameInteropProvider` in
-`ChatInterop`:
+**What it says.** Short lines, in the channel's colour, in the chat channel
+chosen in Settings (the same one for every line, so a ChatTwo tab that shows
+"Now talking in" shows "Stopped" too): "Now talking in [sky]." and "Stopped
+talking in [sky]." with a few words of reason where they help (": you logged
+out.", ": disconnected.", ": you're no longer in it.", ": LookingGlass was
+turned off.", ": the connection started over."). The first time ever that it
+starts with ChatTwo loaded, one more sentence follows (a saved setting,
+`ChatTwoStickyNoteShown`): ChatTwo's "(Warning: …)" only names the game
+channel underneath, messages still go only to the channel, and the long form
+(`/party hi`) talks in a game channel once. A message kept from the game says
+"Not sent to [sky] or game chat: *reason*".
 
-- `UIModule.ProcessChatBoxEntry`, which the chat box calls with the line typed
-  when Enter is pressed. From there the game runs commands (Dalamud's
-  included) or sends plain text to the current channel, so it is the one place
-  to keep a line from game chat without touching how commands work.
+**The hooks.** Two required game functions, by the addresses
+FFXIVClientStructs gives (Dalamud resolves them at startup), hooked with
+`IGameInteropProvider` in `ChatInterop`:
+
+- `ShellCommandModule.ExecuteCommandInner`, the gate: where the game runs a
+  chat line, a command (Dalamud's included) or plain text for the current
+  channel. Every line goes through it, whichever way it came:
+  - the game's own chat box. Enter goes from the ChatLog addon, through the
+    UI's external interface handler 19 (`UIModule`), which adds the line to the
+    input's history and calls this function directly. The game's code never
+    calls `UIModule.ProcessChatBoxEntry` (a reviewer's cross-reference scan of
+    the 2026.09.15 game build: no callers). The first version of sticky mode
+    gated `ProcessChatBoxEntry`, so the game's own chat box went past it
+    entirely: plain text, links and `/s test` all reached game chat while the
+    label showed the tag. That was the owner's B and C;
+  - `UIModule.ProcessChatBoxEntry`, which ChatTwo (and other plugins) call, and
+    which ends here too;
+  - about twenty other callers in the game: macro lines, gear sets, battle
+    mode, general actions, joining the novice network. Their commands pass
+    through unchanged. A macro's plain text (or `/p text`) while sticky goes to
+    the LookingGlass channel instead of game chat: private, so it fails safe. A
+    raid macro's `/p Pull in 5` therefore goes to the channel while sticky; macros
+    meant for Party should use the long form, `/party`.
+
+*Lines run inside a line (a reviewer's reading of the game's code).* Two of
+the game's command handlers run the gate's function again while their own
+line is running. The reply command (`/r`, `/reply`, `ShellCommandChatReply`)
+sets the tell target, then runs only the text after "/r" that way. Judged,
+that text is plain text, so a private reply would go to the whole channel and
+the tell would never be sent. So a line run directly inside a reply the gate
+let through goes to the game unjudged (`NestedLines`; English names and the
+client's own from the `TextCommand` sheet, found by the English name), and the
+log says so. Every other line run inside another is judged as usual: a
+plugin command that submits plain text while it runs, and the game's command
+that runs a stored line (`ShellCommandCommand`, contents unknown; low risk,
+and judged means kept from game chat). The game's other chat commands (Say,
+Party, Tell, FC, the linkshells, Alliance, Novice Network, PvP team) send
+directly, with nothing run inside.
 - `RaptureShellModule.ChangeChatChannel`, which switches the game's chat
-  channel (`/s`, `/p`, `/l1`, ChatTwo's channel picker and tabs).
+  channel (`/s`, `/p`, `/l1`, ChatTwo's channel picker and tabs). Some of the
+  game's own commands set the channel through another function that
+  FFXIVClientStructs doesn't name (`RaptureShellModule.SetChatChannel` in the
+  reviewer's scan, about nine shell-command sites), so not every switch passes
+  this hook. Those are still seen: a typed channel command on its own is caught
+  at the gate, and the channel is read once a frame and before each draw of the
+  chat log.
 
 Both or neither: if either address is missing, neither is hooked and sticky
-mode refuses to start, rather than catch typing without seeing switches. Both
+mode refuses to start, rather than catch lines without seeing switches. Both
 stay enabled while the plugin is loaded; when no channel is sticky, the
-detours only call the game (and count a running line, below).
+detours only call the game (and count a running line, below). Three more are
+optional, for the diagnostic log and to see a switch sooner:
+`UIModule.ProcessChatBoxEntry` (a pass-through that only notes a line came from
+a plugin), `AgentChatLog.ChangeChannelName` and
+`AgentChatLog.InsertTextCommandParam`.
 
-**Where a line goes** (`StickyRoute.For`). Not sticky: the game. Sticky:
+*Plugin commands (checked in Dalamud's source).* Dalamud dispatches plugin
+commands, `/lgc` included, from its own hook on
+`ShellCommands.TryInvokeDebugCommand` (`Dalamud/Game/Command/CommandManager.cs`):
+it calls the game's function first and, if the game doesn't know the command,
+runs the plugin's handler right there, synchronously. The game calls that
+function while running a command, inside `ExecuteCommandInner`, so the gate
+sees `/lgc3` first, lets it through like any command, and the handler runs
+inside the gate's call to the game (which is also why a line counts as
+running, below). The two hooks are on different functions, so their order
+doesn't matter. Another plugin hooking `ExecuteCommandInner` too (GagSpeak, on
+the owner's machine) is chained by Dalamud: if it runs first and changes the
+text (gagged speech), the gate decides the changed text, which still goes to
+the channel.
 
-- A line that starts with `/` is a command and goes to the game untouched,
-  `/lgc` commands included. Only a `/` at the very start counts: a line with
-  a space before it goes to the channel, never the game.
-- Anything else goes to the channel, trimmed, as text (`SeString.TextValue`:
-  item links and auto-translate phrases become their text). A blank line goes
-  nowhere; a line with no text at all (only a link) is dropped with a line
-  saying so.
-- With ChatTwo loaded, a short channel command followed by text also goes to
-  the channel: that is how ChatTwo sends plain text (below).
+**Where a line goes** (`StickyRoute.For`). It is decided from the line as the
+gate got it (`ChatBoxLine`): its bytes, an SeString in which links
+and auto-translate phrases are payloads starting with the byte 2, and its text
+(`SeString.TextValue`, where those become their text). Not sticky: the game.
+Sticky:
+
+- A channel command on its own, with nothing after it (`/s`, `/say`, `/p`,
+  `/party`, `/l1`, `/linkshell1`, `/cwl1`, `/cwlinkshell1` and the rest, in
+  English and in the client's language from the game's `TextCommand` sheet):
+  the player switching back. Sticky mode ends right there, with its line and
+  the labels taken down, and then the command goes on to the game, which
+  switches its channel (`StickyRoute.Leave`). This doesn't depend on whether,
+  or when, the game calls its channel switch for the command; for the channel
+  already on it may not (see Leaving). If the game then refuses the switch
+  (`/l3` without a third linkshell), sticky mode has still ended, and the label
+  shows the game's channel, which is where typing goes.
+- A short channel command (`/s`, `/p`, `/a`, `/y`, `/sh`, `/fc`, `/pt`, `/b`,
+  `/l1` to `/l8`, `/cwl1` to `/cwl8`) followed by *anything* (text, a link's
+  payload bytes, a link placeholder, an auto-translate phrase) is the
+  channel's, like plain text, in both chat boxes. ChatTwo sends what was typed
+  in it that way (below), and a typed `/p hi` can't be told apart from that, so
+  one rule holds for every line. Only the bare
+  command is a switch (above). The command ends at the first space or control
+  byte, so a payload straight after it still counts. The long forms (`/party
+  hi`) are the way to talk in a game channel once.
+- Any other line starting with `/` is a command and goes to the game
+  untouched, `/lgc` commands included. Only a `/` at the very start counts: a
+  line with a space before it goes to the channel, never the game.
+- Anything else goes to the channel, trimmed, as text.
+- A line with nothing to send as text is kept from the game, with "Not sent to
+  [sky] or game chat: no text (links can't be sent)." That is a line with only
+  links (payloads) or only link placeholders (`<item>`, `<flag>`, `<status>`:
+  what the chat input holds for a link until the line is sent, put there by
+  `AgentChatLog.InsertTextCommandParam`; the game makes them links only while
+  running the line, after the gate, and ChatTwo's input holds them the same
+  way). In a line with text, a placeholder is sent as typed. A blank
+  line goes nowhere, quietly.
 
 **Fail closed.** While sticky, a line never reaches game chat unless it is a
 command:
 
-- Not connected (or reconnecting): kept from the game, and "Not sent to [sky]:
-  not connected to LookingGlass. It didn't go to game chat either." Sticky
-  mode stays on, so a reconnect doesn't drop the player into public chat.
+- Not connected (or reconnecting): kept from the game, and "Not sent to [sky]
+  or game chat: not connected to LookingGlass." A connection that drops on its
+  own keeps its session, which reconnects, so sticky mode stays on, and a
+  reconnect doesn't drop the player into public chat. Pressing **Disconnect**
+  stops the session: that ends sticky mode, with "Stopped talking in [sky]:
+  disconnected." (`StickyEnd.Disconnected`), as the player chose to stop.
 - The send fails (no channel key yet, rate limited, refused, timed out): the
   same line with the reason, in the mode's words (`PlainMessages.MessageOf`).
 - Deciding throws: the line is kept, and the player is told it wasn't sent.
@@ -1355,12 +1450,10 @@ command:
 - Unloading: sticky mode ends first (with a line), the chat input's channel
   name is put back, then the hooks come off, before anything else is disposed.
 
-A line kept from the game is still put in the game chat input's history when
-the game would have put it there (`UIModule.AddAtkHistoryEntry`, with the
-history the chat input uses, `AtkComponentTextInput.AtkHistoryIndex`), so the
-up arrow brings back a message that wasn't sent. This is best effort: if the
-chat input or its history can't be found, the line just isn't added. ChatTwo
-keeps its own history, so it isn't affected.
+A line kept from the game is still in the chat input's history, so the up
+arrow brings back a message that wasn't sent: the game's own chat box adds the
+line to its history before running it, and ChatTwo keeps its own. (The first
+version added kept lines itself, which would now add the game's twice.)
 
 **Leaving.** It ends, with one line saying so, when:
 
@@ -1369,18 +1462,52 @@ keeps its own history, so it isn't affected.
   every `ChangeChatChannel` call, against the channel it started in
   (Tab-cycling, ChatTwo's picker, a ChatTwo tab with another channel, another
   plugin);
-- a channel command is typed, even for the channel already on (`/s` while in
-  Say): a `ChangeChatChannel` call made while a line from the chat box is
-  being run (`StickyChannel.ChannelSwitchCalled`);
+- a channel command is typed on its own, even for the channel already on (`/s`
+  while in Say): decided from the line itself, before the game runs it (see
+  Where a line goes), and also any `ChangeChatChannel` call made while a line
+  from the chat box is being run (`StickyChannel.ChannelSwitchCalled`), such
+  as `/t Bob`;
 - the player clicks the server info bar entry;
 - they log out or another character logs in;
-- the session ends: disconnected by hand, the server address changed, or the
-  identity reset or restored (a new session object);
+- the session is stopped: **Disconnect** pressed (or a server change waiting
+  to connect), "disconnected";
+- the session is replaced: the server address changed, or the identity reset
+  or restored (a new session object), "the connection started over";
 - they're no longer in the channel (left, removed, disbanded, "Remove from my
   list", or now only a place under old keys), checked against the complete
   channel list only;
+- the game makes a one-off switch, saving the channel it is on to go back to
+  (`StickyEnd.ChatBoxSwitched`, below);
 - the game's chat channel can't be read any more;
 - the plugin is turned off or updated.
+
+**One-off switches (the reviewer's reading of the game's code).** Besides its
+channel (`ChatType`), the shell keeps `RaptureShellModule.TempChatType` and
+`TempChatCommand` (FFXIVClientStructs), with a saved tell target: the channel
+to go back to. For a one-off switch, a tell from a menu ("Send Tell",
+`SetContextTellTargetInForay`) or a channel for one line, the game saves the
+channel it is on there, then calls `ChangeChatChannel` with the new one without
+making it its channel (`setChatType` false), and sets the saved type to -2 if
+that fails. (The previous round's docs had this backwards, as a channel typed
+for one line.) Sticky mode reads it, with the chat log agent's channel and
+label (`AgentChatLog.CurrentChannel`, `ChannelLabel`, the label only as a
+hash), as a `ChatBoxState`: once a frame, right before each draw of the chat
+log, and when the game renames its input's channel
+(`AgentChatLog.ChangeChannelName`, hooked; if that hook is missing, the other
+two still hold). Measured against the state when sticky mode started:
+
+- a channel saved now, where it changed: a one-off switch; sticky mode ends,
+  with its line, and the label is the game's again (a tell from a menu ends it
+  too, which is accepted);
+- any other change of it (only its type, or cleared): the tag is held back
+  from the label, so the game's own name for the channel shows, while what is
+  typed still goes to the LookingGlass channel (the safe way round); the info
+  bar still shows the tag;
+- the agent's channel or label alone: logged, nothing else.
+
+A line let through to the game (a command, `/party hi`) may set and reset the
+saved channel while it runs, so the state is measured again once it has run
+(`StickyChannel.LinePassed`) and changes while it runs don't count.
 
 A `ChangeChatChannel` call that neither changes the channel nor comes from a
 typed line doesn't end it: ChatTwo makes one with the channel it is already on
@@ -1405,13 +1532,21 @@ shows in three places:
 - the server info bar (`IDtrBar`), as "LG [sky]" in the channel's colour, with
   a tooltip; clicking it stops. This one works whatever chat window is in use.
 
+They never disagree with where typing goes. Once a frame (`SyncIndicators`),
+whatever happened, ChatTwo's label and the info bar are made to match the
+state: set while sticky (ChatTwo's sent again every second, in case it missed
+it, `LabelKeeper`), and taken down on the first check after it ends, once,
+whatever ended it. ChatTwo's is cleared only if LookingGlass set it, so
+another plugin's label is left alone. When sticky mode ends, the labels come
+down first and the line is printed after, each even if the other fails.
+
 **ChatTwo.** ChatTwo replaces the game's chat window, and it is the owner's
 default. What its public source (github.com/Infiziert90/ChatTwo, EUPL-1.2,
 read for its behaviour only; version 1.40.9) shows, and what LookingGlass does
 about it:
 
 - *Sending (verified).* ChatTwo sends what is typed with
-  `UIModule.ProcessChatBoxEntry`, the hooked function, but puts its input's
+  `UIModule.ProcessChatBoxEntry`, which ends in the gate, but puts its input's
   channel command in front of plain text first: "hello" typed in an input on
   Party is sent as "/p hello" (`SendHandler.SendChatBox`,
   `InputChannelExt.Prefix`). Every input has its own channel: the main window,
@@ -1429,15 +1564,33 @@ about it:
   one-off `/p hi` typed in ChatTwo while sticky goes to the LookingGlass
   channel too. The long commands (`/party hi`, `/say`, `/shout`,
   `/linkshell1`, `/cwlinkshell1` and so on) are never sent by ChatTwo, so they
-  still reach the game; the "Now talking in" line says to use them, or to
-  switch channel first.
+  still reach the game; the ChatTwo sentence after "Now talking in" says to
+  use them. The rule doesn't depend on ChatTwo being detected: it holds in
+  the game's own chat box too (Where a line goes).
+- *Links (verified).* ChatTwo's input is plain text: a link put in it (its own
+  "Link" menu item calls `AgentChatLog.LinkItem`) arrives through the game's
+  chat log refresh event as a string ChatTwo adds to its input
+  (`Chat.ChatLogRefreshDetour`, `ChatLog.Activated` with `AddIfNotPresent`),
+  and its preview turns `<item>`, `<flag>` and `<status>` back into links
+  (`Message.cs`, `TextParamRegex`; `InputPreview.cs` counts a link as
+  `"<item>".Length`), so the input holds the placeholder; the status link is
+  added as " <status>" directly (`PayloadHandler.cs`). A link alone in an
+  input on a cross-world linkshell is therefore sent as "/cwl1 <item>"
+  (`SendHandler.SendChatBox`). Whether the game's string is always the
+  placeholder, or sometimes the link's own bytes, isn't visible from ChatTwo's
+  side, so both are handled (Where a line goes).
+- *A channel command on its own (verified on ChatTwo's side).* Typed in
+  ChatTwo, `/s` is sent as it is through `ProcessChatBoxEntry`, like any line
+  starting with `/` (`SendHandler.SendChatBox`); ChatTwo doesn't act on it
+  itself. Its label then follows the game's channel when the game renames its
+  own (`Chat.ChangeChannelNameDetour`). So it is caught by the rule for a
+  channel command on its own.
 - *Tells (verified).* ChatTwo sends a tell to a known player straight to the
-  server, without the chat box function, so it can't be caught. Sticky mode
+  server, without running a chat line in the game, so it can't be caught. Sticky mode
   therefore refuses to start while the game's channel or ChatTwo's main input
   is on a /tell, and switching the game to a tell ends it. A ChatTwo tab or
   pop-out set to a tell, or a one-off tell (its reply keybind, "Send Tell" in
-  a menu), goes as a tell, as that input shows; the "Now talking in" line says
-  so.
+  a menu), goes as a tell, as that input shows (and as the README says).
 - *Switching (verified).* ChatTwo's channel picker, its tab switches and its
   keybinds for a lasting switch call `RaptureShellModule.ChangeChatChannel`
   (`SetChannelWithExtraChat`); see Leaving for which calls end sticky mode.
@@ -1457,9 +1610,9 @@ about it:
   on one of those through its own channel picker, which offers them only while
   `/ecl1` to `/ecl8` are registered Dalamud commands. LookingGlass doesn't
   register ExtraChat's commands, so ChatTwo shows "LookingGlass [sky] (Warning:
-  Party)". The "Now talking in" line says what it means: the game's channel
-  underneath; what is typed still goes to the LookingGlass channel (from any
-  ChatTwo input not set to a tell). Making it go away needs a change in
+  Party)". The ChatTwo sentence after "Now talking in" (shown once) says what
+  it means: the game's channel underneath; what is typed still goes to the
+  LookingGlass channel (from any ChatTwo input not set to a tell). Making it go away needs a change in
   ChatTwo, such as an override that names a command to send plain text with
   (`/lgc3`) and no warning.
 - *Why ExtraChat's sticky channel was unreliable with ChatTwo (inferred from
@@ -1474,16 +1627,62 @@ about it:
   depend on ChatTwo's input channel at all: the prefix rule catches every
   input.
 
-**Limits.** Only lines submitted through the chat box function are caught:
-ChatTwo's tells (above), and anything the game sends another way (a macro's
-lines may be one; not checked), go to the game as always. Another plugin that
-submits plain text through the chat box while a channel is sticky (or a short
-channel command with text, while ChatTwo is loaded) has it sent to the channel
-instead (private, so it fails safe). Whether the game makes its channel switch
-for `/s` and the like while the typed line is being run (so it counts as
-typed) is checked in game; if it doesn't, `/s` while already in Say leaves
-sticky mode on (the indicator still shows it), and any switch that changes the
-channel still ends it.
+**Limits.** Only lines the game runs through the gate are caught: ChatTwo's
+tells to a known player (above), which it sends to the server itself, go as
+tells. Everything else that runs a chat line goes through the gate, so while a
+channel is sticky, plain text (or a short channel command with text) from a
+macro, from another plugin, or from ChatTwo's special tells in Eureka and
+Bozja (`ExecuteCommandInner` with the message alone) is sent to the channel
+instead (private, so it fails safe). A channel command on its own that isn't
+known by name (neither English nor the client's language) ends sticky mode
+only if the game calls its channel switch while the line runs, or the channel
+changes.
+
+**The diagnostic log.** So an in-game test can be read back without the
+player copying anything, sticky mode writes one Information line to Dalamud's
+log (`dalamud.log`, tagged `[LookingGlass] [sticky]`, built by
+`StickyDiagnostics`) for every line the gate sees while sticky (saying
+whether it came from the game, or from a plugin through `ProcessChatBoxEntry`), every
+start (and refusal) and every end, and every `ChangeChatChannel` call while
+sticky. A line's entry has the channel's tag, whether ChatTwo is loaded,
+the leading command if it is a known one (otherwise "(text)", "(payload)",
+"(link placeholder)", "(blank)" or "(other command)"), its size in bytes,
+whether it held payloads, and the decision with a reason in fixed words. A
+switch's has the chat type before and after the call, and whether a typed line
+was in flight. Never what was typed, a link's contents, or an unknown command's
+name (it could be a message typed after a "/"); tests check this. When sticky
+mode is off, the hook doesn't look at lines at all, and channel switches are
+written at Debug only. Also logged while sticky: every change of the shell's
+saved channel (`ChatBoxState`: numbers, and its command only if known),
+where it was seen (a frame, a draw, the game renaming its channel, after a
+line), and whether it counted as a one-off switch; the tag being held back from the
+label and shown again; a line run inside a reply passed to the game unjudged
+(its size only); a link placeholder put in the chat input
+(`AgentChatLog.InsertTextCommandParam`, hooked for the log only: just its
+number); and the chat box state at start and end. A line typed while sticky
+that reached game chat with no `[sticky] line` entry at that time went past the
+gate.
+
+**What the owner's game test showed, and what changed (October 2026).** The
+owner turned ChatTwo off after step 1, so B and C happened in the game's own
+chat box: `/s` typed while sticky printed nothing and left the tag on the
+label while the next line, `test`, went to Say; and a link alone reached the
+cross-world linkshell. The cause (found by a reviewer, verified in the
+2026.09.15 game build): the game's own chat box never calls
+`UIModule.ProcessChatBoxEntry`, which was the gate then, but runs its lines
+through `ShellCommandModule.ExecuteCommandInner` directly (see The hooks). So
+no line from it was ever seen: not `/s` (and its switch went through
+`SetChatChannel`, past the `ChangeChatChannel` hook, so nothing ended), not
+`test`, not the link, while the label showed the tag from sticky mode's state.
+Earlier "plain text works" results without a second character to check Say
+were seeing only the label. ChatTwo's lines did reach the old gate. What
+changed: the gate is on `ExecuteCommandInner`, where both chat boxes, macros
+and the game's other callers meet; a channel command on its own ends sticky
+mode from the line itself; the short-command rule holds for every line; the
+saved channel of a one-off switch is watched; and the diagnostic log says
+which way each line came. (A guess in the round before, that the game's chat
+box has a "one-line channel" typed as "/s ", was wrong: the `Temp` fields hold
+the channel to go back to, see One-off switches.)
 
 ### Simple and advanced mode
 

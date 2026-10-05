@@ -32,6 +32,12 @@ public sealed class Configuration : IPluginConfiguration {
     /// </summary>
     public bool AdvancedMode { get; set; }
 
+    /// <summary>
+    /// The one line about ChatTwo's "(Warning: …)" label has been shown: it follows "Now talking in" only the first time
+    /// talking in a channel starts with ChatTwo loaded (see <see cref="StickyMessages.ChatTwoNote"/>).
+    /// </summary>
+    public bool ChatTwoStickyNoteShown { get; set; }
+
     /// <summary>Per character, keyed by content ID.</summary>
     public Dictionary<ulong, CharacterSettings> Characters { get; set; } = new();
 
