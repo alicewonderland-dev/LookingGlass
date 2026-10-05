@@ -431,7 +431,8 @@ public sealed class MainWindow : Window {
 
     private const string LoginNotRecognisedText =
         "This server doesn't recognise your login or your identity key. If you changed the server address, check it in Settings. " +
-        "Register again (through the Lodestone) only if your key was lost or replaced, or this server has never known your account.";
+        "Register again (through the Lodestone) only if your key was lost or replaced, or this server has never known your account. " +
+        PlainMessages.LoginMaybeReplaced;
 
     /// <summary>
     /// Above the registration steps when the server refused the saved login and the identity key: what may be wrong, that
@@ -441,6 +442,7 @@ public sealed class MainWindow : Window {
         Widgets.IconText(FontAwesomeIcon.ExclamationTriangle, "This server doesn't recognise your login", Widgets.Warning);
         ImGui.TextUnformatted("It didn't accept your saved login or your identity key. If you changed the server address, check it in Settings.");
         ImGui.TextUnformatted("Register again (below) only if your identity key was lost or replaced, or this server has never known your account.");
+        ImGui.TextUnformatted(PlainMessages.LoginMaybeReplaced);
         ImGui.TextColored(Widgets.Muted, "Your login is kept and tried again every minute or so, so it works again by itself once the server knows it.");
         ImGui.TextColored(Widgets.Muted, $"Server: {this._config.ServerUrl}");
         ImGui.Spacing();

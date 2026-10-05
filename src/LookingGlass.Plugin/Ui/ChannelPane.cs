@@ -147,6 +147,12 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
     /// <summary>One muted line under the name: your rank, the members, and the key.</summary>
     private void DrawSummary(ChannelView channel) {
         var first = true;
+        if (channel.OldKeyMembership && channel.KeyMovedAway) {
+            // Re-verified with another key (normally on another computer): this one can do nothing here any more.
+            Segment(ref first, "Moved to another key", Widgets.Warning, PlainMessages.KeyMovedAwayChannel, FontAwesomeIcon.ExclamationTriangle);
+            return;
+        }
+
         if (channel.OldKeyMembership) {
             // Nothing else here means anything for the current key: no key is coming, and nothing can be done but removing it.
             Segment(ref first, "Your old key's place", Widgets.Warning,

@@ -196,8 +196,11 @@ before you start, and you're told how many came back. The server retires your
 old key at the same time: it can never sign in or be registered for your
 account there again, and every login made with it (say, on a stolen laptop)
 stops working. The other members of each channel see "*Name* re-verified their
-character and has a new key." and you show as **New key** to them until they
-compare fingerprints with you. A channel works again for you as soon as a
+character and has a new key." (so does anyone who had your old key pinned and
+first reads about the change later, say in a channel they're invited to) and
+you show as **New key** to them until they compare fingerprints with you. If
+your old computer is still about, it can't sign in any more, and says that if
+it wasn't you who re-verified, "Reset my identity" takes your channels back. A channel works again for you as soon as a
 member who is online gives it a new key (they do so automatically), which the
 old key can't read; until then you can already remove members and change
 ranks there (as your rank allows), but not read, send, invite or rename.

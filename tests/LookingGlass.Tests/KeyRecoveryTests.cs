@@ -252,6 +252,9 @@ public sealed class KeyRecoveryTests : IAsyncLifetime {
         await WaitFor(() => bob.Notices.FirstOrDefault(n => n.Text.Contains(ReVerified) && n.ChannelId == mine));
         await reset.Session.SendTextAsync(mine, "same me, new key", Ct);
         await WaitFor(() => bob.Messages.FirstOrDefault(m => m.Text == "same me, new key"));
+
+        // Her own move isn't news to her: not as someone else's new key, nor as her key going elsewhere.
+        Assert.DoesNotContain(reset.Notices, n => n.Text.Contains(ReVerified) || n.Text == PlainMessages.ReVerifiedElsewhere);
     }
 
     /// <summary>
@@ -491,7 +494,145 @@ public sealed class KeyRecoveryTests : IAsyncLifetime {
         Assert.True(seen.KeyRecovered);
         Assert.False(seen.FingerprintCompared);
         Assert.Equal(MemberKeys.Of(serverKeys).Fingerprint, seen.Fingerprint);
-        await WaitFor(() => bob.Session.Snapshot.FindChannel(channelId) is { OldKeyMembership: true } c ? c : null);
+        var place = await WaitFor(() => bob.Session.Snapshot.FindChannel(channelId) is { OldKeyMembership: true } c ? c : null);
+
+        // Bob himself is told, in plain words: someone re-verified his character with another key, and what to do if it wasn't him.
+        var told = await WaitFor(() => bob.Notices.FirstOrDefault(n => n.Text == PlainMessages.ReVerifiedElsewhere));
+        Assert.Equal(NoticeLevel.Warning, told.Level);
+        Assert.Contains("Reset my identity", told.Text);
+        Assert.True(place.KeyMovedAway);
+        Assert.Equal(PlainMessages.KeyMovedAwayChannel, place.MembershipWarning);
+        // Not as someone else who has a new key.
+        Assert.DoesNotContain(bob.Notices, n => n.Text.Contains(ReVerified));
+    }
+
+    /// <summary>
+    /// A log read from its start (an invite's) can still change a key pinned before: Alice compared Bob's key in a channel
+    /// they shared, which he has left since. When his place in another channel moved to a new key, she wasn't there; reading
+    /// that channel's history when she's invited, she is told, and he no longer shows as compared. Dave, who never saw Bob
+    /// before, reads the same history as history, and isn't told.
+    /// </summary>
+    [Fact]
+    public async Task APinnedKeyChangesOutLoudEvenInALogReadFromItsStart() {
+        var alice = await this._server.RegisterAsync("Alice Compared Bob");
+        var bob = await this._server.RegisterAsync("Bob Compared Once");
+        var carol = await this._server.RegisterAsync("Carol Invites Later");
+        var dave = await this._server.RegisterAsync("Dave Never Met Bob");
+        var shared = await alice.Session.CreateChannelAsync("Compared Here", Ct);
+        await AddMemberAsync(alice, shared, bob);
+        await alice.Session.AcknowledgeKeyChangeAsyncFor(bob);
+        await bob.Session.LeaveAsync(shared, Ct);
+        await WaitFor(() => alice.Session.Snapshot.FindChannel(shared)!.Members.Length == 1 ? new object() : null);
+        var channelId = await carol.Session.CreateChannelAsync("Bob Moved Here", Ct);
+        await AddMemberAsync(carol, channelId, bob);
+
+        var bob2 = await NewComputerAsync(this._server, bob);
+        await WaitFor(() => carol.Session.Snapshot.FindChannel(channelId)!.Members.FirstOrDefault(m => m.User.UserId == bob2.UserId && m.KeyRecovered));
+        await WaitFor(() => carol.Session.Snapshot.FindChannel(channelId) is { RekeyPending: false } c ? c : null);
+
+        foreach (var invited in new[] { alice, dave }) {
+            await carol.Session.InviteAsync(channelId, invited.Name, ProtocolInfo.DebugWorldName, Ct);
+            await WaitFor(() => invited.Session.Snapshot.Invites.FirstOrDefault(i => i.ChannelId == channelId && i.Verified));
+            await invited.Session.RespondToInviteAsync(channelId, true, Ct);
+            await WaitFor(() => invited.Session.Snapshot.FindChannel(channelId) is { HasKey: true, RekeyPending: false } c ? c : null);
+        }
+
+        var notice = await WaitFor(() => alice.Notices.FirstOrDefault(n => n.Text.Contains(ReVerified)));
+        Assert.Contains(bob.Name, notice.Text);
+        Assert.Contains("compared", notice.Text);
+        var seen = alice.Session.Snapshot.FindChannel(channelId)!.Members.Single(m => m.User.UserId == bob2.UserId);
+        Assert.Equal(bob2.Keys().Fingerprint, seen.Fingerprint);
+        Assert.True(seen.KeyRecovered);
+        Assert.False(seen.FingerprintCompared);
+
+        Assert.DoesNotContain(dave.Notices, n => n.Text.Contains(ReVerified));
+        Assert.False(dave.Session.Snapshot.FindChannel(channelId)!.Members.Single(m => m.User.UserId == bob2.UserId).KeyRecovered);
+    }
+
+    /// <summary>
+    /// The server's identities show Bob's new key first, as an unexplained change ("key changed"); the log then says why. The
+    /// warning becomes "New key", and Alice is told he re-verified his character.
+    /// </summary>
+    [Fact]
+    public async Task AKeyChangeWarningBecomesANewKeyOnceTheLogExplainsIt() {
+        var alice = await this._server.RegisterAsync("Alice Warned First");
+        var bob = await this._server.RegisterAsync("Bob Explained Later");
+        var channelId = await alice.Session.CreateChannelAsync("Explained", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        using var newKeys = IdentityKeys.Generate();
+        var bundle = newKeys.ToBundle();
+        this._server.ExecuteSql("UPDATE users SET signing_key = $s, agreement_key = $a, binding_signature = $b, key_version = key_version + 1 WHERE user_id = $u;",
+            ("$s", bundle.SigningPublicKey.ToByteArray()), ("$a", bundle.AgreementPublicKey.ToByteArray()), ("$b", bundle.BindingSignature.ToByteArray()), ("$u", bob.UserId));
+        await alice.Session.RefreshAsync(Ct);
+        Assert.Contains(alice.Notices, n => n.Level == NoticeLevel.Warning && n.Text.Contains("identity key changed"));
+        Assert.True(alice.Session.Snapshot.FindChannel(channelId)!.Members.Single(m => m.User.UserId == bob.UserId).KeyChanged);
+
+        var moved = this._server.ServerMembership(channelId).CreateKeyRecovered(bob.UserId, MemberKeys.Of(newKeys), KeyRecoveryProof.Sign(newKeys, bob.UserId),
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        Assert.True(this._server.Database.AppendEntry(channelId, moved));
+        await this._server.SendAndSettleAsync(alice, new Event { LogEntryAdded = new LogEntryAdded { ChannelId = channelId, Entry = moved } });
+
+        await WaitFor(() => alice.Notices.FirstOrDefault(n => n.Text.Contains(ReVerified)));
+        var seen = alice.Session.Snapshot.FindChannel(channelId)!.Members.Single(m => m.User.UserId == bob.UserId);
+        Assert.Equal(MemberKeys.Of(newKeys).Fingerprint, seen.Fingerprint);
+        Assert.False(seen.KeyChanged);
+        Assert.True(seen.KeyRecovered);
+        Assert.False(seen.FingerprintCompared);
+    }
+
+    /// <summary>A member whose place moved twice while Alice wasn't looking is announced once, under the keys they have now.</summary>
+    [Fact]
+    public async Task AMemberMovedTwiceAtOnceIsAnnouncedOnce() {
+        var alice = await this._server.RegisterAsync("Alice Catches Up");
+        var bob = await this._server.RegisterAsync("Bob Moved Twice");
+        var channelId = await alice.Session.CreateChannelAsync("Moved Twice", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        using var first = IdentityKeys.Generate();
+        using var second = IdentityKeys.Generate();
+        foreach (var keys in new[] { first, second }) {
+            var moved = this._server.ServerMembership(channelId).CreateKeyRecovered(bob.UserId, MemberKeys.Of(keys), KeyRecoveryProof.Sign(keys, bob.UserId),
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            Assert.True(this._server.Database.AppendEntry(channelId, moved));
+        }
+
+        // As registering them would have left the server's identity for him.
+        var bundle = second.ToBundle();
+        this._server.ExecuteSql("UPDATE users SET signing_key = $s, agreement_key = $a, binding_signature = $b, key_version = key_version + 2 WHERE user_id = $u;",
+            ("$s", bundle.SigningPublicKey.ToByteArray()), ("$a", bundle.AgreementPublicKey.ToByteArray()), ("$b", bundle.BindingSignature.ToByteArray()), ("$u", bob.UserId));
+        await alice.Session.RefreshAsync(Ct);
+
+        Assert.Equal(MemberKeys.Of(second), alice.Session.MembershipForTests(channelId).FindMember(bob.UserId)!.Keys);
+        Assert.Single(alice.Notices, n => n.Text.Contains(ReVerified));
+        var seen = alice.Session.Snapshot.FindChannel(channelId)!.Members.Single(m => m.User.UserId == bob.UserId);
+        Assert.Equal(MemberKeys.Of(second).Fingerprint, seen.Fingerprint);
+        Assert.True(seen.KeyRecovered);
+    }
+
+    /// <summary>
+    /// The identity a member holds for someone whose place just moved is the old one: it is fetched again (here, the new
+    /// one, as the server registered it), not left out.
+    /// </summary>
+    [Fact]
+    public async Task AMovedMembersNewIdentityIsFetched() {
+        var asked = new System.Collections.Concurrent.ConcurrentQueue<long>();
+        var recording = false;
+        var alice = await this._server.RegisterAsync("Alice Fetches Again", options: this._server.Options(wrap: socket => new RewritingWebSocket(socket, frame => frame, sent: frame => {
+            if (Volatile.Read(ref recording) && frame.GetIdentities is { } request) {
+                foreach (var id in request.UserIds) {
+                    asked.Enqueue(id);
+                }
+            }
+        })));
+        var bob = await this._server.RegisterAsync("Bob Fetched Again");
+        var channelId = await alice.Session.CreateChannelAsync("Fetched Again", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        await alice.Session.RefreshAsync(Ct);
+        Volatile.Write(ref recording, true);
+
+        var bob2 = await NewComputerAsync(this._server, bob);
+
+        await WaitFor(() => alice.Notices.FirstOrDefault(n => n.Text.Contains(ReVerified)));
+        await WaitFor(() => asked.Contains(bob2.UserId) ? new object() : null);
     }
 }
 

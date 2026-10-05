@@ -144,6 +144,11 @@ public sealed class SignedLogMembership : IChannelMembership {
         return keys;
     }
 
+    public bool MovedFrom(long userId, MemberKeys keys) {
+        return (this.FindMember(userId) != null || this.FindInvitee(userId) != null)
+               && this._keyChanges.TryGetValue(userId, out var changes) && changes.Any(change => change.Before == keys);
+    }
+
     public bool IsCurrent(LogPosition? position) {
         return position != null && this.Head != null
                                 && position.Seq >= this.MembersChangedAt

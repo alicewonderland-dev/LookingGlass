@@ -89,6 +89,11 @@ public sealed record SessionSnapshot(
 /// current keys: not reading, sending or leaving (a leave must be signed by the old keys). Offer "Remove from my list"
 /// (<see cref="ClientSession.ForgetChannelAsync"/>) instead of Leave.
 /// </param>
+/// <param name="KeyMovedAway">
+/// With <see cref="OldKeyMembership"/>: the log moved this user's place away from the keys this client holds (a key
+/// recovered entry: their character was re-verified with other keys, normally their own on another computer). Say so, and
+/// that "Reset my identity" takes it back if it wasn't them (<see cref="PlainMessages.KeyMovedAwayChannel"/>).
+/// </param>
 public sealed record ChannelView(
     string Id,
     string? Name,
@@ -100,7 +105,8 @@ public sealed record ChannelView(
     ImmutableArray<MemberView> Members,
     LogPosition? LogHead = null,
     string? MembershipWarning = null,
-    bool OldKeyMembership = false) {
+    bool OldKeyMembership = false,
+    bool KeyMovedAway = false) {
     public string DisplayName => this.Name ?? PlaceholderName(this.Id);
 
     /// <summary>What to show before a channel's name has been decrypted. Safe for IDs of any length.</summary>

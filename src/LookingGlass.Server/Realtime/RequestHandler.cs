@@ -55,8 +55,9 @@ public sealed class RequestHandler(
 
     // Registering a key the account replaced, or retired with "Reset my identity": what the plugin says to do.
     private const string KeyRetired =
-        "This identity key was replaced (by registering again with new keys, or \"Reset my identity\"), so it can't be registered again. " +
-        "Use \"Reset my identity\" in Settings to make new keys, then register.";
+        "This identity key was replaced (this character was re-verified with another key, perhaps on another computer, or \"Reset my identity\" " +
+        "was used), so it can't be registered again. Use \"Reset my identity\" in Settings to make new keys, then register: that brings your " +
+        "channels along to them, so if it wasn't you who re-verified, this takes them back.";
 
     // Registering a key another account is registered with. With registrations signed, only the key's owner can get here,
     // registering a second character with one character's keys, which the plugin never does (it keeps keys per character).

@@ -94,6 +94,8 @@ public sealed class ClientSession : IAsyncDisposable {
     private readonly Dictionary<string, ulong> _namePositionsAhead = new();
     // Users whose identity held here is older than the keys a log just moved them to; Publish has them fetched again.
     private readonly HashSet<long> _identitiesToRefresh = new();
+    // The user was told a log moved their own place away from this client's keys (see PlainMessages.ReVerifiedElsewhere).
+    private bool _toldKeyMovedAway;
     // When each channel's whole log was last fetched to look into a fork, the checks under way, the claims
     // still to look into (made too soon after a check, or whose check failed), and the re-checks scheduled.
     private readonly Dictionary<string, DateTimeOffset> _forkCheckedAt = new();
@@ -1271,7 +1273,7 @@ public sealed class ClientSession : IAsyncDisposable {
     private const string LoginNotRecognizedStatus =
         "This server doesn't recognise your login or your identity key. If you changed the server address, check it in Settings. " +
         "You only need to register again (through the Lodestone) if your identity key was lost or replaced, or this server has never known your account; " +
-        "otherwise your login is tried again by itself.";
+        "otherwise your login is tried again by itself. " + PlainMessages.LoginMaybeReplaced;
 
     /// <summary>
     /// The server refused the saved login, and signing in with the identity key didn't work either (or there is no key).
@@ -3025,8 +3027,17 @@ public sealed class ClientSession : IAsyncDisposable {
             }
         }
 
-        foreach (var entry in applied.Where(entry => entry.Kind == MembershipEntryKind.KeyRecovered && entry.Subject.UserId != me)) {
-            this.PinRecoveredKeys(channelId, membership, entry, followsOn);
+        foreach (var entry in applied.Where(entry => entry.Kind == MembershipEntryKind.KeyRecovered)) {
+            if (entry.Subject.UserId != me) {
+                this.PinRecoveredKeys(channelId, membership, entry, followsOn);
+            } else if (this._myKeys != null && MemberKeys.FromProto(entry.Subject) == this._myKeys && MemberKeys.FromProto(entry.NewKeys) != this._myKeys) {
+                // This user's own place, moved away from the keys this client holds: their character was re-verified with
+                // others (normally their own, on another computer; if not, the server or someone else did it). Said once.
+                if (!this._toldKeyMovedAway) {
+                    this._toldKeyMovedAway = true;
+                    this._pendingNotices.Add(new SessionNotice(NoticeLevel.Warning, PlainMessages.ReVerifiedElsewhere, channelId));
+                }
+            }
         }
 
         if (this._channels.TryGetValue(channelId, out var channel)) {
@@ -3038,7 +3049,9 @@ public sealed class ClientSession : IAsyncDisposable {
     /// Someone re-verified their character with new keys, and the log moved their place to them (a key recovered entry): pins
     /// the new keys as expected, not as an unexplained change ("key changed"), but as not compared yet, which stays shown
     /// until the user compares them. That the change is theirs is the server's word (it checked the Lodestone), so it is
-    /// said in the channel, in plain words, whenever it happened since this client last looked. Call inside the lock.
+    /// said in the channel, in plain words, whenever it happened since this client last looked, and whenever it changes
+    /// what this client held for them (a key pinned before, compared or not, or a "key changed" warning it now explains),
+    /// even in a log read from its start. Call inside the lock.
     /// </summary>
     /// <param name="followsOn">The entry follows a membership verified here before, rather than a log replayed from its start.</param>
     private void PinRecoveredKeys(string channelId, IChannelMembership membership, MembershipEntry entry, bool followsOn) {
@@ -3049,20 +3062,27 @@ public sealed class ClientSession : IAsyncDisposable {
             return;
         }
 
+        // News whenever it follows what this client verified, or changes what it held for them; a log replayed from its start
+        // to someone who never saw them is history.
+        var tell = followsOn;
+        var wasCompared = false;
         if (this._secrets.PinnedIdentities.TryGetValue(userId, out var pinned)) {
             var sameKeys = pinned.SigningPublicKey.AsSpan().SequenceEqual(keys.SigningPublicKey) && pinned.AgreementPublicKey.AsSpan().SequenceEqual(keys.AgreementPublicKey);
             if (!sameKeys) {
+                wasCompared = pinned.Compared;
                 pinned.SigningPublicKey = keys.SigningKeyArray();
                 pinned.AgreementPublicKey = keys.AgreementKeyArray();
                 pinned.Compared = false;
                 pinned.KeyChangeUnacknowledged = false;
                 pinned.KeyRecovered = true;
                 this._secretsVersion++;
+                tell = true;
             } else if (pinned.KeyChangeUnacknowledged) {
                 // Seen first from the server's identities, as an unexplained change: the log explains it now.
                 pinned.KeyChangeUnacknowledged = false;
                 pinned.KeyRecovered = true;
                 this._secretsVersion++;
+                tell = true;
             }
         } else {
             // Trusted on first use, as anyone first seen in a log.
@@ -3076,9 +3096,10 @@ public sealed class ClientSession : IAsyncDisposable {
             this._identitiesToRefresh.Add(userId);
         }
 
-        if (followsOn) {
+        if (tell) {
             var who = this.UserOf(userId);
-            this._pendingNotices.Add(new SessionNotice(NoticeLevel.Info, $"{who.Name}@{who.WorldName} {PlainMessages.ReVerified}", channelId));
+            this._pendingNotices.Add(new SessionNotice(NoticeLevel.Info,
+                $"{who.Name}@{who.WorldName} {PlainMessages.ReVerified}" + (wasCompared ? $" {PlainMessages.ComparedBefore}" : ""), channelId));
         }
     }
 
@@ -3450,15 +3471,17 @@ public sealed class ClientSession : IAsyncDisposable {
 
         var mine = this._me == null ? null : membership.FindMember(this._me.UserId);
         var oldKey = mine != null && this._myKeys != null && mine.Keys != this._myKeys;
+        // Not keys this user had before, but this client's, which their place moved away from: re-verified elsewhere.
+        var movedAway = oldKey && membership.MovedFrom(mine!.UserId, this._myKeys!);
         var warning = channel.MembershipWarning ?? channel.RemovalWarning;
         if (warning == null && oldKey) {
-            warning = PlainMessages.OldKeyChannel;
+            warning = movedAway ? PlainMessages.KeyMovedAwayChannel : PlainMessages.OldKeyChannel;
         }
 
         var keyEpoch = this.KeyEpochOf(channel.Id);
         return new ChannelView(channel.Id, channel.Name, keyEpoch ?? channel.ServerEpoch, channel.ServerEpoch,
             this.HasCurrentKey(channel.Id), this.NeedsRekey(channel), mine != null && mine.Keys == this._myKeys ? mine.Rank : Rank.Unspecified,
-            members, membership.Head?.Clone(), warning, oldKey);
+            members, membership.Head?.Clone(), warning, oldKey, movedAway);
     }
 
     // ================================================================ plumbing

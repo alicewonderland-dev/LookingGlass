@@ -22,6 +22,40 @@ public static class PlainMessages {
         "character through the Lodestone. Their members are told. Each channel works again as soon as a member who is online shares its new " +
         "key with you.";
 
+    /// <summary>
+    /// After someone's name, when their place moving replaced a key pinned for them that the user had compared over /tell: the
+    /// comparison was for the old key.
+    /// </summary>
+    public const string ComparedBefore = "You had compared fingerprints with them before; that was for their old key, so compare the new one over /tell.";
+
+    /// <summary>
+    /// What to do if a re-verification wasn't the user's own: "Reset my identity" makes new keys and registers them through
+    /// the Lodestone, which moves every place of theirs to those (see <see cref="ReVerifiedElsewhere"/>).
+    /// </summary>
+    private const string IfItWasntYou =
+        "If that wasn't you, use \"Reset my identity\" in Settings: it re-verifies you through the Lodestone and takes your channels back.";
+
+    /// <summary>
+    /// Told when a channel's log moves this user's own place away from the identity key this client holds: their character
+    /// was re-verified through the Lodestone with another key. Normally that was them, on another computer.
+    /// </summary>
+    public const string ReVerifiedElsewhere =
+        "Your character was re-verified through the Lodestone with a different identity key, probably on another computer, so your channels " +
+        "here moved to that key and this computer's key can't use them any more. " + IfItWasntYou;
+
+    /// <summary>Shown on a channel where that happened (see <see cref="ChannelView.KeyMovedAway"/>).</summary>
+    public const string KeyMovedAwayChannel =
+        "Your place in this channel moved to a different identity key: your character was re-verified through the Lodestone with it, probably " +
+        "on another computer. This computer's key can't read or send here any more. " + IfItWasntYou;
+
+    /// <summary>
+    /// Added where the server refuses this client's login and identity key: the usual reason, since registering through the
+    /// Lodestone with new keys moves the account's channels and shuts the old key out.
+    /// </summary>
+    public const string LoginMaybeReplaced =
+        "If this character was re-verified through the Lodestone on another computer, this computer's identity key was replaced and your " +
+        "channels moved to the new one. " + IfItWasntYou;
+
     /// <summary>Shown on a channel whose place belongs to the old key (see <see cref="ChannelView.OldKeyMembership"/>).</summary>
     public const string OldKeyChannel =
         "Your place in this channel belongs to an identity key you no longer have, from before registering again brought your channels along " +
