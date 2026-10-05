@@ -644,10 +644,7 @@ public sealed class Database {
     /// The user's rank: a member rank, <see cref="Rank.Invited"/> for a pending invite, or null (also for a place they removed
     /// from their list: see <see cref="ForgetStaleMembership"/>).
     /// </returns>
-    public Rank? GetRank(string channelId, long userId) {
-        using var connection = this.Open();
-        return GetRank(connection, null, channelId, userId);
-    }
+    public Rank? GetRank(string channelId, long userId) => this.GetPlace(channelId, userId)?.Rank;
 
     /// <returns>
     /// The user's place in the channel: its rank, as <see cref="GetRank"/> gives it, and whether it is under the keys the user
@@ -1115,16 +1112,6 @@ public sealed class Database {
         using var command = Command(connection, tx, "SELECT * FROM channels WHERE channel_id = $id;", ("$id", channelId));
         using var reader = command.ExecuteReader();
         return reader.Read() ? ReadChannel(reader) : null;
-    }
-
-    private static Rank? GetRank(SqliteConnection connection, SqliteTransaction? tx, string channelId, long userId) {
-        var rank = Scalar(connection, tx, "SELECT rank FROM members WHERE channel_id = $channel AND user_id = $user AND forgotten = 0;", ("$channel", channelId), ("$user", userId));
-        if (rank != null) {
-            return (Rank) Convert.ToInt32(rank);
-        }
-
-        var invited = Scalar(connection, tx, "SELECT 1 FROM invites WHERE channel_id = $channel AND user_id = $user AND forgotten = 0;", ("$channel", channelId), ("$user", userId));
-        return invited != null ? Rank.Invited : null;
     }
 
     private static List<MemberRow> GetMembers(SqliteConnection connection, SqliteTransaction? tx, string channelId) {

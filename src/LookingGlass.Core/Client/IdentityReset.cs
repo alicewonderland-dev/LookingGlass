@@ -108,14 +108,14 @@ public sealed record IdentityResetPlan(
             .ToImmutableArray();
         // An old key's place is known (the log is verified, and has another key there); any other the log doesn't place
         // this user in as a member, or that the server says is theirs to run beyond what the log says, isn't checked yet.
-        var notChecked = known.Where(channel => !channel.OldKeyMembership && channel.MyRank != Rank.Admin && (channel.MyRank < Rank.Member || channel.AdminPerServer))
+        var notChecked = known
+            .Where(channel => !channel.OldKeyMembership && channel.MyRank != Rank.Admin && (channel.MyRank < Rank.Member || channel.AdminPerServer))
             .ToImmutableArray();
 
         if (readiness == ResetReadiness.Ready) {
-            // What the user must do comes before what needs a moment.
+            // What the user must do comes before what needs a moment. (An admin place only the server has is unchecked.)
             readiness = adminOf.Any(channel => channel.MyRank == Rank.Admin) ? ResetReadiness.AdminOfChannels
                 : notChecked.Length > 0 ? ResetReadiness.Checking
-                : adminOf.Length > 0 ? ResetReadiness.AdminOfChannels
                 : ResetReadiness.Ready;
         }
 
@@ -169,6 +169,31 @@ public sealed record IdentityResetPlan(
             "Connect, then reset. Only if this server is gone for good, reset anyway without that. " + LosingAdmin,
         _ => "",
     };
+
+    /// <summary>
+    /// With this plan worked out again once the channels were left: why the reset must stop there, before the old key is
+    /// retired, or null if it may go on. Once the key is retired, nothing it still holds can be left any more, so a leave or
+    /// decline that failed, or anything that changed meanwhile (a channel joined, an invite or admin role received, the
+    /// connection lost), is the user's to try again.
+    /// </summary>
+    internal string? WhyStopAfterLeaving(IReadOnlyCollection<ResetFailure> failed) {
+        const string NothingReset = "Nothing was reset, so your old key still works and you can try again.";
+        if (failed.Count > 0) {
+            return $"Couldn't leave (or decline) {string.Join(", ", failed.Select(failure => $"\"{failure.What}\""))}. {NothingReset} " +
+                   "What was left stays left. If one still can't be left, open it to see why.";
+        }
+
+        if (this.Readiness != ResetReadiness.Ready) {
+            return $"Something changed while your channels were being left. {NothingReset} {this.Explanation}";
+        }
+
+        if (this.ToLeave.Any() || !this.Declines.IsEmpty) {
+            return $"While your channels were being left, you joined another channel or were invited to one. {NothingReset} " +
+                   "Resetting again leaves that too.";
+        }
+
+        return null;
+    }
 
     // What resetting without a live login costs, said wherever it is offered.
     private const string LosingAdmin =

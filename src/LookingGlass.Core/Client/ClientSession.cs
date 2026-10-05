@@ -819,33 +819,9 @@ public sealed class ClientSession : IAsyncDisposable {
             }
         }
 
+        // The plan again, as things are now that the channels were left.
         return new IdentityResetCleanup(left.ToImmutable(), declined.ToImmutable(), plan.Kept.ToImmutableArray(), failed.ToImmutable(),
-            WhyStopBeforeRetiring(failed, IdentityResetPlan.Of(this.Snapshot)));
-    }
-
-    /// <summary>
-    /// Why the reset must stop after leaving the channels, before the old key is retired, or null if it may go on: once it
-    /// is retired, nothing that key still holds can be left any more. A leave or decline that failed, or anything that
-    /// changed meanwhile (a channel joined, an invite or admin role received, the connection lost) is the user's to try again.
-    /// </summary>
-    /// <param name="after">The plan again, as things are now that the channels were left.</param>
-    private static string? WhyStopBeforeRetiring(IReadOnlyList<ResetFailure> failed, IdentityResetPlan after) {
-        const string NothingReset = "Nothing was reset, so your old key still works and you can try again.";
-        if (failed.Count > 0) {
-            return $"Couldn't leave (or decline) {string.Join(", ", failed.Select(failure => $"\"{failure.What}\""))}. {NothingReset} " +
-                   "What was left stays left. If one still can't be left, open it to see why.";
-        }
-
-        if (after.Readiness != ResetReadiness.Ready) {
-            return $"Something changed while your channels were being left. {NothingReset} {after.Explanation}";
-        }
-
-        if (after.ToLeave.Any() || !after.Declines.IsEmpty) {
-            return $"While your channels were being left, you joined another channel or were invited to one. {NothingReset} " +
-                   "Resetting again leaves that too.";
-        }
-
-        return null;
+            IdentityResetPlan.Of(this.Snapshot).WhyStopAfterLeaving(failed));
     }
 
     public async Task DisbandAsync(string channelId, CancellationToken ct = default) {
@@ -1194,13 +1170,13 @@ public sealed class ClientSession : IAsyncDisposable {
                     ev => this.OnEvent(connection, ev), response => this.OnResponse(connection, response), this.AddTrace);
                 this._connection = connection;
                 connection.Start();
-
-                await this.HandshakeAsync(connection, ct);
-                delay = this._options.ReconnectMinDelay;
                 lock (this._lock) {
+                    // Reached: this attempt hasn't failed (yet). Set again below if the handshake does.
                     this._connectionFailed = false;
                 }
 
+                await this.HandshakeAsync(connection, ct);
+                delay = this._options.ReconnectMinDelay;
                 await this.RetryRejectedLoginAsync(connection, ct);
                 await connection.Closed.WaitAsync(ct);
                 this.Log(NoticeLevel.Info, connection.CloseReason);

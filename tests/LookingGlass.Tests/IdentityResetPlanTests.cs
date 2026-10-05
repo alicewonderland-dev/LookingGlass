@@ -190,6 +190,30 @@ public sealed class IdentityResetPlanTests {
         Assert.NotEqual("", plan.Explanation);
     }
 
+    /// <summary>
+    /// Once the channels are left, the reset goes on to retire the old key only if nothing is left to do with it: no leave
+    /// failed, and the plan worked out again still may go ahead, with nothing new to leave or decline. Otherwise it stops,
+    /// saying why in plain words, while the old key can still sign.
+    /// </summary>
+    [Fact]
+    public void AfterLeavingTheResetGoesOnOnlyIfNothingIsLeftToDo() {
+        var done = IdentityResetPlan.Of(Snapshot([Channel("old", Rank.Unspecified, oldKey: true, others: Member(Bob, Rank.Member))]));
+        Assert.Null(done.WhyStopAfterLeaving([]));
+
+        var failed = done.WhyStopAfterLeaving([new ResetFailure("a", "Channel a", "It went wrong.")]);
+        Assert.Contains("\"Channel a\"", failed);
+        Assert.Contains("try again", failed);
+
+        // Made the admin of a channel meanwhile: what to do about it is said.
+        var admin = IdentityResetPlan.Of(Snapshot([Channel("a", Rank.Admin, others: Member(Bob, Rank.Member))]));
+        Assert.Contains("Make admin", admin.WhyStopAfterLeaving([]));
+        // Disconnected meanwhile.
+        Assert.Contains("connect", IdentityResetPlan.Of(Snapshot([], state: ConnectionState.Stopped)).WhyStopAfterLeaving([]));
+        // Joined a channel, or invited to one, meanwhile.
+        Assert.Contains("try again", IdentityResetPlan.Of(Snapshot([Channel("a", Rank.Member, others: Member(Bob, Rank.Admin))])).WhyStopAfterLeaving([]));
+        Assert.Contains("invited", IdentityResetPlan.Of(Snapshot([], [Invite("x")])).WhyStopAfterLeaving([]));
+    }
+
     [Fact]
     public void AnOldKeyChannelIsExplainedInPlainWordsAndPointsAtRemovingIt() {
         var channel = Channel("old", Rank.Unspecified, oldKey: true, others: Member(Bob, Rank.Member)) with {

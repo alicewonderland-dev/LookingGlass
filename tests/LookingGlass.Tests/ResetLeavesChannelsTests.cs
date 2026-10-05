@@ -245,14 +245,17 @@ public sealed class ResetLeavesChannelsTests : IAsyncLifetime {
 
     /// <summary>
     /// The way past checking (resetting without leaving) is only offered once connecting has failed: while the first
-    /// attempt is still under way, the reset waits.
+    /// attempt is still under way, the reset waits. A connection that works again puts that behind it.
     /// </summary>
     [Fact]
     public async Task ResettingWithoutLeavingIsOfferedOnlyOnceConnectingHasFailed() {
         var fail = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var failing = 1;
         var client = this._server.StartClient("Alice Can't Connect", options: this._server.Options(beforeConnect: async ct => {
-            await fail.Task.WaitAsync(ct);
-            throw new IOException("The server isn't answering.");
+            if (Volatile.Read(ref failing) == 1) {
+                await fail.Task.WaitAsync(ct);
+                throw new IOException("The server isn't answering.");
+            }
         }));
 
         await WaitFor(() => client.Session.Snapshot.State == ConnectionState.Connecting ? new object() : null);
@@ -265,6 +268,10 @@ public sealed class ResetLeavesChannelsTests : IAsyncLifetime {
         var failed = IdentityResetPlan.Of(client.Session.Snapshot);
         Assert.Equal(ResetReadiness.Offline, failed.Readiness);
         Assert.True(failed.CanOverride);
+
+        Volatile.Write(ref failing, 0);
+        await WaitFor(() => client.Session.Snapshot.State == ConnectionState.Unregistered ? new object() : null);
+        Assert.False(client.Session.Snapshot.ConnectionFailed);
     }
 
     [Fact]

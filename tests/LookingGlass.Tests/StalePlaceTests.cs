@@ -248,6 +248,19 @@ public sealed class StalePlaceTests : IAsyncLifetime {
         Assert.Single(this._server.Database.GetInvitesForUser(again.UserId));
     }
 
+    /// <summary>A place is under the current keys only if both keys are the account's now: a new agreement key alone makes it stale too.</summary>
+    [Fact]
+    public async Task APlaceIsCurrentOnlyWithBothKeys() {
+        var alice = await this._server.RegisterAsync("Alice One Key Changed");
+        var channelId = await alice.Session.CreateChannelAsync("Half Changed", Ct);
+        Assert.Equal((Rank.Admin, true), this._server.Database.GetPlace(channelId, alice.UserId));
+
+        this._server.ExecuteSql("UPDATE users SET agreement_key = randomblob(32) WHERE user_id = $u;", ("$u", alice.UserId));
+
+        Assert.Equal((Rank.Admin, false), this._server.Database.GetPlace(channelId, alice.UserId));
+        Assert.False(Assert.Single(this._server.Database.GetMembers(channelId)).CurrentKeys);
+    }
+
     [Fact]
     public async Task RemovingFromTheListIsRateLimited() {
         var alice = await this._server.RegisterAsync("Alice Forgets A Lot");
