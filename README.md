@@ -44,10 +44,11 @@ its tag (like `[sky]`) shows where the chat box names its channel and in the
 server info bar; click that to stop. If a message can't be sent, you're told,
 and it doesn't go to game chat either. Links can't be sent, only text.
 
-With ChatTwo, everything you type goes to the channel, from any ChatTwo chat
-box not set to a tell, even `/p hi`. To say something in a game channel once, use the long
-command (`/party hi`). Its "(Warning: ...)" only names the game channel
-underneath. Turn ExtraChat off while you do this.
+Even `/p hi` goes to the channel. To go back, type `/s` (or any channel)
+on its own (in the game's chat box, `/s ` with a space works too). With ChatTwo,
+every ChatTwo chat box not set to a tell sends to the channel too, and
+`/party hi` talks in Party once; its "(Warning: ...)" only names the game
+channel underneath. Turn ExtraChat off while you do this.
 
 ## Installing
 

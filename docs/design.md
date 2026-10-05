@@ -1356,11 +1356,16 @@ Sticky:
   already on it may not (see Leaving). If the game then refuses the switch
   (`/l3` without a third linkshell), sticky mode has still ended, and the label
   shows the game's channel, which is where typing goes.
-- With ChatTwo loaded, a short channel command followed by *anything* (text, a
-  link's payload bytes, a link placeholder, an auto-translate phrase) is how
-  ChatTwo sends what was typed in it (below), so it is the channel's, like
-  plain text. Only the bare command is a switch (above). The command ends at
-  the first space or control byte, so a payload straight after it still counts.
+- A short channel command (`/s`, `/p`, `/a`, `/y`, `/sh`, `/fc`, `/pt`, `/b`,
+  `/l1` to `/l8`, `/cwl1` to `/cwl8`) followed by *anything* (text, a link's
+  payload bytes, a link placeholder, an auto-translate phrase) is the
+  channel's, like plain text, in both chat boxes. ChatTwo sends what was typed
+  in it that way (below), and the game's own chat box sends a line typed in its
+  one-line channel with the command in front too, as far as can be told (see
+  Leaving); a typed `/p hi` can't be told apart from either. Only the bare
+  command is a switch (above). The command ends at the first space or control
+  byte, so a payload straight after it still counts. The long forms (`/party
+  hi`) are the way to talk in a game channel once.
 - Any other line starting with `/` is a command and goes to the game
   untouched, `/lgc` commands included. Only a `/` at the very start counts: a
   line with a space before it goes to the channel, never the game.
@@ -1419,8 +1424,35 @@ keeps its own history, so it isn't affected.
 - they're no longer in the channel (left, removed, disbanded, "Remove from my
   list", or now only a place under old keys), checked against the complete
   channel list only;
+- the game's chat box switches to a one-line channel of its own
+  (`StickyEnd.ChatBoxSwitched`, below);
 - the game's chat channel can't be read any more;
 - the plugin is turned off or updated.
+
+**The game chat box's one-line channel (inferred).** Besides its channel
+(`ChatType`), the shell keeps a one-line channel: `RaptureShellModule.TempChatType`
+and `TempChatCommand` in FFXIVClientStructs. As far as can be told (from the
+names and from the owner's test, not the game's code), it is what the game's
+chat box uses when a channel command and a space are typed at the start of the
+input (`/s `): the input names that channel for the line, and the line is sent
+there, without the channel switch above. Sticky mode reads it, with the chat log
+agent's channel and label (`AgentChatLog.CurrentChannel`, `ChannelLabel`, the
+label only as a hash), as a `ChatBoxState`: once a frame, right before each draw
+of the chat log, and when the game renames its input's channel
+(`AgentChatLog.ChangeChannelName`, hooked; if that hook is missing, the other
+two still hold). Measured against the state when sticky mode started:
+
+- a one-line command now, where it changed: the player switched; sticky mode
+  ends, with its line, and the label is the game's again;
+- any other change of the one-line state (only its type, or cleared): the tag
+  is held back from the label, so the game's own name for the channel shows,
+  while what is typed still goes to the LookingGlass channel (the safe way
+  round); the info bar still shows the tag;
+- the agent's channel or label alone: logged, nothing else.
+
+A line let through to the game (a command, a one-off `/party hi`) may set and
+reset the one-line state while it runs, so the state is measured again once
+it has run (`StickyChannel.LinePassed`) and changes while it runs don't count.
 
 A `ChangeChatChannel` call that neither changes the channel nor comes from a
 typed line doesn't end it: ChatTwo makes one with the channel it is already on
@@ -1478,9 +1510,8 @@ about it:
   channel too. The long commands (`/party hi`, `/say`, `/shout`,
   `/linkshell1`, `/cwlinkshell1` and so on) are never sent by ChatTwo, so they
   still reach the game; the ChatTwo sentence after "Now talking in" says to
-  use them. Once ChatTwo was loaded when sticky mode started, its short
-  commands stay the channel's until it ends, even if ChatTwo stops answering
-  meanwhile (fail safe: a vanilla `/p hi` then goes to the channel too).
+  use them. The rule doesn't depend on ChatTwo being detected: it holds in
+  the game's own chat box too (Where a line goes).
 - *Links (verified).* ChatTwo's input is plain text: a link put in it (its own
   "Link" menu item calls `AgentChatLog.LinkItem`) arrives through the game's
   chat log refresh event as a string ChatTwo adds to its input
@@ -1564,23 +1595,37 @@ switch's has the chat type before and after the call, and whether a typed line
 was in flight. Never what was typed, a link's contents, or an unknown command's
 name (it could be a message typed after a "/"); tests check this. When sticky
 mode is off, the hook doesn't look at lines at all, and channel switches are
-written at Debug only.
+written at Debug only. Also logged while sticky: every change of the chat
+box's one-line state (`ChatBoxState`: numbers, and its command only if known),
+where it was seen (a frame, a draw, the game renaming its channel, after a
+line), and whether it counted as a switch; the tag being held back from the
+label and shown again; a link placeholder put in the chat input
+(`AgentChatLog.InsertTextCommandParam`, hooked for the log only: just its
+number); and the chat box state at start and end. A line typed while sticky
+that reached game chat with no `[sticky] line` entry at that time went past the
+chat box function.
 
-**What the owner's game test showed, and what changed (October 2026).** With
-ChatTwo on: a link alone reached a cross-world linkshell, and `/s` typed while
-sticky printed nothing and left ChatTwo's label on "LookingGlass", while the
-next line went to Say. On ChatTwo's side both lines are verified to reach the
-hooked function as "/cwl1 <item>" and "/s" (above). That `/s` printed nothing
-and left the label up fits the game not calling its channel switch for a
-typed `/s` while already in Say, as was feared (inferred: the game's code isn't
-read). Why the next lines reached the game isn't explained by ChatTwo's source
-or by the old rule, which sent "/cwl1 <item>" and "/s test" to the channel;
-one possible gap was the rule depending on ChatTwo being detected at that very
-moment (a guess, not reproduced). What changed covers each of these: a
-channel command on its own now ends sticky mode from the line itself; the
-ChatTwo rule holds for as long as sticky mode lasts once ChatTwo was loaded at
-its start; anything after a ChatTwo command, payload bytes included, is the
-channel's; and the labels are checked against the state every frame.
+**What the owner's game test showed, and what changed (October 2026).** The
+owner turned ChatTwo off after step 1, so these happened in the game's own
+chat box: `/s` typed while sticky printed nothing and left the tag on the
+label, and the next line, `test`, went to Say; and a link alone reached the
+cross-world linkshell. The tag still shown means sticky mode was still on (the
+label is drawn from its state, once a frame). With it on, a plain `test` through
+the chat box function goes to the channel, so the line must have reached the
+game as a command, or past that function. What fits both, inferred: the chat
+box's one-line channel (above). `/s ` with a space put the input on Say for the
+next line, with no channel switch, so nothing ended; the tag, drawn over the
+label every frame, hid the game's "Say"; and the line went as `/s test`, which
+the old rule let through in the game's chat box (its short-command rule was
+ChatTwo's only). A link alone sent from a one-line cross-world linkshell is
+`/cwl1 <item>` (the chat input holds a link as `<item>`, put there by
+`AgentChatLog.InsertTextCommandParam`, until the line is sent), let through the
+same way. What changed: a switch to a one-line channel ends sticky mode, with
+its line; any other change of that state holds the tag back from the label; the
+short-command rule holds in both chat boxes, so `/s test` and `/cwl1 <item>` are
+the channel's (or "Not sent" for a link alone) even if the switch isn't seen; a
+channel command on its own ends it from the line itself; and the diagnostic log
+records all of it, so the retest can confirm or rule this out.
 
 ### Simple and advanced mode
 
