@@ -1387,7 +1387,9 @@ public sealed class RequestHandler(
         // A member coming online may be the one to rekey now; nobody else would ask them.
         if (channel.RekeyPending) {
             var online = members.Where(member => registry.IsOnline(member.User.UserId)).ToList();
-            info.RekeyDesignated = ChooseRekeyer(online, preferred: null, excluding: null) == viewerId;
+            var noKeyHolder = NobodyHoldsTheKey(members);
+            info.RekeyDesignated = ChooseRekeyer(online, preferred: null, excluding: null, noKeyHolder) == viewerId;
+            info.NoKeyHolder = noKeyHolder;
         }
 
         return info;
@@ -1407,15 +1409,29 @@ public sealed class RequestHandler(
 
         var members = db.GetMembers(channelId);
         var online = members.Where(member => !member.Forgotten && registry.IsOnline(member.User.UserId)).ToList();
-        var designated = ChooseRekeyer(online, preferred, excluding);
+        var noKeyHolder = NobodyHoldsTheKey(members);
+        var designated = ChooseRekeyer(online, preferred, excluding, noKeyHolder);
         registry.SendToAll(online.Select(member => member.User.UserId), new Event {
             RekeyNeeded = new RekeyNeeded {
                 ChannelId = channelId,
                 CurrentEpoch = channel.Epoch,
                 DesignatedUserId = designated ?? 0,
+                NoKeyHolder = noKeyHolder,
             },
         });
         return designated;
+    }
+
+    /// <summary>
+    /// No member who could make the channel's next key holds its key (see <see cref="RekeyNeeded.NoKeyHolder"/>), online or
+    /// not: every place under its owner's current keys is waiting for one (<see cref="MemberRow.AwaitingKey"/>: everyone who
+    /// held it re-verified with new keys, say), and the rest belong to keys their owners no longer have, or were removed
+    /// from their lists. Nobody can ever share the key, or tell the channel's name, so one of the members waiting makes a
+    /// new key under a name of its own, rather than the channel waiting for ever. While anyone who holds it may come back,
+    /// it waits for them.
+    /// </summary>
+    private static bool NobodyHoldsTheKey(List<MemberRow> members) {
+        return !members.Any(member => member is { Forgotten: false, CurrentKeys: true, AwaitingKey: false });
     }
 
     /// <summary>
@@ -1423,11 +1439,12 @@ public sealed class RequestHandler(
     /// if possible, otherwise the highest-ranked, avoiding <paramref name="excluding"/> unless
     /// nobody else is online.
     /// </summary>
-    private static long? ChooseRekeyer(List<MemberRow> online, long? preferred, long? excluding) {
+    /// <param name="noKeyHolder">Nobody holds the channel's key (see <see cref="NobodyHoldsTheKey"/>): a member waiting for one may be asked.</param>
+    private static long? ChooseRekeyer(List<MemberRow> online, long? preferred, long? excluding, bool noKeyHolder) {
         // Only members who can: one whose place belongs to keys they no longer have (from before key recovery) can't sign a
         // rekey, and one whose place just moved to new keys holds no key and so doesn't know the channel's name to carry
-        // over; either would leave the channel waiting for one.
-        online = online.Where(member => member is { Forgotten: false, CurrentKeys: true, AwaitingKey: false }).ToList();
+        // over; either would leave the channel waiting for one. Unless nobody holds it: then one waiting makes a new one.
+        online = online.Where(member => member is { Forgotten: false, CurrentKeys: true } && (noKeyHolder || !member.AwaitingKey)).ToList();
         var candidates = online.Where(member => member.User.UserId != excluding).ToList();
         if (candidates.Count == 0) {
             candidates = online;

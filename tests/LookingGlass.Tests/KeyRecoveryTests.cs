@@ -299,6 +299,67 @@ public sealed class KeyRecoveryTests : IAsyncLifetime {
     }
 
     /// <summary>
+    /// Everyone who held the channel's key re-verified with new keys before any of their old computers came back (here, Bob
+    /// while Alice already waits for him): nobody can share the key or tell its name, so one of them makes a new key under a
+    /// name of its own rather than both waiting for ever.
+    /// </summary>
+    [Fact]
+    public async Task WhenEveryoneWhoHeldTheKeyRecoveredOneOfThemMakesANewOne() {
+        var alice = await this._server.RegisterAsync("Alice Both Recover");
+        var bob = await this._server.RegisterAsync("Bob Both Recover");
+        var channelId = await alice.Session.CreateChannelAsync("Both Came Back", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        var bobId = bob.UserId;
+        await bob.Session.DisposeAsync();
+        await WaitFor(() => this._server.Registry.IsOnline(bobId) ? null : new object());
+
+        // Bob, who holds the key, may come back: she waits for him.
+        var alice2 = await NewComputerAsync(this._server, alice);
+        Assert.False((await WaitFor(() => alice2.Session.Snapshot.FindChannel(channelId) is { MyRank: Rank.Admin } c ? c : null)).HasKey);
+
+        // He comes back on a new computer too: nobody holds it any more.
+        var bob2 = await NewComputerAsync(this._server, bob);
+
+        foreach (var client in new[] { alice2, bob2 }) {
+            await WaitFor(() => client.Session.Snapshot.FindChannel(channelId) is { HasKey: true, RekeyPending: false, Name: PlainMessages.RestoredChannelName } c ? c : null);
+        }
+
+        Assert.False(this._server.Database.GetChannel(channelId)!.RekeyPending);
+        Assert.DoesNotContain(this._server.Database.GetMembers(channelId), member => member.AwaitingKey);
+        Assert.Equal(Rank.Admin, alice2.Session.Snapshot.FindChannel(channelId)!.MyRank);
+        await alice2.Session.SendTextAsync(channelId, "both new", Ct);
+        await WaitFor(() => bob2.Messages.FirstOrDefault(m => m.Text == "both new"));
+        await alice2.Session.RenameAsync(channelId, "Both Came Back Again", Ct);
+        await WaitFor(() => bob2.Session.Snapshot.FindChannel(channelId) is { Name: "Both Came Back Again" } c ? c : null);
+    }
+
+    /// <summary>
+    /// The only other member is a place under keys its owner no longer has (registered again on a server from before
+    /// recovery; in the second channel also removed from their list): it can't make a key, and nobody else holds one, so
+    /// the recovered member does, under a name of its own, although they aren't alone in the log.
+    /// </summary>
+    [Fact]
+    public async Task WhenTheOnlyOtherPlaceIsAnOldKeysTheRecoveredMemberMakesTheKey() {
+        var alice = await this._server.RegisterAsync("Alice Beside Old Keys");
+        var bob = await this._server.RegisterAsync("Bob Left Old Keys");
+        var oldKey = await alice.Session.CreateChannelAsync("Old Key Company", Ct);
+        var forgotten = await alice.Session.CreateChannelAsync("Forgotten Company", Ct);
+        await AddMemberAsync(alice, oldKey, bob);
+        await AddMemberAsync(alice, forgotten, bob);
+        var stale = await ForgetChannelTests.RegisterOnAnOldServerAsync(this._server, bob);
+        await WaitFor(() => stale.Session.Snapshot.FindChannel(forgotten) is { OldKeyMembership: true } c ? c : null);
+        await stale.Session.ForgetChannelAsync(forgotten, Ct);
+
+        var again = await NewComputerAsync(this._server, alice);
+
+        foreach (var channelId in new[] { oldKey, forgotten }) {
+            await WaitFor(() => again.Session.Snapshot.FindChannel(channelId) is { HasKey: true, RekeyPending: false, Name: PlainMessages.RestoredChannelName } c ? c : null);
+            Assert.Equal(2, again.Session.Snapshot.FindChannel(channelId)!.Members.Length);
+            Assert.False(this._server.Database.GetChannel(channelId)!.RekeyPending);
+        }
+    }
+
+    /// <summary>
     /// The new keys' consent goes with the registration: without it, a registration that would move places is refused
     /// (asking to update), and one signed by any other key, or for another account, registers nothing.
     /// </summary>

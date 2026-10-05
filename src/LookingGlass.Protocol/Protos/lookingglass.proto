@@ -512,6 +512,8 @@ message ChannelInfo {
   // Log entries after the position the client gave in ListChannels (from 0 if none), at
   // most a few (ProtocolInfo.MaxLogEntriesInChannelInfo): fetch the rest with FetchMembershipLog.
   repeated MembershipEntry log = 9;
+  // With rekey_pending: as RekeyNeeded's no_key_holder.
+  bool no_key_holder = 10;
 }
 
 // How much of a channel's log the client already has.
@@ -702,6 +704,11 @@ message RekeyNeeded {
   uint64 current_epoch = 2;
   // The member the server asks to perform the rekey. Any member may do it.
   int64 designated_user_id = 4;
+  // No member who could make the new key holds the channel's key: every place under its owner's current keys moved there
+  // by a key recovered entry (or joined through an invite that moved) and has had no key since, and the rest belong to
+  // keys their owners no longer have. Nobody can tell the channel's name, so the member asked makes the new key under a
+  // name of its own (which the admin can change). Added with key recovery, in protocol version 3.
+  bool no_key_holder = 5;
 }
 
 message EpochAdvanced {

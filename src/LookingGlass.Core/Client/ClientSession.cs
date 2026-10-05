@@ -681,12 +681,13 @@ public sealed class ClientSession : IAsyncDisposable {
 
         if (accept) {
             await this.EnsureChannelReadyAsync(channelId, ct);
-            var (hasKey, pending, nameKnown) = this.Read(() => {
+            var (hasKey, pending, canName) = this.Read(() => {
                 var channel = this._channels.GetValueOrDefault(channelId);
-                return (this.HasCurrentKey(channelId), channel != null && this.NeedsRekey(channel), channel?.Name != null);
+                // An invite moved to new keys knows no name; if nobody holds the key, this client names it (see RekeyAsync).
+                return (this.HasCurrentKey(channelId), channel != null && this.NeedsRekey(channel), channel?.Name != null || this.NamesNewKeyItself(channelId));
             });
-            if (designated && pending && nameKnown) {
-                // Nobody else is online to share the key. (The server's RekeyNeeded arrived before
+            if (designated && pending && canName) {
+                // Nobody else who could is online to share the key. (The server's RekeyNeeded arrived before
                 // this response, while the channel was unknown, so it was ignored.)
                 if (this._options.AutoRekeyWhenDesignated) {
                     this.RaiseNotice(NoticeLevel.Info, "Joined. No other member is online, so you're making the channel a new key.", channelId);
@@ -744,7 +745,7 @@ public sealed class ClientSession : IAsyncDisposable {
         }
 
         this.Publish();
-        if (removed && this.Read(() => this._channels.GetValueOrDefault(channelId)?.Name == null && !this.IsAloneIn(channelId))) {
+        if (removed && this.Read(() => this._channels.GetValueOrDefault(channelId)?.Name == null && !this.NamesNewKeyItself(channelId))) {
             // Back with new keys and no key for the channel yet (so not knowing its name): another member makes the new
             // key, as the server asks one who can.
             return;
@@ -918,9 +919,9 @@ public sealed class ClientSession : IAsyncDisposable {
                     return;
                 }
 
-                if (name == null && this.Read(() => this.IsAloneIn(channelId))) {
-                    // Back with new keys in a channel nobody else is in: nobody can share its key, or tell its name, so it
-                    // gets a name of its own, which can be changed.
+                if (name == null && this.Read(() => this.NamesNewKeyItself(channelId))) {
+                    // Back with new keys where nobody else holds the key (or nobody else is in the channel): nobody can share
+                    // it, or tell its name, so it gets a name of its own, which can be changed.
                     name = PlainMessages.RestoredChannelName;
                 } else if (name == null) {
                     throw new InvalidOperationException("You don't have this channel's key yet, so you can't rekey it. Another member needs to.");
@@ -970,6 +971,7 @@ public sealed class ClientSession : IAsyncDisposable {
                     if (this._channels.TryGetValue(channelId, out var channel)) {
                         channel.ServerEpoch = Math.Max(channel.ServerEpoch, newEpoch);
                         channel.RekeyPending = false;
+                        channel.NoKeyHolder = false;
                         if (this.KeyEpochOf(channelId) == newEpoch) {
                             channel.EncryptedName = request.Name;
                             channel.Name = name;
@@ -1555,10 +1557,11 @@ public sealed class ClientSession : IAsyncDisposable {
 
         if (rekeyIfDesignated && this._options.AutoRekeyWhenDesignated) {
             // Without the name (say, after re-verifying with new keys) this client can't rekey; another member must. Unless
-            // nobody else is in the channel: then it is this client's to do, under a name of its own (see RekeyAsync).
+            // nobody else is in the channel, or nobody else who could holds its key: then it is this client's to do, under
+            // a name of its own (see RekeyAsync).
             var designated = this.Read(() => channels
                 .Where(info => info.RekeyPending && this.IsMember(info.ChannelId)
-                               && ((info.RekeyDesignated && this._channels.GetValueOrDefault(info.ChannelId)?.Name != null)
+                               && ((info.RekeyDesignated && (this._channels.GetValueOrDefault(info.ChannelId)?.Name != null || this.NamesNewKeyItself(info.ChannelId)))
                                    || (this.IsAloneIn(info.ChannelId) && !this.HasCurrentKey(info.ChannelId))))
                 .Select(info => info.ChannelId)
                 .ToList());
@@ -2266,6 +2269,7 @@ public sealed class ClientSession : IAsyncDisposable {
 
             channel.ServerEpoch = Math.Max(channel.ServerEpoch, rekey.CurrentEpoch);
             channel.RekeyPending = true;
+            channel.NoKeyHolder = rekey.NoKeyHolder;
             designated = rekey.DesignatedUserId == this._me?.UserId && this.IsMember(rekey.ChannelId);
         }
 
@@ -2329,6 +2333,8 @@ public sealed class ClientSession : IAsyncDisposable {
 
                 channel.ServerEpoch = Math.Max(channel.ServerEpoch, advanced.Epoch);
                 channel.RekeyPending = false;
+                // Someone held (or made) a key: the server says again if nobody does next time.
+                channel.NoKeyHolder = false;
                 if (advanced.Name != null) {
                     channel.EncryptedName = advanced.Name;
                 }
@@ -2685,6 +2691,7 @@ public sealed class ClientSession : IAsyncDisposable {
             if (this.KeyEpochOf(channelId) is { } newest && newest > channel.ServerEpoch) {
                 channel.ServerEpoch = newest;
                 channel.RekeyPending = false;
+                channel.NoKeyHolder = false;
             }
 
             this.TryDecryptName(channelId);
@@ -2960,6 +2967,7 @@ public sealed class ClientSession : IAsyncDisposable {
         // Only hints: they decide when to fetch keys, logs or rekey, never which key is used or who is a member.
         channel.ServerEpoch = info.Epoch;
         channel.RekeyPending = info.RekeyPending;
+        channel.NoKeyHolder = info.RekeyPending && info.NoKeyHolder;
         if (info.LogHead != null) {
             channel.LogHead = info.LogHead;
         }
@@ -3094,6 +3102,14 @@ public sealed class ClientSession : IAsyncDisposable {
 
     /// <summary>True if this user is the channel's only member, under their current identity keys. Call inside the lock.</summary>
     private bool IsAloneIn(string channelId) => this.IsMember(channelId) && this.MembershipOf(channelId).Members.Count == 1;
+
+    /// <summary>
+    /// Without the channel's name, this client makes the channel's next key itself, under a name of its own (see
+    /// <see cref="PlainMessages.RestoredChannelName"/>): it is the channel's only member, or the server says nobody who could
+    /// make the key holds it (see <see cref="ChannelState.NoKeyHolder"/>), so nobody can ever share the key or tell the name.
+    /// Call inside the lock.
+    /// </summary>
+    private bool NamesNewKeyItself(string channelId) => this.IsAloneIn(channelId) || this._channels.GetValueOrDefault(channelId)?.NoKeyHolder == true;
 
     /// <summary>
     /// The channel needs a new key before anyone sends: the server says so, or the newest key held
@@ -3604,6 +3620,12 @@ public sealed class ClientSession : IAsyncDisposable {
         /// <summary>The epoch the server last reported. A hint for fetching keys and rekeying; the key epoch is <see cref="KeyEpochOf"/>.</summary>
         public ulong ServerEpoch { get; set; }
         public bool RekeyPending { get; set; }
+
+        /// <summary>
+        /// The server last said nobody who could make the channel's next key holds its key (see <see cref="RekeyNeeded.NoKeyHolder"/>):
+        /// a client that doesn't know the channel's name makes it under a name of its own. Only a hint, as the server says it.
+        /// </summary>
+        public bool NoKeyHolder { get; set; }
 
         /// <summary>The newest membership log position the server reported. A hint for when to fetch the log.</summary>
         public LogPosition? LogHead { get; set; }

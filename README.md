@@ -201,9 +201,12 @@ compare fingerprints with you. A channel works again for you as soon as a
 member who is online gives it a new key (they do so automatically), which the
 old key can't read; until then you can already remove members and change
 ranks there (as your rank allows), but not read, send, invite or rename.
-If nobody else is in a channel, you make its new key yourself, and since
-nobody can tell you its name then, it comes back as "Restored channel":
-rename it. An invite that comes back shows its channel's name once you've
+If nobody else is in a channel, or nobody else there holds its key any more
+(they re-verified too, or only an old key's place is left), you (or another
+member in the same spot) make its new key, and since nobody can tell you its
+name then, it comes back as "Restored channel": the admin can rename it (the
+real name can't come back after that). While someone who holds the key may
+still come back, the channel waits for them. An invite that comes back shows its channel's name once you've
 joined (the name in it was sealed to your old key).
 
 **Reset my identity** (Settings, under "Your identity") is for a key that may
