@@ -246,6 +246,13 @@ public sealed class ClientSession : IAsyncDisposable {
 
     // ================================================================ registration
 
+    /// <summary>
+    /// Starts registering <paramref name="character"/>: the server answers with the code to put in the Lodestone profile.
+    /// The code must be the one derived from the address this client connected to, its identity key, the server's nonce
+    /// and the character (see <see cref="LodestoneCode"/>); any other is refused, never shown, since it was made for
+    /// another server or key, which is what a malicious server passing on another server's code would send.
+    /// </summary>
+    /// <exception cref="RelayedRegistrationCodeException">The server sent a code that isn't this server's for this key.</exception>
     public async Task<RegistrationChallenge> StartRegistrationAsync(Character character, CancellationToken ct = default) {
         var identity = this.EnsureIdentity();
         var connection = this.RequireConnection();
@@ -257,12 +264,29 @@ public sealed class ClientSession : IAsyncDisposable {
                 throw new InvalidOperationException("You're already logged in, so there's nothing to register.");
             }
 
+            // Exactly the address this connection was made to, as for CompleteRegistration: the code is derived from its origin.
+            var serverUrl = this._options.ServerUri.AbsoluteUri;
             // Lodestone lookups are queued server-side, so allow more time than usual.
             var response = await this.RequestAsync(connection, new ClientFrame {
-                StartRegistration = new StartRegistration { Character = character, Identity = identity.ToBundle() },
+                StartRegistration = new StartRegistration { Character = character, Identity = identity.ToBundle(), ServerUrl = serverUrl },
             }, ct, RegistrationRequestTimeout);
 
             challenge = response.RegistrationChallenge ?? throw Unexpected(response);
+            if (CheckCode(challenge, serverUrl, identity) is { } wrong) {
+                this.Log(NoticeLevel.Warning, $"Refused the registration code the server sent ({wrong}). It may be passing on another server's code; it wasn't shown.");
+                lock (this._lock) {
+                    // The server replaced any earlier registration on this connection with this one, which is refused.
+                    this._challenge = null;
+                    if (this._state == ConnectionState.Registering) {
+                        this._state = this._loginRejected ? ConnectionState.LoginNotRecognized : ConnectionState.Unregistered;
+                        this._status = this._loginRejected ? LoginNotRecognizedStatus : "Not registered on this server.";
+                    }
+                }
+
+                this.Publish();
+                throw new RelayedRegistrationCodeException();
+            }
+
             lock (this._lock) {
                 this._challenge = challenge;
                 this._state = ConnectionState.Registering;
@@ -276,6 +300,33 @@ public sealed class ClientSession : IAsyncDisposable {
 
         this.Publish();
         return challenge;
+    }
+
+    /// <summary>
+    /// Whether a registration challenge's code is the one this client expects: derived from the origin of the address it
+    /// connected to, its own identity key, the nonce the server sent and the character the server named. A debug account
+    /// has no code (and nothing to put in a profile).
+    /// </summary>
+    /// <returns>Why it isn't, for the log, or null if it is.</returns>
+    internal static string? CheckCode(RegistrationChallenge challenge, string serverUrl, IdentityKeys identity) {
+        if (challenge.VerificationSkipped && challenge.Code.Length == 0) {
+            return null;
+        }
+
+        // From the server: shortened and without control characters, as it is logged.
+        var code = new string(challenge.Code.Where(c => !char.IsControl(c)).Take(40).ToArray());
+        if (ServerOrigin.FromUrl(serverUrl) is not { } origin) {
+            return $"\"{code}\", for an address with no origin, {serverUrl}";
+        }
+
+        if (challenge.Nonce.Length != RegistrationProof.NonceSize) {
+            return $"\"{code}\", with a nonce of {challenge.Nonce.Length} bytes";
+        }
+
+        var expected = LodestoneCode.Derive(origin, identity.SigningPublicKey, challenge.Nonce.Span, challenge.LodestoneId);
+        return challenge.Code == expected
+            ? null
+            : $"\"{code}\" for character {challenge.LodestoneId} isn't the code for {origin}, this client's identity key and the nonce sent with it";
     }
 
     /// <summary>

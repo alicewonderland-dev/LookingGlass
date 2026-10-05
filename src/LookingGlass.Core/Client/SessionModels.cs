@@ -159,6 +159,15 @@ public sealed class ServerErrorException(ErrorCode code, string message) : Excep
 /// <summary>The connection closed before the request was answered.</summary>
 public sealed class SessionDisconnectedException(string message) : Exception(message);
 
+/// <summary>
+/// The server answered "register" with a Lodestone code that wasn't made for it and this client's key (see
+/// <see cref="Crypto.LodestoneCode"/>), as a server passing on another server's code would, to take the character's
+/// account there once the user puts the code in their profile. The code isn't shown.
+/// </summary>
+public sealed class RelayedRegistrationCodeException() : InvalidOperationException(
+    "This server sent a registration code that doesn't belong to it. It may be passing on another server's code. " +
+    "Don't put it in your Lodestone profile.");
+
 public sealed class ClientSessionOptions {
     public required Uri ServerUri { get; init; }
     public string ClientVersion { get; init; } = "0.1.0";

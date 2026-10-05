@@ -48,6 +48,9 @@ public sealed class RequestHandler(
     // Said to anyone asking, before looking at the account, on a server with key login off.
     private const string KeyLoginUnavailable = "Signing in with the identity key isn't available on this server.";
 
+    // A plugin too old to register here: one that doesn't sign registrations, or can't check the Lodestone code it shows.
+    private const string UpdateToRegister = "This server needs a newer version of LookingGlass to register: please update the plugin, then register again.";
+
     // Registering a key the account replaced, or retired with "Reset my identity": what the plugin says to do.
     private const string KeyRetired =
         "This identity key was replaced (by registering again with new keys, or \"Reset my identity\"), so it can't be registered again. " +
@@ -224,6 +227,11 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.InvalidRequest, "Invalid identity keys.");
         }
 
+        if (string.IsNullOrEmpty(request.ServerUrl)) {
+            // A plugin from before codes were derived from the server's address, which can't check the code it shows.
+            throw new RequestException(ErrorCode.RegistrationFailed, UpdateToRegister);
+        }
+
         var minutes = options.Value.Lodestone.ChallengeMinutes;
         if (ProtocolInfo.IsDebugWorld(worldName)) {
             if (!options.Value.Dev.AllowDebugAccounts) {
@@ -244,6 +252,19 @@ public sealed class RequestHandler(
             };
         }
 
+        // The code is made for this address, and the client only accepts a code made for the address it connected to: an
+        // address that isn't this server's is what a malicious server passing this server's code on to its users would
+        // name (to have them accept it). Checked as when completing, before anything is counted or looked up.
+        if (this.NotThisServer(connection, request.ServerUrl) is { } elsewhere) {
+            logger.LogWarning("Registration of {Name} on {World} from {Address} refused when starting: {Reason}", name, worldName, connection.RemoteAddress, elsewhere);
+            throw new RequestException(ErrorCode.RegistrationFailed,
+                this.WrongAddressMessage(connection, request.ServerUrl) +
+                " Nothing was started: set the server address in Settings to one this server accepts, then register again.");
+        }
+
+        // NotThisServer accepted it, so it parses.
+        var origin = ServerOrigin.FromUrl(request.ServerUrl)!;
+
         if (!this._registrations.TryAdd(connection.RemoteAddress)) {
             throw new RequestException(ErrorCode.RateLimited, "Too many registration attempts; try again later.");
         }
@@ -263,9 +284,12 @@ public sealed class RequestHandler(
 
         // Once the account is known (the lookup is cached, so asking again costs nothing).
         this.CheckKeyRegistrable(found.Id, request.Identity);
-        var code = "LGC-" + RandomCode(8);
+        // For this address, the key this registration is for (only it can complete it: see CheckRegistrationProof), a fresh
+        // nonce and the character, so the client can check it was made for its own server and key before showing it.
+        var nonce = NewRegistrationNonce();
+        var code = LodestoneCode.Derive(origin, request.Identity.SigningPublicKey.Span, nonce, found.Id);
         connection.PendingRegistration = new PendingRegistration(
-            found.Id, found.Name, character.WorldId, found.WorldName, request.Identity, code, DateTimeOffset.UtcNow.AddMinutes(minutes), false, NewRegistrationNonce());
+            found.Id, found.Name, character.WorldId, found.WorldName, request.Identity, code, DateTimeOffset.UtcNow.AddMinutes(minutes), false, nonce);
         connection.VerifyAttempts = 0;
 
         return new Response {
@@ -373,14 +397,15 @@ public sealed class RequestHandler(
     /// as for key login, so a malicious server can't relay this server's challenge to its users and register their keys
     /// here, receiving the login this hands out (the plugin's separate keys per address don't stop that: registering
     /// registers whatever key was signed with); a debug account proves nothing about who registers it anyway (anyone may register any name), and the echo bot
-    /// connects to a local address that PublicUrls don't list.
+    /// connects to a local address that PublicUrls don't list. The key is the one the Lodestone code was derived from
+    /// when registering started (<see cref="PendingRegistration.Identity"/>), so a registration completes only for the
+    /// key its code was issued for.
     /// </summary>
     /// <exception cref="RequestException">Not signed, or not like that. The registration can still be completed.</exception>
     private void CheckRegistrationProof(ClientConnection connection, PendingRegistration pending, CompleteRegistration request) {
         if (request.Signature.IsEmpty) {
             // A plugin from before registrations were signed.
-            throw new RequestException(ErrorCode.RegistrationFailed,
-                "This server needs a newer version of LookingGlass to register: please update the plugin, then register again.");
+            throw new RequestException(ErrorCode.RegistrationFailed, UpdateToRegister);
         }
 
         if (!pending.IsDebug && this.NotThisServer(connection, request.ServerUrl) is { } elsewhere) {
@@ -1386,15 +1411,6 @@ public sealed class RequestHandler(
     internal static byte[] HashToken(string token) => SHA256.HashData(Encoding.UTF8.GetBytes(token));
 
     private static string NewDeviceToken() => "lgt_" + Base64Url(RandomNumberGenerator.GetBytes(32));
-
-    private static string RandomCode(int length) {
-        const string alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-        return string.Create(length, alphabet, (span, chars) => {
-            for (var i = 0; i < span.Length; i++) {
-                span[i] = chars[RandomNumberGenerator.GetInt32(chars.Length)];
-            }
-        });
-    }
 
     private static string Base64Url(byte[] bytes) => Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
 }
