@@ -1534,13 +1534,17 @@ public sealed class RequestHandler(
     /// rekey, fetch keys, rename or disband, as none of that is signed by the keys the log knows it by (and a disband would
     /// end the channel for everyone). It can still read the log, which is how the client sees whose place it is; and it can be removed from the
     /// user's list (<see cref="ForgetChannel"/>, which doesn't come here). A place removed from the list isn't one at all.
+    /// The place must also be under the keys this connection signed in with, so a session that outlived the registration
+    /// that replaced its keys is in the same position, whatever rank the place kept when it moved to the new keys.
     /// </summary>
     private Rank RequireAllowed(string channelId, UserRow me, ChannelAction action) {
         if (db.GetChannel(channelId) == null) {
             throw new RequestException(ErrorCode.NotFound, "No such channel.");
         }
 
-        var place = db.GetPlace(channelId, me.UserId) ?? throw new RequestException(ErrorCode.NotFound, "You're not in that channel.");
+        // Under the keys this connection signed in with, too: a session of keys the account replaced since (one registering
+        // new keys should have disconnected) has no say through a place that moved to the new ones.
+        var place = db.GetPlace(channelId, me.UserId, me.Keys) ?? throw new RequestException(ErrorCode.NotFound, "You're not in that channel.");
         if (!place.CurrentKeys && action != ChannelAction.FetchLog) {
             throw new RequestException(ErrorCode.Forbidden, OldKeyPlace);
         }

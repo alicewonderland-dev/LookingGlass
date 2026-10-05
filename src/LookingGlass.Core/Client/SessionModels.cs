@@ -90,9 +90,9 @@ public sealed record SessionSnapshot(
 /// (<see cref="ClientSession.ForgetChannelAsync"/>) instead of Leave.
 /// </param>
 /// <param name="KeyMovedAway">
-/// With <see cref="OldKeyMembership"/>: the log moved this user's place away from the keys this client holds (a key
-/// recovered entry: their character was re-verified with other keys, normally their own on another computer). Say so, and
-/// that "Reset my identity" takes it back if it wasn't them (<see cref="PlainMessages.KeyMovedAwayChannel"/>).
+/// With <see cref="OldKeyMembership"/>: the log moved this user's place to keys this client doesn't hold (a key recovered
+/// entry: their character was re-verified with other keys, normally their own on another computer). Say so, and that
+/// "Reset my identity" takes it back if it wasn't them (<see cref="PlainMessages.KeyMovedAwayChannel"/>).
 /// </param>
 public sealed record ChannelView(
     string Id,

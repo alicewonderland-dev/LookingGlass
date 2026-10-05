@@ -3471,8 +3471,9 @@ public sealed class ClientSession : IAsyncDisposable {
 
         var mine = this._me == null ? null : membership.FindMember(this._me.UserId);
         var oldKey = mine != null && this._myKeys != null && mine.Keys != this._myKeys;
-        // Not keys this user had before, but this client's, which their place moved away from: re-verified elsewhere.
-        var movedAway = oldKey && membership.MovedFrom(mine!.UserId, this._myKeys!);
+        // Not keys this user had before: the log moved their place (a key recovered entry) to keys this client doesn't hold, so
+        // their character was re-verified elsewhere.
+        var movedAway = oldKey && membership.KeysAt(mine!.UserId, 0) != mine.Keys;
         var warning = channel.MembershipWarning ?? channel.RemovalWarning;
         if (warning == null && oldKey) {
             warning = movedAway ? PlainMessages.KeyMovedAwayChannel : PlainMessages.OldKeyChannel;

@@ -3,6 +3,7 @@ using LookingGlass.Core.Client;
 using LookingGlass.Core.Crypto;
 using LookingGlass.Core.Membership;
 using LookingGlass.Protocol;
+using LookingGlass.Server.Data;
 using static LookingGlass.Tests.Harness;
 
 namespace LookingGlass.Tests;
@@ -108,6 +109,8 @@ public sealed class KeyRecoveryTests : IAsyncLifetime {
         var newEpoch = this._server.Database.GetChannel(channelId)!.Epoch;
         Assert.DoesNotContain(this._server.Database.GetEpochKeys(channelId, userId, newEpoch), key => key.Key.Box == null);
         Assert.Single(this._server.Database.GetEpochKeys(channelId, userId, newEpoch));
+        // She holds the key now: no longer waiting for one (so she may be asked to make the next).
+        Assert.False(Assert.Single(this._server.Database.GetMembers(channelId), m => m.User.UserId == userId).AwaitingKey);
 
         await again.Session.SendTextAsync(channelId, "back again", Ct);
         await WaitFor(() => bob.Messages.FirstOrDefault(m => m.Text == "back again"));
@@ -151,6 +154,7 @@ public sealed class KeyRecoveryTests : IAsyncLifetime {
         var waiting = await WaitFor(() => again.Session.Snapshot.FindChannel(channelId) is { MyRank: Rank.Admin } c ? c : null);
         Assert.False(waiting.HasKey);
         Assert.True(this._server.Database.GetChannel(channelId)!.RekeyPending);
+        Assert.True(Assert.Single(this._server.Database.GetMembers(channelId), m => m.User.UserId == again.UserId).AwaitingKey);
 
         var back = await this._server.RestartAsync(bob);
         await WaitFor(() => back.Notices.FirstOrDefault(n => n.Text.Contains(ReVerified)));
@@ -267,12 +271,19 @@ public sealed class KeyRecoveryTests : IAsyncLifetime {
         var alice = await this._server.RegisterAsync("Alice Old Places");
         var kept = await bob.Session.CreateChannelAsync("Kept Place", Ct);
         var removed = await bob.Session.CreateChannelAsync("Removed Place", Ct);
+        var declined = await bob.Session.CreateChannelAsync("Declined Invite", Ct);
         await AddMemberAsync(bob, kept, alice);
         await AddMemberAsync(bob, removed, alice);
+        await bob.Session.InviteAsync(declined, alice.Name, ProtocolInfo.DebugWorldName, Ct);
+        await WaitFor(() => alice.Session.Snapshot.Invites.FirstOrDefault(i => i.ChannelId == declined && i.ChannelName != null));
         var firstKeys = alice.Keys();
         var stale = await ForgetChannelTests.RegisterOnAnOldServerAsync(this._server, alice);
         await WaitFor(() => stale.Session.Snapshot.FindChannel(kept) is { OldKeyMembership: true } c ? c : null);
         await stale.Session.ForgetChannelAsync(removed, Ct);
+        // An invite for the old key, declined: removed from the list the same way.
+        await WaitFor(() => stale.Session.Snapshot.Invites.FirstOrDefault(i => i.ChannelId == declined));
+        await stale.Session.RespondToInviteAsync(declined, accept: false, Ct);
+        Assert.Empty(this._server.Database.GetInvitesForUser(stale.UserId));
 
         var again = await NewComputerAsync(this._server, stale);
 
@@ -282,6 +293,9 @@ public sealed class KeyRecoveryTests : IAsyncLifetime {
         Assert.Null(again.Session.Snapshot.FindChannel(removed));
         Assert.Equal(firstKeys, this._server.ServerMembership(removed).FindMember(again.UserId)!.Keys);
         Assert.True(Assert.Single(this._server.Database.GetMembers(removed), m => m.User.UserId == again.UserId).Forgotten);
+        Assert.DoesNotContain(again.Session.Snapshot.Invites, i => i.ChannelId == declined);
+        Assert.Equal(firstKeys, this._server.ServerMembership(declined).FindInvitee(again.UserId)!.Keys);
+        Assert.Equal(1UL, this._server.Database.GetLogEntries(declined, 0, 100).Last().Seq);
     }
 
     /// <summary>
@@ -360,6 +374,134 @@ public sealed class KeyRecoveryTests : IAsyncLifetime {
             Assert.Equal(2, again.Session.Snapshot.FindChannel(channelId)!.Members.Length);
             Assert.False(this._server.Database.GetChannel(channelId)!.RekeyPending);
         }
+    }
+
+    /// <summary>
+    /// An invite that moved to her new key, accepted while the only member who holds the key is offline: she waits for the key
+    /// (not knowing the channel's name, she couldn't make one), and gets it, with the real name, when he comes back.
+    /// </summary>
+    [Fact]
+    public async Task AnAcceptedMovedInviteWaitsForTheKey() {
+        var bob = await this._server.RegisterAsync("Bob Away When Accepted");
+        var alice = await this._server.RegisterAsync("Alice Accepts Moved");
+        var channelId = await bob.Session.CreateChannelAsync("Accepted While Away", Ct);
+        await bob.Session.InviteAsync(channelId, alice.Name, ProtocolInfo.DebugWorldName, Ct);
+        await WaitFor(() => alice.Session.Snapshot.Invites.FirstOrDefault(i => i.ChannelId == channelId && i.ChannelName != null));
+        var bobId = bob.UserId;
+        await bob.Session.DisposeAsync();
+        await WaitFor(() => this._server.Registry.IsOnline(bobId) ? null : new object());
+
+        var again = await NewComputerAsync(this._server, alice);
+        await WaitFor(() => again.Session.Snapshot.Invites.FirstOrDefault(i => i.ChannelId == channelId && i.Verified));
+        await again.Session.RespondToInviteAsync(channelId, true, Ct);
+
+        var joined = Assert.Single(this._server.Database.GetMembers(channelId), m => m.User.UserId == again.UserId);
+        Assert.True(joined.AwaitingKey);
+        Assert.True(this._server.Database.GetChannel(channelId)!.RekeyPending);
+        Assert.False(again.Session.Snapshot.FindChannel(channelId)!.HasKey);
+
+        var back = await this._server.RestartAsync(bob);
+        await WaitFor(() => again.Session.Snapshot.FindChannel(channelId) is { HasKey: true, RekeyPending: false, Name: "Accepted While Away" } c ? c : null);
+        Assert.False(Assert.Single(this._server.Database.GetMembers(channelId), m => m.User.UserId == again.UserId).AwaitingKey);
+        await again.Session.SendTextAsync(channelId, "in at last", Ct);
+        await WaitFor(() => back.Messages.FirstOrDefault(m => m.Text == "in at last"));
+    }
+
+    /// <summary>
+    /// The old computer is still signed in when the character re-verifies on a new one (which hasn't logged in yet, so
+    /// nothing else replaces the old session): the old session is dropped before anyone is told (it hears nothing of its own
+    /// replacement), and its login doesn't work any more.
+    /// </summary>
+    [Fact]
+    public async Task TheOldComputersSessionIsDroppedWhenTheCharacterReVerifies() {
+        var alice = await this._server.RegisterAsync("Alice Old Laptop On");
+        var bob = await this._server.RegisterAsync("Bob Sees Laptop");
+        var channelId = await alice.Session.CreateChannelAsync("Laptop Left On", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+
+        using var newKeys = IdentityKeys.Generate();
+        Assert.Equal(1u, (await this.RegisterRawAsync(alice.Name, alice.UserId, newKeys)).PlacesRestored);
+
+        var refused = await WaitFor(() => alice.Session.Snapshot is { State: ConnectionState.LoginNotRecognized } s ? s : null);
+        Assert.Contains(PlainMessages.LoginMaybeReplaced, refused.StatusText);
+        await WaitFor(() => bob.Notices.FirstOrDefault(n => n.Text.Contains(ReVerified)));
+        Assert.DoesNotContain(alice.Notices, n => n.Text == PlainMessages.ReVerifiedElsewhere);
+    }
+
+    /// <summary>
+    /// Defence in depth: should a session of the old keys outlive the registration that replaced them (here the server's
+    /// database is changed under it, with nobody disconnected), its place in the channel isn't its own any more: it can't
+    /// disband the channel, fetch its keys or rename it, although the place's rank (admin) moved to the new keys.
+    /// </summary>
+    [Fact]
+    public async Task ASessionOfTheOldKeysCanDoNothingThroughTheMovedPlace() {
+        var alice = await this._server.RegisterAsync("Alice Session Lingers");
+        var bob = await this._server.RegisterAsync("Bob Keeps Channel");
+        var channelId = await alice.Session.CreateChannelAsync("Lingering", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        var row = this._server.Database.GetUser(alice.UserId)!;
+        // Only the signing key is new (the agreement key is the one the session has): still not the session's place.
+        using var fresh = IdentityKeys.Generate();
+        using var old = alice.LoadIdentity();
+        using var newKeys = IdentityKeys.Import(fresh.ExportPrivateKeys().Signing, old.ExportPrivateKeys().Agreement);
+        var registration = this._server.Database.RegisterUser(row.UserId, row.Name, row.WorldId, row.WorldName, newKeys.ToBundle(), row.IsDebug,
+            new KeyRecovery(KeyRecoveryProof.Sign(newKeys, row.UserId), SignedLogMembershipProvider.Instance, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
+        Assert.Single(registration.Recovered);
+        Assert.Equal(ConnectionState.Ready, alice.Session.Snapshot.State);
+
+        foreach (var request in new[] {
+                     new ClientFrame { DisbandChannel = new DisbandChannel { ChannelId = channelId } },
+                     new ClientFrame { FetchEpochKeys = new FetchEpochKeys { ChannelId = channelId } },
+                     new ClientFrame { RenameChannel = new RenameChannel { ChannelId = channelId } },
+                 }) {
+            var refused = await Assert.ThrowsAsync<ServerErrorException>(() => alice.Session.SendRawAsync(request, Ct));
+            Assert.Equal(ErrorCode.Forbidden, refused.Code);
+        }
+
+        Assert.NotNull(this._server.Database.GetChannel(channelId));
+        Assert.Equal(Rank.Admin, this._server.ServerMembership(channelId).FindMember(alice.UserId)!.Rank);
+    }
+
+    /// <summary>
+    /// Registering the keys the account already has (a lost login, the key kept) still brings along a place under keys it
+    /// had before (from a server before recovery): it is the same account's.
+    /// </summary>
+    [Fact]
+    public async Task RegisteringTheSameKeysAgainBringsAnOldKeysPlaceAlong() {
+        var bob = await this._server.RegisterAsync("Bob Hosts Same Keys");
+        var alice = await this._server.RegisterAsync("Alice Same Keys Again");
+        var channelId = await bob.Session.CreateChannelAsync("Same Keys Again", Ct);
+        await AddMemberAsync(bob, channelId, alice);
+        var firstKeys = alice.Keys();
+        var stale = await ForgetChannelTests.RegisterOnAnOldServerAsync(this._server, alice);
+        await WaitFor(() => stale.Session.Snapshot.FindChannel(channelId) is { OldKeyMembership: true } c ? c : null);
+        using var keys = stale.LoadIdentity();
+        var userId = stale.UserId;
+        Assert.Equal(firstKeys, this._server.ServerMembership(channelId).FindMember(userId)!.Keys);
+
+        var complete = await this.RegisterRawAsync(alice.Name, userId, keys);
+
+        Assert.Equal(1u, complete.PlacesRestored);
+        Assert.Equal(MemberKeys.Of(keys), this._server.ServerMembership(channelId).FindMember(userId)!.Keys);
+    }
+
+    /// <summary>Registers <paramref name="keys"/> for a debug account over a connection of its own, which doesn't log in.</summary>
+    private async Task<RegistrationComplete> RegisterRawAsync(string name, long userId, IdentityKeys keys) {
+        await using var raw = await this._server.ConnectRawAsync();
+        var url = this._server.ServerUri.AbsoluteUri;
+        var challenge = (await raw.SendAsync(new ClientFrame {
+            StartRegistration = new StartRegistration {
+                Character = new Character { Name = name, WorldName = ProtocolInfo.DebugWorldName }, Identity = keys.ToBundle(), ServerUrl = url, ClientNonce = NewClientNonce(),
+            },
+        })).RegistrationChallenge!;
+        var response = await raw.SendAsync(new ClientFrame {
+            CompleteRegistration = new CompleteRegistration {
+                ServerUrl = url,
+                Signature = ByteString.CopyFrom(RegistrationProof.Sign(keys, challenge.Nonce.Span, challenge.LodestoneId, url)),
+                RecoverySignature = ByteString.CopyFrom(KeyRecoveryProof.Sign(keys, userId)),
+            },
+        });
+        return response.RegistrationComplete ?? throw new InvalidOperationException(response.Error?.Message);
     }
 
     /// <summary>
@@ -507,6 +649,27 @@ public sealed class KeyRecoveryTests : IAsyncLifetime {
     }
 
     /// <summary>
+    /// Re-verified twice (two new computers): the newest one reads both moves from the log's start, and neither is news of
+    /// its key going elsewhere.
+    /// </summary>
+    [Fact]
+    public async Task ReVerifyingTwiceDoesntAlarmTheNewestComputer() {
+        var alice = await this._server.RegisterAsync("Alice Third Computer");
+        var bob = await this._server.RegisterAsync("Bob Sees Two Moves");
+        var channelId = await alice.Session.CreateChannelAsync("Third Computer", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+
+        var second = await NewComputerAsync(this._server, alice);
+        await WaitFor(() => second.Session.Snapshot.FindChannel(channelId) is { HasKey: true } c ? c : null);
+        var third = await NewComputerAsync(this._server, second);
+
+        var channel = await WaitFor(() => third.Session.Snapshot.FindChannel(channelId) is { HasKey: true, MyRank: Rank.Admin, Name: "Third Computer" } c ? c : null);
+        Assert.False(channel.OldKeyMembership);
+        Assert.Equal(2, this._server.Database.GetLogEntries(channelId, 0, 100).Count(entry => entry.Kind == MembershipEntryKind.KeyRecovered));
+        Assert.DoesNotContain(third.Notices, n => n.Text == PlainMessages.ReVerifiedElsewhere);
+    }
+
+    /// <summary>
     /// A log read from its start (an invite's) can still change a key pinned before: Alice compared Bob's key in a channel
     /// they shared, which he has left since. When his place in another channel moved to a new key, she wasn't there; reading
     /// that channel's history when she's invited, she is told, and he no longer shows as compared. Dave, who never saw Bob
@@ -578,6 +741,35 @@ public sealed class KeyRecoveryTests : IAsyncLifetime {
         Assert.False(seen.KeyChanged);
         Assert.True(seen.KeyRecovered);
         Assert.False(seen.FingerprintCompared);
+    }
+
+    /// <summary>
+    /// Alice knew Bob's old key; she next hears of him when his invite arrives, after he re-verified. The server's identity
+    /// shows his new key first, as a "key changed" warning; the invite's log, read from its start, explains it, and she is
+    /// told why rather than left with the warning or nothing.
+    /// </summary>
+    [Fact]
+    public async Task AKeyChangeWarningIsExplainedEvenByALogReadFromItsStart() {
+        var alice = await this._server.RegisterAsync("Alice Knew Bob");
+        var bob = await this._server.RegisterAsync("Bob Invites Anew");
+        var shared = await alice.Session.CreateChannelAsync("Knew Him Here", Ct);
+        await AddMemberAsync(alice, shared, bob);
+        await bob.Session.LeaveAsync(shared, Ct);
+        await WaitFor(() => alice.Session.Snapshot.FindChannel(shared)!.Members.Length == 1 ? new object() : null);
+        var channelId = await bob.Session.CreateChannelAsync("Bob's Own", Ct);
+        var aliceId = alice.UserId;
+        await alice.Session.DisposeAsync();
+        await WaitFor(() => this._server.Registry.IsOnline(aliceId) ? null : new object());
+
+        var bob2 = await NewComputerAsync(this._server, bob);
+        await WaitFor(() => bob2.Session.Snapshot.FindChannel(channelId) is { HasKey: true, RekeyPending: false } c ? c : null);
+        await bob2.Session.InviteAsync(channelId, alice.Name, ProtocolInfo.DebugWorldName, Ct);
+
+        var back = await this._server.RestartAsync(alice);
+        var invite = await WaitFor(() => back.Session.Snapshot.Invites.FirstOrDefault(i => i.ChannelId == channelId && i.Verified));
+        await WaitFor(() => back.Notices.FirstOrDefault(n => n.Text.Contains(ReVerified) && n.Text.Contains(bob.Name)));
+        Assert.False(back.Session.Snapshot.Invites.Single(i => i.ChannelId == channelId).InviterKeyChanged);
+        Assert.Equal(bob2.Keys().Fingerprint, invite.InviterFingerprint);
     }
 
     /// <summary>A member whose place moved twice while Alice wasn't looking is announced once, under the keys they have now.</summary>

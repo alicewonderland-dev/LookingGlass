@@ -729,23 +729,37 @@ public sealed class Database {
 
     /// <returns>
     /// The user's place in the channel: its rank, as <see cref="GetRank"/> gives it, and whether it is under the keys the user
-    /// is registered with now (<see cref="MemberRow.CurrentKeys"/>; for an invite, the keys it was made for). Null as for <see cref="GetRank"/>.
+    /// is registered with now (<see cref="MemberRow.CurrentKeys"/>; for an invite, the keys it was made for), and under
+    /// <paramref name="keys"/> too if given. Null as for <see cref="GetRank"/>.
     /// </returns>
-    public (Rank Rank, bool CurrentKeys)? GetPlace(string channelId, long userId) {
+    /// <param name="keys">
+    /// The keys whoever asks signed in with: a session of keys the user no longer has (one a registration with new keys
+    /// should have disconnected) has no say through a place that moved to the new ones.
+    /// </param>
+    public (Rank Rank, bool CurrentKeys)? GetPlace(string channelId, long userId, MemberKeys? keys = null) {
         using var connection = this.Open();
-        (string, object)[] who = [("$channel", channelId), ("$user", userId)];
+        (string, object)[] who = [
+            ("$channel", channelId), ("$user", userId),
+            ("$signing", keys?.SigningKeyArray() ?? (object) DBNull.Value), ("$agreement", keys?.AgreementKeyArray() ?? (object) DBNull.Value),
+        ];
         var member = Query(connection, null,
-            $"SELECT m.rank, {SameKeys("m")} FROM members m JOIN users u ON u.user_id = m.user_id WHERE m.channel_id = $channel AND m.user_id = $user AND m.forgotten = 0;",
+            $"SELECT m.rank, {SameKeys("m")} AND {SessionKeys("m")} FROM members m JOIN users u ON u.user_id = m.user_id " +
+            "WHERE m.channel_id = $channel AND m.user_id = $user AND m.forgotten = 0;",
             reader => ((Rank) reader.GetInt32(0), reader.GetInt64(1) != 0), who);
         if (member is [var place]) {
             return place;
         }
 
         var invite = Query(connection, null,
-            $"SELECT {SameKeys("i")} FROM invites i JOIN users u ON u.user_id = i.user_id WHERE i.channel_id = $channel AND i.user_id = $user AND i.forgotten = 0;",
+            $"SELECT {SameKeys("i")} AND {SessionKeys("i")} FROM invites i JOIN users u ON u.user_id = i.user_id " +
+            "WHERE i.channel_id = $channel AND i.user_id = $user AND i.forgotten = 0;",
             reader => reader.GetInt64(0) != 0, who);
         return invite is [var current] ? (Rank.Invited, current) : null;
     }
+
+    /// <summary>The row's keys are the asking session's (<c>$signing</c>, <c>$agreement</c>), or no session's were given (null).</summary>
+    private static string SessionKeys(string row) =>
+        $"($signing IS NULL OR ({row}.signing_key = $signing AND {row}.agreement_key = $agreement))";
 
     /// <summary>
     /// Every member row of the channel, as the log has it: places the user removed from their list (<see cref="MemberRow.Forgotten"/>)

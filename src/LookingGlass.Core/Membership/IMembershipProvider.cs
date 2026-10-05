@@ -55,12 +55,6 @@ public interface IChannelMembership {
     MemberKeys? KeysAt(long userId, ulong seq);
 
     /// <summary>
-    /// Whether one of the key recovered entries remembered for <see cref="KeysAt"/> moved the member's or invitee's place away
-    /// from <paramref name="keys"/>.
-    /// </summary>
-    bool MovedFrom(long userId, MemberKeys keys);
-
-    /// <summary>
     /// True if keys or names made at <paramref name="position"/> were made for today's members:
     /// it is in this log, and nobody has joined or left since.
     /// </summary>

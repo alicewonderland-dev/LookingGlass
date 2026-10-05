@@ -510,8 +510,10 @@ What the encryption does today:
   they or anyone else in the channel already have. Every member is told, in
   the channel, and sees "New key" for them until they compare fingerprints.
   A member who is online makes the channel a new key at once (or the first
-  one to come online), so the old key reads nothing more; and it can't sign
-  in again.
+  one to come online; if nobody left holds the key, a member waiting for one
+  makes it, under the name "Restored channel"), so the old key reads nothing
+  more; and it can't sign in again, nor can a session of it still connected
+  act through the moved place.
 - If a client sees two different, validly signed versions of the log (a
   fork: someone is being shown a different member list), or the server
   shows it an older log than it has already verified (it may be hiding a
