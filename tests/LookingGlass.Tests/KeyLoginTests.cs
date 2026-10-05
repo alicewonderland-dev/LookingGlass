@@ -311,6 +311,67 @@ public sealed class KeyLoginTests : IAsyncLifetime {
         }
     }
 
+    /// <summary>
+    /// The address checks (signed URLs, and the Lodestone code derived from the origin) only tell servers apart when each
+    /// listed address is this server's alone. One that other servers can have too isn't: a short name (MagicDNS on
+    /// another tailnet, a LAN name), a private, CGNAT, loopback or link-local IP, or plain ws:// (whoever answers at the
+    /// name on the user's network). Those are named, with why; an address with TLS and a fully qualified name isn't.
+    /// </summary>
+    [Theory]
+    [InlineData("wss://chat.example.com/ws")]
+    [InlineData("wss://lookingglasschat.tail1234.ts.net/ws")]
+    [InlineData("https://chat.example.com:8443/ws")]
+    [InlineData("wss://203.0.113.7/ws")]
+    [InlineData("wss://[2001:db8::7]/ws")]
+    public void AnAddressUniqueToThisServerIsntWarnedAbout(string url) {
+        Assert.Empty(RequestHandler.WhyNotUnique(ServerOrigin.FromUrl(url)!));
+    }
+
+    [Theory]
+    [InlineData("ws://chat.example.com/ws", "ws://")]
+    [InlineData("wss://lookingglasschat/ws", "single-label")]
+    [InlineData("wss://localhost:5180/ws", "single-label")]
+    [InlineData("wss://nas.local/ws", "local")]
+    [InlineData("wss://chat.home.arpa/ws", "local")]
+    [InlineData("wss://chat.lan/ws", "local")]
+    [InlineData("wss://127.0.0.1/ws", "loopback")]
+    [InlineData("wss://[::1]/ws", "loopback")]
+    [InlineData("wss://10.1.2.3/ws", "private")]
+    [InlineData("wss://172.20.0.5/ws", "private")]
+    [InlineData("wss://192.168.1.10/ws", "private")]
+    [InlineData("wss://[fd12:3456::1]/ws", "private")]
+    [InlineData("wss://[::ffff:192.168.1.10]/ws", "private")]
+    [InlineData("wss://100.64.0.1/ws", "CGNAT")]
+    [InlineData("wss://100.127.255.254/ws", "CGNAT")]
+    [InlineData("wss://169.254.1.1/ws", "link-local")]
+    [InlineData("wss://[fe80::1]/ws", "link-local")]
+    public void AnAddressOtherServersCanHaveIsWarnedAbout(string url, string why) {
+        var reasons = RequestHandler.WhyNotUnique(ServerOrigin.FromUrl(url)!);
+        Assert.Contains(reasons, reason => reason.Contains(why));
+    }
+
+    /// <summary>The server warns, when it starts, about each listed address that isn't unique to it, and says what to list instead.</summary>
+    [Fact]
+    public async Task TheServerWarnsAboutListedAddressesOtherServersCanHave() {
+        var logs = new CapturingLoggerProvider();
+        await using var server = new Harness(logs: logs, settings: [
+            ("LookingGlass:PublicUrls:0", "wss://chat.example.com/ws"),
+            ("LookingGlass:PublicUrls:1", "ws://lookingglasschat:5180/ws"),
+            ("LookingGlass:PublicUrls:2", "wss://100.101.102.103/ws"),
+        ]);
+        try {
+            await using var raw = await server.ConnectRawAsync();
+            var warnings = logs.AtLeast(Microsoft.Extensions.Logging.LogLevel.Warning).Where(w => w.Contains("LookingGlass:PublicUrls")).ToList();
+            Assert.Equal(2, warnings.Count);
+            Assert.Contains(warnings, w => w.Contains("ws://lookingglasschat:5180/ws") && w.Contains("ws://") && w.Contains("single-label"));
+            Assert.Contains(warnings, w => w.Contains("wss://100.101.102.103/ws") && w.Contains("CGNAT"));
+            Assert.All(warnings, w => Assert.Contains("fully qualified", w));
+            Assert.DoesNotContain(warnings, w => w.Contains("chat.example.com"));
+        } finally {
+            DeleteDirectory(server.DataDirectory);
+        }
+    }
+
     /// <summary>Outside Development, with PublicUrls set, key login works for exactly those addresses.</summary>
     [Fact]
     public async Task OutsideDevelopmentKeyLoginWorksForThePublicUrls() {

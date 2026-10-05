@@ -111,6 +111,21 @@ any list, a Development server goes by the address each connection names
 (weaker, see below) and says so when it starts; a server not in Development
 refuses to start.
 
+**Each listed address must be this server's alone.** The server tells its
+own addresses from another server's by name only, so an address another
+server can have too protects nothing against that server: a short MagicDNS
+name (a machine on someone else's tailnet can have the same name), a LAN
+name (`.local`, `.lan`, ...), a private, CGNAT (Tailscale's 100.x), loopback
+or link-local IP, or any plain `ws://` address (whatever answers at that
+name on the user's network is taken for this server). A malicious server a
+user reaches under the same address could pass their registration (with its
+Lodestone code) or key login on to this one. On your own tailnet, with
+testers who use only servers you run, that's fine. For a server other people
+may also run under the same name, list and use only `wss://` addresses with
+a fully qualified name, such as `wss://<machine-name>.<tailnet>.ts.net/ws`
+or `wss://chat.example.com/ws`. The server logs a warning when it starts for
+each listed address that may not be its alone.
+
 Check a server from any machine:
 
 ```sh
@@ -349,16 +364,22 @@ every address clients use, for example:
 
 ```sh
 LookingGlass__PublicUrls__0=wss://chat.example.com/ws
-# A tailnet server, reached directly and through Tailscale Funnel:
+# A private tailnet server, reached directly and through Tailscale Funnel
+# (the short name is fine only on a tailnet you control: see below):
 LookingGlass__PublicUrls__0=ws://<machine-name>:5180/ws
 LookingGlass__PublicUrls__1=wss://<machine-name>.<tailnet>.ts.net/ws
 ```
 
 The server also tells plugins these addresses, which is how a plugin moving
 between two of them keeps its identity (see "Moving the server" above), but
-only to a `wss://` one. Listing short or plain `ws://` names (a tailnet
-machine name, `127.0.0.1`) is still fine for key login on a private network;
-plugins just can't move their identity to them.
+only to a `wss://` one. Short names (a tailnet machine name), private,
+CGNAT or loopback IPs (`100.x.y.z`, `127.0.0.1`) and plain `ws://` addresses
+aren't this server's alone (see "Each listed address must be this server's
+alone" above): fine on a private network you control, where plugins just
+can't move their identity to them, but not for a server people use alongside
+servers others run, where only `wss://` addresses with a fully qualified
+name keep the checks meaningful. The server warns about each such address
+when it starts.
 
 **Without `PublicUrls`, a server outside Development refuses to start**,
 saying what to set. A server in Development starts without them, accepts

@@ -76,6 +76,18 @@ try {
 switch (RequestHandler.ChooseKeyLoginOrigins(publicOrigins, app.Environment.IsDevelopment())) {
     case RequestHandler.KeyLoginOrigins.PublicUrls:
         app.Logger.LogInformation("Registrations, key logins and identity resets are accepted when signed for {Origins}", string.Join(", ", publicOrigins));
+        // The checks tell this server from another by address alone, so each listed address must be this server's only.
+        foreach (var url in options.PublicUrls.Where(url => !string.IsNullOrWhiteSpace(url)).Select(url => url.Trim()).Distinct()) {
+            if (RequestHandler.WhyNotUnique(ServerOrigin.FromUrl(url)!) is { Count: > 0 } reasons) {
+                app.Logger.LogWarning(
+                    "LookingGlass:PublicUrls lists {Url}, which may not be this server's alone: {Reasons}. Registrations, key logins, identity resets and " +
+                    "Lodestone codes are bound to the address a client connected to, so a server that users also reach under this address (say, a machine " +
+                    "with the same short name on another tailnet or LAN) could pass them on here, and take over accounts. Fine on a private network you " +
+                    "control; for a server other people use, list a wss:// address with a fully qualified name (such as wss://<machine>.<tailnet>.ts.net/ws).",
+                    url, string.Join("; ", reasons));
+            }
+        }
+
         break;
     case RequestHandler.KeyLoginOrigins.HostHeader:
         app.Logger.LogWarning(

@@ -1,3 +1,4 @@
+using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using Google.Protobuf;
@@ -745,6 +746,52 @@ public sealed class RequestHandler(
 
     internal static KeyLoginOrigins ChooseKeyLoginOrigins(IReadOnlyList<ServerOrigin> publicOrigins, bool development) {
         return publicOrigins.Count > 0 ? KeyLoginOrigins.PublicUrls : development ? KeyLoginOrigins.HostHeader : KeyLoginOrigins.Off;
+    }
+
+    // Names only a local network gives meaning to, which every other network may give to another machine.
+    private static readonly string[] LocalNameSuffixes = [".local", ".lan", ".home", ".home.arpa", ".internal", ".intranet", ".localdomain", ".localhost"];
+
+    /// <summary>
+    /// Why <paramref name="origin"/>, a listed public address, may not be this server's alone, or nothing if it is. The
+    /// address checks (signed URLs, and the Lodestone code derived from the origin) tell this server from another only by
+    /// the address the client connected to: if another server can have the same address, a client of that server signs
+    /// for (and is shown codes for) this one's, and that server can pass them on here. A short name (MagicDNS on another
+    /// tailnet, a LAN name), a private, CGNAT, loopback or link-local IP, or plain ws:// (where whoever answers at the
+    /// name is taken for this server) can be. Fine on a private network the operator controls.
+    /// </summary>
+    internal static IReadOnlyList<string> WhyNotUnique(ServerOrigin origin) {
+        var reasons = new List<string>();
+        if (!origin.Secure) {
+            reasons.Add("it is plain ws:// (no TLS), so whatever answers at that name on a user's network is taken for this server");
+        }
+
+        if (IPAddress.TryParse(origin.Host.Trim('[', ']'), out var ip)) {
+            if (ip.IsIPv4MappedToIPv6) {
+                ip = ip.MapToIPv4();
+            }
+
+            var kind = ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork
+                ? ip.GetAddressBytes() switch {
+                    [127, ..] => "loopback",
+                    [10, ..] or [172, >= 16 and < 32, ..] or [192, 168, ..] => "private",
+                    [100, >= 64 and < 128, ..] => "CGNAT (shared, as Tailscale's 100.x addresses are)",
+                    [169, 254, ..] => "link-local",
+                    _ => null,
+                }
+                : IPAddress.IsLoopback(ip) ? "loopback"
+                : ip.IsIPv6LinkLocal ? "link-local"
+                : ip.IsIPv6UniqueLocal || ip.IsIPv6SiteLocal ? "private (unique local)"
+                : null;
+            if (kind != null) {
+                reasons.Add($"it is a {kind} IP address, which other networks use too");
+            }
+        } else if (!origin.Host.Contains('.')) {
+            reasons.Add("it is a single-label name (such as a short MagicDNS or LAN name), which other networks can give to other machines");
+        } else if (LocalNameSuffixes.Any(suffix => origin.Host.EndsWith(suffix, StringComparison.Ordinal))) {
+            reasons.Add("it is a local network name, which other networks can give to other machines");
+        }
+
+        return reasons;
     }
 
     /// <exception cref="InvalidOperationException">An entry isn't a ws, wss, http or https URL.</exception>
