@@ -94,6 +94,8 @@ public sealed class KeyRecoveryTests : IAsyncLifetime {
             Assert.Equal(NoticeLevel.Info, notice.Level);
             Assert.Equal(channelId, notice.ChannelId);
             Assert.StartsWith("Alice New Computer", notice.Text);
+            Assert.Equal(NoticeKind.ReVerified, notice.Kind);
+            Assert.StartsWith("Alice New Computer@Debug set up LookingGlass again (new computer or reset).", notice.TextFor(advanced: false));
             var seen = await WaitFor(() => other.Session.Snapshot.FindChannel(channelId)!.Members.FirstOrDefault(m => m.User.UserId == userId && m.KeyRecovered));
             Assert.Equal(Rank.Admin, seen.Rank);
             Assert.Equal(newKeys.Fingerprint, seen.Fingerprint);
@@ -424,6 +426,7 @@ public sealed class KeyRecoveryTests : IAsyncLifetime {
 
         var refused = await WaitFor(() => alice.Session.Snapshot is { State: ConnectionState.LoginNotRecognized } s ? s : null);
         Assert.Contains(PlainMessages.LoginMaybeReplaced, refused.StatusText);
+        Assert.Equal(PlainMessages.LoginNotRecognized.Plain, refused.PlainStatusText);
         await WaitFor(() => bob.Notices.FirstOrDefault(n => n.Text.Contains(ReVerified)));
         Assert.DoesNotContain(alice.Notices, n => n.Text == PlainMessages.ReVerifiedElsewhere);
     }
@@ -642,8 +645,11 @@ public sealed class KeyRecoveryTests : IAsyncLifetime {
         var told = await WaitFor(() => bob.Notices.FirstOrDefault(n => n.Text == PlainMessages.ReVerifiedElsewhere));
         Assert.Equal(NoticeLevel.Warning, told.Level);
         Assert.Contains("Reset my identity", told.Text);
+        Assert.Equal(NoticeKind.ReVerifiedElsewhere, told.Kind);
+        Assert.Equal(PlainMessages.ReVerifiedElsewhereWording.Plain, told.TextFor(advanced: false));
         Assert.True(place.KeyMovedAway);
         Assert.Equal(PlainMessages.KeyMovedAwayChannel, place.MembershipWarning);
+        Assert.Equal(PlainMessages.KeyMovedAwayWording.Plain, place.PlainMembershipWarning);
         // Not as someone else who has a new key.
         Assert.DoesNotContain(bob.Notices, n => n.Text.Contains(ReVerified));
     }

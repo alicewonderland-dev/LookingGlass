@@ -21,6 +21,7 @@ public sealed class Harness : IAsyncDisposable {
     public static readonly TimeSpan Timeout = TimeSpan.FromSeconds(10);
 
     private readonly List<IAsyncDisposable> _disposables = [];
+    private readonly List<TestClient> _clients = [];
 
     /// <param name="serverTime">The server's clock, for tests that move it forward (key login challenges expire by it).</param>
     /// <param name="environment">
@@ -158,6 +159,7 @@ public sealed class Harness : IAsyncDisposable {
         store ??= new InMemorySecretStore();
         var client = new TestClient(name, new ClientSession(options ?? this.Options(), store), store);
         this._disposables.Add(client.Session);
+        this._clients.Add(client);
         client.Session.Start();
         return client;
     }
@@ -291,12 +293,23 @@ public sealed class Harness : IAsyncDisposable {
         }
     }
 
+    /// <summary>
+    /// Also checks that every notice any client was given, in every test, is shown in simple mode (the default) as well as
+    /// advanced mode, in plain words when it is about something technical (see <see cref="PlainLanguage.AssertShownInBothModes"/>).
+    /// </summary>
     public async ValueTask DisposeAsync() {
         foreach (var disposable in this._disposables) {
             await disposable.DisposeAsync();
         }
 
         await this.Factory.DisposeAsync();
+        var names = this._clients.Select(client => client.Name)
+            .Concat(this._clients.SelectMany(client => client.Session.Snapshot.Channels).Select(channel => channel.Name ?? ""))
+            .Concat(this._clients.SelectMany(client => client.Session.Snapshot.Invites).Select(invite => invite.ChannelName ?? ""))
+            .ToHashSet();
+        foreach (var notice in this._clients.SelectMany(client => client.Notices)) {
+            PlainLanguage.AssertShownInBothModes(notice, names);
+        }
     }
 
     public static void DeleteDirectory(string path) {

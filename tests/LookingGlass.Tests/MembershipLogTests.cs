@@ -249,6 +249,10 @@ public sealed class MembershipLogTests : IAsyncLifetime {
         var warning = alice.Session.Snapshot.FindChannel(channelId)!.MembershipWarning;
         Assert.Contains("hasn't taken effect", warning);
         Assert.Contains(alice.Notices, n => n.Level == NoticeLevel.Warning && n.Text == warning);
+        // In simple mode's words too.
+        var plainWarning = alice.Session.Snapshot.FindChannel(channelId)!.PlainMembershipWarning;
+        PlainLanguage.AssertPlain(plainWarning);
+        Assert.Contains(alice.Notices, n => n.Kind == NoticeKind.RemovalNotInEffect && n.Plain == plainWarning);
 
         // Once the server takes a rekey made after the removal (here Bob's: Alice has used up the server's rekey
         // allowance for now), the removal has taken effect and the warning goes.
@@ -352,6 +356,8 @@ public sealed class MembershipLogTests : IAsyncLifetime {
         var view = aliceAgain.Session.Snapshot.FindChannel(channelId)!;
         Assert.Contains("hiding", view.MembershipWarning);
         Assert.Contains(aliceAgain.Notices, n => n.Level == NoticeLevel.Warning && n.Text == view.MembershipWarning);
+        PlainLanguage.AssertPlain(view.PlainMembershipWarning);
+        Assert.Contains(aliceAgain.Notices, n => n.Kind == NoticeKind.MembersShownDifferently && n.Plain == view.PlainMembershipWarning);
         Assert.Equal(epoch + 1, view.Epoch);
         Assert.False(aliceAgain.Store.Load().EpochKeys[channelId].ContainsKey(epoch + 2));
     }
@@ -421,6 +427,9 @@ public sealed class MembershipLogTests : IAsyncLifetime {
         Assert.Equal(NoticeLevel.Warning, notice.Level);
         var view = carol.Session.Snapshot.FindChannel(channelId)!;
         Assert.Contains("two different versions", view.MembershipWarning);
+        Assert.Equal(NoticeKind.MembershipForked, notice.Kind);
+        Assert.Contains("two different member lists", view.PlainMembershipWarning);
+        Assert.Equal(view.PlainMembershipWarning, notice.Plain);
         Assert.Contains(view.Members, m => m.User.UserId == dave.UserId);
         Assert.DoesNotContain(view.Members, m => m.User.UserId == erin.UserId);
 

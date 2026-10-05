@@ -483,6 +483,7 @@ public sealed class EndToEndTests : IAsyncLifetime {
 
         // The new key is still treated as a change to check, not silently trusted.
         Assert.Contains(carol.Notices, n => n.Level == NoticeLevel.Warning && n.Text.StartsWith($"{bob.Name}@Debug's identity key changed"));
+        Assert.Contains(carol.Notices, n => n.Kind == NoticeKind.KeyChanged && n.TextFor(advanced: false).StartsWith($"{bob.Name}@Debug's LookingGlass was reinstalled or reset"));
         var member = carol.Session.Snapshot.FindChannel(channelId)!.Members.Single(m => m.User.UserId == bobAgain.UserId);
         Assert.True(member.KeyChanged);
         Assert.Equal(bobAgain.Session.Snapshot.MyFingerprint, member.Fingerprint);
@@ -609,6 +610,8 @@ public sealed class EndToEndTests : IAsyncLifetime {
         await WaitFor(() => carol.Notices.FirstOrDefault(n => n.Text == sentinel));
         var dropped = carol.Notices.Single(n => n.Text.StartsWith("Dropped a message"));
         Assert.StartsWith($"Dropped a message from {alice.Name}: it's signed with the identity key they registered again with", dropped.Text);
+        Assert.Equal(NoticeKind.MessageFromNewSetup, dropped.Kind);
+        Assert.StartsWith($"Dropped a message from {alice.Name}: they set up LookingGlass again", dropped.TextFor(advanced: false));
         await WaitFor(() => carol.Notices.FirstOrDefault(n => n.Level == NoticeLevel.Warning && n.Text.StartsWith($"{alice.Name}@Debug's identity key changed")));
         Assert.Equal(before + 1, Lookups());
         Assert.Equal("Shared Fetch", carol.Session.Snapshot.FindChannel(channelId)!.Name);

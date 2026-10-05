@@ -45,6 +45,9 @@ public enum ConnectionState {
 /// new ones after "Reset my identity"). Registering them takes the character's account over if it has one here: its
 /// channels, ranks and invites move to the new keys.
 /// </param>
+/// <param name="StatusText">The connection's status, in advanced mode's words. See <see cref="StatusFor"/>.</param>
+/// <param name="PlainStatusText">The same, in simple mode's words (see <see cref="Wording"/>).</param>
+/// <param name="PlainAddressNotListed"><paramref name="AddressNotListed"/>, in simple mode's words.</param>
 public sealed record SessionSnapshot(
     ConnectionState State,
     string? StatusText,
@@ -59,11 +62,19 @@ public sealed record SessionSnapshot(
     bool ChannelsLoaded,
     bool LoginRejected = false,
     string? AddressNotListed = null,
-    bool NewIdentity = false) {
+    bool NewIdentity = false,
+    string? PlainStatusText = null,
+    string? PlainAddressNotListed = null) {
     public static readonly SessionSnapshot Empty = new(
         ConnectionState.Stopped, null, null, null,
         ImmutableArray<ChannelView>.Empty, ImmutableArray<InviteView>.Empty,
         null, false, null, ImmutableArray<User>.Empty, false);
+
+    /// <summary>The status in a mode's words. Never null where <see cref="StatusText"/> isn't: a missing plain text falls back to it.</summary>
+    public string? StatusFor(bool advanced) => advanced ? this.StatusText : this.PlainStatusText ?? this.StatusText;
+
+    /// <summary><see cref="AddressNotListed"/> in a mode's words; null in both or neither.</summary>
+    public string? AddressNotListedFor(bool advanced) => advanced ? this.AddressNotListed : this.PlainAddressNotListed ?? this.AddressNotListed;
 
     public ChannelView? FindChannel(string channelId) {
         foreach (var channel in this.Channels) {
@@ -82,7 +93,10 @@ public sealed record SessionSnapshot(
 /// <param name="MyRank">This user's rank in the verified membership log; Unspecified if not a member under their current keys.</param>
 /// <param name="Members">Members and invitees according to the verified membership log, never the server's list.</param>
 /// <param name="LogHead">The newest membership log entry this client has verified.</param>
-/// <param name="MembershipWarning">Something wrong with the channel's membership the user should know about (a fork, a hidden change).</param>
+/// <param name="MembershipWarning">
+/// Something wrong with the channel's membership the user should know about (a fork, a hidden change), in advanced mode's
+/// words; <paramref name="PlainMembershipWarning"/> in simple mode's. See <see cref="WarningFor"/>.
+/// </param>
 /// <param name="OldKeyMembership">
 /// The verified log has this user as a member under identity keys they no longer have (they registered again with new
 /// keys before registering moved channels along, or the server didn't move this one). Nothing can be done here with the
@@ -106,11 +120,31 @@ public sealed record ChannelView(
     LogPosition? LogHead = null,
     string? MembershipWarning = null,
     bool OldKeyMembership = false,
-    bool KeyMovedAway = false) {
+    bool KeyMovedAway = false,
+    string? PlainMembershipWarning = null) {
     public string DisplayName => this.Name ?? PlaceholderName(this.Id);
 
+    /// <summary>
+    /// <see cref="MembershipWarning"/> in a mode's words (see <see cref="Wording"/>). Never null where it isn't: a missing
+    /// plain text falls back to the technical one, so simple mode never loses a warning.
+    /// </summary>
+    public string? WarningFor(bool advanced) => advanced ? this.MembershipWarning : this.PlainMembershipWarning ?? this.MembershipWarning;
+
+    /// <summary>The name, or in simple mode's words (see <see cref="Wording"/>) what to show before it is known.</summary>
+    public string DisplayNameFor(bool advanced) => this.Name ?? (advanced ? PlaceholderName(this.Id) : PlainPlaceholderName(this.Id));
+
+    private const string Placeholder = "(encrypted channel ";
+    private const string PlainPlaceholder = "(channel ";
+
     /// <summary>What to show before a channel's name has been decrypted. Safe for IDs of any length.</summary>
-    public static string PlaceholderName(string id) => $"(encrypted channel {(id.Length > 8 ? id[..8] : id)})";
+    public static string PlaceholderName(string id) => $"{Placeholder}{(id.Length > 8 ? id[..8] : id)})";
+
+    /// <summary><see cref="PlaceholderName"/> in simple mode's words.</summary>
+    public static string PlainPlaceholderName(string id) => PlainNames(PlaceholderName(id));
+
+    /// <summary>Text for simple mode with every <see cref="PlaceholderName"/> in it in simple mode's words.</summary>
+    [return: System.Diagnostics.CodeAnalysis.NotNullIfNotNull(nameof(text))]
+    public static string? PlainNames(string? text) => text?.Replace(Placeholder, PlainPlaceholder, StringComparison.Ordinal);
 }
 
 /// <param name="Fingerprint">Of the keys the membership log binds them to.</param>
@@ -177,7 +211,24 @@ public enum NoticeLevel {
     Error,
 }
 
-public sealed record SessionNotice(NoticeLevel Level, string Text, string? ChannelId = null);
+/// <summary>Something the user should be told.</summary>
+/// <param name="Text">In advanced mode's words. See <see cref="TextFor"/>.</param>
+public sealed record SessionNotice(NoticeLevel Level, string Text, string? ChannelId = null) {
+    /// <summary>The same, in simple mode's words (see <see cref="Wording"/>); null if they are the same.</summary>
+    public string? Plain { get; init; }
+
+    /// <summary>What it is about.</summary>
+    public NoticeKind Kind { get; init; }
+
+    /// <summary>
+    /// The words for a mode. The mode only changes the words, never whether the notice is shown: with no plain words, simple
+    /// mode shows the technical ones rather than nothing.
+    /// </summary>
+    public string TextFor(bool advanced) => advanced ? this.Text : this.Plain ?? this.Text;
+
+    public static SessionNotice Of(NoticeLevel level, Wording wording, string? channelId = null) =>
+        new(level, wording.Technical, channelId) { Plain = wording.Plain, Kind = wording.Kind };
+}
 
 public sealed record TraceEntry(DateTimeOffset Time, bool Outgoing, string Summary);
 
@@ -202,9 +253,7 @@ public sealed class SessionDisconnectedException(string message) : Exception(mes
 /// <see cref="Crypto.LodestoneCode"/>), as a server passing on another server's code would, to take the character's
 /// account there once the user puts the code in their profile. The code isn't shown.
 /// </summary>
-public sealed class RelayedRegistrationCodeException() : InvalidOperationException(
-    "This server sent a registration code that doesn't belong to it. It may be passing on another server's code. " +
-    "Don't put it in your Lodestone profile.");
+public sealed class RelayedRegistrationCodeException() : InvalidOperationException(PlainMessages.RelayedRegistrationCode.Technical);
 
 public sealed class ClientSessionOptions {
     public required Uri ServerUri { get; init; }
