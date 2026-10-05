@@ -2,6 +2,7 @@ using Google.Protobuf;
 using LookingGlass.Core.Client;
 using LookingGlass.Core.Membership;
 using LookingGlass.Protocol;
+using LookingGlass.Server.Data;
 using static LookingGlass.Tests.Harness;
 
 namespace LookingGlass.Tests;
@@ -204,6 +205,47 @@ public sealed class ForgetChannelTests : IAsyncLifetime {
 
         Assert.NotNull(this._server.Database.GetChannel(channelId));
         Assert.Equal([again.UserId], this._server.Database.GetMembers(channelId).Where(m => m.Forgotten).Select(m => m.User.UserId));
+    }
+
+    /// <summary>
+    /// A channel the server already stopped listing to this account (removed from another device, say) still comes off
+    /// this list, without an error.
+    /// </summary>
+    [Fact]
+    public async Task RemovingAChannelTheServerAlreadyForgotStillRemovesItHere() {
+        var bob = await this._server.RegisterAsync("Bob Forgotten Elsewhere");
+        var alice = await this._server.RegisterAsync("Alice Two Devices");
+        var channelId = await bob.Session.CreateChannelAsync("Forgotten Elsewhere", Ct);
+        await AddMemberAsync(bob, channelId, alice);
+        var again = await ResetWithoutLeavingAsync(this._server, alice);
+        await WaitFor(() => again.Session.Snapshot.FindChannel(channelId) is { OldKeyMembership: true } c ? c : null);
+        Assert.Equal(ForgetResult.Forgotten, this._server.Database.ForgetStaleMembership(channelId, again.UserId));
+
+        await again.Session.ForgetChannelAsync(channelId, Ct);
+
+        Assert.Null(again.Session.Snapshot.FindChannel(channelId));
+    }
+
+    /// <summary>
+    /// Changing the members through an old key's place (here, as the old admin) is refused before anything is sent, in
+    /// plain words rather than the log's "isn't signed with the key the log knows its author by".
+    /// </summary>
+    [Fact]
+    public async Task MemberChangesThroughAnOldKeysPlaceAreRefusedInPlainWords() {
+        var alice = await this._server.RegisterAsync("Alice Old Admin Acts");
+        var bob = await this._server.RegisterAsync("Bob Not Removed");
+        var channelId = await alice.Session.CreateChannelAsync("Old Admin", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        var again = await ResetWithoutLeavingAsync(this._server, alice);
+        await WaitFor(() => again.Session.Snapshot.FindChannel(channelId) is { OldKeyMembership: true } c ? c : null);
+        var head = this._server.Database.GetChannel(channelId)!.LogHead;
+
+        var kick = await Assert.ThrowsAsync<InvalidOperationException>(() => again.Session.KickAsync(channelId, bob.UserId, Ct));
+        Assert.Equal(PlainMessages.OldKeyCantChangeMembers, kick.Message);
+        var handOver = await Assert.ThrowsAsync<InvalidOperationException>(() => again.Session.SetRankAsync(channelId, bob.UserId, Rank.Admin, Ct));
+        Assert.Equal(PlainMessages.OldKeyCantChangeMembers, handOver.Message);
+
+        Assert.True(MembershipEntries.SamePosition(head, this._server.Database.GetChannel(channelId)!.LogHead));
     }
 
     private static async Task<ErrorCode?> ErrorOf(TestClient client, ClientFrame request) {
