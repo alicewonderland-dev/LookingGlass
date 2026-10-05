@@ -88,10 +88,13 @@ Select a channel in the main window to see its members and settings.
   remain: hand over the admin role, or disband the channel, first.
 - **Removing someone.** Hold **Ctrl** while choosing **Remove from channel** in
   their menu.
-- **Checking it's really them.** The icon before each member shows a question
-  mark until you've compared fingerprints with them. Click it, compare the
-  fingerprint with them over /tell, then press **Mark verified**. A warning
-  icon means their key changed unexpectedly: ask them before trusting it.
+- **Checking it's really them.** A warning sign before a member's name means
+  their LookingGlass was reinstalled or reset, or someone else may be using
+  their name. Ask them over /tell, then click it and press **It's really
+  them**.
+- **Advanced mode.** Turn it on in Settings, under "Your identity", to see the
+  encryption details: fingerprints you can compare over /tell to be sure your
+  chats are private. Warnings show either way.
 
 ## Playing on a new computer, or lost your settings
 
@@ -100,11 +103,10 @@ made on, so they don't come with you to a new one. Just register again through
 the Lodestone, as the main window shows you. Every channel you were in comes
 back, with your rank, and so do your open invites.
 
-The other members see that you re-verified your character and have a new key,
-and you show as **New key** to them until they compare fingerprints with you.
-A channel starts working again as soon as another member who is online passes
-you its new key, which happens automatically. If nobody else in a channel can,
-it comes back as "Restored channel", and its admin can rename it.
+The other members are told that you set up LookingGlass again. A channel
+starts working again as soon as another member who is online lets you back in,
+which happens automatically. If nobody else in a channel can, it comes back as
+"Restored channel", and its admin can rename it.
 
 Your old computer can't sign in any more after that.
 
@@ -129,8 +131,9 @@ other servers.
   addresses the plugin lists instead.
 - **A server sent "a registration code that doesn't belong to it".** Don't put
   that code in your profile, and don't register with that server.
-- **A channel shows "Your old key's place".** It's left over from an older
-  version and can't be used. Choose **Remove from my list...** in its menu.
+- **A channel shows "From your old setup"** ("Your old key's place" in advanced
+  mode). It's left over from an older version and can't be used. Choose
+  **Remove from my list...** in its menu.
 - **The server moved to a new address.** Change it in Settings. If both
   addresses belong to the same server, the plugin offers to keep your identity;
   otherwise you register again there.

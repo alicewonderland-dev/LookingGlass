@@ -200,6 +200,8 @@ The warning stays until the user marks the new key verified. To compare,
 users click the icon before a member's name (or choose **Compare
 fingerprints...** in the member's menu), compare over an in-game /tell, which
 doesn't pass through the LookingGlass server, then press **Mark verified**.
+This is advanced mode; simple mode, the default, says the same in everyday
+words (see [Simple and advanced mode](#simple-and-advanced-mode)).
 
 ### Registering through the Lodestone
 
@@ -1278,12 +1280,45 @@ These are plugin settings, kept per character, and never sent to the server.
 - **Unread counts.** The channel list counts messages from others since the
   user last looked at a channel in the main window or talked in it. The
   window's title shows the total. The counts start from zero at each login.
-- **Member icons.** Besides the fingerprint state (see
+- **Member icons.** Besides the fingerprint state in advanced mode (see
   [Identity keys and fingerprints](#identity-keys-and-fingerprints)), the
   icon's colour shows presence: green while connected, grey when not. A
   warning keeps its orange either way, and invitees stay grey until they join.
 - **Confirmations.** Removing a member needs **Ctrl** held. Leaving or
   disbanding asks first. Cancelling an invite happens straight away.
+
+### Simple and advanced mode
+
+Most players don't want to think about keys, so the plugin starts in **simple
+mode**. **Advanced mode** (a setting, under "Your identity") shows everything
+described in this document: fingerprints, **Compare fingerprints** and **Mark
+verified**, key numbers, and the technical wording of every warning.
+
+**Simple mode never hides a warning.** It only says it differently: what
+happened, in everyday words, and what to do, nearly always "check with them
+over /tell". Someone's key changing without explanation becomes "Bob's
+LookingGlass was reinstalled or reset, or someone else may be using their
+name"; a key recovered entry becomes "Bob set up LookingGlass again (new
+computer or reset)"; a fork or a hidden membership change becomes "the server
+is showing different member lists". A member with a warning still shows the
+warning icon, and **It's really them** clears it as **Mark verified** does,
+for the keys held for them. Without a warning, a member's icon only shows
+whether they're online.
+
+How it works:
+
+- Everything the core tells the user carries both wordings (`Wording`:
+  `Technical` and `Plain`) and a `NoticeKind`. `PlainMessages` holds them all.
+  Notices (`SessionNotice.TextFor`), snapshot texts (`StatusFor`,
+  `WarningFor`, `AddressNotListedFor`) and errors (`PlainMessages.Failure`,
+  `MessageOf`) give the plugin both, and it picks one when it shows them. So
+  switching modes takes effect at once, and a missing plain wording falls back
+  to the technical one rather than to nothing.
+- Tests check that every kind has a plain wording without jargon (a list of
+  banned words: key, fingerprint, epoch, rekey, fork, log, pinned, signature,
+  encrypted, and the like), and that every notice raised anywhere in the test
+  suite is shown in both modes.
+- The debug window (`/lgdebug`) always shows the technical details.
 
 ## Server design
 
