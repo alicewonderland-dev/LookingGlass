@@ -204,10 +204,18 @@ message UserIdentity {
 message StartRegistration {
   Character character = 1;
   IdentityBundle identity = 2;
+  // The server's address exactly as the client connected to it, as in CompleteRegistration. The code is derived from
+  // its origin, so the server only issues one for an address that is its own (checked as for CompleteRegistration,
+  // except for debug accounts). Without it (an older plugin), registering is refused, asking to update. Added in 0.2
+  // without a version change.
+  string server_url = 3;
 }
 
 message RegistrationChallenge {
-  // Text the user places in their Lodestone profile.
+  // Text the user places in their Lodestone profile: "LGC-" and 20 characters in groups of four, derived from the
+  // origin of StartRegistration.server_url, identity.signing_public_key, nonce and lodestone_id (see
+  // LookingGlass.Core.Crypto.LodestoneCode), so the client can recompute it from its own address and key and refuse a
+  // code made for another server or key (one a malicious server passes on from another). Empty for debug accounts.
   string code = 1;
   int64 expires_unix = 2;
   int64 lodestone_id = 3;

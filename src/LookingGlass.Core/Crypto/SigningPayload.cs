@@ -67,4 +67,5 @@ public static class Domains {
     public const string KeyLogin = "lookingglass/key-login/v1";
     public const string RetireIdentity = "lookingglass/retire-identity/v1";
     public const string Registration = "lookingglass/registration/v1";
+    public const string LodestoneCode = "lookingglass/lodestone-code/v1";
 }

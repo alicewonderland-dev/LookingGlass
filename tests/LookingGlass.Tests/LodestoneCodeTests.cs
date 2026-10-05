@@ -27,7 +27,7 @@ public sealed class LodestoneCodeTests {
 
         Assert.Matches(Format, code);
         Assert.Equal(28, code.Length);
-        Assert.Equal(code.Length, LodestoneCode.Length);
+        Assert.Equal(LodestoneCode.Length, code.Length);
         // 20 characters of 5 bits each.
         Assert.Equal(100, LodestoneCode.Bits);
 
