@@ -28,9 +28,10 @@ public sealed class Harness : IAsyncDisposable {
     /// the connection's Host header when no PublicUrls are set; anywhere else it needs them.
     /// </param>
     /// <param name="logs">Also gets everything the server logs.</param>
+    /// <param name="lodestone">Answers the server's Lodestone requests instead of the real Lodestone, for registering real characters.</param>
     /// <param name="settings">Extra server configuration, for example <c>("LookingGlass:Limits:MaxIdentitiesPerRequest", "2")</c>.</param>
     public Harness(string? dataDirectory = null, bool allowDebugAccounts = true, TimeProvider? serverTime = null, string environment = "Development",
-        CapturingLoggerProvider? logs = null, params (string Key, string Value)[] settings) {
+        CapturingLoggerProvider? logs = null, FakeLodestone? lodestone = null, params (string Key, string Value)[] settings) {
         this.DataDirectory = dataDirectory ?? Path.Combine(Path.GetTempPath(), "lgt-" + Guid.NewGuid().ToString("N"));
         this.Factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder => {
             builder.UseEnvironment(environment);
@@ -47,6 +48,13 @@ public sealed class Harness : IAsyncDisposable {
 
             if (serverTime != null) {
                 builder.ConfigureTestServices(services => services.AddSingleton(serverTime));
+            }
+
+            if (lodestone != null) {
+                builder.UseSetting("LookingGlass:Lodestone:BaseUrl", FakeLodestone.BaseUrl);
+                builder.UseSetting("LookingGlass:Lodestone:MinDelaySeconds", "0");
+                builder.ConfigureTestServices(services => services.AddHttpClient<LookingGlass.Server.Services.LodestoneClient>()
+                    .ConfigurePrimaryHttpMessageHandler(() => lodestone));
             }
         });
         _ = this.Factory.Server;
@@ -97,6 +105,9 @@ public sealed class Harness : IAsyncDisposable {
     public ConnectionRegistry Registry => this.Factory.Services.GetRequiredService<ConnectionRegistry>();
 
     public static CancellationToken Ct => TestContext.Current.CancellationToken;
+
+    /// <summary>A StartRegistration's client nonce, as a client makes it: 32 random bytes.</summary>
+    public static ByteString NewClientNonce() => ByteString.CopyFrom(System.Security.Cryptography.RandomNumberGenerator.GetBytes(LodestoneCode.ClientNonceSize));
 
     /// <summary>The server's database, for tests that play a malicious or misbehaving server.</summary>
     public Database Database => this.Factory.Services.GetRequiredService<Database>();
@@ -338,6 +349,112 @@ public sealed class HoldingWebSocket(WebSocket inner) : WebSocket {
     public override void Dispose() {
         this._release.TrySetResult();
         inner.Dispose();
+    }
+}
+
+/// <summary>
+/// A client's WebSocket on which a test plays the server the client thinks it reaches: every frame the real server sends
+/// goes through <c>rewrite</c> on its way to the client, as a malicious server (or one passing on another's answers)
+/// would change it. Requests go to the real server unchanged, and to <c>sent</c> (if given) first, for a test to look at.
+/// </summary>
+public sealed class RewritingWebSocket(WebSocket inner, Func<ServerFrame, ServerFrame> rewrite, Action<ClientFrame>? sent = null) : WebSocket {
+    private readonly byte[] _chunk = new byte[16 * 1024];
+    private readonly MemoryStream _message = new();
+    // The rewritten frame being handed to the client, and how much of it has been.
+    private byte[]? _pending;
+    private int _offset;
+
+    public override WebSocketCloseStatus? CloseStatus => inner.CloseStatus;
+    public override string? CloseStatusDescription => inner.CloseStatusDescription;
+    public override WebSocketState State => inner.State;
+    public override string? SubProtocol => inner.SubProtocol;
+
+    public override async Task<WebSocketReceiveResult> ReceiveAsync(ArraySegment<byte> buffer, CancellationToken cancellationToken) {
+        if (this._pending == null) {
+            this._message.SetLength(0);
+            while (true) {
+                var result = await inner.ReceiveAsync(new ArraySegment<byte>(this._chunk), cancellationToken);
+                if (result.MessageType == WebSocketMessageType.Close) {
+                    return result;
+                }
+
+                this._message.Write(this._chunk, 0, result.Count);
+                if (result.EndOfMessage) {
+                    break;
+                }
+            }
+
+            this._pending = rewrite(ServerFrame.Parser.ParseFrom(this._message.ToArray())).ToByteArray();
+            this._offset = 0;
+        }
+
+        var count = Math.Min(buffer.Count, this._pending.Length - this._offset);
+        Array.Copy(this._pending, this._offset, buffer.Array!, buffer.Offset, count);
+        this._offset += count;
+        var end = this._offset >= this._pending.Length;
+        if (end) {
+            this._pending = null;
+        }
+
+        return new WebSocketReceiveResult(count, WebSocketMessageType.Binary, end);
+    }
+
+    public override async ValueTask<ValueWebSocketReceiveResult> ReceiveAsync(Memory<byte> buffer, CancellationToken cancellationToken) {
+        var array = new byte[buffer.Length];
+        var result = await this.ReceiveAsync(new ArraySegment<byte>(array), cancellationToken);
+        array.AsMemory(0, result.Count).CopyTo(buffer);
+        return new ValueWebSocketReceiveResult(result.Count, result.MessageType, result.EndOfMessage);
+    }
+
+    public override Task SendAsync(ArraySegment<byte> buffer, WebSocketMessageType messageType, bool endOfMessage, CancellationToken cancellationToken) {
+        // The client sends each request as one message.
+        sent?.Invoke(ClientFrame.Parser.ParseFrom(buffer.AsSpan()));
+        return inner.SendAsync(buffer, messageType, endOfMessage, cancellationToken);
+    }
+
+    public override ValueTask SendAsync(ReadOnlyMemory<byte> buffer, WebSocketMessageType messageType, bool endOfMessage, CancellationToken cancellationToken) {
+        sent?.Invoke(ClientFrame.Parser.ParseFrom(buffer.Span));
+        return inner.SendAsync(buffer, messageType, endOfMessage, cancellationToken);
+    }
+
+    public override Task CloseAsync(WebSocketCloseStatus closeStatus, string? statusDescription, CancellationToken cancellationToken) => inner.CloseAsync(closeStatus, statusDescription, cancellationToken);
+
+    public override Task CloseOutputAsync(WebSocketCloseStatus closeStatus, string? statusDescription, CancellationToken cancellationToken) => inner.CloseOutputAsync(closeStatus, statusDescription, cancellationToken);
+
+    public override void Abort() => inner.Abort();
+
+    public override void Dispose() => inner.Dispose();
+}
+
+/// <summary>
+/// The Lodestone as a server sees it: every search finds <see cref="Name"/> on <see cref="World"/> with ID
+/// <see cref="CharacterId"/>, and every profile's text is <see cref="Profile"/> (what the user put there).
+/// </summary>
+public sealed class FakeLodestone : HttpMessageHandler {
+    public const string BaseUrl = "https://lodestone.test";
+
+    private int _profileReads;
+
+    public string Name { get; init; } = "Test Person";
+    public string World { get; init; } = "Gilgamesh";
+    public long CharacterId { get; init; } = 31337;
+
+    /// <summary>The profile's text (by default without any code).</summary>
+    public string Profile { get; set; } = "Nothing to see here.";
+
+    /// <summary>Profiles the server has read, to check registration codes.</summary>
+    public int ProfileReads => Volatile.Read(ref this._profileReads);
+
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) {
+        string html;
+        if (request.RequestUri!.AbsolutePath.TrimEnd('/') == "/lodestone/character") {
+            html = $"""<a href="/lodestone/character/{this.CharacterId}/" class="entry__link"><p class="entry__name">{this.Name}</p><p class="entry__world">{this.World} [Aether]</p></a>""";
+        } else {
+            Interlocked.Increment(ref this._profileReads);
+            html = $"""<div class="character__selfintroduction">{System.Net.WebUtility.HtmlEncode(this.Profile)}</div>""";
+        }
+
+        return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent(html) });
     }
 }
 

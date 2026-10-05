@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Options;
+using LookingGlass.Core.Crypto;
 
 namespace LookingGlass.Server.Services;
 
@@ -77,7 +78,10 @@ public sealed partial class LodestoneClient(HttpClient http, IOptions<ServerOpti
         return found;
     }
 
-    /// <summary>Checks whether the character's profile text contains <paramref name="code"/>.</summary>
+    /// <summary>
+    /// Checks whether the character's profile text contains <paramref name="code"/>, a registration code, as
+    /// <see cref="LodestoneCode.AppearsIn"/> reads it (in any case, forgiving O for 0 and I or L for 1).
+    /// </summary>
     public async Task<ProfileCheck> ProfileContainsAsync(long characterId, string code, CancellationToken ct) {
         var html = await this.GetAsync($"{this.Options.BaseUrl}/lodestone/character/{characterId}/", ct);
         if (html == null) {
@@ -90,7 +94,7 @@ public sealed partial class LodestoneClient(HttpClient http, IOptions<ServerOpti
         }
 
         var text = WebUtility.HtmlDecode(TagPattern().Replace(intro.Groups["text"].Value, " "));
-        return text.Contains(code, StringComparison.OrdinalIgnoreCase) ? ProfileCheck.CodeFound : ProfileCheck.CodeNotFound;
+        return LodestoneCode.AppearsIn(text, code) ? ProfileCheck.CodeFound : ProfileCheck.CodeNotFound;
     }
 
     /// <exception cref="LodestoneBusyException">Too many requests are already waiting.</exception>

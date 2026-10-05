@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.Net.WebSockets;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Channels;
 using Google.Protobuf;
@@ -246,6 +247,14 @@ public sealed class ClientSession : IAsyncDisposable {
 
     // ================================================================ registration
 
+    /// <summary>
+    /// Starts registering <paramref name="character"/>: the server answers with the code to put in the Lodestone profile.
+    /// The code must be the one derived from the address this client connected to, its identity key, the server's nonce,
+    /// this request's fresh client nonce and the character (see <see cref="LodestoneCode"/>); any other is refused, never
+    /// shown, since it was made for another server, key or request, which is what a malicious server passing on another
+    /// server's code would send.
+    /// </summary>
+    /// <exception cref="RelayedRegistrationCodeException">The server sent a code that isn't this server's for this key.</exception>
     public async Task<RegistrationChallenge> StartRegistrationAsync(Character character, CancellationToken ct = default) {
         var identity = this.EnsureIdentity();
         var connection = this.RequireConnection();
@@ -257,12 +266,35 @@ public sealed class ClientSession : IAsyncDisposable {
                 throw new InvalidOperationException("You're already logged in, so there's nothing to register.");
             }
 
+            // Exactly the address this connection was made to, as for CompleteRegistration: the code is derived from its origin.
+            var serverUrl = this._options.ServerUri.AbsoluteUri;
+            // Fresh for this request, so a server can only look for a code matching another server's once asked, and only
+            // until this request times out.
+            var clientNonce = RandomNumberGenerator.GetBytes(LodestoneCode.ClientNonceSize);
             // Lodestone lookups are queued server-side, so allow more time than usual.
             var response = await this.RequestAsync(connection, new ClientFrame {
-                StartRegistration = new StartRegistration { Character = character, Identity = identity.ToBundle() },
+                StartRegistration = new StartRegistration {
+                    Character = character, Identity = identity.ToBundle(), ServerUrl = serverUrl, ClientNonce = ByteString.CopyFrom(clientNonce),
+                },
             }, ct, RegistrationRequestTimeout);
 
             challenge = response.RegistrationChallenge ?? throw Unexpected(response);
+            if (CheckCode(challenge, serverUrl, identity, clientNonce) is { } wrong) {
+                // Never the code itself, which is what a user mustn't paste: the log may be read out, or shared to ask for help.
+                this.Log(NoticeLevel.Warning, $"Refused the registration code the server sent ({wrong}). It may be passing on another server's code; it wasn't shown or logged.");
+                lock (this._lock) {
+                    // The server replaced any earlier registration on this connection with this one, which is refused.
+                    this._challenge = null;
+                    if (this._state == ConnectionState.Registering) {
+                        this._state = this._loginRejected ? ConnectionState.LoginNotRecognized : ConnectionState.Unregistered;
+                        this._status = this._loginRejected ? LoginNotRecognizedStatus : "Not registered on this server.";
+                    }
+                }
+
+                this.Publish();
+                throw new RelayedRegistrationCodeException();
+            }
+
             lock (this._lock) {
                 this._challenge = challenge;
                 this._state = ConnectionState.Registering;
@@ -276,6 +308,34 @@ public sealed class ClientSession : IAsyncDisposable {
 
         this.Publish();
         return challenge;
+    }
+
+    /// <summary>
+    /// Whether a registration challenge's code is the one this client expects: derived from the origin of the address it
+    /// connected to, its own identity key, the nonce the server sent, the nonce this client sent (<paramref name="clientNonce"/>)
+    /// and the character the server named. A debug account has no code (and nothing to put in a profile).
+    /// </summary>
+    /// <returns>
+    /// Why it isn't, for the log, or null if it is: the address and the character, never the code (a code someone else
+    /// may hold the registration for, which nobody should be shown, not even in a log they may share).
+    /// </returns>
+    internal static string? CheckCode(RegistrationChallenge challenge, string serverUrl, IdentityKeys identity, byte[] clientNonce) {
+        if (challenge.VerificationSkipped && challenge.Code.Length == 0) {
+            return null;
+        }
+
+        if (ServerOrigin.FromUrl(serverUrl) is not { } origin) {
+            return $"for character {challenge.LodestoneId}, from an address with no origin, {serverUrl}";
+        }
+
+        if (challenge.Nonce.Length != RegistrationProof.NonceSize) {
+            return $"for character {challenge.LodestoneId}, from {origin}, with a nonce of {challenge.Nonce.Length} bytes";
+        }
+
+        var expected = LodestoneCode.Derive(origin, identity.SigningPublicKey, challenge.Nonce.Span, clientNonce, challenge.LodestoneId);
+        return challenge.Code == expected
+            ? null
+            : $"for character {challenge.LodestoneId}, from {origin}: it isn't the code for that address, this client's identity key and the nonces";
     }
 
     /// <summary>
@@ -2782,7 +2842,7 @@ public sealed class ClientSession : IAsyncDisposable {
     private InviteView ToView(InviteState invite) {
         var inviterId = invite.Info.Inviter.UserId;
         var keyChanged = this._secrets.PinnedIdentities.TryGetValue(inviterId, out var pinned) && pinned.KeyChangeUnacknowledged;
-        return new InviteView(invite.Info.ChannelId, invite.Info.Inviter, invite.Name, invite.Verified,
+        return new InviteView(invite.Info.ChannelId, Shown(invite.Info.Inviter), invite.Name, invite.Verified,
             DateTimeOffset.FromUnixTimeSeconds(invite.Info.CreatedUnix), keyChanged, invite.InviterKeys?.Fingerprint);
     }
 
@@ -3115,12 +3175,14 @@ public sealed class ClientSession : IAsyncDisposable {
         SessionSnapshot snapshot;
         List<SessionNotice> notices;
         lock (this._lock) {
-            notices = [.. this._pendingNotices];
+            // Status texts and notices often hold what the server said: no registration code but this client's own.
+            var keep = this.ShownCode();
+            notices = [.. this._pendingNotices.Select(notice => notice with { Text = LodestoneCode.Redact(notice.Text, keep) })];
             this._pendingNotices.Clear();
             snapshot = new SessionSnapshot(
                 this._state,
-                this._status,
-                this._me,
+                LodestoneCode.Redact(this._status, keep),
+                this._me == null ? null : Shown(this._me),
                 this._identity?.Fingerprint,
                 this._channels.Values
                     .OrderBy(channel => channel.Name ?? channel.Id, StringComparer.OrdinalIgnoreCase)
@@ -3132,7 +3194,7 @@ public sealed class ClientSession : IAsyncDisposable {
                 this._challenge,
                 this._secrets.BlockedUsers
                     .Select(id => this._secrets.PinnedIdentities.TryGetValue(id, out var pinned)
-                        ? new User { UserId = id, Name = pinned.Name, WorldName = pinned.WorldName }
+                        ? Shown(new User { UserId = id, Name = pinned.Name, WorldName = pinned.WorldName })
                         : new User { UserId = id, Name = $"user {id}" })
                     .OrderBy(user => user.Name, StringComparer.OrdinalIgnoreCase)
                     .ToImmutableArray(),
@@ -3169,7 +3231,7 @@ public sealed class ClientSession : IAsyncDisposable {
                 var online = member.Rank >= Rank.Member && (member.UserId == this._me?.UserId
                     ? this._state == ConnectionState.Ready
                     : this._presence.GetValueOrDefault(member.UserId));
-                return new MemberView(user, member.Rank, member.Keys.Fingerprint, pinned is { KeyChangeUnacknowledged: true }, compared, replaced,
+                return new MemberView(Shown(user), member.Rank, member.Keys.Fingerprint, pinned is { KeyChangeUnacknowledged: true }, compared, replaced,
                     replaced ? current!.Fingerprint : null, online);
             })
             .OrderByDescending(member => member.Rank)
@@ -3201,7 +3263,7 @@ public sealed class ClientSession : IAsyncDisposable {
     private async Task<Response> RequestAsync(Connection connection, ClientFrame frame, CancellationToken ct, TimeSpan? timeout = null) {
         var response = await connection.RequestAsync(frame, ct, timeout);
         if (response.Error != null) {
-            throw new ServerErrorException(response.Error.Code, response.Error.Message);
+            throw new ServerErrorException(response.Error.Code, response.Error.Message, this.ShownCode());
         }
 
         return response;
@@ -3269,19 +3331,38 @@ public sealed class ClientSession : IAsyncDisposable {
         }
     }
 
-    private void RaiseMessage(IncomingMessage message) => this.InvokeSafely(this.MessageReceived, message);
+    /// <summary>
+    /// The registration code this client derived and checked (see <see cref="CheckCode"/>), while a registration is under
+    /// way: the only one it shows. Every other is removed from what the server says (see <see cref="LodestoneCode.Redact"/>).
+    /// </summary>
+    private string? ShownCode() {
+        lock (this._lock) {
+            return this._challenge?.Code is { Length: > 0 } code ? code : null;
+        }
+    }
+
+    /// <summary>A user as the server named them, to show: a name is no place for a registration code either.</summary>
+    private static User Shown(User user) {
+        var name = LodestoneCode.Redact(user.Name);
+        var world = LodestoneCode.Redact(user.WorldName);
+        return ReferenceEquals(name, user.Name) && ReferenceEquals(world, user.WorldName)
+            ? user
+            : new User(user) { Name = name, WorldName = world };
+    }
+
+    private void RaiseMessage(IncomingMessage message) => this.InvokeSafely(this.MessageReceived, message with { Sender = Shown(message.Sender) });
 
     /// <summary>
     /// Tells the user something. Notices often contain names, channel names or
     /// server text, so they go only to <see cref="Notice"/>, never to the diagnostic log.
     /// </summary>
     private void RaiseNotice(NoticeLevel level, string text, string? channelId = null) {
-        this.InvokeSafely(this.Notice, new SessionNotice(level, text, channelId));
+        this.InvokeSafely(this.Notice, new SessionNotice(level, LodestoneCode.Redact(text, this.ShownCode()), channelId));
     }
 
     private void Log(NoticeLevel level, string text) {
         try {
-            this._options.Log?.Invoke(level, text);
+            this._options.Log?.Invoke(level, LodestoneCode.Redact(text, this.ShownCode()));
         } catch {
             // Never let logging break the session.
         }

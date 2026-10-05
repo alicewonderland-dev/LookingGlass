@@ -1,3 +1,4 @@
+using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using Google.Protobuf;
@@ -5,6 +6,7 @@ using Microsoft.Extensions.Options;
 using LookingGlass.Core.Client;
 using LookingGlass.Core.Crypto;
 using LookingGlass.Core.Membership;
+using LookingGlass.Core.Util;
 using LookingGlass.Protocol;
 using LookingGlass.Server.Data;
 using LookingGlass.Server.Services;
@@ -48,6 +50,9 @@ public sealed class RequestHandler(
     // Said to anyone asking, before looking at the account, on a server with key login off.
     private const string KeyLoginUnavailable = "Signing in with the identity key isn't available on this server.";
 
+    // A plugin too old to register here: one that doesn't sign registrations, or can't check the Lodestone code it shows.
+    private const string UpdateToRegister = "This server needs a newer version of LookingGlass to register: please update the plugin, then register again.";
+
     // Registering a key the account replaced, or retired with "Reset my identity": what the plugin says to do.
     private const string KeyRetired =
         "This identity key was replaced (by registering again with new keys, or \"Reset my identity\"), so it can't be registered again. " +
@@ -76,6 +81,10 @@ public sealed class RequestHandler(
     private const int MaxSealedNameBytes = 128;
 
     private readonly WindowCounter _registrations = new(options.Value.Limits.RegistrationsPerHourPerIp, TimeSpan.FromHours(1));
+    // Registrations refused for naming an address that isn't this server's, when starting or completing. They cost no
+    // registration and no Lodestone request (the honest client that names one is misconfigured, and is told what to
+    // set), but each logs a warning, so they are counted on their own; past the limit they are refused unlogged.
+    private readonly WindowCounter _refusedRegistrations = new(options.Value.Limits.RefusedRegistrationsPerHourPerIp, TimeSpan.FromHours(1));
     // Key login: challenges per address; failures per address, where a challenge counts as one from when it is issued
     // until it is answered correctly (so asking and never answering is limited like failing); and failed answers per
     // account and address. Each challenge allows one attempt, so these bound attempts per connection too.
@@ -216,7 +225,8 @@ public sealed class RequestHandler(
         var character = request.Character ?? throw new RequestException(ErrorCode.InvalidRequest, "Missing character.");
         var name = character.Name.Trim();
         var worldName = character.WorldName.Trim();
-        if (name.Length is 0 or > 32 || worldName.Length is 0 or > 32) {
+        // Before anything is logged: they are, as the client sent them, when the registration is refused.
+        if (name.Length is 0 or > 32 || worldName.Length is 0 or > 32 || !TextSanitizer.IsPlain(name) || !TextSanitizer.IsPlain(worldName)) {
             throw new RequestException(ErrorCode.InvalidRequest, "Invalid character name or world.");
         }
 
@@ -224,7 +234,22 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.InvalidRequest, "Invalid identity keys.");
         }
 
-        var minutes = options.Value.Lodestone.ChallengeMinutes;
+        if (string.IsNullOrEmpty(request.ServerUrl)) {
+            // A plugin from before codes were derived from the server's address, which can't check the code it shows.
+            throw new RequestException(ErrorCode.RegistrationFailed, UpdateToRegister);
+        }
+
+        if (request.ClientNonce.IsEmpty) {
+            // Likewise: a plugin from before the code was derived from the client's nonce too.
+            throw new RequestException(ErrorCode.RegistrationFailed, UpdateToRegister);
+        }
+
+        if (request.ClientNonce.Length != LodestoneCode.ClientNonceSize) {
+            throw new RequestException(ErrorCode.InvalidRequest, $"The client's registration nonce must be {LodestoneCode.ClientNonceSize} bytes.");
+        }
+
+        // Checked when the server starts; kept in range here too, for a handler made without that check.
+        var minutes = Math.Clamp(options.Value.Lodestone.ChallengeMinutes, LodestoneOptions.MinChallengeMinutes, LodestoneOptions.MaxChallengeMinutes);
         if (ProtocolInfo.IsDebugWorld(worldName)) {
             if (!options.Value.Dev.AllowDebugAccounts) {
                 throw new RequestException(ErrorCode.RegistrationFailed, "Debug accounts are disabled on this server.");
@@ -232,7 +257,7 @@ public sealed class RequestHandler(
 
             this.CheckKeyRegistrable(DebugUserId(name), request.Identity);
             connection.PendingRegistration = new PendingRegistration(
-                DebugUserId(name), name, 0, ProtocolInfo.DebugWorldName, request.Identity, "", DateTimeOffset.UtcNow.AddMinutes(minutes), true, NewRegistrationNonce());
+                DebugUserId(name), name, 0, ProtocolInfo.DebugWorldName, request.Identity, "", DateTimeOffset.UtcNow.AddMinutes(minutes), true, NewRegistrationNonce(), null);
             return new Response {
                 RegistrationChallenge = new RegistrationChallenge {
                     Code = "",
@@ -243,6 +268,20 @@ public sealed class RequestHandler(
                 },
             };
         }
+
+        // The code is made for this address, and the client only accepts a code made for the address it connected to: an
+        // address that isn't this server's is what a malicious server passing this server's code on to its users would
+        // name (to have them accept it). Checked as when completing, before anything is counted or looked up.
+        if (this.NotThisServer(connection, request.ServerUrl) is { } elsewhere) {
+            this.CountRefusedRegistration(connection);
+            logger.LogWarning("Registration of {Name} on {World} from {Address} refused when starting: {Reason}", name, worldName, connection.RemoteAddress, elsewhere);
+            throw new RequestException(ErrorCode.RegistrationFailed,
+                this.WrongAddressMessage(connection, request.ServerUrl) +
+                " Nothing was started: set the server address in Settings to one this server accepts, then register again.");
+        }
+
+        // NotThisServer accepted it, so it parses.
+        var origin = ServerOrigin.FromUrl(request.ServerUrl)!;
 
         if (!this._registrations.TryAdd(connection.RemoteAddress)) {
             throw new RequestException(ErrorCode.RateLimited, "Too many registration attempts; try again later.");
@@ -263,9 +302,13 @@ public sealed class RequestHandler(
 
         // Once the account is known (the lookup is cached, so asking again costs nothing).
         this.CheckKeyRegistrable(found.Id, request.Identity);
-        var code = "LGC-" + RandomCode(8);
+        // For this address, the key this registration is for (only it can complete it: see CheckRegistrationProof), a fresh
+        // nonce, the client's nonce and the character, so the client can check it was made for its own server, key and
+        // request before showing it.
+        var nonce = NewRegistrationNonce();
+        var code = LodestoneCode.Derive(origin, request.Identity.SigningPublicKey.Span, nonce, request.ClientNonce.Span, found.Id);
         connection.PendingRegistration = new PendingRegistration(
-            found.Id, found.Name, character.WorldId, found.WorldName, request.Identity, code, DateTimeOffset.UtcNow.AddMinutes(minutes), false, NewRegistrationNonce());
+            found.Id, found.Name, character.WorldId, found.WorldName, request.Identity, code, DateTimeOffset.UtcNow.AddMinutes(minutes), false, nonce, origin);
         connection.VerifyAttempts = 0;
 
         return new Response {
@@ -276,6 +319,15 @@ public sealed class RequestHandler(
                 Nonce = ByteString.CopyFrom(connection.PendingRegistration.Nonce),
             },
         };
+    }
+
+    /// <summary>Counts a registration refused for its address (see <see cref="_refusedRegistrations"/>), before it is logged.</summary>
+    /// <exception cref="RequestException">Too many from this address: refused without a warning.</exception>
+    private void CountRefusedRegistration(ClientConnection connection) {
+        if (!this._refusedRegistrations.TryAdd(connection.RemoteAddress)) {
+            throw new RequestException(ErrorCode.RateLimited,
+                "Too many registration attempts for addresses this server doesn't accept; set the server address in Settings to one it accepts, and try again later.");
+        }
     }
 
     private static byte[] NewRegistrationNonce() => RandomNumberGenerator.GetBytes(RegistrationProof.NonceSize);
@@ -335,7 +387,8 @@ public sealed class RequestHandler(
                 case ProfileCheck.ProfileUnavailable:
                     throw new RequestException(ErrorCode.RegistrationFailed, "Couldn't read your Lodestone profile. Is it public?");
                 case ProfileCheck.CodeNotFound:
-                    throw new RequestException(ErrorCode.RegistrationFailed, $"{pending.Code} isn't in your Lodestone profile yet. The Lodestone can take a minute to update.");
+                    // Without the code: the client knows it, and shows no code a server writes into its words (see LodestoneCode.Redact).
+                    throw new RequestException(ErrorCode.RegistrationFailed, "Your code isn't in your Lodestone profile yet. The Lodestone can take a minute to update.");
             }
         }
 
@@ -373,21 +426,33 @@ public sealed class RequestHandler(
     /// as for key login, so a malicious server can't relay this server's challenge to its users and register their keys
     /// here, receiving the login this hands out (the plugin's separate keys per address don't stop that: registering
     /// registers whatever key was signed with); a debug account proves nothing about who registers it anyway (anyone may register any name), and the echo bot
-    /// connects to a local address that PublicUrls don't list.
+    /// connects to a local address that PublicUrls don't list. The key is the one the Lodestone code was derived from
+    /// when registering started (<see cref="PendingRegistration.Identity"/>), so a registration completes only for the
+    /// key its code was issued for.
     /// </summary>
     /// <exception cref="RequestException">Not signed, or not like that. The registration can still be completed.</exception>
     private void CheckRegistrationProof(ClientConnection connection, PendingRegistration pending, CompleteRegistration request) {
         if (request.Signature.IsEmpty) {
             // A plugin from before registrations were signed.
-            throw new RequestException(ErrorCode.RegistrationFailed,
-                "This server needs a newer version of LookingGlass to register: please update the plugin, then register again.");
+            throw new RequestException(ErrorCode.RegistrationFailed, UpdateToRegister);
         }
 
         if (!pending.IsDebug && this.NotThisServer(connection, request.ServerUrl) is { } elsewhere) {
+            this.CountRefusedRegistration(connection);
             logger.LogWarning("Registration of {User} from {Address} refused: {Reason}", pending.UserId, connection.RemoteAddress, elsewhere);
             throw new RequestException(ErrorCode.RegistrationFailed,
                 this.WrongAddressMessage(connection, request.ServerUrl) +
                 " Nothing was registered: set the server address in Settings to one this server accepts, then register again.");
+        }
+
+        // The address the code was made for: another of this server's would complete a registration whose code the client
+        // checked for an address it isn't using now.
+        if (!pending.IsDebug && ServerOrigin.FromUrl(request.ServerUrl) != pending.Origin) {
+            logger.LogInformation("Registration of {User} from {Address} refused: completed for {Completed}, started for {Started}",
+                pending.UserId, connection.RemoteAddress, ServerOrigin.FromUrl(request.ServerUrl), pending.Origin);
+            throw new RequestException(ErrorCode.RegistrationFailed,
+                $"This registration was started through {pending.Origin}, and its code was made for that address: complete it through the same " +
+                "address, or start again through this one.");
         }
 
         if (!RegistrationProof.Verify(pending.Identity.SigningPublicKey.Span, pending.Nonce, pending.UserId, request.ServerUrl, request.Signature.Span)) {
@@ -719,6 +784,52 @@ public sealed class RequestHandler(
 
     internal static KeyLoginOrigins ChooseKeyLoginOrigins(IReadOnlyList<ServerOrigin> publicOrigins, bool development) {
         return publicOrigins.Count > 0 ? KeyLoginOrigins.PublicUrls : development ? KeyLoginOrigins.HostHeader : KeyLoginOrigins.Off;
+    }
+
+    // Names only a local network gives meaning to, which every other network may give to another machine.
+    private static readonly string[] LocalNameSuffixes = [".local", ".lan", ".home", ".home.arpa", ".internal", ".intranet", ".localdomain", ".localhost"];
+
+    /// <summary>
+    /// Why <paramref name="origin"/>, a listed public address, may not be this server's alone, or nothing if it is. The
+    /// address checks (signed URLs, and the Lodestone code derived from the origin) tell this server from another only by
+    /// the address the client connected to: if another server can have the same address, a client of that server signs
+    /// for (and is shown codes for) this one's, and that server can pass them on here. A short name (MagicDNS on another
+    /// tailnet, a LAN name), a private, CGNAT, loopback or link-local IP, or plain ws:// (where whoever answers at the
+    /// name is taken for this server) can be. Fine on a private network the operator controls.
+    /// </summary>
+    internal static IReadOnlyList<string> WhyNotUnique(ServerOrigin origin) {
+        var reasons = new List<string>();
+        if (!origin.Secure) {
+            reasons.Add("it is plain ws:// (no TLS), so whatever answers at that name on a user's network is taken for this server");
+        }
+
+        if (IPAddress.TryParse(origin.Host.Trim('[', ']'), out var ip)) {
+            if (ip.IsIPv4MappedToIPv6) {
+                ip = ip.MapToIPv4();
+            }
+
+            var kind = ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork
+                ? ip.GetAddressBytes() switch {
+                    [127, ..] => "loopback",
+                    [10, ..] or [172, >= 16 and < 32, ..] or [192, 168, ..] => "private",
+                    [100, >= 64 and < 128, ..] => "CGNAT (shared, as Tailscale's 100.x addresses are)",
+                    [169, 254, ..] => "link-local",
+                    _ => null,
+                }
+                : IPAddress.IsLoopback(ip) ? "loopback"
+                : ip.IsIPv6LinkLocal ? "link-local"
+                : ip.IsIPv6UniqueLocal || ip.IsIPv6SiteLocal ? "private (unique local)"
+                : null;
+            if (kind != null) {
+                reasons.Add($"it is a {kind} IP address, which other networks use too");
+            }
+        } else if (!origin.Host.Contains('.')) {
+            reasons.Add("it is a single-label name (such as a short MagicDNS or LAN name), which other networks can give to other machines");
+        } else if (LocalNameSuffixes.Any(suffix => origin.Host.EndsWith(suffix, StringComparison.Ordinal))) {
+            reasons.Add("it is a local network name, which other networks can give to other machines");
+        }
+
+        return reasons;
     }
 
     /// <exception cref="InvalidOperationException">An entry isn't a ws, wss, http or https URL.</exception>
@@ -1386,15 +1497,6 @@ public sealed class RequestHandler(
     internal static byte[] HashToken(string token) => SHA256.HashData(Encoding.UTF8.GetBytes(token));
 
     private static string NewDeviceToken() => "lgt_" + Base64Url(RandomNumberGenerator.GetBytes(32));
-
-    private static string RandomCode(int length) {
-        const string alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-        return string.Create(length, alphabet, (span, chars) => {
-            for (var i = 0; i < span.Length; i++) {
-                span[i] = chars[RandomNumberGenerator.GetInt32(chars.Length)];
-            }
-        });
-    }
 
     private static string Base64Url(byte[] bytes) => Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
 }

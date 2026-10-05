@@ -230,8 +230,8 @@ public sealed class KeyPossessionTests : IAsyncLifetime {
 
     // ================================================================ helpers
 
-    private static ClientFrame Start(string name, IdentityBundle identity) => new() {
-        StartRegistration = new StartRegistration { Character = new Character { Name = name, WorldName = ProtocolInfo.DebugWorldName }, Identity = identity },
+    private ClientFrame Start(string name, IdentityBundle identity) => new() {
+        StartRegistration = new StartRegistration { Character = new Character { Name = name, WorldName = ProtocolInfo.DebugWorldName }, Identity = identity, ServerUrl = this.Url, ClientNonce = NewClientNonce() },
     };
 
     private static ClientFrame Complete(string url, byte[] signature) => new() {

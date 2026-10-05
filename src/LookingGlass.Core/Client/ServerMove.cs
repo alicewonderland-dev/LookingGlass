@@ -1,4 +1,5 @@
 using System.Net.WebSockets;
+using LookingGlass.Core.Crypto;
 using LookingGlass.Protocol;
 
 namespace LookingGlass.Core.Client;
@@ -222,6 +223,6 @@ public static class ServerMove {
         hello.ProtocolVersions.Add(ProtocolInfo.CurrentVersion);
         var response = await connection.RequestAsync(new ClientFrame { Hello = hello }, ct);
         return response.Welcome
-               ?? throw new InvalidOperationException(response.Error is { } error ? $"the server said: {error.Message}" : "the server didn't answer as a LookingGlass server");
+               ?? throw new InvalidOperationException(response.Error is { } error ? $"the server said: {LodestoneCode.Redact(error.Message)}" : "the server didn't answer as a LookingGlass server");
     }
 }

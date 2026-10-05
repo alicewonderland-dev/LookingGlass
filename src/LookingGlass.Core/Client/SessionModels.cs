@@ -150,14 +150,30 @@ public sealed record SessionNotice(NoticeLevel Level, string Text, string? Chann
 
 public sealed record TraceEntry(DateTimeOffset Time, bool Outgoing, string Summary);
 
-/// <summary>The server answered a request with an error.</summary>
-public sealed class ServerErrorException(ErrorCode code, string message) : Exception($"{message} ({code})") {
+/// <summary>
+/// The server answered a request with an error. Its message is shown to the user, so it holds no registration code but
+/// <paramref name="keepCode"/>, the one this client checked (see <see cref="Crypto.LodestoneCode.Redact"/>): a server
+/// could otherwise answer "LGC-... isn't in your Lodestone profile yet" with another server's code.
+/// </summary>
+public sealed class ServerErrorException(ErrorCode code, string message, string? keepCode = null)
+    : Exception($"{Crypto.LodestoneCode.Redact(message, keepCode)} ({code})") {
     public ErrorCode Code { get; } = code;
-    public string ServerMessage { get; } = message;
+
+    /// <summary>What the server said, without registration codes (see the class documentation).</summary>
+    public string ServerMessage { get; } = Crypto.LodestoneCode.Redact(message, keepCode);
 }
 
 /// <summary>The connection closed before the request was answered.</summary>
 public sealed class SessionDisconnectedException(string message) : Exception(message);
+
+/// <summary>
+/// The server answered "register" with a Lodestone code that wasn't made for it and this client's key (see
+/// <see cref="Crypto.LodestoneCode"/>), as a server passing on another server's code would, to take the character's
+/// account there once the user puts the code in their profile. The code isn't shown.
+/// </summary>
+public sealed class RelayedRegistrationCodeException() : InvalidOperationException(
+    "This server sent a registration code that doesn't belong to it. It may be passing on another server's code. " +
+    "Don't put it in your Lodestone profile.");
 
 public sealed class ClientSessionOptions {
     public required Uri ServerUri { get; init; }

@@ -41,12 +41,16 @@ public sealed class RequestHandlerTests : IDisposable {
     }
 
     /// <param name="publicUrls">The server's addresses. The handler isn't in Development, so with none it trusts no address.</param>
-    private RequestHandler NewHandler(params string[] publicUrls) {
+    private RequestHandler NewHandler(params string[] publicUrls) => this.NewHandler(15, publicUrls);
+
+    /// <param name="challengeMinutes">How long a registration challenge lives.</param>
+    /// <param name="publicUrls">The server's addresses (by default the one the clients here sign for).</param>
+    private RequestHandler NewHandler(int challengeMinutes, string[]? publicUrls = null) {
         var options = Options.Create(new ServerOptions {
             Dev = { AllowDebugAccounts = true },
-            Lodestone = { BaseUrl = "https://lodestone.test", MinDelaySeconds = 0 },
+            Lodestone = { BaseUrl = "https://lodestone.test", MinDelaySeconds = 0, ChallengeMinutes = challengeMinutes },
             Limits = { RegistrationsPerHourPerIp = 3 },
-            PublicUrls = publicUrls,
+            PublicUrls = publicUrls ?? [Url],
         });
         var lodestone = new LodestoneClient(new HttpClient(this._lodestone), options, NullLogger<LodestoneClient>.Instance);
         var logger = Microsoft.Extensions.Logging.LoggerFactory.Create(logging => logging.AddProvider(this._logs)).CreateLogger<RequestHandler>();
@@ -101,7 +105,7 @@ public sealed class RequestHandlerTests : IDisposable {
         this._handler = this.NewHandler("wss://chat.example.com/ws");
         var connection = await this.HelloAsync("203.0.113.60");
         using var keys = IdentityKeys.Generate();
-        var challenge = (await this.StartRegistrationAsync(connection, keys: keys)).RegistrationChallenge!;
+        var challenge = (await this.StartRegistrationAsync(connection, keys: keys, url: "wss://chat.example.com/ws")).RegistrationChallenge!;
         this._lodestone.Profile = $"My code: {challenge.Code}";
 
         foreach (var url in new[] { "wss://evil.example/ws", "ws://localhost/ws", "wss://chat.example.com.evil.example/ws" }) {
@@ -130,25 +134,24 @@ public sealed class RequestHandlerTests : IDisposable {
     /// <summary>
     /// Outside Development without PublicUrls the server doesn't start (see <c>KeyLoginTests.OutsideDevelopmentTheServerNeedsPublicUrls</c>).
     /// A handler made that way anyway has no address to check a signed one against, so it accepts none: a registration
-    /// through the Lodestone is refused whatever address it was signed for, before the Lodestone is asked, as is key
-    /// login. Debug accounts, whose registrations don't name an address, still work.
+    /// through the Lodestone is refused whatever address it names, when it starts, before the Lodestone is asked, as is
+    /// key login. Debug accounts, whose registrations aren't checked against an address, still work.
     /// </summary>
     [Fact]
     public async Task WithoutAddressesNoSignedAddressIsAccepted() {
         this._handler = this.NewHandler();
         var connection = await this.HelloAsync("203.0.113.62");
         using var keys = IdentityKeys.Generate();
-        var challenge = (await this.StartRegistrationAsync(connection, keys: keys)).RegistrationChallenge!;
-        this._lodestone.Profile = $"My code: {challenge.Code}";
 
         foreach (var url in new[] { Url, "wss://chat.example.com/ws" }) {
-            var refused = await this.CompleteRegistrationAsync(connection, keys, challenge, url);
+            var refused = await this.StartRegistrationAsync(connection, keys: keys, url: url);
             Assert.Equal(ErrorCode.RegistrationFailed, refused.Error?.Code);
             Assert.Contains($"doesn't accept the address {url}", refused.Error!.Message);
             Assert.Contains("LookingGlass:PublicUrls", refused.Error.Message);
         }
 
-        Assert.Equal(0, connection.VerifyAttempts);
+        Assert.Null(connection.PendingRegistration);
+        Assert.Equal(0, this._lodestone.Requests);
         Assert.Null(this._db.GetUser(LodestoneId));
         Assert.Equal(ErrorCode.NotAuthenticated, (await this.SendAsync(connection, new ClientFrame { StartKeyLogin = new StartKeyLogin { UserId = LodestoneId } })).Error?.Code);
         Assert.NotNull(await this.RegisterDebugAsync("No Addresses"));
@@ -169,6 +172,251 @@ public sealed class RequestHandlerTests : IDisposable {
         Assert.Null(this._db.GetUser(LodestoneId));
 
         Assert.NotNull((await this.CompleteRegistrationAsync(connection, keys, challenge)).RegistrationComplete);
+    }
+
+    /// <summary>
+    /// The code is no random string but the one derived from the address the client connected to, the key it registers,
+    /// this connection's nonce, the client's nonce and the character (see <see cref="LodestoneCode"/>), which the client
+    /// checks before showing it. Debug accounts get no code.
+    /// </summary>
+    [Fact]
+    public async Task TheCodeIsDerivedFromTheAddressKeyNonceAndCharacter() {
+        this._handler = this.NewHandler("wss://chat.example.com/ws", "ws://100.64.0.1:5000/ws");
+        using var keys = IdentityKeys.Generate();
+        using var otherKeys = IdentityKeys.Generate();
+        var codes = new List<string>();
+        foreach (var (url, identity) in new[] {
+                     ("wss://chat.example.com/ws", keys), ("wss://chat.example.com/ws", keys), ("ws://100.64.0.1:5000/ws", keys), ("wss://chat.example.com/ws", otherKeys),
+                 }) {
+            // From an address each, as the limit is three an hour.
+            var clientNonce = System.Security.Cryptography.RandomNumberGenerator.GetBytes(LodestoneCode.ClientNonceSize);
+            var challenge = (await this.StartRegistrationAsync(await this.HelloAsync($"203.0.113.{100 + codes.Count}"), keys: identity, url: url, clientNonce: clientNonce))
+                .RegistrationChallenge!;
+            Assert.Equal(LodestoneCode.Derive(Core.Client.ServerOrigin.FromUrl(url)!, identity.SigningPublicKey, challenge.Nonce.Span, clientNonce, LodestoneId), challenge.Code);
+            Assert.Equal(LodestoneId, challenge.LodestoneId);
+            codes.Add(challenge.Code);
+        }
+
+        // A fresh nonce each time, so never the same code twice.
+        Assert.Equal(codes.Count, codes.Distinct().Count());
+
+        var debug = (await this.StartRegistrationAsync(await this.HelloAsync("203.0.113.63"), "Debug Person", ProtocolInfo.DebugWorldName, keys)).RegistrationChallenge!;
+        Assert.True(debug.VerificationSkipped);
+        Assert.Equal("", debug.Code);
+    }
+
+    /// <summary>
+    /// The client's nonce is exactly 32 bytes: without one (a plugin from before), registering is refused asking to
+    /// update; any other length is an invalid request. Checked before the Lodestone is asked, for debug accounts too.
+    /// </summary>
+    [Theory]
+    [InlineData(World)]
+    [InlineData(ProtocolInfo.DebugWorldName)]
+    public async Task TheClientNonceIsRequiredAndIs32Bytes(string world) {
+        var connection = await this.HelloAsync("203.0.113.70");
+        var old = await this.StartRegistrationAsync(connection, world: world, clientNonce: []);
+        Assert.Equal(ErrorCode.RegistrationFailed, old.Error?.Code);
+        Assert.Contains("update the plugin", old.Error!.Message);
+
+        foreach (var length in new[] { 1, 16, 31, 33, 64 }) {
+            var wrong = await this.StartRegistrationAsync(connection, world: world, clientNonce: new byte[length]);
+            Assert.Equal(ErrorCode.InvalidRequest, wrong.Error?.Code);
+        }
+
+        Assert.Null(connection.PendingRegistration);
+        Assert.Equal(0, this._lodestone.Requests);
+        Assert.NotNull((await this.StartRegistrationAsync(connection, world: world, clientNonce: new byte[32])).RegistrationChallenge);
+    }
+
+    /// <summary>A challenge lives for ChallengeMinutes, kept between 1 and 60 even by a handler made without the startup check.</summary>
+    [Theory]
+    [InlineData(-5, 1)]
+    [InlineData(0, 1)]
+    [InlineData(15, 15)]
+    [InlineData(60, 60)]
+    [InlineData(10_000, 60)]
+    public async Task AChallengeLivesBetweenOneAndSixtyMinutes(int configured, int minutes) {
+        this._handler = this.NewHandler(challengeMinutes: configured);
+        var started = DateTimeOffset.UtcNow;
+        var challenge = (await this.StartRegistrationAsync(await this.HelloAsync("203.0.113.71"))).RegistrationChallenge!;
+        var lifetime = DateTimeOffset.FromUnixTimeSeconds(challenge.ExpiresUnix) - started;
+        Assert.InRange(lifetime.TotalMinutes, minutes - 0.1, minutes + 0.1);
+    }
+
+    /// <summary>
+    /// The code is made for the address the client named (and signs for), never the one the connection's Host header
+    /// names: with PublicUrls, that is whatever the connecting side sent, and need not be the address the client uses.
+    /// </summary>
+    [Fact]
+    public async Task TheCodeIsForTheAddressTheClientNamedNotTheHostHeader() {
+        this._handler = this.NewHandler("wss://chat.example.com/ws", "ws://100.64.0.1:5000/ws");
+        foreach (var url in new[] { "wss://chat.example.com/ws", "ws://100.64.0.1:5000/ws" }) {
+            using var keys = IdentityKeys.Generate();
+            var clientNonce = System.Security.Cryptography.RandomNumberGenerator.GetBytes(LodestoneCode.ClientNonceSize);
+            // Reached through a proxy that passes on another Host.
+            var hostHeader = Core.Client.ServerOrigin.FromRequest("http", "localhost:5180")!;
+            var connection = await this.HelloAsync("203.0.113.72", hostHeader);
+            var challenge = (await this.StartRegistrationAsync(connection, keys: keys, url: url, clientNonce: clientNonce)).RegistrationChallenge!;
+
+            Assert.Equal(LodestoneCode.Derive(Core.Client.ServerOrigin.FromUrl(url)!, keys.SigningPublicKey, challenge.Nonce.Span, clientNonce, LodestoneId), challenge.Code);
+            Assert.NotEqual(LodestoneCode.Derive(hostHeader, keys.SigningPublicKey, challenge.Nonce.Span, clientNonce, LodestoneId), challenge.Code);
+        }
+    }
+
+    /// <summary>
+    /// A registration completes through the address it was started for, which its code was made for: another of the
+    /// server's addresses is refused (before the Lodestone is asked), though it is the server's too.
+    /// </summary>
+    [Fact]
+    public async Task ARegistrationCompletesThroughTheAddressItWasStartedFor() {
+        this._handler = this.NewHandler("wss://chat.example.com/ws", "ws://100.64.0.1:5000/ws");
+        using var keys = IdentityKeys.Generate();
+        var connection = await this.HelloAsync("203.0.113.73");
+        var challenge = (await this.StartRegistrationAsync(connection, keys: keys, url: "wss://chat.example.com/ws")).RegistrationChallenge!;
+        this._lodestone.Profile = $"My code: {challenge.Code}";
+
+        var elsewhere = await this.CompleteRegistrationAsync(connection, keys, challenge, "ws://100.64.0.1:5000/ws");
+        Assert.Equal(ErrorCode.RegistrationFailed, elsewhere.Error?.Code);
+        Assert.Contains("wss://chat.example.com", elsewhere.Error!.Message);
+        Assert.Equal(0, connection.VerifyAttempts);
+        Assert.Null(this._db.GetUser(LodestoneId));
+
+        // Any spelling of the same origin does.
+        Assert.NotNull((await this.CompleteRegistrationAsync(connection, keys, challenge, "wss://CHAT.example.com:443/other")).RegistrationComplete);
+    }
+
+    /// <summary>
+    /// A registration completes only for the key its code was issued for: it is bound to the pending registration, the
+    /// proof of possession must be by it, and another key's registration looks for another code.
+    /// </summary>
+    [Fact]
+    public async Task CompletingWithAnotherKeyThanTheCodeWasIssuedForIsRefused() {
+        using var keys = IdentityKeys.Generate();
+        using var otherKeys = IdentityKeys.Generate();
+        var connection = await this.HelloAsync("203.0.113.64");
+        var challenge = (await this.StartRegistrationAsync(connection, keys: keys)).RegistrationChallenge!;
+        this._lodestone.Profile = $"My code: {challenge.Code}";
+
+        // Signed by another key over this connection's challenge: refused before the Lodestone is asked.
+        var refused = await this.CompleteRegistrationAsync(connection, otherKeys, challenge);
+        Assert.Equal(ErrorCode.RegistrationFailed, refused.Error?.Code);
+        Assert.Contains("isn't signed with the identity key being registered", refused.Error!.Message);
+        Assert.Equal(0, connection.VerifyAttempts);
+
+        // The other key's own registration has its own code, which isn't the one in the profile.
+        var elsewhere = await this.HelloAsync("203.0.113.65");
+        var other = (await this.StartRegistrationAsync(elsewhere, keys: otherKeys)).RegistrationChallenge!;
+        Assert.NotEqual(challenge.Code, other.Code);
+        var notFound = await this.CompleteRegistrationAsync(elsewhere, otherKeys, other);
+        Assert.Equal(ErrorCode.RegistrationFailed, notFound.Error?.Code);
+        // Without the code: the client knows its own, and a server's words are no place for one (see LodestoneCode.Redact).
+        Assert.Contains("isn't in your Lodestone profile", notFound.Error!.Message);
+        Assert.DoesNotContain(other.Code, notFound.Error.Message);
+        Assert.DoesNotContain("LGC-", notFound.Error.Message);
+        Assert.Null(this._db.GetUser(LodestoneId));
+
+        // The key the code was issued for registers.
+        Assert.NotNull((await this.CompleteRegistrationAsync(connection, keys, challenge)).RegistrationComplete);
+        Assert.Equal(keys.SigningPublicKey, this._db.GetUser(LodestoneId)!.SigningKey);
+    }
+
+    /// <summary>
+    /// The code is made for the address the client says it connected to, so that address is checked when registering
+    /// starts, as when it completes: one that isn't this server's is refused before the Lodestone is asked, without using
+    /// up the address's registrations, and logged. Debug accounts aren't checked (the echo bot connects to a local address).
+    /// </summary>
+    [Fact]
+    public async Task StartingARegistrationForAnotherServersAddressIsRefused() {
+        this._handler = this.NewHandler("wss://chat.example.com/ws");
+        using var keys = IdentityKeys.Generate();
+        foreach (var url in new[] { "wss://evil.example/ws", Url, "wss://chat.example.com.evil.example/ws", "not an address" }) {
+            var connection = await this.HelloAsync("203.0.113.66");
+            var refused = await this.StartRegistrationAsync(connection, keys: keys, url: url);
+            Assert.Equal(ErrorCode.RegistrationFailed, refused.Error?.Code);
+            Assert.Contains($"doesn't accept the address {url}", refused.Error!.Message);
+            Assert.Contains("Use one of: wss://chat.example.com/ws", refused.Error.Message);
+            Assert.Null(connection.PendingRegistration);
+        }
+
+        Assert.Equal(0, this._lodestone.Requests);
+        var warnings = this._logs.AtLeast(Microsoft.Extensions.Logging.LogLevel.Warning);
+        Assert.Equal(4, warnings.Count);
+        Assert.Contains(warnings, w => w.Contains("wss://evil.example:443"));
+
+        // The address's three registrations an hour are all still there.
+        for (var i = 0; i < 3; i++) {
+            Assert.NotNull((await this.StartRegistrationAsync(await this.HelloAsync("203.0.113.66"), keys: keys, url: "wss://chat.example.com/ws")).RegistrationChallenge);
+        }
+
+        Assert.NotNull((await this.StartRegistrationAsync(await this.HelloAsync("203.0.113.66"), "Debug Person", ProtocolInfo.DebugWorldName, keys, "ws://127.0.0.1:5186/ws"))
+            .RegistrationChallenge);
+    }
+
+    /// <summary>
+    /// A name or world with characters that aren't text (line breaks, control and format characters, line separators)
+    /// is no character's, and is refused before anything is looked up or logged: a refused registration logs both, and
+    /// a line break there could forge log lines.
+    /// </summary>
+    [Theory]
+    [InlineData("Test\nPerson", World)]
+    [InlineData("Test\r\n[WRN] Forged", World)]
+    [InlineData("Test\u0002Person", World)]
+    [InlineData("Test\u202EPerson", World)]
+    [InlineData("Test\u200BPerson", World)]
+    [InlineData("Test\u2028Person", World)]
+    [InlineData("Test\uFFFEPerson", World)]
+    [InlineData("Test Person", "Gilga\nmesh")]
+    [InlineData("Test Person", "Gilga\u0085mesh")]
+    [InlineData("Test\nPerson", ProtocolInfo.DebugWorldName)]
+    public async Task ANameOrWorldThatIsntPlainTextIsRefusedBeforeAnythingIsLogged(string name, string world) {
+        this._handler = this.NewHandler("wss://chat.example.com/ws");
+        var connection = await this.HelloAsync("203.0.113.67");
+
+        // For another server's address, which would be logged with the name and world.
+        var refused = await this.StartRegistrationAsync(connection, name, world, url: "wss://evil.example/ws");
+        Assert.Equal(ErrorCode.InvalidRequest, refused.Error?.Code);
+        Assert.Null(connection.PendingRegistration);
+        Assert.Empty(this._logs.AtLeast(Microsoft.Extensions.Logging.LogLevel.Information));
+        Assert.Equal(0, this._lodestone.Requests);
+
+        // And for this one's, which would ask the Lodestone.
+        Assert.Equal(ErrorCode.InvalidRequest, (await this.StartRegistrationAsync(connection, name, world, url: "wss://chat.example.com/ws")).Error?.Code);
+        Assert.Equal(0, this._lodestone.Requests);
+    }
+
+    /// <summary>
+    /// Starting a registration for an address that isn't this server's costs no registration and no Lodestone request,
+    /// but logs a warning, so those are counted on their own, per address (10 an hour): past that, they are refused
+    /// without a warning. Refused completions count too. Other addresses, and real registrations, aren't affected.
+    /// </summary>
+    [Fact]
+    public async Task RegistrationsForAnotherServersAddressAreLimitedPerAddress() {
+        this._handler = this.NewHandler("wss://chat.example.com/ws");
+        using var keys = IdentityKeys.Generate();
+        var connection = await this.HelloAsync("203.0.113.68");
+        for (var i = 0; i < 9; i++) {
+            Assert.Equal(ErrorCode.RegistrationFailed, (await this.StartRegistrationAsync(connection, keys: keys, url: "wss://evil.example/ws")).Error?.Code);
+        }
+
+        // A completion for another address counts too: the tenth.
+        var started = (await this.StartRegistrationAsync(connection, keys: keys, url: "wss://chat.example.com/ws")).RegistrationChallenge!;
+        Assert.Equal(ErrorCode.RegistrationFailed, (await this.CompleteRegistrationAsync(connection, keys, started, "wss://evil.example/ws")).Error?.Code);
+        Assert.Equal(10, this._logs.AtLeast(Microsoft.Extensions.Logging.LogLevel.Warning).Count);
+
+        var limited = await this.StartRegistrationAsync(connection, keys: keys, url: "wss://evil.example/ws");
+        Assert.Equal(ErrorCode.RateLimited, limited.Error?.Code);
+        Assert.Equal(ErrorCode.RateLimited, (await this.CompleteRegistrationAsync(connection, keys, started, "wss://evil.example/ws")).Error?.Code);
+        Assert.Equal(10, this._logs.AtLeast(Microsoft.Extensions.Logging.LogLevel.Warning).Count);
+
+        // Another address is counted on its own.
+        var other = await this.StartRegistrationAsync(await this.HelloAsync("203.0.113.69"), keys: keys, url: "wss://evil.example/ws");
+        Assert.Equal(ErrorCode.RegistrationFailed, other.Error?.Code);
+        Assert.Equal(11, this._logs.AtLeast(Microsoft.Extensions.Logging.LogLevel.Warning).Count);
+
+        // The real registration started above is still there, and two more of the address's three an hour.
+        for (var i = 0; i < 2; i++) {
+            Assert.NotNull((await this.StartRegistrationAsync(await this.HelloAsync("203.0.113.68"), keys: keys, url: "wss://chat.example.com/ws")).RegistrationChallenge);
+        }
     }
 
     [Fact]
@@ -195,7 +443,7 @@ public sealed class RequestHandlerTests : IDisposable {
         var response = await this.SendAsync(connection, new ClientFrame {
             StartRegistration = new StartRegistration {
                 Character = new Character { Name = "Zero Key", WorldName = ProtocolInfo.DebugWorldName },
-                Identity = CryptoTests.BundleWithAgreementKey(keys, new byte[32]),
+                Identity = CryptoTests.BundleWithAgreementKey(keys, new byte[32]), ServerUrl = Url, ClientNonce = NewClientNonce(),
             },
         });
 
@@ -227,8 +475,9 @@ public sealed class RequestHandlerTests : IDisposable {
 
     private Task<Response> SendAsync(ClientConnection connection, ClientFrame frame) => this._handler.HandleAsync(connection, frame, Ct);
 
-    private async Task<ClientConnection> HelloAsync(string address) {
-        var connection = new ClientConnection(new ClosedWebSocket(), address, 128 * 1024, 64, NullLogger.Instance);
+    /// <param name="hostHeader">Where the connection says it was made to (its Host header and scheme).</param>
+    private async Task<ClientConnection> HelloAsync(string address, Core.Client.ServerOrigin? hostHeader = null) {
+        var connection = new ClientConnection(new ClosedWebSocket(), address, 128 * 1024, 64, NullLogger.Instance) { RequestOrigin = hostHeader };
         var hello = new Hello();
         hello.ProtocolVersions.Add(ProtocolInfo.CurrentVersion);
         Assert.NotNull((await this.SendAsync(connection, new ClientFrame { Hello = hello })).Welcome);
@@ -236,10 +485,16 @@ public sealed class RequestHandlerTests : IDisposable {
     }
 
     /// <param name="keys">The identity to register (by default new keys, thrown away).</param>
-    private Task<Response> StartRegistrationAsync(ClientConnection connection, string name = "Test Person", string world = World, IdentityKeys? keys = null) {
+    /// <param name="url">The address the client says it connected to.</param>
+    /// <param name="clientNonce">The client's nonce (by default a new one).</param>
+    private Task<Response> StartRegistrationAsync(ClientConnection connection, string name = "Test Person", string world = World, IdentityKeys? keys = null, string url = Url,
+        byte[]? clientNonce = null) {
         using var generated = keys == null ? IdentityKeys.Generate() : null;
         return this.SendAsync(connection, new ClientFrame {
-            StartRegistration = new StartRegistration { Character = new Character { Name = name, WorldName = world }, Identity = (keys ?? generated!).ToBundle() },
+            StartRegistration = new StartRegistration {
+                Character = new Character { Name = name, WorldName = world }, Identity = (keys ?? generated!).ToBundle(), ServerUrl = url,
+                ClientNonce = clientNonce == null ? NewClientNonce() : Google.Protobuf.ByteString.CopyFrom(clientNonce),
+            },
         });
     }
 
@@ -264,10 +519,16 @@ public sealed class RequestHandlerTests : IDisposable {
 
     /// <summary>Answers every search with "Test Person" on Gilgamesh, and every profile with <see cref="Profile"/>.</summary>
     private sealed class StubLodestone : HttpMessageHandler {
+        private int _requests;
+
         /// <summary>The profile's text (by default without any code).</summary>
         public string Profile { get; set; } = "Nothing to see here.";
 
+        /// <summary>Searches and profile reads asked for.</summary>
+        public int Requests => Volatile.Read(ref this._requests);
+
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) {
+            Interlocked.Increment(ref this._requests);
             var html = request.RequestUri!.AbsolutePath.TrimEnd('/') == "/lodestone/character"
                 ? $"""<a href="/lodestone/character/{LodestoneId}/" class="entry__link"><p class="entry__name">Test Person</p><p class="entry__world">{World} [Aether]</p></a>"""
                 : $"""<div class="character__selfintroduction">{this.Profile}</div>""";
