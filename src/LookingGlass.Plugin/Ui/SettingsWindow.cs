@@ -32,7 +32,7 @@ public sealed class SettingsWindow : Window {
         this._config = config;
         this._sessions = sessions;
         this._actions = actions;
-        this._modals = new Modals(actions);
+        this._modals = new Modals(actions, () => config.AdvancedMode);
         this._serverUrl = config.ServerUrl;
         this.Size = new Vector2(440, 520);
         this.SizeCondition = ImGuiCond.FirstUseEver;
@@ -149,6 +149,7 @@ public sealed class SettingsWindow : Window {
         }
 
         var who = offer.Characters.Count == 1 ? "your character" : $"your {offer.Characters.Count} characters";
+        var advanced = this._config.AdvancedMode;
         ImGui.PushTextWrapPos(ImGui.GetFontSize() * 26);
         var close = false;
         if (check.Verdict == ServerMoveVerdict.SameServer) {
@@ -156,7 +157,7 @@ public sealed class SettingsWindow : Window {
             ImGui.Spacing();
             ImGui.TextColored(Widgets.Muted, check.Message);
             ImGui.TextColored(Widgets.Muted,
-                $"Keeping it copies the identity of {who} registered there (keys, login and channels) to the new address: no registering again, " +
+                $"Keeping it copies the identity of {who} registered there ({(advanced ? "keys, login and channels" : "login and channels")}) to the new address: no registering again, " +
                 "and you stay in your channels. The identity for the old address is kept too, so switching back works.");
             ImGui.Spacing();
             if (ImGui.Button("Keep my identity")) {
@@ -171,7 +172,9 @@ public sealed class SettingsWindow : Window {
                 close = true;
             }
 
-            Widgets.Tooltip("Treat the new address as a different server: register there through the Lodestone, with new keys.");
+            Widgets.Tooltip(advanced
+                ? "Treat the new address as a different server: register there through the Lodestone, with new keys."
+                : "Treat the new address as a different server: register there through the Lodestone, and start afresh.");
         } else {
             ImGui.TextUnformatted("LookingGlass can't confirm this is the same server");
             ImGui.Spacing();
@@ -180,7 +183,7 @@ public sealed class SettingsWindow : Window {
                 ? "If it is the same server, apply its wss:// address instead (ask whoever runs it for one, and to list it in LookingGlass:PublicUrls)."
                 : "If it is the same server, ask whoever runs it to list both addresses in LookingGlass:PublicUrls, then apply it again.";
             ImGui.TextColored(Widgets.Muted,
-                "So the new address counts as a different server: there you'd register through the Lodestone with new keys, and start " +
+                $"So the new address counts as a different server: there you'd register through the Lodestone{(advanced ? " with new keys" : "")}, and start " +
                 $"without channels. The identity of {who} for {offer.OldUrl} is kept, so switching back restores it. {remedy}");
             ImGui.Spacing();
             if (ImGui.Button("Use the new address anyway")) {
@@ -232,7 +235,7 @@ public sealed class SettingsWindow : Window {
         }
 
         // What the server said on connecting: it lists its addresses, and not this one.
-        if (this._sessions.Session != null && this._sessions.Snapshot.AddressNotListed is { } addressHint) {
+        if (this._sessions.Session != null && this._sessions.Snapshot.AddressNotListedFor(this._config.AdvancedMode) is { } addressHint) {
             Widgets.IconText(FontAwesomeIcon.ExclamationTriangle, "The server doesn't accept this address", Widgets.Warning);
             ImGui.TextColored(Widgets.Warning, addressHint);
         }
@@ -303,29 +306,43 @@ public sealed class SettingsWindow : Window {
     private void DrawIdentity() {
         Widgets.Heading("Your identity");
 
-        ImGui.TextUnformatted("Your fingerprint");
-        var fingerprint = this._sessions.Snapshot.MyFingerprint;
-        if (fingerprint == null) {
-            ImGui.TextColored(Widgets.Muted, "Not known until you're connected and registered.");
-        } else {
-            Modals.Fingerprint(fingerprint, "##copy-fingerprint");
-            ImGui.PushTextWrapPos();
-            ImGui.TextColored(Widgets.Muted, "Others compare this with what LookingGlass shows them for you, to be sure it's really you.");
-            ImGui.PopTextWrapPos();
+        var advanced = this._config.AdvancedMode;
+        if (ImGui.Checkbox("Advanced mode: show encryption details (fingerprints, keys)", ref advanced)) {
+            this._config.AdvancedMode = advanced;
+            this._config.Save();
         }
 
-        ImGui.Spacing();
         ImGui.PushTextWrapPos();
-        ImGui.TextColored(Widgets.Muted, $"Keys are stored with: {ProtectedSecretStore.Protection}");
+        ImGui.TextColored(Widgets.Muted, "For checking that your chats are private: compare fingerprints with people over /tell. " +
+                                         "Warnings show either way; this only adds the technical details.");
         ImGui.PopTextWrapPos();
-
         ImGui.Spacing();
+
+        if (advanced) {
+            ImGui.TextUnformatted("Your fingerprint");
+            var fingerprint = this._sessions.Snapshot.MyFingerprint;
+            if (fingerprint == null) {
+                ImGui.TextColored(Widgets.Muted, "Not known until you're connected and registered.");
+            } else {
+                Modals.Fingerprint(fingerprint, "##copy-fingerprint");
+                ImGui.PushTextWrapPos();
+                ImGui.TextColored(Widgets.Muted, "Others compare this with what LookingGlass shows them for you, to be sure it's really you.");
+                ImGui.PopTextWrapPos();
+            }
+
+            ImGui.Spacing();
+            ImGui.PushTextWrapPos();
+            ImGui.TextColored(Widgets.Muted, $"Keys are stored with: {ProtectedSecretStore.Protection}");
+            ImGui.PopTextWrapPos();
+            ImGui.Spacing();
+        }
+
         var player = this._sessions.Player;
         ImGui.BeginDisabled(this._actions.Busy || player == null);
         if (ImGui.Button("Reset my identity...") && player != null) {
             var serverUrl = this._config.ServerUrl;
             var loggedIn = this._sessions.Snapshot.State == ConnectionState.Ready;
-            this._modals.Confirm("Reset my identity", ResetText(player.Name, serverUrl, loggedIn), "Reset my identity", () => {
+            this._modals.Confirm("Reset my identity", ResetText(player.Name, serverUrl, loggedIn, advanced), "Reset my identity", () => {
                 // On the framework thread (the dialog's button); the returned task finishes the reset.
                 var reset = this._sessions.ResetIdentity();
                 this._actions.Run("Resetting your identity", () => reset);
@@ -336,9 +353,12 @@ public sealed class SettingsWindow : Window {
         }
 
         ImGui.EndDisabled();
-        Widgets.Tooltip("New identity keys for this character on this server, for a key that was lost or may have been stolen. " +
-                        "Your channels come along when you register them.");
-        this.DrawBackup(player);
+        Widgets.Tooltip(advanced
+            ? "New identity keys for this character on this server, for a key that was lost or may have been stolen. " +
+              "Your channels come along when you register them."
+            : "Set up LookingGlass afresh for this character on this server, if its files were lost or someone may have copied them. " +
+              "Your channels come along when you register again.");
+        this.DrawBackup(player, advanced);
     }
 
     /// <summary>
@@ -346,7 +366,7 @@ public sealed class SettingsWindow : Window {
     /// own: offered, never restored without asking (see ServerSecretFiles). Looked for in the background, again whenever
     /// the window opens, the character or address changes, or the identity is reset or restored.
     /// </summary>
-    private void DrawBackup(PlayerInfo? player) {
+    private void DrawBackup(PlayerInfo? player, bool advanced) {
         if (player == null) {
             return;
         }
@@ -368,7 +388,7 @@ public sealed class SettingsWindow : Window {
         ImGui.PopTextWrapPos();
         ImGui.BeginDisabled(this._actions.Busy);
         if (ImGui.Button("Restore the backup...")) {
-            this._modals.Confirm("Restore your identity", RestoreText(player.Name, serverUrl, saved), "Restore it", () => {
+            this._modals.Confirm("Restore your identity", RestoreText(player.Name, serverUrl, saved, advanced), "Restore it", () => {
                 var restore = this._sessions.RestoreBackup();
                 this._actions.Run("Restoring your identity", () => restore);
                 this._backupFor = (player.ContentId, serverUrl);
@@ -377,20 +397,47 @@ public sealed class SettingsWindow : Window {
         }
 
         ImGui.EndDisabled();
-        Widgets.Tooltip("Your identity for this server is gone (no keys, no login), but LookingGlass kept a copy when it moved your keys to a new file.");
+        Widgets.Tooltip(advanced
+            ? "Your identity for this server is gone (no keys, no login), but LookingGlass kept a copy when it moved your keys to a new file."
+            : "Your LookingGlass setup for this server is gone, but LookingGlass kept a copy when it moved it to a new file.");
     }
 
-    private static string RestoreText(string name, string serverUrl, string saved) =>
-        $"This restores the identity LookingGlass kept for {name} on {serverUrl}, as it was on {saved}: its keys, login and channel keys.\n\n" +
-        "It may be older than you think:\n" +
-        "- Its login may no longer work. If the server still knows its key, it signs you in with that.\n" +
-        "- Channel keys and changes since then are missing; channels you're still in catch up from the server.\n" +
-        "- If you have reset your identity on this server since, its key no longer counts there: you'd have to reset again.\n\n" +
-        "The backup file itself is kept.";
+    private static string RestoreText(string name, string serverUrl, string saved, bool advanced) => advanced
+        ? $"This restores the identity LookingGlass kept for {name} on {serverUrl}, as it was on {saved}: its keys, login and channel keys.\n\n" +
+          "It may be older than you think:\n" +
+          "- Its login may no longer work. If the server still knows its key, it signs you in with that.\n" +
+          "- Channel keys and changes since then are missing; channels you're still in catch up from the server.\n" +
+          "- If you have reset your identity on this server since, its key no longer counts there: you'd have to reset again.\n\n" +
+          "The backup file itself is kept."
+        : $"This restores the LookingGlass setup kept for {name} on {serverUrl}, as it was on {saved}.\n\n" +
+          "It may be older than you think:\n" +
+          "- Its login may no longer work. If the server still knows it, it signs you in anyway.\n" +
+          "- Changes since then are missing; channels you're still in catch up from the server.\n" +
+          "- If you have reset your identity on this server since, it no longer counts there: you'd have to reset again.\n\n" +
+          "The backup file itself is kept.";
 
     /// <param name="loggedIn">Connected and logged in now, so the server can be told to retire the old key straight away.</param>
-    private static string ResetText(string name, string serverUrl, bool loggedIn) {
+    /// <param name="advanced">In advanced mode's words; otherwise simple mode's, with nothing about keys.</param>
+    private static string ResetText(string name, string serverUrl, bool loggedIn, bool advanced) {
         var text = new StringBuilder();
+        if (!advanced) {
+            text.Append($"This sets up LookingGlass afresh for {name} on {serverUrl}. Only do this if its files were lost, or someone may ")
+                .Append("have copied them. If you just can't sign in, you don't need it: registering again is enough.\n\n");
+
+            text.Append(loggedIn
+                ? "First, LookingGlass tells the server to stop accepting your old setup: from then on, nobody can sign in with it there.\n\n"
+                : "You're not logged in, so the server can't be told to stop accepting your old setup now: it keeps working there until you register again.\n\n");
+
+            text.Append("After a reset:\n")
+                .Append("- You register again through the Lodestone. Until then you can't sign in there.\n")
+                .Append("- Registering brings your channels, ranks (admin too) and invites along. Each channel works again ")
+                .Append("once another member who is online lets you back in.\n")
+                .Append("- The members of your channels are told that you set up LookingGlass again.\n")
+                .Append("- Copies of the old setup kept for this server's other addresses, and in backups, are removed too.\n\n")
+                .Append("Your identity on other servers isn't affected.");
+            return text.ToString();
+        }
+
         text.Append($"This makes new identity keys for {name} on {serverUrl}. Only do this if your key was lost or may have been stolen. ")
             .Append("If you just can't sign in, you don't need it: registering again keeps your key.\n\n");
 

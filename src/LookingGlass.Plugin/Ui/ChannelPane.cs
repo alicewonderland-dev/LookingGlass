@@ -47,12 +47,12 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
         }
 
         ImGui.PushID(channel.Id);
-        this.DrawHeader(channel, session);
-        if (channel.MembershipWarning is { } warning) {
+        var advanced = sessions.AdvancedMode;
+        this.DrawHeader(channel, session, advanced);
+        if (channel.WarningFor(advanced) is { } warning) {
             ImGuiHelpers.ScaledDummy(4);
             // A fork or hidden change is shown rather than the old key's place (see ChannelView.MembershipWarning): the title says which.
-            Widgets.IconText(FontAwesomeIcon.ExclamationTriangle,
-                warning == PlainMessages.OldKeyChannel ? "Your current key isn't a member here" : "Check this channel's members", Widgets.Warning);
+            Widgets.IconText(FontAwesomeIcon.ExclamationTriangle, WarningTitle(channel, advanced), Widgets.Warning);
             Widgets.WrappedColoured(Widgets.Warning, warning);
         }
 
@@ -63,9 +63,22 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
         ImGui.PopID();
     }
 
+    /// <summary>The heading of a channel's warning: which one it is shows in its advanced-mode text (see <see cref="ChannelView.MembershipWarning"/>).</summary>
+    private static string WarningTitle(ChannelView channel, bool advanced) {
+        if (channel.MembershipWarning == PlainMessages.OldKeyChannel) {
+            return advanced ? "Your current key isn't a member here" : "This place belongs to your old setup";
+        }
+
+        if (channel.MembershipWarning == PlainMessages.KeyMovedAwayChannel && !advanced) {
+            return "Your place here moved elsewhere";
+        }
+
+        return "Check this channel's members";
+    }
+
     // ================================================================ header
 
-    private void DrawHeader(ChannelView channel, ClientSession session) {
+    private void DrawHeader(ChannelView channel, ClientSession session, bool advanced) {
         var scale = Widgets.Scale;
         var style = ImGui.GetStyle();
         var admin = channel.MyRank == Rank.Admin;
@@ -97,15 +110,16 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
 
         // The name, as large as the header font. Until that font is built, it is the normal one.
         var nameRoom = right - ImGui.GetCursorPosX() - button - style.ItemSpacing.X * 2 - (admin ? button + 2 * scale : 0);
+        var displayName = channel.DisplayNameFor(advanced);
         string shown;
         using (fonts.Header.Push()) {
-            shown = Widgets.Ellipsize(channel.DisplayName, Math.Max(nameRoom, 40 * scale));
+            shown = Widgets.Ellipsize(displayName, Math.Max(nameRoom, 40 * scale));
             ImGui.SetCursorPosY(top + MathF.Round((lineHeight - ImGui.GetTextLineHeight()) / 2));
             ImGui.TextUnformatted(shown);
         }
 
-        if (!ReferenceEquals(shown, channel.DisplayName)) {
-            Widgets.Tooltip(channel.DisplayName);
+        if (!ReferenceEquals(shown, displayName)) {
+            Widgets.Tooltip(displayName);
         }
 
         if (admin) {
@@ -122,12 +136,12 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
             ImGui.OpenPopup("channel-menu");
         }
 
-        var chosen = this.DrawChannelMenu(channel, session, admin);
+        var chosen = this.DrawChannelMenu(channel, session, admin, advanced);
         if (chosen != Open.Nothing) {
             open = chosen;
         }
 
-        this.DrawSummary(channel);
+        DrawSummary(channel, advanced);
 
         // Opened here, at the pane's level, where they're drawn: also when asked for from the menu, which closes.
         switch (open) {
@@ -144,20 +158,23 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
         this.DrawColourPopup(channel);
     }
 
-    /// <summary>One muted line under the name: your rank, the members, and the key.</summary>
-    private void DrawSummary(ChannelView channel) {
+    /// <summary>One muted line under the name: your rank, the members, and the key (in simple mode, whether the channel is ready).</summary>
+    private static void DrawSummary(ChannelView channel, bool advanced) {
         var first = true;
         if (channel.OldKeyMembership && channel.KeyMovedAway) {
             // Re-verified with another key (normally on another computer): this one can do nothing here any more.
-            Segment(ref first, "Moved to another key", Widgets.Warning, PlainMessages.KeyMovedAwayChannel, FontAwesomeIcon.ExclamationTriangle);
+            Segment(ref first, advanced ? "Moved to another key" : "Moved elsewhere", Widgets.Warning, PlainMessages.KeyMovedAwayWording.For(advanced),
+                FontAwesomeIcon.ExclamationTriangle);
             return;
         }
 
         if (channel.OldKeyMembership) {
             // Nothing else here means anything for the current key: no key is coming, and nothing can be done but removing it.
-            Segment(ref first, "Your old key's place", Widgets.Warning,
-                "Your place here belongs to an identity key you no longer have, from before registering again brought channels along to the new " +
-                "key. Your current key isn't a member: use \"Remove from my list\" in the channel's menu.", FontAwesomeIcon.ExclamationTriangle);
+            Segment(ref first, advanced ? "Your old key's place" : "From your old setup", Widgets.Warning, advanced
+                ? "Your place here belongs to an identity key you no longer have, from before registering again brought channels along to the new " +
+                  "key. Your current key isn't a member: use \"Remove from my list\" in the channel's menu."
+                : "Your place here belongs to your old LookingGlass setup, from before you registered again, so you can't use this channel. " +
+                  "Use \"Remove from my list\" in the channel's menu.", FontAwesomeIcon.ExclamationTriangle);
             return;
         }
 
@@ -165,7 +182,7 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
             Rank.Admin => "You are an admin of this channel: you can invite, remove, promote and rename.",
             Rank.Moderator => "You are a moderator of this channel: you can invite and remove members.",
             Rank.Member => "You are a member of this channel.",
-            _ => "You aren't a member of this channel under your current keys.",
+            _ => advanced ? "You aren't a member of this channel under your current keys." : "You aren't a member of this channel.",
         });
 
         var members = channel.Members.Count(m => m.Rank >= Rank.Member);
@@ -178,17 +195,21 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
             });
 
         if (channel.RekeyPending) {
-            Segment(ref first, "New key pending", Widgets.Warning,
-                "Someone joined, left or got a new identity key since the key in use was made, so the channel needs a new one before anyone sends. A member makes it automatically.",
+            Segment(ref first, advanced ? "New key pending" : "Updating", Widgets.Warning, advanced
+                    ? "Someone joined, left or got a new identity key since the key in use was made, so the channel needs a new one before anyone sends. A member makes it automatically."
+                    : "Its members changed (someone joined, left or set up LookingGlass again), so the channel is being updated before anyone sends. This happens by itself.",
                 FontAwesomeIcon.HourglassHalf);
         } else if (!channel.HasKey) {
-            Segment(ref first, "Waiting for the key", Widgets.Warning,
-                "Messages can't be read or sent here until a member shares the channel key with you.",
+            Segment(ref first, advanced ? "Waiting for the key" : "Waiting for a member", Widgets.Warning, advanced
+                    ? "Messages can't be read or sent here until a member shares the channel key with you."
+                    : "Messages can't be read or sent here until another member who is online lets you in. This happens by itself.",
                 FontAwesomeIcon.HourglassHalf);
-        } else {
+        } else if (advanced) {
             Segment(ref first, $"End-to-end encrypted, key {channel.Epoch}", Widgets.Muted,
                 "Only the members below hold this channel's key. A new key is made when someone joins or leaves.",
                 FontAwesomeIcon.Lock);
+        } else {
+            Segment(ref first, "Private", Widgets.Muted, "Only the members below can read this channel. Not even the server can.", FontAwesomeIcon.Lock);
         }
     }
 
@@ -218,13 +239,13 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
         Widgets.Tooltip(tooltip);
     }
 
-    private Open DrawChannelMenu(ChannelView channel, ClientSession session, bool admin) {
+    private Open DrawChannelMenu(ChannelView channel, ClientSession session, bool admin, bool advanced) {
         if (!ImGui.BeginPopup("channel-menu")) {
             return Open.Nothing;
         }
 
         var open = Open.Nothing;
-        var name = channel.DisplayName;
+        var name = channel.DisplayNameFor(advanced);
         var enabled = !actions.Busy;
         if (admin && Widgets.MenuItem(FontAwesomeIcon.PencilAlt, "Rename...", enabled)) {
             open = Open.Rename;
@@ -240,18 +261,22 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
         if (channel.OldKeyMembership) {
             // Leave can never work here (only the old key could sign it), and disbanding isn't this key's either.
             if (Widgets.MenuItem(FontAwesomeIcon.EyeSlash, "Remove from my list...", enabled)) {
-                modals.Confirm("Remove from my list",
-                    $"Remove \"{name}\" from your channel list?\n\n" +
-                    "Your place in it belongs to an identity key you no longer have, so you can't leave it, read it or send to it. This only " +
-                    "takes it off your list: the others still see your old key as a member until a moderator removes it, and registering " +
-                    "again won't bring it back. To come back, ask a moderator to remove your old key and invite you again.",
+                modals.Confirm("Remove from my list", $"Remove \"{name}\" from your channel list?\n\n" + (advanced
+                        ? "Your place in it belongs to an identity key you no longer have, so you can't leave it, read it or send to it. This only " +
+                          "takes it off your list: the others still see your old key as a member until a moderator removes it, and registering " +
+                          "again won't bring it back. To come back, ask a moderator to remove your old key and invite you again."
+                        : "Your place in it belongs to your old LookingGlass setup, so you can't leave it, read it or send to it. This only " +
+                          "takes it off your list: the others still see your old place as a member until a moderator removes it, and registering " +
+                          "again won't bring it back. To come back, ask a moderator to remove your old place and invite you again."),
                     "Remove", () => {
                         actions.Run($"Removing {name} from your list", () => session.ForgetChannelAsync(channel.Id));
                         this.Closed?.Invoke();
                     });
             }
 
-            Widgets.Tooltip("Take this channel off your list. It isn't left: only your old identity key could do that.");
+            Widgets.Tooltip(advanced
+                ? "Take this channel off your list. It isn't left: only your old identity key could do that."
+                : "Take this channel off your list. It isn't left: only your old setup could do that.");
             ImGui.EndPopup();
             return open;
         }
@@ -440,7 +465,7 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
 
                 if (CommandSlots.ChannelIn(slots, i) is { } other && other != channel.Id) {
                     ImGui.SameLine(nameColumn);
-                    Widgets.TextEllipsis(snapshot.FindChannel(other)?.DisplayName ?? "(another channel)", width - nameColumn - 20 * Widgets.Scale, Widgets.Muted);
+                    Widgets.TextEllipsis(snapshot.FindChannel(other)?.DisplayNameFor(sessions.AdvancedMode) ?? "(another channel)", width - nameColumn - 20 * Widgets.Scale, Widgets.Muted);
                 }
             }
         }
@@ -565,16 +590,22 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
         }
 
         // Verification, as the icon's shape: click it to compare fingerprints. Presence, as its colour,
-        // unless there's a warning to show, which matters more.
-        var (icon, warningColour, title, explanation) = Verification(member, isMe);
+        // unless there's a warning to show, which matters more. In simple mode, only a warning or a new setup changes the shape.
+        var advanced = sessions.AdvancedMode;
+        var (icon, warningColour, title, explanation) = advanced ? Verification(member, isMe) : Check(member, isMe);
         var iconColour = warningColour ?? (member.Online ? Widgets.Success : Widgets.Muted);
+        // Simple mode has nothing to compare, only something to check with them when there's a hint or warning.
+        var checkable = !isMe && (advanced || Modals.HasSomethingToCheck(member));
         ImGui.SetCursorScreenPos(pos with { X = pos.X + 2 * scale });
-        if (ImGui.InvisibleButton("##verification", new Vector2(button, height)) && !isMe) {
-            modals.CompareFingerprints(channel.Id, member.User.UserId);
+        if (ImGui.InvisibleButton("##verification", new Vector2(button, height)) && checkable) {
+            modals.CheckMember(channel.Id, member);
         }
 
         Widgets.DrawIcon(drawList, icon, (ImGui.GetItemRectMin() + ImGui.GetItemRectMax()) / 2, ImGui.GetColorU32(iconColour));
-        Widgets.Tooltip($"{Presence(member)}\n{title}\n{explanation}", isMe ? "Your fingerprint is in Settings." : "Click to compare fingerprints.");
+        // Simple mode leaves the title or explanation out where there's nothing to say.
+        var tooltip = string.Join("\n", new[] { Presence(member), title, explanation }.OfType<string>());
+        Widgets.Tooltip(tooltip, !advanced ? (checkable ? "Click for what to do." : null)
+            : isMe ? "Your fingerprint is in Settings." : "Click to compare fingerprints.");
 
         // On the right: the menu (none for yourself, but its space kept so ranks line up), then the rank.
         var right = pos.X + width - 2 * scale;
@@ -595,10 +626,11 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
         ImGui.SameLine(0, 4 * scale);
         ImGui.AlignTextToFramePadding();
         var nameRoom = rankX - ImGui.GetCursorScreenPos().X - style.ItemSpacing.X - youWidth;
-        var tooltip = member is { KeyReplaced: true, NewFingerprint: { } newFingerprint }
-            ? $"{name}\nFingerprint in this channel: {member.Fingerprint ?? "-"}\nThe key they registered again with: {newFingerprint}"
-            : $"{name}\nFingerprint: {member.Fingerprint ?? "-"}";
-        Widgets.TextEllipsis(name, Math.Max(nameRoom, 20 * scale), null, tooltip);
+        var nameTooltip = !advanced ? name
+            : member is { KeyReplaced: true, NewFingerprint: { } newFingerprint }
+                ? $"{name}\nFingerprint in this channel: {member.Fingerprint ?? "-"}\nThe key they registered again with: {newFingerprint}"
+                : $"{name}\nFingerprint: {member.Fingerprint ?? "-"}";
+        Widgets.TextEllipsis(name, Math.Max(nameRoom, 20 * scale), null, nameTooltip);
         if (you != null) {
             ImGui.SameLine();
             ImGui.TextColored(Widgets.Muted, you);
@@ -634,8 +666,36 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
     private static string Presence(MemberView member) =>
         member.Rank == Rank.Invited ? "Online status shows once they join" : member.Online ? "Online" : "Offline";
 
+    /// <summary>
+    /// Simple mode's icon and tooltip: the same icon for everyone, coloured by presence, but a warning sign when there is a
+    /// warning, and a circling arrow (no warning colour) with a plain hint when they set up LookingGlass again. Nothing about
+    /// fingerprints or comparing.
+    /// </summary>
+    /// <returns>The icon, a colour only for warnings, and a title and explanation only when there is something to say.</returns>
+    private static (FontAwesomeIcon Icon, Vector4? WarningColour, string? Title, string? Explanation) Check(MemberView member, bool isMe) {
+        if (isMe) {
+            return (FontAwesomeIcon.User, null, "You", null);
+        }
+
+        if (member.KeyReplaced) {
+            return (FontAwesomeIcon.ExclamationTriangle, Widgets.Warning, "Set up LookingGlass again", Modals.ReplacedText(member.User.Name));
+        }
+
+        if (member.KeyChanged) {
+            return (FontAwesomeIcon.ExclamationTriangle, Widgets.Warning, "Check it's really them",
+                Modals.ChangedText(member.User.Name) + " If you didn't expect that, check with them over /tell.");
+        }
+
+        if (member.KeyRecovered) {
+            // Expected, so no warning sign; but that it's them is the server's word, so it is said.
+            return (FontAwesomeIcon.Redo, null, "Set up LookingGlass again", Modals.RecoveredText(member.User.Name));
+        }
+
+        return (FontAwesomeIcon.User, null, null, null);
+    }
+
     /// <returns>The icon, and a colour only for warnings: otherwise the icon's colour shows whether they're online.</returns>
-    private static (FontAwesomeIcon Icon, Vector4? WarningColour, string Title, string Explanation) Verification(MemberView member, bool isMe) {
+    private static (FontAwesomeIcon Icon, Vector4? WarningColour, string? Title, string? Explanation) Verification(MemberView member, bool isMe) {
         if (isMe) {
             return (FontAwesomeIcon.User, null, "You", "Others compare your fingerprint with you to verify you.");
         }
@@ -675,8 +735,13 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
         ImGui.TextColored(Widgets.Muted, name);
         ImGuiHelpers.ScaledDummy(2);
 
-        if (Widgets.MenuItem(FontAwesomeIcon.Fingerprint, "Compare fingerprints...")) {
-            modals.CompareFingerprints(channel.Id, user.UserId);
+        var advanced = sessions.AdvancedMode;
+        if (advanced && Widgets.MenuItem(FontAwesomeIcon.Fingerprint, "Compare fingerprints...")) {
+            modals.CheckMember(channel.Id, member);
+        }
+
+        if (!advanced && Modals.HasSomethingToCheck(member) && Widgets.MenuItem(FontAwesomeIcon.UserCheck, "Check it's really them...")) {
+            modals.CheckMember(channel.Id, member);
         }
 
         // The same permissions as the server's: admins promote and demote; moderators and admins remove lower ranks.
@@ -692,7 +757,7 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
         if (channel.MyRank == Rank.Admin && member.Rank is (Rank.Member or Rank.Moderator) && !member.KeyReplaced
             && Widgets.MenuItem(FontAwesomeIcon.Crown, "Make admin (hand over)...", enabled)) {
             modals.Confirm("Hand over admin",
-                $"Make {name} the admin of \"{channel.DisplayName}\"?\n\n" +
+                $"Make {name} the admin of \"{channel.DisplayNameFor(advanced)}\"?\n\n" +
                 "A channel has one admin, so you become a moderator: you can still invite and remove members, but no longer rename the " +
                 $"channel, change ranks or disband it. Only {user.Name} can make you admin again, and as admin they can also remove you.",
                 "Make admin", () => actions.Run($"Making {user.Name} admin", () => session.SetRankAsync(channel.Id, user.UserId, Rank.Admin)));
@@ -711,7 +776,9 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
                     actions.Run($"Removing {user.Name}", () => session.KickAsync(channel.Id, user.UserId));
                 }
 
-                Widgets.Tooltip(ctrl ? $"Remove {name}. They'll need a new invite to come back, and a new key is made that they don't get." : "Hold Ctrl to remove.",
+                Widgets.Tooltip(!ctrl ? "Hold Ctrl to remove."
+                    : advanced ? $"Remove {name}. They'll need a new invite to come back, and a new key is made that they don't get."
+                    : $"Remove {name}. They'll need a new invite to come back, and can't read anything sent afterwards.",
                     ctrl ? null : "They'd need a new invite to come back.");
             }
         }
@@ -739,7 +806,7 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
 
         var width = 260 * Widgets.Scale;
         ImGui.TextUnformatted("Invite someone");
-        ImGui.TextColored(Widgets.Muted, $"to {Widgets.Ellipsize(channel.DisplayName, width)}");
+        ImGui.TextColored(Widgets.Muted, $"to {Widgets.Ellipsize(channel.DisplayNameFor(sessions.AdvancedMode), width)}");
         ImGuiHelpers.ScaledDummy(4);
 
         ImGui.TextUnformatted("Character name");

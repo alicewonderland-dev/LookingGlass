@@ -83,7 +83,8 @@ public sealed class Commands : IDisposable {
                     try {
                         await session.SendTextAsync(send.ChannelId, send.Text);
                     } catch (Exception ex) {
-                        this._chat.Notice(NoticeLevel.Error, PlainMessages.Of($"Not sent: {ex.Message}"));
+                        var advanced = this._sessions.AdvancedMode;
+                        this._chat.Notice(NoticeLevel.Error, PlainMessages.Of($"Not sent: {PlainMessages.MessageOf(ex, advanced)}", advanced));
                     }
                 });
                 break;

@@ -162,6 +162,8 @@ public sealed class MaliciousMemberTests : IAsyncLifetime {
         var notice = await WaitFor(() => alice.Notices.FirstOrDefault(n => n.Text.Contains("while rekeying")));
         Assert.Equal(NoticeLevel.Warning, notice.Level);
         Assert.Equal("Bob Announce@Debug changed the channel name from \"Proper Name\" to \"Bob's Name\" while rekeying.", notice.Text);
+        Assert.Equal(NoticeKind.NameChangedWhileRekeying, notice.Kind);
+        Assert.StartsWith("Bob Announce@Debug changed the name of this channel from \"Proper Name\" to \"Bob's Name\".", notice.Plain);
         Assert.Equal("Bob's Name", alice.Session.Snapshot.FindChannel(channelId)!.Name);
 
         // An ordinary rekey, which keeps the name, says nothing.

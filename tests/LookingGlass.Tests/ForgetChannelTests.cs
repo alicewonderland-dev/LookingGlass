@@ -66,8 +66,10 @@ public sealed class ForgetChannelTests : IAsyncLifetime {
         var stale = await WaitFor(() => again.Session.Snapshot.FindChannel(channelId) is { OldKeyMembership: true } c ? c : null);
         Assert.Equal(Rank.Unspecified, stale.MyRank);
         Assert.Equal(PlainMessages.OldKeyChannel, stale.MembershipWarning);
+        Assert.Equal(PlainMessages.OldKeyChannelWording.Plain, stale.PlainMembershipWarning);
         var leave = await Assert.ThrowsAsync<InvalidOperationException>(() => again.Session.LeaveAsync(channelId, Ct));
         Assert.Equal(PlainMessages.CantLeaveOldKeyChannel, leave.Message);
+        Assert.Equal(PlainMessages.CantLeaveOldKeyWording.Plain, PlainMessages.MessageOf(leave, advanced: false));
 
         var headBefore = this._server.Database.GetChannel(channelId)!.LogHead;
         await again.Session.ForgetChannelAsync(channelId, Ct);

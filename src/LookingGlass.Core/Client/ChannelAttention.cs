@@ -18,27 +18,28 @@ public enum AttentionLevel {
 public sealed record ChannelAttention(AttentionLevel Level, ImmutableArray<string> Reasons) {
     public static readonly ChannelAttention None = new(AttentionLevel.None, ImmutableArray<string>.Empty);
 
-    public static ChannelAttention Of(ChannelView channel) {
+    /// <param name="advanced">In advanced mode's words; otherwise simple mode's (see <see cref="Wording"/>). The same warnings either way.</param>
+    public static ChannelAttention Of(ChannelView channel, bool advanced = true) {
         var warnings = ImmutableArray.CreateBuilder<string>();
-        if (channel.MembershipWarning is { } warning) {
+        if (channel.WarningFor(advanced) is { } warning) {
             // Also carries removals the server didn't take the rekey for, and "your place belongs to your old key".
             warnings.Add(warning);
         }
 
         var changed = channel.Members.Where(member => member is { KeyChanged: true, KeyReplaced: false }).Select(NameOf).ToList();
         if (changed.Count > 0) {
-            warnings.Add($"Key changed: {string.Join(", ", changed)}. Compare fingerprints.");
+            warnings.Add(PlainMessages.KeysChangedIn(string.Join(", ", changed)).For(advanced));
         }
 
         var replaced = channel.Members.Where(member => member.KeyReplaced).Select(NameOf).ToList();
         if (replaced.Count > 0) {
-            warnings.Add($"Registered again: {string.Join(", ", replaced)}. Remove them and invite them again to let their new key in.");
+            warnings.Add(PlainMessages.RegisteredAgainIn(string.Join(", ", replaced)).For(advanced));
         }
 
         // No key is coming for a place that belongs to an old key: its warning says what to do instead.
-        string? pending = channel.OldKeyMembership ? null
-            : channel.RekeyPending ? "A new channel key is pending."
-            : !channel.HasKey ? "Waiting for the channel key."
+        var pending = channel.OldKeyMembership ? null
+            : channel.RekeyPending ? PlainMessages.NewKeyPending
+            : !channel.HasKey ? PlainMessages.WaitingForKey
             : null;
 
         var level = warnings.Count > 0 ? AttentionLevel.Warning : pending != null ? AttentionLevel.Pending : AttentionLevel.None;
@@ -47,7 +48,7 @@ public sealed record ChannelAttention(AttentionLevel Level, ImmutableArray<strin
         }
 
         if (pending != null) {
-            warnings.Add(pending);
+            warnings.Add(pending.For(advanced));
         }
 
         return new ChannelAttention(level, warnings.ToImmutable());

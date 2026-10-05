@@ -44,6 +44,10 @@ public sealed class ServerMoveTests : IDisposable {
         Assert.Contains("ws://100.64.0.7:5180/ws", hint);
         Assert.Contains("wss://chat.example.com/ws, ws://lgchat:5180/ws", hint);
         Assert.Contains(elsewhere.Notices, notice => notice.Level == NoticeLevel.Warning && notice.Text == hint);
+        var plainHint = Assert.IsType<string>(snapshot.PlainAddressNotListed);
+        Assert.Contains("ws://100.64.0.7:5180/ws", plainHint);
+        PlainLanguage.AssertPlain(plainHint);
+        Assert.Contains(elsewhere.Notices, notice => notice.Kind == NoticeKind.AddressNotListed && notice.Plain == plainHint);
 
         foreach (var (server, url) in new[] { (listed, "wss://CHAT.example.com:443/ws"), (listed, "ws://lgchat:5180/ws"), (unlisted, OldUrl) }) {
             var fine = server.StartClient("Address Fine " + Guid.NewGuid().ToString("N")[..6], options: server.Options(serverUri: new Uri(url)));

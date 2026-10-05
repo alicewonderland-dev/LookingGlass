@@ -40,6 +40,13 @@ public sealed class SessionManager : IDisposable {
 
     public PlayerInfo? Player => this._sessionPlayer ?? this._player.Current;
 
+    /// <summary>
+    /// Advanced mode (see <see cref="Configuration.AdvancedMode"/>): what is shown and printed uses the technical words, and
+    /// fingerprints and keys show. Otherwise simple mode's words (see <see cref="Wording"/>). Read whenever something is shown,
+    /// so switching takes effect at once. Safe from any thread.
+    /// </summary>
+    public bool AdvancedMode => this._config.AdvancedMode;
+
     /// <summary>Unread messages per channel, for the current session. Safe from any thread.</summary>
     public UnreadCounter Unread { get; } = new();
 
@@ -134,22 +141,16 @@ public sealed class SessionManager : IDisposable {
                     this.ReplaceSecrets(player, () => ProtectedSecretStore.ResetIdentity(player.ContentId, serverUrl)));
             } catch (Exception ex) when (notRetired == null) {
                 // The old key is already gone on the server, so the files still holding it are of no use there now.
-                this._chat.Notice(NoticeLevel.Warning,
-                    $"The server at {serverUrl} retired your old key, but resetting your keys here failed ({ex.Message}). " +
-                    "Try \"Reset my identity\" again: until you do, you can't register or sign in there.");
+                this.Tell(NoticeLevel.Warning, PlainMessages.IdentityResetFailed(serverUrl, ex.Message));
                 throw;
             }
 
             Services.Log.Information($"Reset the LookingGlass identity of a character ({reset.Scrubbed.Count} other files held the old one)");
 
             if (notRetired == null) {
-                this._chat.Notice(NoticeLevel.Info,
-                    $"Your identity on {serverUrl} was reset, and the server no longer accepts your old key or any login made with it. " +
-                    "Register again (through the Lodestone) to use your new key: your channels, ranks and invites come along with it.");
+                this.Tell(NoticeLevel.Info, PlainMessages.IdentityReset(serverUrl));
             } else {
-                this._chat.Notice(NoticeLevel.Warning,
-                    $"Your identity on {serverUrl} was reset here, but the server couldn't be told ({notRetired}), so your old key and login " +
-                    "keep working there until you register again with the new key, which brings your channels along. Register as soon as you can.");
+                this.Tell(NoticeLevel.Warning, PlainMessages.IdentityResetNotRetired(serverUrl, notRetired));
             }
 
             foreach (var problem in reset.Problems) {
@@ -354,7 +355,7 @@ public sealed class SessionManager : IDisposable {
             }, ProtectedSecretStore.For(player.ContentId, this._config.ServerUrl, warning => this._chat.Notice(NoticeLevel.Warning, warning)));
         } catch (Exception ex) {
             Services.Log.Error(ex, "Couldn't start a LookingGlass session");
-            this._chat.Notice(NoticeLevel.Error, $"Couldn't load your keys: {ex.Message}");
+            this.Tell(NoticeLevel.Error, PlainMessages.CouldntLoadKeys(ex.Message));
             return;
         }
 
@@ -392,8 +393,12 @@ public sealed class SessionManager : IDisposable {
             }
         }
 
-        this._chat.Notice(notice.Level, notice.Text);
+        // In the words of the mode set now: switching modes changes the words of what comes next, never whether it is shown.
+        this._chat.Notice(notice.Level, notice.TextFor(this.AdvancedMode));
     }
+
+    /// <summary>Prints something to chat in the words of the mode set now.</summary>
+    private void Tell(NoticeLevel level, Wording wording) => this._chat.Notice(level, wording.For(this.AdvancedMode));
 
     private void SyncCommands(SessionSnapshot snapshot) {
         this.Unread.Retain(snapshot);

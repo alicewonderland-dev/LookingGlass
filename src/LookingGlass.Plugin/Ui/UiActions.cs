@@ -14,7 +14,11 @@ namespace LookingGlass.Plugin.Ui;
 /// The registration code the session checked and shows (if one is under way): the only code an error may show. Errors often
 /// hold what a server said, so every other is removed (see <see cref="LodestoneCode.Redact"/>).
 /// </param>
-public sealed class UiActions(Func<string?>? shownCode = null) {
+/// <param name="advancedMode">
+/// Whether errors are told in advanced mode's words, asked when one happens (see <see cref="PlainMessages.MessageOf"/>).
+/// Without it (the debug window), always.
+/// </param>
+public sealed class UiActions(Func<string?>? shownCode = null, Func<bool>? advancedMode = null) {
     /// <summary>How long a success stays in the status bar; the last part of it fades. Errors stay until dismissed or replaced.</summary>
     private const long SuccessShownMs = 8000;
     private const long FadeMs = 1500;
@@ -37,8 +41,10 @@ public sealed class UiActions(Func<string?>? shownCode = null) {
                 await action();
                 this.SetResult($"{description}: done.", false);
             } catch (Exception ex) {
-                // Messages about an old key's place (from the log's rules, or a server) in the words the user needs.
-                this.SetResult(LodestoneCode.Redact(PlainMessages.Of($"{description} failed: {ex.Message}"), shownCode?.Invoke()), true);
+                // In the mode's words, and messages about an old key's place (from the log's rules, or a server) in the words the user needs.
+                var advanced = advancedMode?.Invoke() ?? true;
+                this.SetResult(LodestoneCode.Redact(PlainMessages.Of($"{description} failed: {PlainMessages.MessageOf(ex, advanced)}", advanced),
+                    shownCode?.Invoke()), true);
             }
         });
     }

@@ -94,6 +94,8 @@ public sealed class KeyRecoveryTests : IAsyncLifetime {
             Assert.Equal(NoticeLevel.Info, notice.Level);
             Assert.Equal(channelId, notice.ChannelId);
             Assert.StartsWith("Alice New Computer", notice.Text);
+            Assert.Equal(NoticeKind.ReVerified, notice.Kind);
+            Assert.StartsWith("Alice New Computer@Debug set up LookingGlass again (new computer or reset).", notice.TextFor(advanced: false));
             var seen = await WaitFor(() => other.Session.Snapshot.FindChannel(channelId)!.Members.FirstOrDefault(m => m.User.UserId == userId && m.KeyRecovered));
             Assert.Equal(Rank.Admin, seen.Rank);
             Assert.Equal(newKeys.Fingerprint, seen.Fingerprint);
@@ -424,6 +426,7 @@ public sealed class KeyRecoveryTests : IAsyncLifetime {
 
         var refused = await WaitFor(() => alice.Session.Snapshot is { State: ConnectionState.LoginNotRecognized } s ? s : null);
         Assert.Contains(PlainMessages.LoginMaybeReplaced, refused.StatusText);
+        Assert.Equal(PlainMessages.LoginNotRecognized.Plain, refused.PlainStatusText);
         await WaitFor(() => bob.Notices.FirstOrDefault(n => n.Text.Contains(ReVerified)));
         Assert.DoesNotContain(alice.Notices, n => n.Text == PlainMessages.ReVerifiedElsewhere);
     }
@@ -642,8 +645,11 @@ public sealed class KeyRecoveryTests : IAsyncLifetime {
         var told = await WaitFor(() => bob.Notices.FirstOrDefault(n => n.Text == PlainMessages.ReVerifiedElsewhere));
         Assert.Equal(NoticeLevel.Warning, told.Level);
         Assert.Contains("Reset my identity", told.Text);
+        Assert.Equal(NoticeKind.ReVerifiedElsewhere, told.Kind);
+        Assert.Equal(PlainMessages.ReVerifiedElsewhereWording.Plain, told.TextFor(advanced: false));
         Assert.True(place.KeyMovedAway);
         Assert.Equal(PlainMessages.KeyMovedAwayChannel, place.MembershipWarning);
+        Assert.Equal(PlainMessages.KeyMovedAwayWording.Plain, place.PlainMembershipWarning);
         // Not as someone else who has a new key.
         Assert.DoesNotContain(bob.Notices, n => n.Text.Contains(ReVerified));
     }
@@ -826,6 +832,77 @@ public sealed class KeyRecoveryTests : IAsyncLifetime {
         await WaitFor(() => alice.Notices.FirstOrDefault(n => n.Text.Contains(ReVerified)));
         await WaitFor(() => asked.Contains(bob2.UserId) ? new object() : null);
     }
+}
+
+/// <summary>
+/// Simple mode's "It's really them" clears a warning or hint about someone (here, that they re-verified with a new key), but
+/// isn't a fingerprint comparison: advanced mode still shows them as not compared, and a later recovery doesn't say the
+/// user had compared them. Advanced mode's "Mark verified" does both.
+/// </summary>
+public sealed class ConfirmedWithoutComparingTests : IAsyncLifetime {
+    private Harness _server = null!;
+
+    public ValueTask InitializeAsync() {
+        this._server = new Harness();
+        return ValueTask.CompletedTask;
+    }
+
+    public async ValueTask DisposeAsync() {
+        await this._server.DisposeAsync();
+        DeleteDirectory(this._server.DataDirectory);
+    }
+
+    [Fact]
+    public async Task ItsReallyThemClearsTheHintWithoutCountingAsAComparison() {
+        var alice = await this._server.RegisterAsync("Alice Confirms Bob");
+        var bob = await this._server.RegisterAsync("Bob Moves Twice");
+        var channelId = await alice.Session.CreateChannelAsync("Checked Plainly", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+
+        var bob2 = await KeyRecoveryTests.NewComputerAsync(this._server, bob);
+        var recovered = await WaitFor(() => Member(alice, channelId, bob2.UserId) is { KeyRecovered: true } m ? m : null);
+
+        // Simple mode: the hint goes, but nothing was compared.
+        alice.Session.AcknowledgeKeyChange(bob2.UserId, recovered.Fingerprint!, compared: false);
+        var confirmed = Member(alice, channelId, bob2.UserId)!;
+        Assert.False(confirmed.KeyRecovered);
+        Assert.False(confirmed.KeyChanged);
+        Assert.False(confirmed.FingerprintCompared);
+
+        // So when he moves again, Alice isn't told she had compared him.
+        await WaitFor(() => alice.Session.Snapshot.FindChannel(channelId) is { RekeyPending: false } c ? c : null);
+        var bob3 = await KeyRecoveryTests.NewComputerAsync(this._server, bob2);
+        var again = await WaitFor(() => Member(alice, channelId, bob3.UserId) is { KeyRecovered: true } m ? m : null);
+        var notices = alice.Notices.Where(n => n.Kind == NoticeKind.ReVerified).ToList();
+        Assert.Equal(2, notices.Count);
+        Assert.All(notices, n => Assert.DoesNotContain(PlainMessages.ComparedBefore, n.Text));
+        Assert.All(notices, n => Assert.DoesNotContain("confirmed", n.TextFor(advanced: false)));
+
+        // Advanced mode: "Mark verified" is a comparison.
+        alice.Session.AcknowledgeKeyChange(bob3.UserId, again.Fingerprint!);
+        var compared = Member(alice, channelId, bob3.UserId)!;
+        Assert.False(compared.KeyRecovered);
+        Assert.True(compared.FingerprintCompared);
+    }
+
+    [Fact]
+    public async Task ItsReallyThemStillRefusesAKeyThatChangedSinceItWasShown() {
+        var alice = await this._server.RegisterAsync("Alice Confirms Late");
+        var bob = await this._server.RegisterAsync("Bob Moves Meanwhile");
+        var channelId = await alice.Session.CreateChannelAsync("Checked Too Late", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        var shown = Member(alice, channelId, bob.UserId)!.Fingerprint!;
+
+        var bob2 = await KeyRecoveryTests.NewComputerAsync(this._server, bob);
+        await WaitFor(() => Member(alice, channelId, bob2.UserId) is { KeyRecovered: true } m ? m : null);
+
+        var refused = Assert.Throws<InvalidOperationException>(() => alice.Session.AcknowledgeKeyChange(bob2.UserId, shown, compared: false));
+        Assert.Equal(PlainMessages.VerifiedKeyChanged.Plain, PlainMessages.MessageOf(refused, advanced: false));
+        Assert.True(Member(alice, channelId, bob2.UserId)!.KeyRecovered);
+    }
+
+    private static MemberView? Member(TestClient client, string channelId, long userId) =>
+        client.Session.Snapshot.FindChannel(channelId)?.Members.FirstOrDefault(m => m.User.UserId == userId);
 }
 
 internal static class KeyRecoveryTestExtensions {

@@ -66,12 +66,12 @@ public sealed class ClientSession : IAsyncDisposable {
     private IdentityKeys? _identity;
     private MemberKeys? _myKeys;
     private ConnectionState _state = ConnectionState.Stopped;
-    private string? _status;
+    private Wording? _status;
     private User? _me;
     private Limits? _limits;
     private bool _debugAccountsEnabled;
     // What to tell the user when the server lists its addresses without the one this client uses (see AddressNotListedText).
-    private string? _addressNotListed;
+    private Wording? _addressNotListed;
     private RegistrationChallenge? _challenge;
     // The server refused the saved login on the current connection. The login is kept, and tried again.
     private bool _loginRejected;
@@ -127,14 +127,14 @@ public sealed class ClientSession : IAsyncDisposable {
     // The user has been told the server speaks another protocol version (once, not at every reconnect).
     private int _versionMismatchReported;
     // The last address hint the user was told about (once, not at every reconnect).
-    private string? _addressNotListedReported;
+    private Wording? _addressNotListedReported;
 
     /// <summary>
     /// What to tell the user when the server lists its own addresses (Welcome's public_urls) and <paramref name="serverUri"/>
     /// isn't one of them (by origin: scheme, host and port, as the server compares them): it refuses registering, key login
     /// and "Reset my identity" signed for that address. Null if the address is listed, or the server lists none.
     /// </summary>
-    internal static string? AddressNotListedText(Uri serverUri, IEnumerable<string> publicUrls) {
+    internal static Wording? AddressNotListedText(Uri serverUri, IEnumerable<string> publicUrls) {
         // Only what parses as a server address, and not without end: the list comes from the server.
         var listed = publicUrls.Select(url => url.Trim()).Where(url => url.Length <= 200 && ServerOrigin.FromUrl(url) != null).Distinct().Take(10).ToList();
         var origin = ServerOrigin.FromUrl(serverUri.AbsoluteUri);
@@ -142,9 +142,7 @@ public sealed class ClientSession : IAsyncDisposable {
             return null;
         }
 
-        return $"This server's addresses are {string.Join(", ", listed)}, and the one you connect to, {serverUri.AbsoluteUri}, isn't one of them, " +
-               "so registering, signing in with your identity key and \"Reset my identity\" won't work through it. " +
-               "Set the server address in Settings to one of those (ask the server's operator if none works for you).";
+        return PlainMessages.AddressNotListed(string.Join(", ", listed), serverUri.AbsoluteUri);
     }
 
     public ClientSession(ClientSessionOptions options, ISecretStore store) {
@@ -291,7 +289,7 @@ public sealed class ClientSession : IAsyncDisposable {
                     this._challenge = null;
                     if (this._state == ConnectionState.Registering) {
                         this._state = this._loginRejected ? ConnectionState.LoginNotRecognized : ConnectionState.Unregistered;
-                        this._status = this._loginRejected ? LoginNotRecognizedStatus : "Not registered on this server.";
+                        this._status = this._loginRejected ? PlainMessages.LoginNotRecognized : Wording.Same(NotRegistered);
                     }
                 }
 
@@ -302,9 +300,9 @@ public sealed class ClientSession : IAsyncDisposable {
             lock (this._lock) {
                 this._challenge = challenge;
                 this._state = ConnectionState.Registering;
-                this._status = challenge.VerificationSkipped
+                this._status = Wording.Same(challenge.VerificationSkipped
                     ? "Debug account: no Lodestone verification needed."
-                    : $"Put {challenge.Code} in your Lodestone profile, then verify.";
+                    : $"Put {challenge.Code} in your Lodestone profile, then verify.");
             }
         } finally {
             this._loginGate.Release();
@@ -388,7 +386,7 @@ public sealed class ClientSession : IAsyncDisposable {
         }
 
         if (restored > 0) {
-            this.RaiseNotice(NoticeLevel.Info, PlainMessages.PlacesRestored(restored));
+            this.RaiseNotice(NoticeLevel.Info, PlainMessages.PlacesRestoredWording(restored));
         }
     }
 
@@ -399,19 +397,22 @@ public sealed class ClientSession : IAsyncDisposable {
     /// (say, the key someone registered again with, while a row shows the one the log binds them to).
     /// </summary>
     /// <param name="fingerprint">The fingerprint the user was shown, and compared.</param>
+    /// <param name="compared">
+    /// The user compared fingerprints (advanced mode's "Mark verified"). False for simple mode's "It's really them", which
+    /// only says they checked with the person over /tell: the warning or hint goes, but the keys stay "not compared".
+    /// </param>
     /// <exception cref="InvalidOperationException">The keys held for the user now don't have that fingerprint.</exception>
-    public void AcknowledgeKeyChange(long userId, string fingerprint) {
+    public void AcknowledgeKeyChange(long userId, string fingerprint, bool compared = true) {
         lock (this._lock) {
             if (!this._secrets.PinnedIdentities.TryGetValue(userId, out var pinned)
                 || IdentityKeys.FingerprintOf(pinned.SigningPublicKey, pinned.AgreementPublicKey) != fingerprint) {
-                throw new InvalidOperationException(
-                    "That fingerprint isn't the identity key held for them now: they registered again, or their key changed since it was shown. Nothing was marked verified.");
+                throw PlainMessages.Failure(PlainMessages.VerifiedKeyChanged);
             }
 
-            if (pinned.KeyChangeUnacknowledged || pinned.KeyRecovered || !pinned.Compared) {
+            if (pinned.KeyChangeUnacknowledged || pinned.KeyRecovered || (compared && !pinned.Compared)) {
                 pinned.KeyChangeUnacknowledged = false;
                 pinned.KeyRecovered = false;
-                pinned.Compared = true;
+                pinned.Compared |= compared;
                 this._secretsVersion++;
             }
         }
@@ -537,7 +538,7 @@ public sealed class ClientSession : IAsyncDisposable {
                 this._loginRejected = false;
                 this._me = null;
                 this._state = ConnectionState.Unregistered;
-                this._status = "Your identity key was retired on this server. Reset your identity, then register the new keys.";
+                this._status = PlainMessages.IdentityRetired;
                 this._secretsVersion++;
             }
         } finally {
@@ -614,15 +615,15 @@ public sealed class ClientSession : IAsyncDisposable {
         var found = response.Identities?.Identities_.FirstOrDefault() ?? throw new InvalidOperationException($"{name}@{worldName} isn't registered with LookingGlass.");
         // Trusted on first use: the server says these are their keys (see "fingerprint not compared").
         var invitee = this.AcceptIdentities([found]).FirstOrDefault()
-            ?? throw new InvalidOperationException($"{name}@{worldName} has an invalid identity key.");
+            ?? throw PlainMessages.Failure(PlainMessages.InvalidKeys($"{name}@{worldName}"));
         var inviteeKeys = MemberKeys.Of(invitee.Identity);
         var who = $"{invitee.User.Name}@{invitee.User.WorldName}";
 
         await this.AppendEntryAsync(channelId, ct, membership => {
             if (membership.FindMember(invitee.User.UserId) is { } existing) {
-                throw new InvalidOperationException(existing.Keys == inviteeKeys
-                    ? $"{who} is already a member."
-                    : $"{who} is a member under an identity key they no longer have. Remove them, then invite them again.");
+                throw existing.Keys == inviteeKeys
+                    ? new InvalidOperationException($"{who} is already a member.")
+                    : PlainMessages.Failure(PlainMessages.MemberUnderOldKey(who));
             }
 
             var entry = membership.Create(MembershipEntryKind.Invite, invitee.User.UserId, identity, me.UserId, this.NowMs(), inviteeKeys);
@@ -692,13 +693,13 @@ public sealed class ClientSession : IAsyncDisposable {
                 // Nobody else who could is online to share the key. (The server's RekeyNeeded arrived before
                 // this response, while the channel was unknown, so it was ignored.)
                 if (this._options.AutoRekeyWhenDesignated) {
-                    this.RaiseNotice(NoticeLevel.Info, "Joined. No other member is online, so you're making the channel a new key.", channelId);
-                    this.RunBackground("Rekeying a channel", rekeyCt => this.RekeyAsync(channelId, rekeyCt));
+                    this.RaiseNotice(NoticeLevel.Info, PlainMessages.JoinedMakingKey, channelId);
+                    this.RunBackground(PlainMessages.Rekeying, rekeyCt => this.RekeyAsync(channelId, rekeyCt));
                 } else {
-                    this.RaiseNotice(NoticeLevel.Info, "Joined. No other member is online to share the channel key; rekey the channel, or send a message, to make a new one.", channelId);
+                    this.RaiseNotice(NoticeLevel.Info, PlainMessages.JoinedNobodyToShareKey, channelId);
                 }
             } else if (!hasKey) {
-                this.RaiseNotice(NoticeLevel.Info, "Joined. Waiting for a member to share the channel key.", channelId);
+                this.RaiseNotice(NoticeLevel.Info, PlainMessages.JoinedWaitingForKey, channelId);
             }
         }
     }
@@ -710,7 +711,7 @@ public sealed class ClientSession : IAsyncDisposable {
             var invited = membership.FindInvitee(me.UserId)
                           ?? throw new MembershipException(new MembershipVerdict(MembershipVerdictKind.Conflict, "That invite is no longer open."));
             if (invited.Keys != MemberKeys.Of(identity)) {
-                throw new InvalidOperationException("That invite was made for an identity key you no longer have. Ask to be invited again.");
+                throw PlainMessages.Failure(PlainMessages.InviteForOldKey);
             }
 
             var entry = membership.Create(accept ? MembershipEntryKind.Accept : MembershipEntryKind.Decline, me.UserId, identity, me.UserId, this.NowMs());
@@ -723,7 +724,7 @@ public sealed class ClientSession : IAsyncDisposable {
         await this.AppendEntryAsync(channelId, ct, membership => {
             if (membership.FindMember(me.UserId) is { } mine && mine.Keys != MemberKeys.Of(identity)) {
                 // Only the old keys could sign it. Said before anything is sent, in plain words.
-                throw new InvalidOperationException(PlainMessages.CantLeaveOldKeyChannel);
+                throw PlainMessages.Failure(PlainMessages.CantLeaveOldKeyWording);
             }
 
             var entry = membership.Create(MembershipEntryKind.Leave, me.UserId, identity, me.UserId, this.NowMs());
@@ -786,7 +787,7 @@ public sealed class ClientSession : IAsyncDisposable {
     public async Task ForgetChannelAsync(string channelId, CancellationToken ct = default) {
         this.RequireIdentityAndUser();
         if (this.Read(() => this.IsMember(channelId))) {
-            throw new InvalidOperationException("You're a member of this channel with your current identity key: leave it instead.");
+            throw PlainMessages.Failure(PlainMessages.ForgetMembership);
         }
 
         try {
@@ -814,7 +815,7 @@ public sealed class ClientSession : IAsyncDisposable {
             var membership = await this.SyncLogAsync(channelId, ct, fetch: attempt == 0 ? LogFetch.IfBehind : LogFetch.Always);
             var (epoch, key, revision) = this.Read(() => {
                 var channel = this._channels.GetValueOrDefault(channelId) ?? throw new InvalidOperationException("Unknown channel.");
-                var keyEpoch = this.KeyEpochOf(channelId) ?? throw new InvalidOperationException("This channel's key isn't available yet.");
+                var keyEpoch = this.KeyEpochOf(channelId) ?? throw PlainMessages.Failure(PlainMessages.NoKeyToRename);
 
                 // The server and other members refuse a name that isn't newer than the
                 // current one, so beat both the name accepted here and the one offered.
@@ -831,7 +832,7 @@ public sealed class ClientSession : IAsyncDisposable {
 
                 // Only reachable if someone set a huge revision on purpose. It resets with the next epoch.
                 if (current >= ProtocolInfo.MaxNameRevision) {
-                    throw new InvalidOperationException("This channel can't be renamed again until its key changes. Rekey it, then rename it.");
+                    throw PlainMessages.Failure(PlainMessages.RenamedTooOften);
                 }
 
                 return (keyEpoch, this.GetEpochKey(channelId, keyEpoch)!, current + 1);
@@ -880,7 +881,7 @@ public sealed class ClientSession : IAsyncDisposable {
                 continue;
             } catch (MembershipException) when (this.Read(() => this.HoldsOldKeyPlace(membership))) {
                 // Rather than "it isn't signed with the key the log knows its author by": what that means here.
-                throw new InvalidOperationException(PlainMessages.OldKeyCantChangeMembers);
+                throw PlainMessages.Failure(PlainMessages.OldKeyCantChangeMembersWording);
             }
 
             Response response;
@@ -926,11 +927,11 @@ public sealed class ClientSession : IAsyncDisposable {
                     // it, or tell its name, so it gets a name of its own, which can be changed.
                     name = PlainMessages.RestoredChannelName;
                 } else if (name == null) {
-                    throw new InvalidOperationException("You don't have this channel's key yet, so you can't rekey it. Another member needs to.");
+                    throw PlainMessages.Failure(PlainMessages.NoKeyToRekey);
                 }
 
                 if (membership.FindMember(me.UserId)?.Keys != MemberKeys.Of(identity)) {
-                    throw new InvalidOperationException("You can't rekey this channel: your place in it belongs to an identity key you no longer have. A moderator must remove you and invite you again.");
+                    throw PlainMessages.Failure(PlainMessages.OldKeyCantRekey);
                 }
 
                 var position = membership.Head!;
@@ -947,7 +948,7 @@ public sealed class ClientSession : IAsyncDisposable {
                 } catch (SealingFailedException ex) {
                     // Name the member at fault: otherwise one bad key leaves everyone guessing why the channel is stuck.
                     var who = this.Read(() => this.UserOf(ex.Member.UserId));
-                    throw new InvalidOperationException($"Can't rekey: the key couldn't be sealed to {who.Name}@{who.WorldName}'s identity key ({ex.InnerException?.Message}). They need to be removed.", ex);
+                    throw PlainMessages.Failure(PlainMessages.CantSealTo($"{who.Name}@{who.WorldName}", ex.InnerException?.Message), ex);
                 }
 
                 var request = new SubmitRekey {
@@ -991,19 +992,18 @@ public sealed class ClientSession : IAsyncDisposable {
             // Whatever head the server claims, it must still have the newest entry this client verified (a removal
             // it made, say), and show everything after it. If not, it refuses keys for a change it is hiding.
             if (!await this.ConfirmHeadAsync(channelId, ct)) {
-                this.WarnAboutMembership(channelId, HidingWarning);
-                throw new InvalidOperationException(
-                    "The server refuses the new key, and won't show the newest membership change you have verified, or what it says came after it. It may be hiding a change from the other members.");
+                this.WarnAboutMembership(channelId, PlainMessages.MembershipHidden);
+                throw PlainMessages.Failure(PlainMessages.ServerRefusesKey);
             }
 
-            throw new InvalidOperationException("Rekeying kept conflicting with other changes; try again.");
+            throw PlainMessages.Failure(PlainMessages.RekeyConflicts);
         } catch (Exception ex) when (ex is not OperationCanceledException && this.Read(() => this.RemovalAwaitingRekey(channelId)) != null) {
             // This rekey was to make a removal (or a leave) take effect, and it didn't, however the server refused it.
             if (ex is ServerErrorException or TimeoutException) {
                 // As after conflicts: a server that refuses keys for a change it is hiding may not show it either.
                 try {
                     if (!await this.ConfirmHeadAsync(channelId, ct)) {
-                        this.WarnAboutMembership(channelId, HidingWarning);
+                        this.WarnAboutMembership(channelId, PlainMessages.MembershipHidden);
                     }
                 } catch (Exception confirm) when (confirm is ServerErrorException or SessionDisconnectedException or TimeoutException) {
                     this.Log(NoticeLevel.Warning, $"Couldn't check the membership log of {channelId} after a refused rekey: {confirm.Message}");
@@ -1037,15 +1037,13 @@ public sealed class ClientSession : IAsyncDisposable {
     /// effect for the other members: the new key that leaves whoever went out couldn't be shared.
     /// </summary>
     private void WarnRemovalNotInEffect(string channelId) {
-        string text;
+        Wording text;
         lock (this._lock) {
             if (!this._channels.TryGetValue(channelId, out var channel) || this.RemovalAwaitingRekey(channelId) is not { } seq) {
                 return;
             }
 
-            text = $"A removal from {channel.DisplayName} (or someone leaving it, at membership log entry #{seq}) hasn't taken effect for the other members yet: " +
-                   "the server didn't take the new key that leaves them out, so the others still share the old key with them. Rekey the channel to try again. " +
-                   "If it keeps failing, the server may be hiding the change from the other members.";
+            text = PlainMessages.RemovalNotInEffect(channel.DisplayName, seq);
             if (channel.RemovalWarning == text) {
                 return;
             }
@@ -1070,9 +1068,9 @@ public sealed class ClientSession : IAsyncDisposable {
             var pending = this.Read(() => {
                 var channel = this._channels.GetValueOrDefault(channelId) ?? throw new InvalidOperationException("You're not in that channel.");
                 if (!this.IsMember(channelId)) {
-                    throw new InvalidOperationException(this.MembershipOf(channelId).FindMember(me.UserId) != null
-                        ? PlainMessages.OldKeyChannel
-                        : "You haven't joined that channel.");
+                    throw this.MembershipOf(channelId).FindMember(me.UserId) != null
+                        ? PlainMessages.Failure(PlainMessages.OldKeyChannelWording)
+                        : new InvalidOperationException("You haven't joined that channel.");
                 }
 
                 return this.NeedsRekey(channel);
@@ -1088,7 +1086,7 @@ public sealed class ClientSession : IAsyncDisposable {
                 // the channel for a rekey, and the next attempt moves it to a key we hold.
                 await this.FetchEpochKeysAsync(channelId, ct);
                 if (this.Read(() => this.KeyEpochOf(channelId)) == null) {
-                    throw new InvalidOperationException("You don't have this channel's key yet. A member who is online will share it.");
+                    throw PlainMessages.Failure(PlainMessages.NoKeyToSend);
                 }
 
                 if (this.Read(() => this._channels.GetValueOrDefault(channelId) is { } channel && this.NeedsRekey(channel))) {
@@ -1098,7 +1096,7 @@ public sealed class ClientSession : IAsyncDisposable {
 
             // Always the newest key accepted, never an epoch the server merely claims.
             var (epoch, key) = this.Read(() => {
-                var held = this.KeyEpochOf(channelId) ?? throw new InvalidOperationException("You don't have this channel's key yet.");
+                var held = this.KeyEpochOf(channelId) ?? throw PlainMessages.Failure(PlainMessages.NoKeyToSend with { Technical = "You don't have this channel's key yet." });
                 return (held, this.GetEpochKey(channelId, held)!);
             });
 
@@ -1164,7 +1162,7 @@ public sealed class ClientSession : IAsyncDisposable {
                 failure = $"Connection failed: {ex.Message}";
                 this.Log(NoticeLevel.Warning, failure);
                 lock (this._lock) {
-                    this._status = failure;
+                    this._status = Wording.Same(failure);
                 }
             } finally {
                 this._connection = null;
@@ -1253,7 +1251,7 @@ public sealed class ClientSession : IAsyncDisposable {
             }
 
             if (!hasToken) {
-                this.SetState(ConnectionState.Unregistered, "Not registered on this server.");
+                this.SetState(ConnectionState.Unregistered, NotRegistered);
                 return;
             }
 
@@ -1270,10 +1268,7 @@ public sealed class ClientSession : IAsyncDisposable {
         }
     }
 
-    private const string LoginNotRecognizedStatus =
-        "This server doesn't recognise your login or your identity key. If you changed the server address, check it in Settings. " +
-        "You only need to register again (through the Lodestone) if your identity key was lost or replaced, or this server has never known your account; " +
-        "otherwise your login is tried again by itself. " + PlainMessages.LoginMaybeReplaced;
+    private const string NotRegistered = "Not registered on this server.";
 
     /// <summary>
     /// The server refused the saved login, and signing in with the identity key didn't work either (or there is no key).
@@ -1291,7 +1286,7 @@ public sealed class ClientSession : IAsyncDisposable {
             // Registering again goes on (its challenge stays) whatever a try of the old login says.
             if (this._state != ConnectionState.Registering) {
                 this._state = ConnectionState.LoginNotRecognized;
-                this._status = LoginNotRecognizedStatus;
+                this._status = PlainMessages.LoginNotRecognized;
             }
         }
 
@@ -1445,7 +1440,7 @@ public sealed class ClientSession : IAsyncDisposable {
             this._state = ConnectionState.Ready;
             // Ready, but the channel list is only complete once RefreshAsync has fetched it.
             this._channelsLoaded = false;
-            this._status = $"Connected as {ok.User.Name}@{ok.User.WorldName}";
+            this._status = Wording.Same($"Connected as {ok.User.Name}@{ok.User.WorldName}");
         }
 
         this.Publish();
@@ -1529,7 +1524,7 @@ public sealed class ClientSession : IAsyncDisposable {
             await this.EnsureIdentitiesAsync(userIds, ct, connection, refreshIdentities);
         } catch (ServerErrorException ex) {
             this.Log(NoticeLevel.Warning, $"Couldn't fetch identities: {ex.Message}");
-            this.RaiseNotice(NoticeLevel.Warning, "The server didn't send some members' identity keys, so key changes may go unnoticed for now.");
+            this.RaiseNotice(NoticeLevel.Warning, PlainMessages.IdentitiesMissing);
         }
 
         foreach (var channelId in channels.Select(channel => channel.ChannelId)) {
@@ -1568,15 +1563,12 @@ public sealed class ClientSession : IAsyncDisposable {
                 .Select(info => info.ChannelId)
                 .ToList());
             foreach (var channelId in designated) {
-                this.RunBackground("Rekeying a channel", rekeyCt => this.RekeyAsync(channelId, rekeyCt));
+                this.RunBackground(PlainMessages.Rekeying, rekeyCt => this.RekeyAsync(channelId, rekeyCt));
             }
         }
     }
 
     // ================================================================ the membership log
-
-    private const string HidingSuffix = "It may be hiding a change (such as someone's removal) from other members";
-    private const string HidingWarning = "the server won't show the membership of {0} as you have verified it. " + HidingSuffix;
 
     private enum LogFetch {
         /// <summary>Use what was offered; fetch only if the server is known to be further on.</summary>
@@ -1605,7 +1597,7 @@ public sealed class ClientSession : IAsyncDisposable {
         var headDiffers = false;
         // The server said its log goes further than it would show.
         var stalled = false;
-        string? problem = null;
+        Wording? problem = null;
         List<MembershipEntry> applied = [];
         try {
             var start = this.Read(() => this.MembershipOf(channelId));
@@ -1641,7 +1633,7 @@ public sealed class ClientSession : IAsyncDisposable {
                         // Chained to a different entry than the one verified at that position.
                         conflicting = entry;
                     } else if (!verdict.IsValid) {
-                        problem = $"the server sent a change to the membership of {{0}} that doesn't check out ({verdict.Reason}), so it is ignored";
+                        problem = PlainMessages.MembershipChangeRefused(verdict.Reason);
                     } else {
                         state = state.Apply(entry);
                         applied.Add(entry);
@@ -1680,10 +1672,10 @@ public sealed class ClientSession : IAsyncDisposable {
             }
 
             if (problem == null && conflicting == null && stalled) {
-                problem = "the server says the membership of {0} has changed further than it will show you. " + HidingSuffix;
+                problem = PlainMessages.MembershipNotShown;
             } else if (problem == null && conflicting == null && freshHead is { Hash.Length: > 0 } && state.Head != null) {
                 if (freshHead.Seq < state.Head.Seq) {
-                    problem = "the server shows an older version of the membership of {0} than you have already seen. " + HidingSuffix;
+                    problem = PlainMessages.MembershipOlder;
                 } else if (freshHead.Seq == state.Head.Seq && !MembershipEntries.SamePosition(freshHead, state.Head)) {
                     headDiffers = true;
                 }
@@ -1812,7 +1804,7 @@ public sealed class ClientSession : IAsyncDisposable {
             return;
         }
 
-        this.RunBackground("Checking a channel's membership", async ct => {
+        this.RunBackground(PlainMessages.CheckingMembership, async ct => {
             try {
                 await Task.Delay(wait, this._options.TimeProvider, ct);
             } finally {
@@ -1857,9 +1849,7 @@ public sealed class ClientSession : IAsyncDisposable {
 
     private void ReportFork(string channelId, ulong forkAt) {
         this.Log(NoticeLevel.Warning, $"Membership log of {channelId} forked at or before entry {forkAt}");
-        this.WarnAboutMembership(channelId,
-            $"the server has shown you two different versions of the membership of {{0}}, both validly signed, that differ at or before entry #{forkAt}. " +
-            "Someone may be seeing a different member list from you: compare it with other members over /tell before trusting it");
+        this.WarnAboutMembership(channelId, PlainMessages.MembershipForked(forkAt));
     }
 
     /// <summary>
@@ -1922,7 +1912,7 @@ public sealed class ClientSession : IAsyncDisposable {
             this.ReportFork(channelId, forkAt.Value);
         } else if (shortOrInvalid) {
             this.Log(NoticeLevel.Warning, $"Membership log of {channelId} from the server is invalid or shorter than the one verified");
-            this.WarnAboutMembership(channelId, HidingWarning);
+            this.WarnAboutMembership(channelId, PlainMessages.MembershipHidden);
         }
     }
 
@@ -1960,13 +1950,13 @@ public sealed class ClientSession : IAsyncDisposable {
     }
 
     /// <summary>Tells the user (once per problem) that a channel's membership can't be trusted as shown, and shows it on the channel.</summary>
-    /// <param name="format">The problem, with {0} for the channel's name.</param>
-    private void WarnAboutMembership(string channelId, string format) {
-        string text;
+    /// <param name="format">The problem, in both modes' words, with {0} for the channel's name.</param>
+    private void WarnAboutMembership(string channelId, Wording format) {
+        Wording text;
         lock (this._lock) {
             var channel = this._channels.GetValueOrDefault(channelId);
-            text = string.Format(format, channel?.DisplayName ?? this._invites.GetValueOrDefault(channelId)?.Name ?? ChannelView.PlaceholderName(channelId));
-            text = char.ToUpperInvariant(text[0]) + text[1..] + ".";
+            text = format.Format(channel?.DisplayName ?? this._invites.GetValueOrDefault(channelId)?.Name ?? ChannelView.PlaceholderName(channelId))
+                .Map(sentence => char.ToUpperInvariant(sentence[0]) + sentence[1..] + ".");
             if (channel != null) {
                 if (channel.MembershipWarning == text) {
                     return;
@@ -2249,9 +2239,9 @@ public sealed class ClientSession : IAsyncDisposable {
                 this.InvokeSafely(this.InviteReceived, view);
                 var who = $"{view.Inviter.Name}@{view.Inviter.WorldName}";
                 this.RaiseNotice(NoticeLevel.Info,
-                    !view.Verified ? $"{who} sent an invite that failed verification."
-                    : view.InviterKeyChanged ? $"{who} invited you to {Quoted(view.ChannelName)}, but their identity key changed. Compare fingerprints over /tell before accepting."
-                    : $"{who} invited you to {Quoted(view.ChannelName)}.",
+                    !view.Verified ? PlainMessages.InviteUnverified(who)
+                    : view.InviterKeyChanged ? PlainMessages.InviteFromChangedKey(who, Quoted(view.ChannelName))
+                    : Wording.Same($"{who} invited you to {Quoted(view.ChannelName)}."),
                     invite.ChannelId);
             }
         });
@@ -2277,7 +2267,7 @@ public sealed class ClientSession : IAsyncDisposable {
 
         this.Publish();
         if (designated && this._options.AutoRekeyWhenDesignated) {
-            this.RunBackground("Rekeying a channel", ct => this.RekeyAsync(rekey.ChannelId, ct));
+            this.RunBackground(PlainMessages.Rekeying, ct => this.RekeyAsync(rekey.ChannelId, ct));
         }
     }
 
@@ -2294,12 +2284,14 @@ public sealed class ClientSession : IAsyncDisposable {
         string? equivocation = null;
         BadKey? bad = null;
         MemberKeys? failedSigner = null;
+        var channelName = "";
         lock (this._lock) {
             if (this._identity == null || this._me == null || !this._channels.TryGetValue(advanced.ChannelId, out var channel)
                 || !this.IsMember(advanced.ChannelId)) {
                 return;
             }
 
+            channelName = channel.DisplayName;
             var membership = this.MembershipOf(advanced.ChannelId);
             var author = membership.FindMember(advanced.AuthorId);
             var authorKeys = SignerKeys(membership, advanced.AuthorId, position);
@@ -2357,7 +2349,7 @@ public sealed class ClientSession : IAsyncDisposable {
 
         if (equivocation != null) {
             // Whatever log the server shows this client, it showed another to whoever made the key.
-            this.WarnAboutMembership(advanced.ChannelId, EquivocationWarning(equivocation));
+            this.WarnAboutMembership(advanced.ChannelId, PlainMessages.MembersShownDifferently(equivocation));
         } else if (stale && await this.ConfirmHeadAsync(advanced.ChannelId, ct)) {
             // An honest server sends such a key now and then: made just before a change this client already
             // applied (its own, say), or while it was away. Only a server that can't show what was verified is blamed.
@@ -2366,7 +2358,7 @@ public sealed class ClientSession : IAsyncDisposable {
         }
 
         if (rejected != null) {
-            this.RaiseNotice(NoticeLevel.Warning, $"Rejected a new key for a channel: {rejected}.", advanced.ChannelId);
+            this.RaiseNotice(NoticeLevel.Warning, PlainMessages.ChannelKeyRejected(rejected, channelName), advanced.ChannelId);
             return;
         }
 
@@ -2374,12 +2366,7 @@ public sealed class ClientSession : IAsyncDisposable {
         this.Publish();
     }
 
-    private sealed record BadKey(string ChannelId, string Message, bool Rekey);
-
-    /// <param name="detail">What gives the server away, from <see cref="EquivocationShownBy"/>.</param>
-    private static string EquivocationWarning(string detail) =>
-        $"the server delivered a key for {{0}} {detail}. An honest server never takes such a key, so it is showing members " +
-        "different versions of the membership. " + HidingSuffix;
+    private sealed record BadKey(string ChannelId, Wording Message, bool Rekey);
 
     /// <summary>
     /// Whether a key for <paramref name="epoch"/> made at <paramref name="position"/>, which isn't this client's current
@@ -2440,17 +2427,14 @@ public sealed class ClientSession : IAsyncDisposable {
         var rekey = channel.BadKeyRekeyEpoch != epoch;
         channel.BadKeyRekeyEpoch = epoch;
 
-        return new BadKey(channel.Id,
-            $"{author.Name}@{author.WorldName} sent you a key for {channel.DisplayName} (epoch {epoch}) that {problem}. " +
-            $"They may be trying to cut you off or split the channel{(rekey ? "; rekeying it now." : ".")}",
-            rekey);
+        return new BadKey(channel.Id, PlainMessages.BadChannelKey($"{author.Name}@{author.WorldName}", channel.DisplayName, epoch, problem, rekey), rekey);
     }
 
     private void HandleBadEpochKey(BadKey bad) {
         this.Publish();
         this.RaiseNotice(NoticeLevel.Warning, bad.Message, bad.ChannelId);
         if (bad.Rekey) {
-            this.RunBackground("Rekeying a channel", ct => this.RekeyAsync(bad.ChannelId, ct));
+            this.RunBackground(PlainMessages.Rekeying, ct => this.RekeyAsync(bad.ChannelId, ct));
         }
     }
 
@@ -2504,7 +2488,7 @@ public sealed class ClientSession : IAsyncDisposable {
             var who = this.Read(() => this._users.ContainsKey(message.SenderId) || this._identities.ContainsKey(message.SenderId)
                 ? $"{senderUser.Name}@{senderUser.WorldName}"
                 : "someone");
-            this.RaiseNotice(NoticeLevel.Warning, $"Dropped a message in {channelName} from {who}, who isn't a member of it.", message.ChannelId);
+            this.RaiseNotice(NoticeLevel.Warning, PlainMessages.MessageFromNonMember(channelName ?? "", who), message.ChannelId);
             return;
         }
 
@@ -2515,13 +2499,13 @@ public sealed class ClientSession : IAsyncDisposable {
         }
 
         if (key == null) {
-            this.RaiseNotice(NoticeLevel.Warning, $"Couldn't decrypt a message from {senderUser.Name}: no key for that epoch yet.", message.ChannelId);
+            this.RaiseNotice(NoticeLevel.Warning, PlainMessages.MessageWithoutKey(senderUser.Name), message.ChannelId);
             return;
         }
 
         var now = this._options.TimeProvider.GetUtcNow();
         if (this.Read(() => this.IsPastOldEpochGrace(message.ChannelId, message.Epoch, now))) {
-            this.RaiseNotice(NoticeLevel.Warning, $"Dropped a message from {senderUser.Name}: it uses an older key that was replaced a while ago.", message.ChannelId);
+            this.RaiseNotice(NoticeLevel.Warning, PlainMessages.MessageTooLate(senderUser.Name), message.ChannelId);
             return;
         }
 
@@ -2531,18 +2515,16 @@ public sealed class ClientSession : IAsyncDisposable {
             // Awaited here, in the inbox, so later messages still wait their turn.
             if (await this.RefetchIdentityAsync(message.SenderId, sender.Keys, ct) is { } current
                 && this._groupKeys.VerifyMessage(message, current.Identity.SigningPublicKey.Span)) {
-                this.RaiseNotice(NoticeLevel.Warning,
-                    $"Dropped a message from {senderUser.Name}: it's signed with the identity key they registered again with, which isn't a member of {channelName} " +
-                    "until a moderator removes them and invites them again.", message.ChannelId);
+                this.RaiseNotice(NoticeLevel.Warning, PlainMessages.MessageFromNewSetup(senderUser.Name, channelName), message.ChannelId);
                 return;
             }
 
-            this.RaiseNotice(NoticeLevel.Warning, $"Dropped a message claiming to be from {senderUser.Name}: it failed signature or decryption checks.", message.ChannelId);
+            this.RaiseNotice(NoticeLevel.Warning, PlainMessages.MessageFailedChecks(senderUser.Name), message.ChannelId);
             return;
         }
 
         if (content == null) {
-            this.RaiseNotice(NoticeLevel.Warning, $"Dropped a message claiming to be from {senderUser.Name}: it failed signature or decryption checks.", message.ChannelId);
+            this.RaiseNotice(NoticeLevel.Warning, PlainMessages.MessageFailedChecks(senderUser.Name), message.ChannelId);
             return;
         }
 
@@ -2550,7 +2532,7 @@ public sealed class ClientSession : IAsyncDisposable {
         // once it falls outside this window (the seen-set covers the window itself).
         var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(message.TimestampUnixMs);
         if ((now - timestamp).Duration() > MaxMessageClockSkew) {
-            this.RaiseNotice(NoticeLevel.Warning, $"Dropped a message from {senderUser.Name} dated {timestamp.ToLocalTime():g}: too far from the current time (replayed, or a wrong clock).", message.ChannelId);
+            this.RaiseNotice(NoticeLevel.Warning, PlainMessages.MessageClockSkew(senderUser.Name, $"{timestamp.ToLocalTime():g}"), message.ChannelId);
             return;
         }
 
@@ -2558,7 +2540,7 @@ public sealed class ClientSession : IAsyncDisposable {
         var newest = this.Read(() => this._secrets.NewestMessageTimes.TryGetValue(message.ChannelId, out var senders)
                                      && senders.TryGetValue(message.SenderId, out var time) ? time : (long?) null);
         if (newest is { } newestMs && message.TimestampUnixMs < newestMs - (long) MessageReorderAllowance.TotalMilliseconds) {
-            this.RaiseNotice(NoticeLevel.Warning, $"Dropped a message from {senderUser.Name} dated {timestamp.ToLocalTime():g}: it's older than messages already received from them (replayed?).", message.ChannelId);
+            this.RaiseNotice(NoticeLevel.Warning, PlainMessages.MessageReplayed(senderUser.Name, $"{timestamp.ToLocalTime():g}"), message.ChannelId);
             return;
         }
 
@@ -2708,11 +2690,10 @@ public sealed class ClientSession : IAsyncDisposable {
         this.SaveSecrets();
         this.Publish();
         if (equivocation != null) {
-            this.WarnAboutMembership(channelId, EquivocationWarning(equivocation));
+            this.WarnAboutMembership(channelId, PlainMessages.MembersShownDifferently(equivocation));
         } else if (staleNewest != null && !await this.ConfirmHeadAsync(channelId, ct, connection)) {
             // Normal while a join or leave awaits its rekey; only a server that can't show what was verified is blamed.
-            this.WarnAboutMembership(channelId,
-                $"the server offered a key for {{0}} made for an older membership (entry #{staleNewest.Key.LogPosition?.Seq}) than you have verified. It may be hiding a change from someone");
+            this.WarnAboutMembership(channelId, PlainMessages.StaleKeyOffered(staleNewest.Key.LogPosition?.Seq));
         }
 
         if (bad != null) {
@@ -2827,7 +2808,7 @@ public sealed class ClientSession : IAsyncDisposable {
         }
 
         if (recovered.Count > 0) {
-            this.RunBackground("Fetching new identity keys", async ct => {
+            this.RunBackground(PlainMessages.FetchingIdentities, async ct => {
                 await this.EnsureIdentitiesAsync(recovered, ct, refresh: true);
                 this.Publish();
             });
@@ -2857,7 +2838,7 @@ public sealed class ClientSession : IAsyncDisposable {
     /// </summary>
     private List<UserIdentity> AcceptIdentities(IEnumerable<UserIdentity> identities) {
         var accepted = new List<UserIdentity>();
-        var warnings = new List<string>();
+        var warnings = new List<Wording>();
 
         lock (this._lock) {
             foreach (var identity in identities) {
@@ -2893,8 +2874,8 @@ public sealed class ClientSession : IAsyncDisposable {
     /// <param name="user">Their name and world, if known.</param>
     /// <param name="keyVersion">From the server's identity; null from a log.</param>
     /// <returns>A warning for the user, if any.</returns>
-    private string? Pin(long userId, MemberKeys keys, User? user, uint? keyVersion = null) {
-        string? warning = null;
+    private Wording? Pin(long userId, MemberKeys keys, User? user, uint? keyVersion = null) {
+        Wording? warning = null;
         var changed = false;
         var who = user != null ? $"{user.Name}@{user.WorldName}" : null;
 
@@ -2907,12 +2888,12 @@ public sealed class ClientSession : IAsyncDisposable {
                 pinned.KeyRecovered = false;
                 pinned.Compared = false;
                 changed = true;
-                warning = $"{who}'s identity key changed (they may have re-registered). Compare fingerprints over /tell before trusting it: {keys.Fingerprint}";
+                warning = PlainMessages.KeyChanged(who, keys.Fingerprint);
             }
 
             if (user != null && (pinned.Name != user.Name || pinned.WorldName != user.WorldName)) {
                 if (pinned.Name.Length > 0 && warning == null) {
-                    warning = $"{pinned.Name}@{pinned.WorldName} is now shown as {who} (a rename or world transfer). Their keys are unchanged.";
+                    warning = PlainMessages.Renamed($"{pinned.Name}@{pinned.WorldName}", who);
                 }
 
                 pinned.Name = user.Name;
@@ -2929,7 +2910,7 @@ public sealed class ClientSession : IAsyncDisposable {
                 string.Equals(pair.Value.Name, user.Name, StringComparison.OrdinalIgnoreCase)
                 && string.Equals(pair.Value.WorldName, user.WorldName, StringComparison.OrdinalIgnoreCase));
             if (previousOwner.Value != null) {
-                warning = $"{who} now belongs to a different account than the one you saw before. Compare fingerprints over /tell before trusting it: {keys.Fingerprint}";
+                warning = PlainMessages.NameNowAnotherAccount(who!, keys.Fingerprint);
             }
 
             this._secrets.PinnedIdentities[userId] = new PinnedIdentity {
@@ -3023,7 +3004,7 @@ public sealed class ClientSession : IAsyncDisposable {
             var keys = MemberKeys.FromProto(entry.Subject)!;
             var current = membership.FindMember(userId)?.Keys ?? membership.FindInvitee(userId)?.Keys;
             if (userId != me && current == keys && this.Pin(userId, keys, this.KnownUser(userId)) is { } warning) {
-                this._pendingNotices.Add(new SessionNotice(NoticeLevel.Warning, warning, channelId));
+                this._pendingNotices.Add(SessionNotice.Of(NoticeLevel.Warning, warning, channelId));
             }
         }
 
@@ -3035,7 +3016,7 @@ public sealed class ClientSession : IAsyncDisposable {
                 // others (normally their own, on another computer; if not, the server or someone else did it). Said once.
                 if (!this._toldKeyMovedAway) {
                     this._toldKeyMovedAway = true;
-                    this._pendingNotices.Add(new SessionNotice(NoticeLevel.Warning, PlainMessages.ReVerifiedElsewhere, channelId));
+                    this._pendingNotices.Add(SessionNotice.Of(NoticeLevel.Warning, PlainMessages.ReVerifiedElsewhereWording, channelId));
                 }
             }
         }
@@ -3098,8 +3079,8 @@ public sealed class ClientSession : IAsyncDisposable {
 
         if (tell) {
             var who = this.UserOf(userId);
-            this._pendingNotices.Add(new SessionNotice(NoticeLevel.Info,
-                $"{who.Name}@{who.WorldName} {PlainMessages.ReVerified}" + (wasCompared ? $" {PlainMessages.ComparedBefore}" : ""), channelId));
+            this._pendingNotices.Add(SessionNotice.Of(NoticeLevel.Info,
+                PlainMessages.ReVerifiedWording($"{who.Name}@{who.WorldName}", wasCompared), channelId));
         }
     }
 
@@ -3207,8 +3188,8 @@ public sealed class ClientSession : IAsyncDisposable {
         if (offered is { Revision: 0, CarriedFrom: { } source } && channel.NameVersion is { } known && channel.Name is { } previous && previous != name
             && new NameVersion(source.Epoch, source.Revision).CompareTo(known) <= 0) {
             var who = this.UserOf(offered.AuthorId);
-            this._pendingNotices.Add(new SessionNotice(NoticeLevel.Warning,
-                $"{who.Name}@{who.WorldName} changed the channel name from \"{previous}\" to \"{name}\" while rekeying.", channelId));
+            this._pendingNotices.Add(SessionNotice.Of(NoticeLevel.Warning,
+                PlainMessages.NameChangedWhileRekeying($"{who.Name}@{who.WorldName}", previous, name), channelId));
         }
 
         channel.Name = name;
@@ -3382,7 +3363,9 @@ public sealed class ClientSession : IAsyncDisposable {
         }
     }
 
-    private void SetState(ConnectionState state, string? status) {
+    private void SetState(ConnectionState state, string? status) => this.SetState(state, status == null ? null : Wording.Same(status));
+
+    private void SetState(ConnectionState state, Wording? status) {
         lock (this._lock) {
             this._state = state;
             this._status = status;
@@ -3404,11 +3387,13 @@ public sealed class ClientSession : IAsyncDisposable {
         lock (this._lock) {
             // Status texts and notices often hold what the server said: no registration code but this client's own.
             var keep = this.ShownCode();
-            notices = [.. this._pendingNotices.Select(notice => notice with { Text = LodestoneCode.Redact(notice.Text, keep) })];
+            notices = [.. this._pendingNotices.Select(notice => Redacted(notice, keep))];
             this._pendingNotices.Clear();
+            // As the server said on this connection; nothing while there is none.
+            var addressNotListed = this._state is ConnectionState.Stopped or ConnectionState.Connecting or ConnectionState.Reconnecting ? null : this._addressNotListed;
             snapshot = new SessionSnapshot(
                 this._state,
-                LodestoneCode.Redact(this._status, keep),
+                LodestoneCode.Redact(this._status?.Technical, keep),
                 this._me == null ? null : Shown(this._me),
                 this._identity?.Fingerprint,
                 this._channels.Values
@@ -3427,10 +3412,11 @@ public sealed class ClientSession : IAsyncDisposable {
                     .ToImmutableArray(),
                 this._channelsLoaded && this._state == ConnectionState.Ready,
                 this._loginRejected && this._state is ConnectionState.LoginNotRecognized or ConnectionState.Registering,
-                // As the server said on this connection; nothing while there is none.
-                this._state is ConnectionState.Stopped or ConnectionState.Connecting or ConnectionState.Reconnecting ? null : this._addressNotListed,
+                addressNotListed?.Technical,
                 // Never registered here: what a registration would do is take an account over, not keep a key.
-                this._secrets.UserId == null);
+                this._secrets.UserId == null,
+                LodestoneCode.Redact(this._status?.Plain, keep),
+                addressNotListed?.Plain);
             this._snapshot = snapshot;
         }
 
@@ -3476,13 +3462,13 @@ public sealed class ClientSession : IAsyncDisposable {
         var movedAway = oldKey && membership.KeysAt(mine!.UserId, 0) != mine.Keys;
         var warning = channel.MembershipWarning ?? channel.RemovalWarning;
         if (warning == null && oldKey) {
-            warning = movedAway ? PlainMessages.KeyMovedAwayChannel : PlainMessages.OldKeyChannel;
+            warning = movedAway ? PlainMessages.KeyMovedAwayWording : PlainMessages.OldKeyChannelWording;
         }
 
         var keyEpoch = this.KeyEpochOf(channel.Id);
         return new ChannelView(channel.Id, channel.Name, keyEpoch ?? channel.ServerEpoch, channel.ServerEpoch,
             this.HasCurrentKey(channel.Id), this.NeedsRekey(channel), mine != null && mine.Keys == this._myKeys ? mine.Rank : Rank.Unspecified,
-            members, membership.Head?.Clone(), warning, oldKey, movedAway);
+            members, membership.Head?.Clone(), warning?.Technical, oldKey, movedAway, ChannelView.PlainNames(warning?.Plain));
     }
 
     // ================================================================ plumbing
@@ -3538,7 +3524,10 @@ public sealed class ClientSession : IAsyncDisposable {
     }
 
     /// <summary>Runs work in the background; <see cref="DisposeAsync"/> waits for it to finish.</summary>
-    private void RunBackground(string what, Func<CancellationToken, Task> work) {
+    private void RunBackground(string what, Func<CancellationToken, Task> work) => this.RunBackground(Wording.Same(what), work);
+
+    /// <inheritdoc cref="RunBackground(string, Func{CancellationToken, Task})"/>
+    private void RunBackground(Wording what, Func<CancellationToken, Task> work) {
         if (Volatile.Read(ref this._disposed) == 1) {
             return;
         }
@@ -3550,7 +3539,7 @@ public sealed class ClientSession : IAsyncDisposable {
             } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
                 // Stopping.
             } catch (Exception ex) when (Volatile.Read(ref this._disposed) == 0) {
-                this.RaiseNotice(NoticeLevel.Warning, PlainMessages.Of($"{what} failed: {ex.Message}"));
+                this.RaiseNotice(NoticeLevel.Warning, PlainMessages.Failed(what, ex));
             } catch {
                 // Shutting down; nobody to tell.
             }
@@ -3592,8 +3581,20 @@ public sealed class ClientSession : IAsyncDisposable {
     /// server text, so they go only to <see cref="Notice"/>, never to the diagnostic log.
     /// </summary>
     private void RaiseNotice(NoticeLevel level, string text, string? channelId = null) {
-        this.InvokeSafely(this.Notice, new SessionNotice(level, LodestoneCode.Redact(text, this.ShownCode()), channelId));
+        this.RaiseNotice(level, Wording.Same(text), channelId);
     }
+
+    /// <inheritdoc cref="RaiseNotice(NoticeLevel, string, string?)"/>
+    private void RaiseNotice(NoticeLevel level, Wording wording, string? channelId = null) {
+        this.InvokeSafely(this.Notice, Redacted(SessionNotice.Of(level, wording, channelId), this.ShownCode()));
+    }
+
+    /// <summary>
+    /// A notice with no registration code in either of its texts but <paramref name="keep"/> (see <see cref="LodestoneCode.Redact"/>),
+    /// and channels whose names aren't known named in simple mode's words in its plain one.
+    /// </summary>
+    private static SessionNotice Redacted(SessionNotice notice, string? keep) =>
+        notice with { Text = LodestoneCode.Redact(notice.Text, keep), Plain = LodestoneCode.Redact(ChannelView.PlainNames(notice.Plain), keep) };
 
     private void Log(NoticeLevel level, string text) {
         try {
@@ -3655,10 +3656,10 @@ public sealed class ClientSession : IAsyncDisposable {
         public LogPosition? LogHead { get; set; }
 
         /// <summary>A fork or hidden change seen in the channel's membership, to keep showing.</summary>
-        public string? MembershipWarning { get; set; }
+        public Wording? MembershipWarning { get; set; }
 
         /// <summary>A removal (or leave) whose rekey the server didn't take: shown until a key made after it is held.</summary>
-        public string? RemovalWarning { get; set; }
+        public Wording? RemovalWarning { get; set; }
 
         /// <summary>The newest name the server offered. Only shown once <see cref="TryDecryptName"/> accepts it.</summary>
         public EncryptedName? EncryptedName { get; set; }
