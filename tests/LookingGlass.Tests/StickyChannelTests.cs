@@ -61,80 +61,116 @@ public sealed class StickyChannelTests {
     }
 
     [Fact]
-    public void WhatChatTwoSendsForPlainTextGoesToTheChannel() {
-        // ChatTwo sends "hello" typed with its input on Party as "/p hello", through the same chat box function.
-        IReadOnlyCollection<string> party = ["/p"];
-        Assert.Equal(new StickyRoute.ToChannel("aaa", "hello"), StickyRoute.For("aaa", Tag, "/p hello", party));
-        Assert.Equal(new StickyRoute.ToChannel("aaa", "hello  there"), StickyRoute.For("aaa", Tag, "/P   hello  there ", party));
-        Assert.Equal(new StickyRoute.ToChannel("aaa", "hi"), StickyRoute.For("aaa", Tag, "/p\thi", party));
+    public void ALineWithOnlyALinkIsDroppedWithALineSayingSo() {
+        Assert.Equal(new StickyRoute.Dropped(StickyMessages.NotSent(Tag, StickyMessages.NoTextReason)), StickyRoute.For("aaa", Tag, " ", NoPrefixes, notOnlyText: true));
+        Assert.Equal(new StickyRoute.ToChannel("aaa", "look"), StickyRoute.For("aaa", Tag, "look ", NoPrefixes, notOnlyText: true));
+    }
 
-        // The channel command on its own is a switch, and other commands are the player's own: on to the game.
-        Assert.Equal(StickyRoute.Game, StickyRoute.For("aaa", Tag, "/p", party));
-        Assert.Equal(StickyRoute.Game, StickyRoute.For("aaa", Tag, "/p   ", party));
-        Assert.Equal(StickyRoute.Game, StickyRoute.For("aaa", Tag, "/s hello", party));
-        Assert.Equal(StickyRoute.Game, StickyRoute.For("aaa", Tag, "/party hello", party));
-        Assert.Equal(StickyRoute.Game, StickyRoute.For("aaa", Tag, "/lgc3 hello", party));
-        Assert.Equal(StickyRoute.Game, StickyRoute.For("aaa", Tag, "/ph hello", party));
+    /// <summary>Every short channel command ChatTwo 1.40.9 can put in front of plain text (InputChannelExt.Prefix), but /t, /e and /ecl.</summary>
+    public static TheoryData<string> ChatTwoPrefixes() {
+        var data = new TheoryData<string>();
+        foreach (var prefix in new[] { "/s", "/p", "/a", "/y", "/sh", "/fc", "/pt", "/b" }) {
+            data.Add(prefix);
+        }
+
+        for (var i = 1; i <= 8; i++) {
+            data.Add($"/cwl{i}");
+            data.Add($"/l{i}");
+        }
+
+        return data;
+    }
+
+    [Theory]
+    [MemberData(nameof(ChatTwoPrefixes))]
+    public void WithChatTwoEveryShortChannelCommandWithTextGoesToTheChannel(string prefix) {
+        // Whatever the game's channel and whatever channel any ChatTwo input (a tab, a pop-out) is on: ChatTwo sends
+        // "hello" typed in a pop-out set to Say as "/s hello" even while the game is on the Free Company.
+        var withChatTwo = ChatChannelPrefixes.SentAs(chatTwo: true);
+        Assert.Equal(new StickyRoute.ToChannel("aaa", "hello"), StickyRoute.For("aaa", Tag, $"{prefix} hello", withChatTwo));
+        Assert.Equal(new StickyRoute.ToChannel("aaa", "hello  there"), StickyRoute.For("aaa", Tag, $"{prefix.ToUpperInvariant()}   hello  there ", withChatTwo));
+        Assert.Equal(new StickyRoute.ToChannel("aaa", "hi"), StickyRoute.For("aaa", Tag, $"{prefix}\thi", withChatTwo));
+
+        // On its own it is a channel switch: the game's.
+        Assert.Equal(StickyRoute.Game, StickyRoute.For("aaa", Tag, prefix, withChatTwo));
+        Assert.Equal(StickyRoute.Game, StickyRoute.For("aaa", Tag, $"{prefix}   ", withChatTwo));
+
+        // Without ChatTwo the game's chat box never adds one, so it is the player's own command: the game's.
+        Assert.Equal(StickyRoute.Game, StickyRoute.For("aaa", Tag, $"{prefix} hello", ChatChannelPrefixes.SentAs(chatTwo: false)));
+
+        // Not talking in a channel: the game's, ChatTwo or not.
+        Assert.Equal(StickyRoute.Game, StickyRoute.For(null, Tag, $"{prefix} hello", withChatTwo));
+    }
+
+    [Theory]
+    // The long forms are only ever typed: the way to talk in a game channel once.
+    [InlineData("/say hello")]
+    [InlineData("/shout hello")]
+    [InlineData("/yell hello")]
+    [InlineData("/party hello")]
+    [InlineData("/alliance hello")]
+    [InlineData("/freecompany hello")]
+    [InlineData("/pvpteam hello")]
+    [InlineData("/beginner hello")]
+    [InlineData("/novice hello")]
+    [InlineData("/linkshell1 hello")]
+    [InlineData("/linkshell8 hello")]
+    [InlineData("/cwlinkshell1 hello")]
+    [InlineData("/cwlinkshell8 hello")]
+    // Echo is only shown to the player (ChatTwo uses it for an input with no channel), tells name a player first,
+    // ExtraChat's commands are ExtraChat's.
+    [InlineData("/e hello")]
+    [InlineData("/echo hello")]
+    [InlineData("/t Bob Smith@Zalera hello")]
+    [InlineData("/tell Bob Smith@Zalera hello")]
+    [InlineData("/ecl1 hello")]
+    // Not channel commands at all.
+    [InlineData("/l9 hello")]
+    [InlineData("/cwl9 hello")]
+    [InlineData("/lgc3 hello")]
+    [InlineData("/lgc sky hello")]
+    [InlineData("/em waves")]
+    [InlineData("/ph hello")]
+    public void WithChatTwoOtherCommandsStillGoToTheGame(string input) {
+        Assert.Equal(StickyRoute.Game, StickyRoute.For("aaa", Tag, input, ChatChannelPrefixes.SentAs(chatTwo: true)));
     }
 
     [Fact]
-    public void ChatTwosPrefixesAreTheOnesItUses() {
-        // The game's chat types (RaptureShellModule.ChatType, as ChatTwo reads them).
-        Assert.Equal("/s", ChatChannelPrefixes.ForGameChatType(1));
-        Assert.Equal("/p", ChatChannelPrefixes.ForGameChatType(2));
-        Assert.Equal("/a", ChatChannelPrefixes.ForGameChatType(3));
-        Assert.Equal("/y", ChatChannelPrefixes.ForGameChatType(4));
-        Assert.Equal("/sh", ChatChannelPrefixes.ForGameChatType(5));
-        Assert.Equal("/fc", ChatChannelPrefixes.ForGameChatType(6));
-        Assert.Equal("/pt", ChatChannelPrefixes.ForGameChatType(7));
-        Assert.Equal("/b", ChatChannelPrefixes.ForGameChatType(8));
-        Assert.Equal("/cwl1", ChatChannelPrefixes.ForGameChatType(9));
-        Assert.Equal("/cwl8", ChatChannelPrefixes.ForGameChatType(16));
-        Assert.Equal("/l1", ChatChannelPrefixes.ForGameChatType(19));
-        Assert.Equal("/l8", ChatChannelPrefixes.ForGameChatType(26));
+    public void ChatTwosPrefixesAreExactlyThese() {
+        var expected = ChatTwoPrefixes().Select(row => row.Data).ToHashSet();
+        Assert.Equal(34 - 8 - 2, expected.Count); // ChatTwo's 34 short commands, less /ecl1 to /ecl8, /t and /e.
+        Assert.True(expected.SetEquals(ChatChannelPrefixes.ChatTwo));
+        Assert.Empty(ChatChannelPrefixes.SentAs(chatTwo: false));
+    }
 
-        // ChatTwo's own numbering, for the channel its input says it sends to.
-        Assert.Equal("/s", ChatChannelPrefixes.ForChatTwoChatType(10));
-        Assert.Equal("/sh", ChatChannelPrefixes.ForChatTwoChatType(11));
-        Assert.Equal("/p", ChatChannelPrefixes.ForChatTwoChatType(14));
-        Assert.Equal("/a", ChatChannelPrefixes.ForChatTwoChatType(15));
-        Assert.Equal("/l1", ChatChannelPrefixes.ForChatTwoChatType(16));
-        Assert.Equal("/l8", ChatChannelPrefixes.ForChatTwoChatType(23));
-        Assert.Equal("/fc", ChatChannelPrefixes.ForChatTwoChatType(24));
-        Assert.Equal("/b", ChatChannelPrefixes.ForChatTwoChatType(27));
-        Assert.Equal("/y", ChatChannelPrefixes.ForChatTwoChatType(30));
-        Assert.Equal("/pt", ChatChannelPrefixes.ForChatTwoChatType(36));
-        Assert.Equal("/cwl1", ChatChannelPrefixes.ForChatTwoChatType(37));
-        Assert.Equal("/cwl2", ChatChannelPrefixes.ForChatTwoChatType(101));
-        Assert.Equal("/cwl8", ChatChannelPrefixes.ForChatTwoChatType(107));
+    // ---------------------------------------------------------------- the gate: fail closed
 
-        // Both numberings agree on every linkshell.
-        for (var i = 0; i < 8; i++) {
-            Assert.Equal(ChatChannelPrefixes.ForGameChatType(19 + i), ChatChannelPrefixes.ForChatTwoChatType(16 + i));
-            Assert.Equal(ChatChannelPrefixes.ForGameChatType(9 + i), ChatChannelPrefixes.ForChatTwoChatType(i == 0 ? 37 : 100 + i));
-        }
-
-        // Tells (ChatTwo sends them another way) and anything that isn't a channel to talk in have none.
-        foreach (var tell in new[] { 0, 17, 18 }) {
-            Assert.Null(ChatChannelPrefixes.ForGameChatType(tell));
-        }
-
-        Assert.Null(ChatChannelPrefixes.ForChatTwoChatType(ChatChannelPrefixes.ChatTwoTell));
-        Assert.Null(ChatChannelPrefixes.ForGameChatType(27));
-        Assert.Null(ChatChannelPrefixes.ForChatTwoChatType(56));
-        Assert.Null(ChatChannelPrefixes.ForChatTwoChatType(1001));
+    [Fact]
+    public void NotTalkingInAChannelTheGateLetsEverythingThroughWithoutLooking() {
+        var looked = false;
+        Assert.False(ChatBoxGate.KeepFromGame(false, () => looked = true, _ => throw new InvalidOperationException()));
+        Assert.False(looked);
     }
 
     [Fact]
-    public void OnlyChatTwosPrefixesForItsChannelsStandForPlainText() {
-        Assert.Empty(ChatChannelPrefixes.SentAs(false, Say, 14));
-        Assert.Equal(new[] { "/s" }, ChatChannelPrefixes.SentAs(true, Say, null));
-        Assert.Equal(new[] { "/s" }, ChatChannelPrefixes.SentAs(true, Say, 10));
-        // A ChatTwo tab with its own channel sends with that channel's command, not the game's.
-        Assert.Equal(new HashSet<string> { "/s", "/fc" }, ChatChannelPrefixes.SentAs(true, Say, 24).ToHashSet());
-        Assert.Equal(new[] { "/p" }, ChatChannelPrefixes.SentAs(true, null, 14));
-        Assert.Empty(ChatChannelPrefixes.SentAs(true, null, null));
-        Assert.Empty(ChatChannelPrefixes.SentAs(true, new GameChannel(17), ChatChannelPrefixes.ChatTwoTell));
+    public void TalkingInAChannelTheGateDoesWhatTheDecisionSays() {
+        Assert.True(ChatBoxGate.KeepFromGame(true, () => true, _ => Assert.Fail("Nothing failed.")));
+        Assert.False(ChatBoxGate.KeepFromGame(true, () => false, _ => Assert.Fail("Nothing failed.")));
+        Assert.True(StickyRoute.For("aaa", Tag, "hello", NoPrefixes).KeepsFromGame);
+        Assert.True(StickyRoute.For("aaa", Tag, "  ", NoPrefixes).KeepsFromGame);
+        Assert.True(StickyRoute.For("aaa", Tag, "/p hi", ChatChannelPrefixes.SentAs(true)).KeepsFromGame);
+        Assert.False(StickyRoute.For("aaa", Tag, "/p hi", NoPrefixes).KeepsFromGame);
+        Assert.False(StickyRoute.For(null, Tag, "hello", NoPrefixes).KeepsFromGame);
+    }
+
+    [Fact]
+    public void ALineWhoseFateCouldntBeDecidedNeverReachesTheGame() {
+        Exception? told = null;
+        Assert.True(ChatBoxGate.KeepFromGame(true, () => throw new InvalidOperationException("boom"), ex => told = ex));
+        Assert.Equal("boom", told?.Message);
+
+        // Even if telling the player fails too.
+        Assert.True(ChatBoxGate.KeepFromGame(true, () => throw new InvalidOperationException("boom"), _ => throw new InvalidOperationException("again")));
     }
 
     // ---------------------------------------------------------------- starting
@@ -198,7 +234,11 @@ public sealed class StickyChannelTests {
         var withChatTwo = new StickyChannel().Enter("aaa", Tag, World(new object()), true, true, false);
         Assert.True(withChatTwo.Entered);
         Assert.Contains("ChatTwo", withChatTwo.Text);
-        Assert.Contains("only to " + Tag, withChatTwo.Text);
+        Assert.Contains("(Warning: ...)", withChatTwo.Text);
+        // Every ChatTwo input and short command goes to the channel; the long command is the way to talk in a game channel once.
+        Assert.Contains("pop-out", withChatTwo.Text);
+        Assert.Contains("/party hi", withChatTwo.Text);
+        Assert.Contains("tell", withChatTwo.Text);
     }
 
     // ---------------------------------------------------------------- leaving
@@ -278,6 +318,40 @@ public sealed class StickyChannelTests {
         Assert.Equal(StickyRoute.Game, StickyRoute.For(sticky.ChannelId, Tag, "hello", NoPrefixes));
     }
 
+    [Fact]
+    public void ASwitchCallEndsItOnlyIfTypedOrIfTheChannelChanged() {
+        var session = new object();
+
+        // ChatTwo calls the switch with the channel it is already on at every tab change, and when its input loses focus
+        // after a one-off channel: it goes on.
+        var sticky = Started(session);
+        Assert.Null(sticky.ChannelSwitchCalled(Say, fromTypedCommand: false));
+        Assert.Null(sticky.ChannelSwitchCalled(Say, fromTypedCommand: false));
+        Assert.Equal("aaa", sticky.ChannelId);
+
+        // /s typed while in Say: the channel doesn't change, but the player is switching back.
+        Assert.Equal(StickyEnd.ChannelSwitched, sticky.ChannelSwitchCalled(Say, fromTypedCommand: true));
+        Assert.Null(sticky.ChannelId);
+        Assert.Null(sticky.ChannelSwitchCalled(Party, fromTypedCommand: true));
+
+        // A ChatTwo tab with another channel, or the picker: the channel changes.
+        sticky = Started(session);
+        Assert.Equal(StickyEnd.ChannelSwitched, sticky.ChannelSwitchCalled(Party, fromTypedCommand: false));
+        Assert.Null(sticky.ChannelId);
+
+        // Another linkshell is another channel.
+        sticky = Started(session, new GameChannel(19));
+        Assert.Null(sticky.ChannelSwitchCalled(new GameChannel(19), false));
+        Assert.Equal(StickyEnd.ChannelSwitched, sticky.ChannelSwitchCalled(new GameChannel(20), false));
+
+        // Unreadable after the call: ends.
+        sticky = Started(session);
+        Assert.Equal(StickyEnd.ChannelUnknown, sticky.ChannelSwitchCalled(null, false));
+
+        // Not talking in a channel: nothing to end.
+        Assert.Null(new StickyChannel().ChannelSwitchCalled(Party, true));
+    }
+
     // ---------------------------------------------------------------- what is said
 
     [Fact]
@@ -293,6 +367,7 @@ public sealed class StickyChannelTests {
             StickyMessages.NotSent(Tag, StickyMessages.NotConnectedReason),
             StickyMessages.NotSent(Tag, StickyMessages.NoTextReason),
             StickyMessages.NotSent(Tag, StickyMessages.SomethingWentWrongReason),
+            StickyMessages.ExtraChatLoaded,
             ChannelCommand.NicknameUsage,
         };
         texts.AddRange(Enum.GetValues<StickyEnd>().Select(end => StickyMessages.Ended(Tag, end)));
@@ -318,9 +393,9 @@ public sealed class StickyChannelTests {
         Assert.Equal(StickyRoute.Game, StickyRoute.For(sticky.ChannelId, Tag, "hello", NoPrefixes));
     }
 
-    private static StickyChannel Started(object session) {
+    private static StickyChannel Started(object session, GameChannel? channel = null) {
         var sticky = new StickyChannel();
-        Assert.True(sticky.Enter("aaa", Tag, World(session), true, false, false).Entered);
+        Assert.True(sticky.Enter("aaa", Tag, World(session) with { Channel = channel ?? Say }, true, false, false).Entered);
         return sticky;
     }
 

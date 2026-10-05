@@ -12,70 +12,34 @@ public readonly record struct GameChannel(int ChatType) {
 }
 
 /// <summary>
-/// The short commands ChatTwo puts in front of plain text it sends for the channel its input shows ("hello" typed in Say
-/// is sent as "/s hello"), so sticky mode can tell that text from a command the player typed. ChatTwo's own tables, as
-/// its public source has them (<c>InputChannelExt.Prefix</c>, <c>ChatType</c>).
+/// The short channel commands ChatTwo puts in front of plain text it sends: "hello" typed in a ChatTwo input on Say is
+/// sent as "/s hello". From ChatTwo's public source (1.40.9, <c>InputChannelExt.Prefix</c>), all of them but three:
+/// <list type="bullet">
+/// <item>"/t": ChatTwo sends tells to a known player without the chat box, and a "/t" line from it names the player
+/// first, as the player's own would. Left to the game.</item>
+/// <item>"/e" (echo, for an input with no channel): shown only to the player. Left to the game.</item>
+/// <item>"/ecl1" to "/ecl8", ExtraChat's commands: only offered while ExtraChat is loaded, and never game chat. Left to
+/// ExtraChat.</item>
+/// </list>
+/// Every input ChatTwo has (its main window, each tab, each pop-out with input) can be on any channel without the game
+/// knowing, so while talking in a channel with ChatTwo loaded, every one of these followed by text goes to the channel.
+/// The long forms (/say, /party, /shout, /linkshell1, /cwlinkshell1) are only ever typed, and go to the game.
 /// </summary>
 public static class ChatChannelPrefixes {
-    /// <summary>
-    /// For the game's chat type (see <see cref="GameChannel"/>), or null for one that isn't a channel to talk in. Null for a
-    /// /tell too: ChatTwo sends tells without the chat box, so a "/t" in front of text is always the player's own command.
-    /// </summary>
-    public static string? ForGameChatType(int chatType) => chatType switch {
-        1 => "/s",
-        2 => "/p",
-        3 => "/a",
-        4 => "/y",
-        5 => "/sh",
-        6 => "/fc",
-        7 => "/pt",
-        8 => "/b",
-        >= 9 and <= 16 => $"/cwl{chatType - 8}",
-        >= 19 and <= 26 => $"/l{chatType - 18}",
-        _ => null,
-    };
+    /// <summary>Every short channel command ChatTwo sends plain text with, but /t, /e and /ecl1 to /ecl8.</summary>
+    public static readonly IReadOnlyCollection<string> ChatTwo = new[] { "/s", "/p", "/a", "/y", "/sh", "/fc", "/pt", "/b" }
+        .Concat(Enumerable.Range(1, 8).Select(i => $"/cwl{i}"))
+        .Concat(Enumerable.Range(1, 8).Select(i => $"/l{i}"))
+        .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>For the chat type ChatTwo reports for its input (its <c>ChatType</c>, the game's chat log types), or null (a /tell too).</summary>
-    public static string? ForChatTwoChatType(int chatType) => chatType switch {
-        10 => "/s",
-        11 => "/sh",
-        14 => "/p",
-        15 => "/a",
-        >= 16 and <= 23 => $"/l{chatType - 15}",
-        24 => "/fc",
-        27 => "/b",
-        30 => "/y",
-        36 => "/pt",
-        37 => "/cwl1",
-        >= 101 and <= 107 => $"/cwl{chatType - 99}",
-        _ => null,
-    };
-
-    /// <summary>ChatTwo's chat type for a /tell (<c>TellOutgoing</c>).</summary>
+    /// <summary>ChatTwo's chat type for a /tell (<c>TellOutgoing</c>), as its <c>ChatTwo.GetChatInputState</c> reports it.</summary>
     public const int ChatTwoTell = 12;
 
     /// <summary>
-    /// The commands that stand for plain text while talking in a channel (see <see cref="StickyRoute.For"/>). With ChatTwo,
-    /// those of the game's channel (which ChatTwo's input follows) and of the channel ChatTwo says its input sends to
-    /// (a tab with its own channel); without it, none: the game's chat box sends plain text as it is.
+    /// The commands that stand for plain text while talking in a channel (see <see cref="StickyRoute.For"/>): with ChatTwo,
+    /// <see cref="ChatTwo"/>; without it, none, as the game's chat box sends plain text as it is.
     /// </summary>
-    /// <param name="chatTwoInput">ChatTwo's input channel, in its numbering, if it said.</param>
-    public static IReadOnlyCollection<string> SentAs(bool chatTwo, GameChannel? game, int? chatTwoInput) {
-        if (!chatTwo) {
-            return [];
-        }
-
-        var prefixes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        if (game is { } channel && ForGameChatType(channel.ChatType) is { } gamePrefix) {
-            prefixes.Add(gamePrefix);
-        }
-
-        if (chatTwoInput is { } input && ForChatTwoChatType(input) is { } inputPrefix) {
-            prefixes.Add(inputPrefix);
-        }
-
-        return prefixes;
-    }
+    public static IReadOnlyCollection<string> SentAs(bool chatTwo) => chatTwo ? ChatTwo : [];
 }
 
 /// <summary>Where something submitted from the chat box goes while (or when not) talking in a channel.</summary>
@@ -94,6 +58,9 @@ public abstract record StickyRoute {
 
     public static readonly StickyRoute Game = new ToGame();
 
+    /// <summary>The line must not reach the game: everything but <see cref="ToGame"/>.</summary>
+    public bool KeepsFromGame => this is not ToGame;
+
     /// <summary>
     /// The one decision for everything the chat box submits. Not talking in a channel: the game's. Otherwise anything that
     /// doesn't start with "/" goes to the channel, and never to the game; so does a command in <paramref name="sentAs"/>
@@ -103,15 +70,19 @@ public abstract record StickyRoute {
     /// <param name="channelId">The channel being talked in, or null.</param>
     /// <param name="tag">The channel's tag, for what is said when nothing is sent.</param>
     /// <param name="input">What was submitted, as text. Not trimmed first: only a "/" at the very start is a command.</param>
-    /// <param name="sentAs">Commands that stand for the channel the chat input shows (empty when only the game's chat box is in use).</param>
-    public static StickyRoute For(string? channelId, string tag, string input, IReadOnlyCollection<string> sentAs) {
+    /// <param name="sentAs">Commands that stand for plain text (see <see cref="ChatChannelPrefixes.SentAs"/>).</param>
+    /// <param name="notOnlyText">
+    /// The line held more than its text (an item link, an auto-translate phrase): if it has no text at all, it is dropped
+    /// with a line saying so, rather than quietly.
+    /// </param>
+    public static StickyRoute For(string? channelId, string tag, string input, IReadOnlyCollection<string> sentAs, bool notOnlyText = false) {
         if (channelId == null) {
             return Game;
         }
 
         if (input.StartsWith('/')) {
             var command = CommandAndText(input);
-            if (command.Text.Length > 0 && sentAs.Any(prefix => string.Equals(prefix, command.Command, StringComparison.OrdinalIgnoreCase))) {
+            if (command.Text.Length > 0 && sentAs.Contains(command.Command, StringComparer.OrdinalIgnoreCase)) {
                 return new ToChannel(channelId, command.Text);
             }
 
@@ -119,7 +90,11 @@ public abstract record StickyRoute {
         }
 
         var text = input.Trim();
-        return text.Length > 0 ? new ToChannel(channelId, text) : new Dropped(null);
+        if (text.Length > 0) {
+            return new ToChannel(channelId, text);
+        }
+
+        return new Dropped(notOnlyText ? StickyMessages.NotSent(tag, StickyMessages.NoTextReason) : null);
     }
 
     private static (string Command, string Text) CommandAndText(string input) {
@@ -132,9 +107,40 @@ public abstract record StickyRoute {
     }
 }
 
+/// <summary>
+/// The gate in front of the game's chat box function: whether a line goes on to the game. Fails closed: while talking in
+/// a channel, a line whose fate couldn't be decided (anything threw) is kept from the game.
+/// </summary>
+public static class ChatBoxGate {
+    /// <param name="active">Talking in a channel. If not, the line goes to the game and nothing else runs.</param>
+    /// <param name="decide">Decides, and acts on it (sends, says why not): true to keep the line from the game.</param>
+    /// <param name="failed">Told when <paramref name="decide"/> threw; may throw itself.</param>
+    /// <returns>True to keep the line from the game.</returns>
+    public static bool KeepFromGame(bool active, Func<bool> decide, Action<Exception> failed) {
+        if (!active) {
+            return false;
+        }
+
+        try {
+            return decide();
+        } catch (Exception ex) {
+            try {
+                failed(ex);
+            } catch {
+                // Nothing more can be done; the line is still kept.
+            }
+
+            return true;
+        }
+    }
+}
+
 /// <summary>Why talking in a channel ended.</summary>
 public enum StickyEnd {
-    /// <summary>The game's chat channel was changed: /s, /p, Tab, ChatTwo's channel picker or tabs, another plugin.</summary>
+    /// <summary>
+    /// The game's chat channel was changed (Tab, ChatTwo's channel picker, a ChatTwo tab with another channel, another
+    /// plugin), or a channel command was typed (/s, /p, even for the channel already on).
+    /// </summary>
     ChannelSwitched,
 
     /// <summary>The player clicked the server info bar entry.</summary>
@@ -222,6 +228,32 @@ public sealed class StickyChannel {
         return end;
     }
 
+    /// <summary>
+    /// Something called the game's channel switch (<c>RaptureShellModule.ChangeChatChannel</c>), and it has returned.
+    /// Ends talking in the channel if the switch came from a command typed in the chat box (/s while already in Say
+    /// leaves the channel unchanged, but is the player switching back), or if the game's channel is no longer the one it
+    /// started in. Otherwise it goes on: ChatTwo calls the switch with the channel it is already on at every tab change,
+    /// and when its input loses focus after a one-off channel.
+    /// </summary>
+    /// <param name="channel">The game's chat channel after the call, or null if it can't be read.</param>
+    /// <param name="fromTypedCommand">The call came while a line submitted through the chat box was being run.</param>
+    /// <returns>Why it ended, or null if it goes on (or wasn't on).</returns>
+    public StickyEnd? ChannelSwitchCalled(GameChannel? channel, bool fromTypedCommand) {
+        if (this.ChannelId == null) {
+            return null;
+        }
+
+        StickyEnd? end = fromTypedCommand ? StickyEnd.ChannelSwitched
+            : channel == null ? StickyEnd.ChannelUnknown
+            : channel != this._gameChannel ? StickyEnd.ChannelSwitched
+            : null;
+        if (end != null) {
+            this.Leave();
+        }
+
+        return end;
+    }
+
     /// <summary>Stops talking in the channel.</summary>
     /// <returns>The channel it was, or null if it wasn't on.</returns>
     public string? Leave() {
@@ -265,7 +297,17 @@ public static class StickyMessages {
 
     public static string Entered(string tag, bool chatTwo) =>
         $"Now talking in {tag}: what you type in chat goes only to this LookingGlass channel. Type /s (or any chat channel command) to go back." +
-        (chatTwo ? " ChatTwo may add \"(Warning: ...)\" with the game's channel; your messages still go only to " + tag + "." : "");
+        (chatTwo
+            ? $" In ChatTwo, every chat box and pop-out sends to {tag} too, whatever channel it shows, and so do short commands with a message " +
+              "(/p hi): to talk in a game channel just once, use the long command (/party hi), or switch channel first. " +
+              $"ChatTwo may add \"(Warning: ...)\" with the game's channel; your messages still go to {tag}, except in a ChatTwo tab " +
+              "or pop-out set to a tell, which ChatTwo sends itself."
+            : "");
+
+    /// <summary>Said when talking in a channel starts while ExtraChat (or a fork of it) is loaded too.</summary>
+    public const string ExtraChatLoaded =
+        "ExtraChat is also turned on. It watches the same chat box and ChatTwo's channel name, so the name shown may be " +
+        "wrong and ExtraChat may take what you type. Turn ExtraChat off while you talk in LookingGlass channels this way.";
 
     public static string Ended(string tag, StickyEnd why) => why switch {
         StickyEnd.ChannelSwitched or StickyEnd.Stopped => $"Stopped talking in {tag}. What you type goes to game chat again.",
