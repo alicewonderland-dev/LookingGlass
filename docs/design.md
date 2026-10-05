@@ -273,7 +273,7 @@ A single process with an embedded database, built around three rules: no lock he
 | Connections per IP | 20; unauthenticated connections close after 20 minutes | Bounds idle and unauthenticated load |
 | Outbound queue per connection | 256 events | A slow client is disconnected, not waited on |
 
-Operations: the server runs on Linux and Windows (.NET 10), listens on localhost by default behind a TLS reverse proxy, and trusts `X-Forwarded-For` only from configured proxies. First deployment is a local VM over Tailscale, then a cloud host.
+Operations: the server runs on Linux and Windows (.NET 10), listens on localhost by default behind a TLS reverse proxy, and trusts `X-Forwarded-For` only from configured proxies. The first tester server runs as a systemd service on a Linux machine behind Tailscale Funnel (`scripts/publish-linux.ps1`, `deploy/install-linux.sh`); a cloud host comes later.
 
 ## Migration from the original
 
@@ -285,6 +285,26 @@ LookingGlass uses a new server and protocol, so users re-register once and chann
 - **Echo bot:** a headless client that accepts invites, takes part in rekeys and echoes messages; runs inside the server (`Dev:HostEchoBot`) or via `lgdev bot`.
 - **`/lgdebug`:** connection state, protocol trace, notices, and tools to ping, force a rekey, or simulate an incoming message.
 - **Automated tests:** crypto, the policy table, end-to-end flows, and a malicious-server suite that injects forged and replayed events.
+
+## Planned features
+
+### Local chat (friends only)
+
+Status: planned, not started. Decided 2026-10-05: friends only, with no party or Free Company option, since those can include people a player doesn't trust.
+
+A `/say`-like chat for players who stand near each other and both use the plugin: nobody without the plugin sees it, and only players on the sender's in-game friends list can read it.
+
+- **The sender's plugin picks the recipients.** When a player sends a local message, their plugin takes the players near them in the game (the object table, at about `/say` range), keeps those on their in-game friends list, and looks up their LookingGlass keys (the same lookup as inviting by name, using pinned keys). It encrypts the message separately to each recipient's identity key, as epoch keys are sealed today, signs it with the sender's identity key, and asks the server to deliver the copies to those accounts.
+- **The receiving plugin checks too.** A message is shown only if it decrypts, its signature is the sender's known key, the sender is on this player's friends list, and the sender's character is near them. FFXIV friendships are mutual and both checks run in the players' own plugins, so the server can't add anyone and can't forge one.
+- **The server never learns locations.** It holds no zones, instances or rooms: it only delivers sealed copies to the user IDs the sender named, and stores nothing.
+- **Shown in game chat** with its own tag and command (for example `/lgl`; check in game that it's free) and its own colour, like a channel.
+- **A new server capability** (`local`) with its own message types. It doesn't touch channels, the membership log or epochs, and an old client never sees it.
+
+What it costs, all accepted:
+- **No meeting strangers.** It is chat among friends who use the plugin. An open, signed-only local chat is out of scope.
+- **Metadata.** The server sees who sent to whom and when, which implies those players were together.
+- **The friends list must be loaded.** The game may only fill it in once the Friends window has been opened in a session; if so, the plugin says plainly to open it once. Check in game.
+- **Crowds.** One copy per recipient is fine for a handful of friends nearby; cap recipients per message (about 50), and rate-limit like channel messages.
 
 ## Milestones
 
