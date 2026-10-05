@@ -86,9 +86,10 @@ public sealed class CommandSlotTests {
         Assert.Equal(new ChannelCommand.NotFound("No channel is on /lgc2. Assign one in the main window (/lg)."), ChannelCommand.ForSlot(slots, 2, "hello"));
         Assert.Equal(new ChannelCommand.NotFound("No channel is on /lgc49. Assign one in the main window (/lg)."), ChannelCommand.ForSlot(slots, 49, "hello"));
 
-        // No message: usage, whether or not the slot has a channel.
-        Assert.Equal(new ChannelCommand.Usage("Usage: /lgc1 <message>"), ChannelCommand.ForSlot(slots, 1, "   "));
-        Assert.Equal(new ChannelCommand.Usage("Usage: /lgc2 <message>"), ChannelCommand.ForSlot(slots, 2, ""));
+        // No message: talk in the channel on that slot from now on, or say there isn't one.
+        Assert.Equal(new ChannelCommand.TalkIn("aaa"), ChannelCommand.ForSlot(slots, 1, "   "));
+        Assert.Equal(new ChannelCommand.TalkIn("bbb"), ChannelCommand.ForSlot(slots, 50, ""));
+        Assert.Equal(new ChannelCommand.NotFound("No channel is on /lgc2. Assign one in the main window (/lg)."), ChannelCommand.ForSlot(slots, 2, ""));
     }
 
     [Theory]
