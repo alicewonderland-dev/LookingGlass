@@ -1551,6 +1551,21 @@ known by name (neither English nor the client's language) ends sticky mode
 only if the game calls its channel switch while the line runs, or the channel
 changes.
 
+**The diagnostic log.** So an in-game test can be read back without the
+player copying anything, sticky mode writes one Information line to Dalamud's
+log (`dalamud.log`, tagged `[LookingGlass] [sticky]`, built by
+`StickyDiagnostics`) for every line the chat box hook sees while sticky, every
+start (and refusal) and every end, and every `ChangeChatChannel` call while
+sticky. A line's entry has the channel's tag, whether the ChatTwo rule was on,
+the leading command if it is a known one (otherwise "(text)", "(payload)",
+"(link placeholder)", "(blank)" or "(other command)"), its size in bytes,
+whether it held payloads, and the decision with a reason in fixed words. A
+switch's has the chat type before and after the call, and whether a typed line
+was in flight. Never what was typed, a link's contents, or an unknown command's
+name (it could be a message typed after a "/"); tests check this. When sticky
+mode is off, the hook doesn't look at lines at all, and channel switches are
+written at Debug only.
+
 **What the owner's game test showed, and what changed (October 2026).** With
 ChatTwo on: a link alone reached a cross-world linkshell, and `/s` typed while
 sticky printed nothing and left ChatTwo's label on "LookingGlass", while the

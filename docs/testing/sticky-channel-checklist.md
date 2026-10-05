@@ -8,6 +8,14 @@ the hooks, the chat box label and ChatTwo behave as the design says
 Steps marked **(changed)** are new, or expect something different since the
 last round: those are the ones to test again. Steps numbered like 11b are new.
 
+You don't need to copy anything out of the game. While you talk in a channel,
+LookingGlass writes one line per thing it decides to Dalamud's log
+(`%APPDATA%\XIVLauncher\dalamud.log`, lines with `[LookingGlass] [sticky]`):
+which command a line started with, its size, and where it went and why, plus
+every channel switch, start and stop. It never writes what you typed or what a
+link holds. After testing, just say roughly what time you did a step that went
+wrong (and its number), and we read the log from there.
+
 ## Before you start
 
 - [ ] Build and load this branch's plugin as a dev plugin.
