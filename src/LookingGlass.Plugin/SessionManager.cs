@@ -103,9 +103,20 @@ public sealed class SessionManager : IDisposable {
 
     public void Disconnect() => this.Stop();
 
+    /// <summary>What "Reset my identity" would do now, for the logged-in character's session (see <see cref="IdentityResetPlan"/>). Call on the framework thread.</summary>
+    public IdentityResetPlan ResetPlan() {
+        var session = this._sessionPlayer is { } owner && owner.ContentId == this._player.Current?.ContentId ? this.Session : null;
+        return IdentityResetPlan.Of(session?.Snapshot ?? SessionSnapshot.Empty);
+    }
+
     /// <summary>
     /// "Reset my identity" for the logged-in character on the configured server:
     /// <list type="number">
+    /// <item>Never while the character is the admin of a channel there (see <see cref="IdentityResetPlan"/>): the user hands
+    /// admin on, disbands or leaves it first. Without a live login nothing can be checked, so only with
+    /// <paramref name="withoutLeaving"/>, the user's explicit say-so.</item>
+    /// <item>It leaves every channel and declines every invite with the old key (see <see cref="ClientSession.LeaveChannelsForResetAsync"/>);
+    /// one that fails is reported, and the reset goes on (it can be removed from the list afterwards).</item>
     /// <item>If the session is logged in, it asks the server to retire the old key (see <see cref="ClientSession.RetireIdentityAsync"/>),
     /// which ends every login made with it there at once. If it can't (not connected, or the server refuses or is too
     /// old), the reset goes on, and the user is told the old key and login keep working on the server until they register again.</item>
@@ -115,7 +126,7 @@ public sealed class SessionManager : IDisposable {
     /// </list>
     /// Call on the framework thread; the returned task finishes the work.
     /// </summary>
-    public Task ResetIdentity() {
+    public Task ResetIdentity(bool withoutLeaving = false) {
         if (this._player.Current is not { } player) {
             return Task.FromException(new InvalidOperationException("Log in to the character whose identity you want to reset."));
         }
@@ -124,6 +135,14 @@ public sealed class SessionManager : IDisposable {
         // This character's session for this address, if any: only it holds a login to sign the request with.
         var session = this._sessionPlayer?.ContentId == player.ContentId ? this.Session : null;
         return Task.Run(async () => {
+            // Checked again here, on the newest snapshot: the dialog's may be older.
+            var plan = IdentityResetPlan.Of(session?.Snapshot ?? SessionSnapshot.Empty);
+            if (plan.Readiness == ResetReadiness.Ready) {
+                this.ReportCleanup(await session!.LeaveChannelsForResetAsync());
+            } else if (!(plan.CanOverride && withoutLeaving)) {
+                throw new InvalidOperationException(plan.Explanation);
+            }
+
             var notRetired = await Retire(session);
             IdentityReset reset;
             try {
@@ -153,6 +172,23 @@ public sealed class SessionManager : IDisposable {
                 this._chat.Notice(NoticeLevel.Warning, $"{problem} It may still hold your old identity.");
             }
         });
+    }
+
+    /// <summary>Tells the user what leaving their channels before the reset did, where it matters: what didn't go as planned.</summary>
+    private void ReportCleanup(IdentityResetCleanup cleanup) {
+        Services.Log.Information($"Before resetting an identity: left {cleanup.Left.Length} channels, declined {cleanup.Declined.Length} invites, " +
+                                 $"kept {cleanup.Kept.Length}, {cleanup.Failed.Length} failed");
+        foreach (var failure in cleanup.Failed) {
+            this._chat.Notice(NoticeLevel.Warning,
+                $"Couldn't leave \"{failure.What}\" before resetting your identity ({failure.Error}). It stays in your channel list under your old key: " +
+                "remove it with \"Remove from my list\" in its menu.");
+        }
+
+        foreach (var kept in cleanup.Kept) {
+            this._chat.Notice(NoticeLevel.Info,
+                $"\"{kept.Channel.DisplayName}\" wasn't left (your current key wasn't a member of it), so it stays in your channel list: " +
+                "remove it with \"Remove from my list\" in its menu.");
+        }
     }
 
     /// <summary>Asks the server to retire the session's identity key, if it is logged in.</summary>

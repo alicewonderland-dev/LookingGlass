@@ -1083,7 +1083,7 @@ public sealed class ClientSession : IAsyncDisposable {
                 var channel = this._channels.GetValueOrDefault(channelId) ?? throw new InvalidOperationException("You're not in that channel.");
                 if (!this.IsMember(channelId)) {
                     throw new InvalidOperationException(this.MembershipOf(channelId).FindMember(me.UserId) != null
-                        ? "Your place in that channel belongs to an identity key you no longer have. A moderator must remove you and invite you again."
+                        ? PlainMessages.OldKeyChannel
                         : "You haven't joined that channel.");
                 }
 
@@ -3420,7 +3420,7 @@ public sealed class ClientSession : IAsyncDisposable {
             } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
                 // Stopping.
             } catch (Exception ex) when (Volatile.Read(ref this._disposed) == 0) {
-                this.RaiseNotice(NoticeLevel.Warning, $"{what} failed: {ex.Message}");
+                this.RaiseNotice(NoticeLevel.Warning, PlainMessages.Of($"{what} failed: {ex.Message}"));
             } catch {
                 // Shutting down; nobody to tell.
             }
