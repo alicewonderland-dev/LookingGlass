@@ -1240,16 +1240,19 @@ Dalamud dependency.
   immutable snapshot after every change. The UI reads only snapshots.
   Anything that must touch the game is queued with
   `Framework.RunOnFrameworkThread`.
-- **Sending.** `/lgc1` to `/lgc50` and `/lgc <nickname>`. A sticky channel
-  through a chat-input hook may come later. Sending fails closed: an error
-  never falls through to ordinary game chat.
-- **Game interop.** Signatures live in one module. A missing one disables
-  only its feature.
-- **ChatTwo (planned).** ExtraChat exposed `ExtraChat.ChannelNames`,
-  `ExtraChat.ChannelCommandColours` and `ExtraChat.OverrideChannelColour` to
-  ChatTwo, and added an invite item to ChatTwo's context menu through
-  `ChatTwo.Register` and `Invoke`. LookingGlass will keep equivalent
-  integration; the IPC names are an open question.
+- **Sending.** `/lgc1` to `/lgc50` and `/lgc <nickname>`, or, after `/lgc3`
+  or `/lgc sky` with no message, plain text typed in the chat box (see
+  [Talking in a channel without /lgc](#talking-in-a-channel-without-lgc)).
+  Sending fails closed: an error never falls through to ordinary game chat.
+- **Game interop.** Signatures live in one module (`ChatInterop`), and come
+  from FFXIVClientStructs. A missing one disables only its feature.
+- **ChatTwo.** ChatTwo's input sends through the same game function the chat
+  box does, which sticky mode hooks, and LookingGlass names its channel in
+  ChatTwo's input through `ExtraChat.OverrideChannelColour` (see below).
+  ExtraChat also exposed `ExtraChat.ChannelNames` and
+  `ExtraChat.ChannelCommandColours`, and added an invite item to ChatTwo's
+  context menu through `ChatTwo.Register` and `Invoke`. LookingGlass will keep
+  equivalent integration; the IPC names are an open question.
 
 ### Channel numbers, nicknames and colours
 
@@ -1286,6 +1289,165 @@ These are plugin settings, kept per character, and never sent to the server.
   warning keeps its orange either way, and invitees stay grey until they join.
 - **Confirmations.** Removing a member needs **Ctrl** held. Leaving or
   disbanding asks first. Cancelling an invite happens straight away.
+
+### Talking in a channel without /lgc
+
+`/lgc3` or `/lgc sky` with no message makes the chat box talk in that channel
+(a "sticky" channel): from then on, plain text typed in the chat box goes to
+the channel, as `/lgc3 <message>` would send it, and never to game chat.
+Commands still work. `/lgc` alone still explains itself, and `/lgc 3` is a
+nickname, never channel number 3. The rules live in the core library
+(`StickyChannel`, `StickyRoute`, `ChatChannelPrefixes`), with no game types,
+and are unit tested; the plugin's `StickyMode` feeds them and acts on them,
+on the game thread only.
+
+**Starting.** Only in a channel the player is a member of (any rank, under
+their current setup) on the server they're connected to now, once the channel
+list is in. Otherwise it is refused with one plain line: not connected, still
+loading, not in that channel, or not available (a hook is missing, or the
+game's chat channel can't be read). With ChatTwo it is also refused while
+ChatTwo's input is on a /tell (see below). `/lgcM` while talking in another
+channel moves to that one.
+
+**The hooks.** Two game functions, by the addresses FFXIVClientStructs gives
+(Dalamud resolves them at startup), hooked with `IGameInteropProvider` in
+`ChatInterop`:
+
+- `UIModule.ProcessChatBoxEntry`, which the chat box calls with the line typed
+  when Enter is pressed. From there the game runs commands (Dalamud's
+  included) or sends plain text to the current channel, so it is the one place
+  to keep a line from game chat without touching how commands work.
+- `RaptureShellModule.ChangeChatChannel`, which switches the game's chat
+  channel (`/s`, `/p`, `/l1`, ChatTwo's channel picker and tabs). It is seen
+  even when the channel switched to is the one it was on, which watching the
+  channel alone would miss (`/s` while in Say).
+
+Both or neither: if either address is missing, neither is hooked and sticky
+mode refuses to start, rather than catch typing without seeing switches. Both
+stay enabled while the plugin is loaded; when no channel is sticky, the
+detours read one field and call the game.
+
+**Where a line goes** (`StickyRoute.For`). Not sticky: the game. Sticky:
+
+- A line that starts with `/` is a command and goes to the game untouched,
+  `/lgc` commands included. Only a `/` at the very start counts: a line with
+  a space before it goes to the channel, never the game.
+- Anything else goes to the channel, trimmed, as text (`SeString.TextValue`:
+  item links and auto-translate phrases become their text). A blank line goes
+  nowhere; a line with no text at all is dropped with a line saying so.
+- With ChatTwo, one more case (below): its channel command followed by text.
+
+**Fail closed.** While sticky, a line never reaches game chat unless it is a
+command:
+
+- Not connected (or reconnecting): kept from the game, and "Not sent to [sky]:
+  not connected to LookingGlass. It didn't go to game chat either." Sticky
+  mode stays on, so a reconnect doesn't drop the player into public chat.
+- The send fails (no channel key yet, rate limited, refused, timed out): the
+  same line with the reason, in the mode's words (`PlainMessages.MessageOf`).
+- Deciding throws (in the detour): the line is kept, and the player is told it
+  wasn't sent. An exception never reaches the game.
+- Hooks missing: sticky mode can't be turned on at all.
+- Unloading: sticky mode ends first (with a line), the chat input's channel
+  name is put back, then the hooks come off, before anything else is disposed.
+
+**Leaving.** It ends, with one line saying so, when:
+
+- the game's chat channel is switched: `ChangeChatChannel` is called (by the
+  game or a plugin), or the channel read once a frame
+  (`RaptureShellModule.ChatType`, which names the linkshell too) differs from
+  the one it started in (Tab-cycling, whatever path the game takes);
+- the player clicks the server info bar entry;
+- they log out or another character logs in;
+- the session ends: disconnected by hand, the server address changed, or the
+  identity reset or restored (a new session object);
+- they're no longer in the channel (left, removed, disbanded, "Remove from my
+  list", or now only a place under old keys), checked against the complete
+  channel list only;
+- the game's chat channel can't be read any more;
+- the plugin is turned off or updated.
+
+The line is printed for a channel switch too, though the player usually made
+it: ChatTwo switches the game's channel when the player only changes tabs, and
+the line is what tells them their typing goes to game chat again. Moving to
+another LookingGlass channel says "Now talking in" instead.
+
+**The indicator.** While sticky, the channel's tag (`[sky]` or `[LGC3]`)
+shows in three places:
+
+- the game chat input's channel name, where it says "Say" or "Party"
+  (`AddonChatLog.CurrentChannelTextNode`), set just before the chat log is
+  drawn (`IAddonLifecycle` `PreDraw`). When sticky mode ends, the node gets
+  the game's own name for its current channel
+  (`AgentChatLog.ChannelLabel`), not the one saved when it started, so after a
+  switch it never shows the old channel;
+- ChatTwo's input (below);
+- the server info bar (`IDtrBar`), as "LG [sky]" in the channel's colour, with
+  a tooltip; clicking it stops. This one works whatever chat window is in use.
+
+**ChatTwo.** ChatTwo replaces the game's chat window, and many players use it.
+What its public source (github.com/Infiziert90/ChatTwo, EUPL-1.2, read for its
+behaviour only; version 1.40.9) shows, and what LookingGlass does about it:
+
+- *Sending (verified).* ChatTwo sends what is typed with
+  `UIModule.ProcessChatBoxEntry`, the hooked function. But it puts its input
+  channel's command in front of plain text first: "hello" typed with its input
+  on Party is sent as "/p hello". So while sticky, with ChatTwo loaded, a line
+  that is the command of the game's current channel (which ChatTwo's input
+  follows) or of the channel ChatTwo says its input sends to (its
+  `ChatTwo.GetChatInputState` IPC; a tab can have its own channel), followed by
+  text, goes to the LookingGlass channel (`ChatChannelPrefixes.SentAs`). The
+  cost: while sticky, a deliberate `/p hello` typed with the input on Party
+  goes to the LookingGlass channel too, which is private, so it fails safe.
+  Other commands go to the game.
+- *Tells (verified).* ChatTwo sends a tell to a known player straight to the
+  server, without the chat box function, so it can't be caught. Sticky mode
+  therefore refuses to start while the game's channel or ChatTwo's input is on
+  a /tell; switching to a tell ends it. A one-off tell from ChatTwo while
+  sticky (its reply keybind, or "Send Tell" in a menu) goes as a tell, as its
+  input then shows.
+- *Switching (verified).* ChatTwo's channel picker, its tab switches and its
+  keybinds for a lasting switch call `RaptureShellModule.ChangeChatChannel`,
+  so they end sticky mode. Its one-off channels (keybinds) and a tab's own
+  channel only change what ChatTwo sends; while sticky, text sent with them
+  goes to the LookingGlass channel (the prefix rule).
+- *The label (verified).* ChatTwo names another plugin's channel in its input
+  only through the IPC message `ExtraChat.OverrideChannelColour` (made for
+  ExtraChat): `{ Channel, UiColour, Rgba }`, with a null `Channel` to stop.
+  LookingGlass sends "LookingGlass [sky]" in the channel's colour while sticky,
+  and null when it ends (and again when `ChatTwo.Available` says ChatTwo
+  reloaded). Dalamud matches the struct's fields by name. ChatTwo shows it only
+  when no one-off channel, tell or tab channel takes precedence, and it changes
+  only the label and the input's colour, never where ChatTwo sends.
+- *"(Warning: Party)" (verified, can't be avoided today).* ChatTwo adds
+  "(Warning: *its channel*)" to an override unless its own input channel is one
+  of ExtraChat's (its `ExtraChatLinkshell1` to `8`). Its input can only be put
+  on one of those through its own channel picker, which offers them only while
+  `/ecl1` to `/ecl8` are registered Dalamud commands. LookingGlass doesn't
+  register ExtraChat's commands, so ChatTwo shows "LookingGlass [sky] (Warning:
+  Party)". The "Now talking in" line says what it means: the game's channel
+  underneath; what is typed still goes only to the LookingGlass channel. Making
+  it go away needs a change in ChatTwo, such as an override that names a
+  command to send plain text with (`/lgc3`) and no warning.
+- *Why ExtraChat's sticky channel was unreliable with ChatTwo (inferred from
+  ChatTwo's side only).* Typing `/ecl1` in ChatTwo sends the command, and the
+  override renames ChatTwo's label, but ChatTwo's own input channel stays
+  where it was (Party in the owner's screenshot, hence "(Warning: Party)").
+  ChatTwo then sends plain text as "/p text", so whether it reached ExtraChat
+  or party chat depended entirely on whether the other plugin's hook claimed a
+  "/p" line as its own. Picking the ExtraChat channel in ChatTwo's picker put
+  ChatTwo's input on it properly, but any game channel change, and every tab
+  switch, puts ChatTwo's input back on the game's channel. LookingGlass doesn't
+  depend on ChatTwo's input channel at all: the prefix rule catches both.
+
+**Limits.** Only lines submitted through the chat box function are caught:
+ChatTwo's tells (above), and anything the game sends another way (a macro's
+lines may be one; not checked), go to the game as always. Another plugin that submits plain
+text through the chat box while a channel is sticky has it sent to the
+channel instead (private, so it fails safe). Whether the game calls
+`ChangeChatChannel` for every way of switching (Tab-cycling, `/t Name`) is
+checked in game; switches that change the channel are caught by the
+once-a-frame check either way.
 
 ### Simple and advanced mode
 
@@ -1471,8 +1633,10 @@ without touching chat, UI or server routing.
 | M3 Integrations and UI | ChatTwo, import wizard, key-verification UI | |
 | M4 Hardening and beta | Hardening, beta testing | No open high-severity findings, then the 1.0 release |
 
-Version 0.2 covers M1 and M2 and the key-verification UI of M3. CI (from M0),
-ChatTwo and the import wizard aren't built yet.
+Version 0.2 covers M1 and M2 and the key-verification UI of M3. Of M3's
+ChatTwo integration, only sticky mode's (sending through ChatTwo's input, and
+naming the channel in it) is built. CI (from M0), the rest of the ChatTwo
+integration and the import wizard aren't built yet.
 
 ## Decisions
 
@@ -1510,6 +1674,12 @@ The owner's decisions, and why.
 - **Stale places can be removed from your list.** A place under an old key
   can't be left, so `ForgetChannel` takes it off the user's list without
   touching the log.
+- **Sticky channel (2026-10-05).** As in ExtraChat, a channel command with no
+  message switches the chat box to that channel, by number (`/lgc3`) or, new,
+  by nickname (`/lgc sky`). See
+  [Talking in a channel without /lgc](#talking-in-a-channel-without-lgc).
+  ChatTwo is the owner's default chat window, so it is designed for, not
+  only tolerated.
 - **Friends-only local chat (2026-10-05).** No party or Free Company option,
   since those can include people a player doesn't trust.
 - **Key-change policy for re-verified keys.** Keys re-verified through the
@@ -1533,7 +1703,11 @@ The owner's decisions, and why.
   re-verified? (Decided for keys re-verified through the Lodestone; see
   Decisions.)
 - **ChatTwo IPC names:** reuse `ExtraChat.*`, or use `LookingGlass.*` and ask
-  ChatTwo to support them?
+  ChatTwo to support them? Sticky mode already sends on
+  `ExtraChat.OverrideChannelColour`, the only one ChatTwo listens to for its
+  input's label; asking ChatTwo for a neutral override (one that names the
+  command to send plain text with, and adds no "(Warning: ...)") would make
+  the label exact.
 - **Message history:** in 1.0, or later?
 - **Limits:** confirm after beta load testing.
 - **Public hosting:** who runs it, the cost, a privacy note, and an acceptable
