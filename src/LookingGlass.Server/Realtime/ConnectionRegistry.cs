@@ -77,7 +77,7 @@ public sealed class ConnectionRegistry(Database db, ILogger<ConnectionRegistry> 
                 return;
             }
 
-            var members = db.GetMembers(channelId).Where(member => !member.Forgotten).Select(member => member.User.UserId);
+            var members = db.GetMembers(channelId).Select(member => member.User.UserId);
             this.SendToAll(members, PresenceEvent(userId, true), except: userId);
         }
     }

@@ -993,7 +993,7 @@ public sealed class Database {
         using var connection = this.Open();
         using var command = Command(connection, null, """
             SELECT DISTINCT m.user_id FROM members m
-            WHERE m.channel_id IN (SELECT channel_id FROM members WHERE user_id = $me AND forgotten = 0) AND m.user_id != $me AND m.forgotten = 0;
+            WHERE m.channel_id IN (SELECT channel_id FROM members WHERE user_id = $me) AND m.user_id != $me;
             """, ("$me", userId));
         using var reader = command.ExecuteReader();
         var ids = new HashSet<long>();

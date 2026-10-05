@@ -1108,7 +1108,7 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.RateLimited, "You're disbanding channels too quickly; try again later.");
         }
 
-        var everyone = db.GetMembers(channelId).Concat(db.GetInvitees(channelId)).Select(member => member.User.UserId).ToList();
+        var everyone = this.Recipients(channelId).Concat(db.GetInvitees(channelId).Select(invitee => invitee.User.UserId)).ToList();
         db.DeleteChannel(channelId);
         registry.SendToAll(everyone, new Event { ChannelRemoved = new ChannelRemoved { ChannelId = channelId, Reason = RemovalReason.Disbanded } }, except: me.UserId);
         return Ack();
