@@ -42,8 +42,10 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
     private readonly LabelKeeper _chatTwoLabel = new(1000);
     // The tag and colour shown while talking in a channel, or null.
     private (string Tag, ushort Colour)? _shown;
-    // ChatTwo was loaded when talking in the channel started: its short commands stay the channel's until it ends.
-    private bool _chatTwoAtStart;
+    // The chat box state last written to the diagnostic log while talking in a channel.
+    private ChatBoxState? _loggedChatBox;
+    // The tag is held back from the game chat input's label (see OnChatLogPreDraw).
+    private bool _labelHeldBack;
     // The game's chat input still shows a tag that must be replaced by the game's own channel name.
     private bool _labelOwed;
     private bool _disposed;
@@ -86,8 +88,8 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
             return;
         }
 
-        this._chatTwoAtStart = chatTwo || (wasOn && this._chatTwoAtStart);
-        Log(() => StickyDiagnostics.Started(tag, this._chatTwoAtStart, world.Channel, wasOn));
+        this._loggedChatBox = world.ChatBox;
+        Log(() => StickyDiagnostics.Started(tag, chatTwo, world.Channel, wasOn, world.ChatBox));
         this._chat.ChannelNotice(start.Text, this._sessions.ColourOf(channelId));
         if (StickyMessages.ChatTwoNoteFor(tag, chatTwo, this._config.ChatTwoStickyNoteShown) is { } note) {
             this._chat.Notice(NoticeLevel.Info, note);
@@ -110,8 +112,8 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
 
         var tag = this.TagOf(channelId);
         var line = new ChatBoxLine(message, SeString.Parse(message).TextValue);
-        var chatTwo = this._chatTwoAtStart || this._chatTwo.Loaded;
-        var (route, reason) = StickyRoute.Decide(channelId, tag, line, ChatChannelPrefixes.SentAs(chatTwo), this._switches);
+        var chatTwo = this._chatTwo.Loaded;
+        var (route, reason) = StickyRoute.Decide(channelId, tag, line, ChatChannelPrefixes.SentAs(), this._switches);
         // Before acting on it, so the log has the line even if acting fails. Never the text itself.
         Log(() => StickyDiagnostics.Line(tag, chatTwo, line, route, reason, this._switches));
         switch (route) {
@@ -129,6 +131,34 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
         }
 
         return route.KeepsFromGame;
+    }
+
+    /// <inheritdoc/>
+    void IChatBoxListener.LinePassed() {
+        var chatBox = ChatInterop.ReadChatBox();
+        if (this._state.ChannelId is { } channelId && chatBox != this._state.ChatBoxBaseline) {
+            Log(() => StickyDiagnostics.ChatBoxChanged(this._shown?.Tag ?? this.TagOf(channelId), "after a line, counted as unchanged", this._state.ChatBoxBaseline, chatBox));
+        }
+
+        this._state.LinePassed(chatBox);
+        this._loggedChatBox = chatBox;
+    }
+
+    /// <inheritdoc/>
+    void IChatBoxListener.ChatBoxRenamed(ChatBoxState? before) {
+        if (this._state.ChannelId is { } channelId) {
+            var after = ChatInterop.ReadChatBox();
+            Log(() => StickyDiagnostics.ChatBoxChanged(this._shown?.Tag ?? this.TagOf(channelId), "the game renamed its channel", before, after));
+        }
+
+        this.CheckNow("the game renamed its channel");
+    }
+
+    /// <inheritdoc/>
+    void IChatBoxListener.LinkInserted(uint param) {
+        if (this._state.ChannelId is { } channelId) {
+            Log(() => StickyDiagnostics.LinkInserted(this._shown?.Tag ?? this.TagOf(channelId), param, ChatInterop.ReadChatBox()));
+        }
     }
 
     /// <inheritdoc/>
@@ -201,14 +231,7 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
     }
 
     private void OnUpdate(IFramework framework) {
-        try {
-            if (this._state.ChannelId is { } channelId && this._state.Check(this.World()) is { } end) {
-                this.Ended(channelId, end);
-            }
-        } catch (Exception ex) {
-            Services.Log.Error(ex, "Error checking the channel being talked in");
-            this.Leave(StickyEnd.ChannelUnknown);
-        }
+        this.CheckNow("frame");
 
         // Whatever happened, the labels say what is so: the tag while talking in a channel, never once it has stopped.
         this.SyncIndicators();
@@ -216,15 +239,58 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
 
     private void OnChatLogPreDraw(AddonEvent type, AddonArgs args) {
         try {
+            // Right before the label is drawn: if the chat box has just switched its channel, stop first, so the tag is never
+            // drawn over a channel that what is typed would go to.
+            this.CheckNow("draw");
             if (this._state.ChannelId is { } channelId) {
-                ChatInterop.SetChannelLabel(args.Addon.Address, this.TagOf(channelId));
-                this._labelOwed = true;
+                // The game's chat input may be naming a one-line channel the switch check can't be sure of: show the game's
+                // own name then, never the tag over it (what is typed still goes to the LookingGlass channel).
+                var unsettled = ChatBoxState.Unsettled(this._state.ChatBoxBaseline, ChatInterop.ReadChatBox());
+                if (unsettled != this._labelHeldBack) {
+                    this._labelHeldBack = unsettled;
+                    Log(() => $"{StickyDiagnostics.Prefix} label: talking in {this._shown?.Tag ?? this.TagOf(channelId)}, " +
+                              (unsettled ? "the chat box's one-line channel changed, so the game's own name is shown" : "the tag is shown again"));
+                }
+
+                ChatInterop.SetChannelLabel(args.Addon.Address, unsettled ? null : this.TagOf(channelId));
+                this._labelOwed = !unsettled;
             } else if (this._labelOwed) {
                 ChatInterop.SetChannelLabel(args.Addon.Address, null);
                 this._labelOwed = false;
             }
         } catch (Exception ex) {
             Services.Log.Error(ex, "Couldn't update the chat input's channel name");
+        }
+    }
+
+    /// <summary>
+    /// Checks the world now (see <see cref="StickyChannel.Check"/>) and ends talking in the channel if it changed; writes a
+    /// changed chat box state to the diagnostic log. Fails closed: if checking throws, it ends.
+    /// </summary>
+    /// <param name="where">Where it was called from, for the log.</param>
+    private void CheckNow(string where) {
+        try {
+            if (this._state.ChannelId is not { } channelId) {
+                return;
+            }
+
+            var world = this.World();
+            var lineInFlight = this._interop.LineInFlight;
+            if (world.ChatBox != this._loggedChatBox) {
+                var before = this._loggedChatBox;
+                this._loggedChatBox = world.ChatBox;
+                Log(() => StickyDiagnostics.ChatBoxChanged(this._shown?.Tag ?? this.TagOf(channelId),
+                    lineInFlight ? $"{where}, while a line runs" : where, before, world.ChatBox));
+            }
+
+            // A line let through to the game (a command, a one-off "/party hi") may set the chat box's one-line channel
+            // while it runs: measured again once it is done (LinePassed), not counted as the player switching.
+            if (this._state.Check(lineInFlight ? world with { ChatBox = null } : world) is { } end) {
+                this.Ended(channelId, end);
+            }
+        } catch (Exception ex) {
+            Services.Log.Error(ex, "Error checking the channel being talked in");
+            this.Leave(StickyEnd.ChannelUnknown);
         }
     }
 
@@ -241,7 +307,9 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
     private void Ended(string channelId, StickyEnd why) {
         // As last shown: after a logout or a disconnect, the channel's number and nickname are no longer at hand.
         var (tag, colour) = this._shown ?? (this.TagOf(channelId), this._sessions.ColourOf(channelId) ?? ChatOutput.TagColour);
-        Log(() => StickyDiagnostics.Ended(tag, why, ChatInterop.CurrentChannel()));
+        Log(() => StickyDiagnostics.Ended(tag, why, ChatInterop.ReadChatBox()));
+        this._loggedChatBox = null;
+        this._labelHeldBack = false;
         try {
             this.SyncIndicators();
         } finally {
@@ -290,7 +358,9 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
     }
 
     private StickyWorld World() =>
-        new(this._sessions.Session, this._player.Current?.ContentId ?? 0, this._sessions.Snapshot, ChatInterop.CurrentChannel());
+        new(this._sessions.Session, this._player.Current?.ContentId ?? 0, this._sessions.Snapshot, ChatInterop.CurrentChannel()) {
+            ChatBox = ChatInterop.ReadChatBox(),
+        };
 
     private string TagOf(string channelId) => ChannelTag.For(this._sessions.SlotOf(channelId), this._sessions.NicknameOf(channelId), this._config.NicknameTags);
 

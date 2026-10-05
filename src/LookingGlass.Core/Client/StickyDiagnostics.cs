@@ -68,13 +68,31 @@ public static partial class StickyDiagnostics {
     public static string Started(string tag, bool chatTwo, GameChannel? channel, bool moved) =>
         $"{Prefix} start: talking in {tag}{(moved ? " (was already talking in a channel)" : "")}, ChatTwo {YesNo(chatTwo)}, chat type {TypeOf(channel)}";
 
+    /// <summary>Talking in a channel started, with the chat box state it is measured against.</summary>
+    public static string Started(string tag, bool chatTwo, GameChannel? channel, bool moved, ChatBoxState? chatBox) =>
+        $"{Started(tag, chatTwo, channel, moved)}; {StateOf(chatBox)}";
+
     /// <summary>Talking in a channel was refused: <paramref name="why"/> is one of <see cref="StickyMessages"/>' fixed refusals.</summary>
     public static string Refused(string why, bool chatTwo, GameChannel? channel) =>
         $"{Prefix} start refused: ChatTwo {YesNo(chatTwo)}, chat type {TypeOf(channel)}: {why}";
 
     /// <summary>Talking in a channel ended.</summary>
-    public static string Ended(string tag, StickyEnd why, GameChannel? channel) =>
-        $"{Prefix} end: stopped talking in {tag} ({why}), chat type {TypeOf(channel)}";
+    public static string Ended(string tag, StickyEnd why, ChatBoxState? chatBox) =>
+        $"{Prefix} end: stopped talking in {tag} ({why}), {StateOf(chatBox)}";
+
+    /// <summary>
+    /// The chat box's own state changed while talking in a channel (<paramref name="what"/> says where it was seen: once a
+    /// frame, before a draw, the game renaming its channel, after a line).
+    /// </summary>
+    public static string ChatBoxChanged(string tag, string what, ChatBoxState? before, ChatBoxState? after) =>
+        $"{Prefix} chat box ({what}): talking in {tag}, {StateOf(before)} -> {StateOf(after)}" +
+        (ChatBoxState.Switched(before, after) ? ", one-line channel switched" : "");
+
+    /// <summary>The game put a link placeholder in its chat input (only its number: which kind of link).</summary>
+    public static string LinkInserted(string tag, uint param, ChatBoxState? chatBox) =>
+        $"{Prefix} link put in the chat input: talking in {tag}, kind {param}, {StateOf(chatBox)}";
+
+    private static string StateOf(ChatBoxState? state) => state is { } known ? known.ToString() : "chat box unreadable";
 
     private static string YesNo(bool value) => value ? "yes" : "no";
 

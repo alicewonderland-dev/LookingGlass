@@ -57,10 +57,14 @@ public static class ChatChannelPrefixes {
     public const int ChatTwoTell = 12;
 
     /// <summary>
-    /// The commands that stand for plain text while talking in a channel (see <see cref="StickyRoute.For"/>): with ChatTwo,
-    /// <see cref="ChatTwo"/>; without it, none, as the game's chat box sends plain text as it is.
+    /// The commands that, followed by anything, stand for plain text while talking in a channel (see
+    /// <see cref="StickyRoute.For"/>): <see cref="ChatTwo"/>, whichever chat box is in use. ChatTwo sends plain text that
+    /// way; the game's own chat box sends a line typed in its one-line channel ("/s " then text) with the channel's
+    /// command in front too, as far as can be told (see <see cref="ChatBoxState"/>), and a typed "/p hi" can't be told
+    /// apart from it. So in both, "/p hi" goes to the LookingGlass channel, and the long form ("/party hi") is the way to
+    /// talk in a game channel once.
     /// </summary>
-    public static IReadOnlyCollection<string> SentAs(bool chatTwo) => chatTwo ? ChatTwo : [];
+    public static IReadOnlyCollection<string> SentAs() => ChatTwo;
 
     /// <summary><see cref="Switches"/> and <paramref name="more"/> (the game's own names for them), ignoring case.</summary>
     public static IReadOnlyCollection<string> SwitchesWith(IEnumerable<string> more) =>
@@ -291,6 +295,12 @@ public enum StickyEnd {
     /// </summary>
     ChannelSwitched,
 
+    /// <summary>
+    /// The game chat box switched its own one-line channel: in the game's chat box, a channel command followed by a
+    /// space (/s, /p) does that before anything is sent (see <see cref="ChatBoxState"/>).
+    /// </summary>
+    ChatBoxSwitched,
+
     /// <summary>The player clicked the server info bar entry.</summary>
     Stopped,
 
@@ -320,7 +330,10 @@ public enum StickyEnd {
 /// <param name="Session">The current session (compared by reference), or null.</param>
 /// <param name="ContentId">The logged-in character, or 0.</param>
 /// <param name="Channel">The game's chat channel, or null if it can't be read.</param>
-public sealed record StickyWorld(object? Session, ulong ContentId, SessionSnapshot Snapshot, GameChannel? Channel);
+public sealed record StickyWorld(object? Session, ulong ContentId, SessionSnapshot Snapshot, GameChannel? Channel) {
+    /// <summary>The game chat box's own state (its one-line channel), or null if it can't be read.</summary>
+    public ChatBoxState? ChatBox { get; init; }
+}
 
 /// <summary>The outcome of asking to talk in a channel.</summary>
 /// <param name="Entered">True if now talking in it.</param>
@@ -336,6 +349,7 @@ public sealed class StickyChannel {
     private object? _session;
     private ulong _contentId;
     private GameChannel _gameChannel;
+    private ChatBoxState? _chatBox;
 
     /// <summary>The channel being talked in, or null.</summary>
     public string? ChannelId { get; private set; }
@@ -359,6 +373,7 @@ public sealed class StickyChannel {
         this._session = world.Session;
         this._contentId = world.ContentId;
         this._gameChannel = world.Channel!.Value;
+        this._chatBox = world.ChatBox;
         return new StickyStart(true, StickyMessages.Entered(tag));
     }
 
@@ -377,6 +392,7 @@ public sealed class StickyChannel {
             : world.Snapshot is { State: ConnectionState.Ready, ChannelsLoaded: true } && MembershipRefusal(world.Snapshot, channelId, "") != null ? StickyEnd.NotInChannel
             : world.Channel == null ? StickyEnd.ChannelUnknown
             : world.Channel != this._gameChannel ? StickyEnd.ChannelSwitched
+            : ChatBoxState.Switched(this._chatBox, world.ChatBox) ? StickyEnd.ChatBoxSwitched
             : null;
         if (end != null) {
             this.Leave();
@@ -411,12 +427,26 @@ public sealed class StickyChannel {
         return end;
     }
 
+    /// <summary>
+    /// A line the chat box submitted has been run by the game (a command, or a one-off line to a game channel): its own
+    /// one-line channel may have been set and reset meanwhile, so what it is now counts as unchanged.
+    /// </summary>
+    public void LinePassed(ChatBoxState? chatBox) {
+        if (this.ChannelId != null) {
+            this._chatBox = chatBox;
+        }
+    }
+
+    /// <summary>The chat box state measured against, for the diagnostic log.</summary>
+    public ChatBoxState? ChatBoxBaseline => this._chatBox;
+
     /// <summary>Stops talking in the channel.</summary>
     /// <returns>The channel it was, or null if it wasn't on.</returns>
     public string? Leave() {
         var channelId = this.ChannelId;
         this.ChannelId = null;
         this._session = null;
+        this._chatBox = null;
         this._contentId = 0;
         return channelId;
     }
