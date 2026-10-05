@@ -35,21 +35,61 @@ public sealed class StickyChannelTests {
     }
 
     [Theory]
-    [InlineData("/s")]
-    [InlineData("/p")]
     [InlineData("/s hello")]
     [InlineData("/p brb")]
-    [InlineData("/l1")]
     [InlineData("/cwl1 hi")]
     [InlineData("/t Bob Smith@Zalera hi")]
+    [InlineData("/t Bob Smith@Zalera")]
     [InlineData("/lgc3")]
     [InlineData("/lgc3 hello")]
     [InlineData("/lgc sky hello")]
     [InlineData("/lg")]
     [InlineData("/em waves")]
+    [InlineData("/e")]
+    [InlineData("/ecl1")]
     [InlineData("/")]
     public void CommandsGoToTheGameUntouchedWithTheGamesChatBox(string input) {
         Assert.Equal(StickyRoute.Game, StickyRoute.For("aaa", Tag, input, NoPrefixes));
+    }
+
+    [Theory]
+    [InlineData("/s")]
+    [InlineData("/S")]
+    [InlineData("/s   ")]
+    [InlineData("/p")]
+    [InlineData("/say")]
+    [InlineData("/party")]
+    [InlineData("/fc")]
+    [InlineData("/freecompany")]
+    [InlineData("/l1")]
+    [InlineData("/linkshell8")]
+    [InlineData("/cwl1")]
+    [InlineData("/cwlinkshell3")]
+    [InlineData("/n")]
+    [InlineData("/beginner")]
+    public void AChannelCommandOnItsOwnEndsItFirstThenGoesToTheGame(string input) {
+        // The player switching back: it ends right then, saying so, without waiting for the game to call its channel
+        // switch (which it may not do for the channel already on), and the game then switches.
+        foreach (var sentAs in new[] { NoPrefixes, ChatChannelPrefixes.SentAs(chatTwo: true) }) {
+            var route = StickyRoute.For("aaa", Tag, input, sentAs);
+            Assert.Equal(StickyRoute.Leave, route);
+            Assert.False(route.KeepsFromGame);
+        }
+
+        // Not talking in a channel: just the game's.
+        Assert.Equal(StickyRoute.Game, StickyRoute.For(null, Tag, input, ChatChannelPrefixes.SentAs(chatTwo: true)));
+    }
+
+    [Fact]
+    public void TheGamesOwnNamesForChannelCommandsEndItToo() {
+        // The plugin adds the names in the client's language from the game's TextCommand sheet.
+        var switches = ChatChannelPrefixes.SwitchesWith(["/sagen", " /gruppe ", "", "x", "/"]);
+        Assert.Equal(StickyRoute.Leave, StickyRoute.For("aaa", Tag, ChatBoxLine.Plain("/sagen"), NoPrefixes, switches));
+        Assert.Equal(StickyRoute.Leave, StickyRoute.For("aaa", Tag, ChatBoxLine.Plain("/GRUPPE"), NoPrefixes, switches));
+        Assert.Equal(StickyRoute.Leave, StickyRoute.For("aaa", Tag, ChatBoxLine.Plain("/s"), NoPrefixes, switches));
+        Assert.Equal(StickyRoute.Game, StickyRoute.For("aaa", Tag, ChatBoxLine.Plain("/sagen hallo"), NoPrefixes, switches));
+        Assert.DoesNotContain("/", switches);
+        Assert.DoesNotContain("", switches);
     }
 
     [Theory]
@@ -60,10 +100,80 @@ public sealed class StickyChannelTests {
         Assert.Equal(new StickyRoute.Dropped(null), StickyRoute.For("aaa", Tag, input, NoPrefixes));
     }
 
+    // ---------------------------------------------------------------- links and auto-translate (the bytes the hook sees)
+
+    /// <summary>An item link as the game encodes it in a line (SeString payloads), with the item's name shown.</summary>
+    private static readonly byte[] NamedItemLink = [
+        0x02, 0x48, 0x04, 0xF2, 0x02, 0x25, 0x03, // colour on
+        0x02, 0x49, 0x04, 0xF2, 0x02, 0x26, 0x03, // glow on
+        0x02, 0x27, 0x07, 0x03, 0xF2, 0x14, 0xD5, 0x02, 0x01, 0x03, // the link: item 5333
+        0xEE, 0x82, 0xBB, (byte) 'P', (byte) 'o', (byte) 't', (byte) 'i', (byte) 'o', (byte) 'n', // link marker and name
+        0x02, 0x49, 0x02, 0x01, 0x03, // glow off
+        0x02, 0x48, 0x02, 0x01, 0x03, // colour off
+        0x02, 0x27, 0x07, 0xCF, 0x01, 0x01, 0x01, 0xFF, 0x01, 0x03, // end of the link
+    ];
+
+    /// <summary>The same link without any text: only payloads.</summary>
+    private static readonly byte[] BareItemLink = [0x02, 0x27, 0x07, 0x03, 0xF2, 0x14, 0xD5, 0x02, 0x01, 0x03, 0x02, 0x27, 0x07, 0xCF, 0x01, 0x01, 0x01, 0xFF, 0x01, 0x03];
+
+    /// <summary>An auto-translate phrase (group 1, phrase 101).</summary>
+    private static readonly byte[] AutoTranslate = [0x02, 0x2E, 0x03, 0x01, 0x66, 0x03];
+
+    private static ChatBoxLine Line(string before, byte[] payload, string text) =>
+        new([.. System.Text.Encoding.UTF8.GetBytes(before), .. payload], text);
+
     [Fact]
-    public void ALineWithOnlyALinkIsDroppedWithALineSayingSo() {
-        Assert.Equal(new StickyRoute.Dropped(StickyMessages.NotSent(Tag, StickyMessages.NoTextReason)), StickyRoute.For("aaa", Tag, " ", NoPrefixes, notOnlyText: true));
-        Assert.Equal(new StickyRoute.ToChannel("aaa", "look"), StickyRoute.For("aaa", Tag, "look ", NoPrefixes, notOnlyText: true));
+    public void ALineWithOnlyALinkIsKeptFromTheGameSayingSo() {
+        var notSent = new StickyRoute.Dropped(StickyMessages.NotSent(Tag, StickyMessages.NoTextReason));
+
+        // The game's chat box: a link with no text, as payloads only, or as the "<item>" the chat input holds for it.
+        Assert.Equal(notSent, StickyRoute.For("aaa", Tag, Line("", BareItemLink, ""), NoPrefixes));
+        Assert.Equal(notSent, StickyRoute.For("aaa", Tag, Line(" ", BareItemLink, " "), NoPrefixes));
+        Assert.Equal(notSent, StickyRoute.For("aaa", Tag, ChatBoxLine.Plain("<item>"), NoPrefixes));
+        Assert.Equal(notSent, StickyRoute.For("aaa", Tag, ChatBoxLine.Plain(" <flag> <status> "), NoPrefixes));
+
+        // With text, the text goes, links as their names.
+        Assert.Equal(new StickyRoute.ToChannel("aaa", "look"), StickyRoute.For("aaa", Tag, Line("look ", BareItemLink, "look "), NoPrefixes));
+        Assert.Equal(new StickyRoute.ToChannel("aaa", "look Potion"), StickyRoute.For("aaa", Tag, Line("look ", NamedItemLink, "look Potion"), NoPrefixes));
+        Assert.Equal(new StickyRoute.ToChannel("aaa", "look <item>"), StickyRoute.For("aaa", Tag, ChatBoxLine.Plain("look <item>"), NoPrefixes));
+    }
+
+    [Theory]
+    [MemberData(nameof(ChatTwoPrefixes))]
+    public void WithChatTwoAShortCommandFollowedByAnythingIsTheChannels(string prefix) {
+        // ChatTwo sends a link typed in an input on a cross-world linkshell as "/cwl1 <item>" (its input holds the link
+        // as the game's "<item>"), or with the link's own bytes after the command: never game chat.
+        var withChatTwo = ChatChannelPrefixes.SentAs(chatTwo: true);
+        var notSent = new StickyRoute.Dropped(StickyMessages.NotSent(Tag, StickyMessages.NoTextReason));
+
+        Assert.Equal(notSent, StickyRoute.For("aaa", Tag, ChatBoxLine.Plain($"{prefix} <item>"), withChatTwo));
+        Assert.Equal(notSent, StickyRoute.For("aaa", Tag, Line($"{prefix} ", BareItemLink, $"{prefix} "), withChatTwo));
+        // Straight after the command, with no space.
+        Assert.Equal(notSent, StickyRoute.For("aaa", Tag, Line(prefix, BareItemLink, prefix), withChatTwo));
+        Assert.Equal(notSent, StickyRoute.For("aaa", Tag, Line($"{prefix}  ", BareItemLink, $"{prefix}  "), withChatTwo));
+
+        // Text, a named link, an auto-translate phrase: sent as their text.
+        Assert.Equal(new StickyRoute.ToChannel("aaa", "Potion"), StickyRoute.For("aaa", Tag, Line($"{prefix} ", NamedItemLink, $"{prefix} Potion"), withChatTwo));
+        Assert.Equal(new StickyRoute.ToChannel("aaa", "look at Potion"),
+            StickyRoute.For("aaa", Tag, Line($"{prefix} look at ", NamedItemLink, $"{prefix} look at Potion"), withChatTwo));
+        Assert.Equal(new StickyRoute.ToChannel("aaa", "Hello"), StickyRoute.For("aaa", Tag, Line($"{prefix} ", AutoTranslate, $"{prefix} Hello"), withChatTwo));
+
+        // Whatever it holds, it never reaches the game while talking in a channel.
+        foreach (var payload in new[] { BareItemLink, NamedItemLink, AutoTranslate }) {
+            Assert.True(StickyRoute.For("aaa", Tag, Line($"{prefix} ", payload, $"{prefix} "), withChatTwo).KeepsFromGame);
+            Assert.True(StickyRoute.For("aaa", Tag, Line("", payload, ""), NoPrefixes).KeepsFromGame);
+        }
+
+        // Only the bare command, with nothing at all after it (a string's closing zero byte is nothing), switches.
+        Assert.Equal(StickyRoute.Leave, StickyRoute.For("aaa", Tag, new ChatBoxLine([.. System.Text.Encoding.UTF8.GetBytes(prefix), 0x00], prefix), withChatTwo));
+        Assert.Equal(StickyRoute.Leave, StickyRoute.For("aaa", Tag, ChatBoxLine.Plain($"{prefix} \t "), withChatTwo));
+    }
+
+    [Fact]
+    public void WithoutChatTwoACommandWithALinkIsTheGames() {
+        // The game's chat box never adds a channel command: "/p <item>" is the player's own, to Party.
+        Assert.Equal(StickyRoute.Game, StickyRoute.For("aaa", Tag, ChatBoxLine.Plain("/p <item>"), NoPrefixes));
+        Assert.Equal(StickyRoute.Game, StickyRoute.For("aaa", Tag, Line("/p ", BareItemLink, "/p "), NoPrefixes));
     }
 
     /// <summary>Every short channel command ChatTwo 1.40.9 can put in front of plain text (InputChannelExt.Prefix), but /t, /e and /ecl.</summary>
@@ -91,9 +201,9 @@ public sealed class StickyChannelTests {
         Assert.Equal(new StickyRoute.ToChannel("aaa", "hello  there"), StickyRoute.For("aaa", Tag, $"{prefix.ToUpperInvariant()}   hello  there ", withChatTwo));
         Assert.Equal(new StickyRoute.ToChannel("aaa", "hi"), StickyRoute.For("aaa", Tag, $"{prefix}\thi", withChatTwo));
 
-        // On its own it is a channel switch: the game's.
-        Assert.Equal(StickyRoute.Game, StickyRoute.For("aaa", Tag, prefix, withChatTwo));
-        Assert.Equal(StickyRoute.Game, StickyRoute.For("aaa", Tag, $"{prefix}   ", withChatTwo));
+        // On its own it is a channel switch: it ends talking in the channel, then goes to the game.
+        Assert.Equal(StickyRoute.Leave, StickyRoute.For("aaa", Tag, prefix, withChatTwo));
+        Assert.Equal(StickyRoute.Leave, StickyRoute.For("aaa", Tag, $"{prefix}   ", withChatTwo));
 
         // Without ChatTwo the game's chat box never adds one, so it is the player's own command: the game's.
         Assert.Equal(StickyRoute.Game, StickyRoute.For("aaa", Tag, $"{prefix} hello", ChatChannelPrefixes.SentAs(chatTwo: false)));
@@ -222,23 +332,29 @@ public sealed class StickyChannelTests {
     }
 
     [Fact]
-    public void StartingSaysHowToGoBack() {
-        var start = new StickyChannel().Enter("aaa", Tag, World(new object()), true, false, false);
-        Assert.True(start.Entered);
-        Assert.Equal(StickyMessages.Entered(Tag, chatTwo: false), start.Text);
-        Assert.Contains(Tag, start.Text);
-        Assert.Contains("/s", start.Text);
-        Assert.DoesNotContain("ChatTwo", start.Text);
+    public void StartingSaysOnlyWhereTypingGoesNow() {
+        foreach (var chatTwo in new[] { false, true }) {
+            var start = new StickyChannel().Enter("aaa", Tag, World(new object()), true, chatTwo, false);
+            Assert.True(start.Entered);
+            Assert.Equal("Now talking in [sky].", start.Text);
+        }
+    }
 
-        // With ChatTwo, why its label says "(Warning: Party)", and that it's still only this channel.
-        var withChatTwo = new StickyChannel().Enter("aaa", Tag, World(new object()), true, true, false);
-        Assert.True(withChatTwo.Entered);
-        Assert.Contains("ChatTwo", withChatTwo.Text);
-        Assert.Contains("(Warning: ...)", withChatTwo.Text);
-        // Every ChatTwo input and short command goes to the channel; the long command is the way to talk in a game channel once.
-        Assert.Contains("pop-out", withChatTwo.Text);
-        Assert.Contains("/party hi", withChatTwo.Text);
-        Assert.Contains("tell", withChatTwo.Text);
+    [Fact]
+    public void WithChatTwoOneShortLineExplainsItsLabelOnlyTheFirstTime() {
+        // Why its label says "(Warning: Party)", that it's still only this channel, and the long command for a game
+        // channel once: one sentence.
+        var note = StickyMessages.ChatTwoNoteFor(Tag, chatTwo: true, shownBefore: false);
+        Assert.Equal(StickyMessages.ChatTwoNote(Tag), note);
+        Assert.Contains("(Warning: …)", note);
+        Assert.Contains(Tag, note);
+        Assert.Contains("/party hi", note);
+        Assert.Single(note!.Split(". ", StringSplitOptions.RemoveEmptyEntries));
+        Assert.True(note.Length < 160, note);
+
+        // Once ever, and never without ChatTwo.
+        Assert.Null(StickyMessages.ChatTwoNoteFor(Tag, chatTwo: true, shownBefore: true));
+        Assert.Null(StickyMessages.ChatTwoNoteFor(Tag, chatTwo: false, shownBefore: false));
     }
 
     // ---------------------------------------------------------------- leaving
@@ -256,6 +372,34 @@ public sealed class StickyChannelTests {
         Assert.Equal("aaa", sticky.ChannelId);
     }
 
+    [Fact]
+    public void ADroppedConnectionKeepsItButDisconnectEndsIt() {
+        var session = new object();
+        var sticky = Started(session);
+
+        // The connection drops on its own: the session stays and reconnects, whatever state it is in meanwhile. Talking in
+        // the channel goes on, failing closed: what is typed isn't sent, says so, and never goes to game chat.
+        foreach (var state in Enum.GetValues<ConnectionState>()) {
+            Assert.Null(sticky.Check(World(session, Snapshot(state, false))));
+        }
+
+        Assert.Equal("aaa", sticky.ChannelId);
+        Assert.True(StickyRoute.For(sticky.ChannelId, Tag, "secret", NoPrefixes).KeepsFromGame);
+
+        // Disconnect pressed: the session is gone, so it ends, saying so.
+        Assert.Equal(StickyEnd.Disconnected, sticky.Check(World(null)));
+        Assert.Null(sticky.ChannelId);
+        Assert.Equal("Stopped talking in [sky]: disconnected.", StickyMessages.Ended(Tag, StickyEnd.Disconnected));
+
+        // A new session (another server, an identity reset) is another ending.
+        sticky = Started(session);
+        Assert.Equal(StickyEnd.SessionEnded, sticky.Check(World(new object())));
+
+        // Logging out stops the session too, but is said as a logout.
+        sticky = Started(session);
+        Assert.Equal(StickyEnd.LoggedOut, sticky.Check(World(null) with { ContentId = 0 }));
+    }
+
     [Theory]
     [MemberData(nameof(Endings))]
     public void ItEndsWhenAnythingItNeedsChanges(string what, StickyEnd expected) {
@@ -264,7 +408,7 @@ public sealed class StickyChannelTests {
         var world = what switch {
             "logged out" => World(session) with { ContentId = 0 },
             "other character" => World(session) with { ContentId = 99 },
-            "session ended" => World(null),
+            "disconnected" => World(null),
             "new session" => World(new object()),
             "left" => World(session, Snapshot(ConnectionState.Ready, true, Member("bbb"))),
             "invited only" => World(session, Snapshot(ConnectionState.Ready, true, Member("aaa") with { MyRank = Rank.Invited })),
@@ -286,7 +430,7 @@ public sealed class StickyChannelTests {
     public static TheoryData<string, StickyEnd> Endings() => new() {
         { "logged out", StickyEnd.LoggedOut },
         { "other character", StickyEnd.LoggedOut },
-        { "session ended", StickyEnd.SessionEnded },
+        { "disconnected", StickyEnd.Disconnected },
         { "new session", StickyEnd.SessionEnded },
         { "left", StickyEnd.NotInChannel },
         { "invited only", StickyEnd.NotInChannel },
@@ -362,8 +506,8 @@ public sealed class StickyChannelTests {
             StickyMessages.NoTellsWithChatTwo,
             StickyMessages.NotConnected(Tag),
             StickyMessages.NotAMember(Tag),
-            StickyMessages.Entered(Tag, false),
-            StickyMessages.Entered(Tag, true),
+            StickyMessages.Entered(Tag),
+            StickyMessages.ChatTwoNote(Tag),
             StickyMessages.NotSent(Tag, StickyMessages.NotConnectedReason),
             StickyMessages.NotSent(Tag, StickyMessages.NoTextReason),
             StickyMessages.NotSent(Tag, StickyMessages.SomethingWentWrongReason),
@@ -377,11 +521,69 @@ public sealed class StickyChannelTests {
 
     [Fact]
     public void AMessageThatWasntSentSaysItDidntGoToGameChat() {
-        Assert.Equal("Not sent to [sky]: too fast. It didn't go to game chat either.", StickyMessages.NotSent(Tag, "too fast"));
-        Assert.Equal("Not sent to [sky]: too fast. It didn't go to game chat either.", StickyMessages.NotSent(Tag, " too fast. "));
-        Assert.Equal("Not sent to [sky]: Slow down (RateLimited). It didn't go to game chat either.", StickyMessages.NotSent(Tag, "Slow down (RateLimited)"));
-        Assert.All(Enum.GetValues<StickyEnd>().Where(end => end != StickyEnd.LoggedOut),
-            end => Assert.Contains("game chat again", StickyMessages.Ended(Tag, end)));
+        Assert.Equal("Not sent to [sky] or game chat: too fast.", StickyMessages.NotSent(Tag, "too fast"));
+        Assert.Equal("Not sent to [sky] or game chat: too fast.", StickyMessages.NotSent(Tag, " too fast. "));
+        Assert.Equal("Not sent to [sky] or game chat: Slow down (RateLimited).", StickyMessages.NotSent(Tag, "Slow down (RateLimited)"));
+        Assert.Equal("Not sent to [sky] or game chat: no text (links can't be sent).", StickyMessages.NotSent(Tag, StickyMessages.NoTextReason));
+    }
+
+    [Fact]
+    public void StoppingSaysSoInAFewWords() {
+        Assert.Equal("Stopped talking in [sky].", StickyMessages.Ended(Tag, StickyEnd.ChannelSwitched));
+        Assert.Equal("Stopped talking in [sky].", StickyMessages.Ended(Tag, StickyEnd.Stopped));
+        Assert.Equal("Stopped talking in [sky]: you logged out.", StickyMessages.Ended(Tag, StickyEnd.LoggedOut));
+        Assert.Equal("Stopped talking in [sky]: disconnected.", StickyMessages.Ended(Tag, StickyEnd.Disconnected));
+        Assert.All(Enum.GetValues<StickyEnd>(), end => {
+            var text = StickyMessages.Ended(Tag, end);
+            Assert.StartsWith("Stopped talking in [sky]", text);
+            Assert.True(text.Length <= 64, text);
+        });
+    }
+
+    // ---------------------------------------------------------------- the labels follow the state
+
+    [Fact]
+    public void ChatTwosLabelIsSetWhileTalkingAndClearedAtOnceWhenItStops() {
+        var keeper = new LabelKeeper(1000);
+
+        // Never talked in a channel: nothing is sent, so another plugin's label is left alone.
+        Assert.False(keeper.ShouldSend(null, 0));
+        Assert.Null(keeper.Shown);
+
+        // Talking: set once, then again only when it changes, or after a while in case it was lost.
+        Assert.True(keeper.ShouldSend("[sky]", 10));
+        Assert.False(keeper.ShouldSend("[sky]", 20));
+        Assert.False(keeper.ShouldSend("[sky]", 1009));
+        Assert.True(keeper.ShouldSend("[sky]", 1010));
+        Assert.True(keeper.ShouldSend("[moon]", 1020));
+        Assert.Equal("[moon]", keeper.Shown);
+
+        // Stopped, however it stopped: cleared on the very next check, once.
+        Assert.True(keeper.ShouldSend(null, 1030));
+        Assert.Null(keeper.Shown);
+        Assert.False(keeper.ShouldSend(null, 1031));
+        Assert.False(keeper.ShouldSend(null, 99999));
+    }
+
+    [Fact]
+    public void SlashSOnItsOwnNeverLeavesTheLabelSayingTheChannelWhileTextGoesToTheGame() {
+        // The case from the game: ChatTwo on Say, talking in [sky], "/s" typed. It ends on the line itself, so by the
+        // next check the label is cleared, and only then does "/s test" (ChatTwo's "test") go to Say.
+        var session = new object();
+        var sticky = Started(session);
+        var keeper = new LabelKeeper(1000);
+        var withChatTwo = ChatChannelPrefixes.SentAs(chatTwo: true);
+        Assert.True(keeper.ShouldSend(Tag, 0));
+
+        Assert.True(StickyRoute.For(sticky.ChannelId, Tag, "/s test", withChatTwo).KeepsFromGame);
+        Assert.Equal(StickyRoute.Leave, StickyRoute.For(sticky.ChannelId, Tag, "/s", withChatTwo));
+        sticky.Leave();
+        Assert.True(keeper.ShouldSend(sticky.ChannelId, 1));
+        Assert.Null(keeper.Shown);
+        Assert.Equal(StickyRoute.Game, StickyRoute.For(sticky.ChannelId, Tag, "/s test", withChatTwo));
+
+        // The game's channel switch for it, if it comes, finds nothing to end.
+        Assert.Null(sticky.ChannelSwitchCalled(Say, fromTypedCommand: true));
     }
 
     private static void AssertRefused(StickyWorld world, string why, bool chatTwo = false, bool chatTwoTell = false) {
