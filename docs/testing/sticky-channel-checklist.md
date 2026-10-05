@@ -1,0 +1,166 @@
+# Sticky channel: in-game checklist
+
+Talking in a channel without typing `/lgc` every time (`/lgc3` or `/lgc sky`
+with no message). The unit tests cover the rules; only the game can show that
+the hooks, the chat box label and ChatTwo behave as the design says
+([design.md](../design.md#talking-in-a-channel-without-lgc)).
+
+## Before you start
+
+- [ ] Build and load this branch's plugin as a dev plugin.
+- [ ] Use two characters (a second client, or a friend). Character **A** does
+      the typing. Character **B** is in the same party and Free Company, and
+      stands next to A, so B sees everything A says in Say, Party and FC.
+- [ ] A and B are both in one LookingGlass channel, here called **sky** on
+      `/lgc1`. Give it the nickname `sky`. A is also in a second channel,
+      **moon**, on `/lgc2`.
+- [ ] Turn ExtraChat off (it is tested on its own at the end).
+- [ ] In every step, "only in LookingGlass" means: B sees it in the
+      LookingGlass channel, and nowhere in Say, Party or FC.
+
+## Part 1: the game's own chat box (turn ChatTwo off)
+
+### Starting
+
+- [ ] 1. In Say, type `/lgc1`.
+  - A line in sky's colour: "Now talking in [sky]: what you type in chat goes
+    only to this LookingGlass channel. Type /s (or any chat channel command) to
+    go back."
+  - The chat box's channel name (where it said "Say") now says `[sky]`.
+  - The server info bar (top right) shows "LG [sky]". Hovering it shows a
+    tooltip.
+- [ ] 2. Type `hello`. It shows only in LookingGlass.
+- [ ] 3. Press the up arrow. `hello` comes back in the chat box. Clear it.
+- [ ] 4. Type `/lgc sky` (the nickname). It says "Now talking in [sky]" again,
+      with no error.
+- [ ] 5. Type `/lgc2`. It now says "Now talking in [moon]", and the label
+      shows the moon tag. Type `hi`: only in moon. Type `/lgc1` to go back to
+      sky.
+- [ ] 6. Type `/lgc` with nothing after it. It shows the usage text, and you
+      are still in [sky].
+- [ ] 7. Type `/lgc 3`. It says "No channel has the nickname '3'."
+
+### Commands still work while in [sky]
+
+- [ ] 8. Type `/em waves`. The emote plays.
+- [ ] 9. Type `/p brb`. It goes to Party (B sees it in Party). You are still in
+      [sky]: the label still says `[sky]`.
+- [ ] 10. Type `  /s hi` (with two spaces before the slash). It goes only to
+      LookingGlass, as "/s hi", and not to Say.
+- [ ] 11. Link an item on its own (no text) and press Enter. You see "Not sent
+      to [sky]: there was no text to send…". Nothing appears in Say.
+
+### Leaving
+
+- [ ] 12. While in Say and in [sky], type `/s`. A line says "Stopped talking in
+      [sky]. What you type goes to game chat again." The label says "Say".
+      Type `test`: it goes to Say.
+- [ ] 13. Go back with `/lgc1`. Type `/p`. It stops, and the label says
+      "Party" (not "Say").
+- [ ] 14. `/lgc1`, then press Tab in the chat box to change the channel. It
+      stops, and the label shows the new channel.
+- [ ] 15. `/lgc1`, then `/l1` (or `/cwl1` if you have a cross-world
+      linkshell). It stops, and the label shows the linkshell.
+- [ ] 16. `/lgc1`, then `/t <B's name>`. It stops, and the label shows the
+      tell.
+- [ ] 17. `/lgc1`, then click "LG [sky]" in the server info bar. It stops, and
+      the info bar entry goes away.
+
+### When something goes wrong (nothing may ever reach Say)
+
+- [ ] 18. `/lgc1`. Open `/lg` and press **Disconnect**. Type `secret`. You see
+      "Not sent to [sky]: not connected to LookingGlass… It didn't go to game
+      chat either." B sees nothing anywhere.
+- [ ] 19. Connect again. A line says "Stopped talking in [sky]: disconnected
+      from LookingGlass." Type `test`: it goes to Say, as the label says.
+- [ ] 20. `/lgc1`, then type ten quick messages in a row until one is refused
+      for going too fast. The refused one says "Not sent to [sky]: …" and
+      doesn't appear in Say. Press the up arrow: it comes back, to send again.
+- [ ] 21. `/lgc1`, then leave sky in `/lg` (or have its admin remove you). A
+      line says you're no longer in that channel. The label says "Say" again.
+- [ ] 22. `/lgc1`, then log out to the title screen and back in. It is no
+      longer on (no label, no info bar entry).
+- [ ] 23. `/lgc1`, then turn the plugin off (or reload it). A line says "LookingGlass
+      was turned off or updated", and the label shows the real channel.
+- [ ] 24. Type `/lgc3` for a channel number you don't have. It says "No channel
+      is on /lgc3."
+- [ ] 25. Right after logging in, before your channels have loaded, type
+      `/lgc1`. It says LookingGlass is still loading, or that you're not
+      connected. Try again a moment later: it works.
+
+### The label
+
+- [ ] 26. Give a channel a 16-letter nickname and start it. The label shows the
+      whole tag, or cuts it off neatly; nothing overlaps.
+- [ ] 27. Without a nickname, the label shows `[LGC1]`.
+
+## Part 2: ChatTwo (turn ChatTwo on)
+
+### The case from the screenshot
+
+- [ ] 28. Switch ChatTwo to Party. Type `/lgc1`.
+  - The "Now talking in [sky]" line also explains ChatTwo: every ChatTwo chat
+    box and pop-out sends to [sky], short commands with a message too, and to
+    use the long command (`/party hi`) to talk in a game channel once.
+  - ChatTwo's channel name reads "LookingGlass [sky] (Warning: Party)".
+  - The server info bar shows "LG [sky]".
+- [ ] 29. Type `hello`. It shows only in LookingGlass. B sees nothing in Party.
+
+### Short and long commands
+
+- [ ] 30. Type `/p hi`. It goes only to LookingGlass (as "hi"), not to Party.
+- [ ] 31. Type `/party hi`. It goes to Party. You're still in [sky].
+- [ ] 32. Type `/say hi`. It goes to Say. Type `/s hi`: only to LookingGlass.
+- [ ] 33. Type `/fc hi`: only LookingGlass. `/freecompany hi`: to FC.
+- [ ] 34. Type `/e note to self`. It shows as an echo, only to you.
+- [ ] 35. Type `/em waves`. The emote plays.
+
+### Tabs
+
+- [ ] 36. Switch to another ChatTwo tab that has no channel of its own, and
+      back. You are still in [sky]: no "Stopped" line, the info bar still
+      shows it. Type `hello`: only in LookingGlass.
+- [ ] 37. Click into ChatTwo's input and press Escape, or click away. Still in
+      [sky].
+- [ ] 38. Switch to a ChatTwo tab whose fixed channel is different from the
+      game's (for example a tab fixed to FC while the game is on Party). A
+      "Stopped talking in [sky]" line appears, and the info bar entry goes
+      away. Type `test`: it goes to FC.
+- [ ] 39. Go back to the first tab, `/lgc1`. Pick another channel in ChatTwo's
+      channel picker (the speech bubble). It stops, with a line.
+
+### Pop-out with its own input
+
+- [ ] 40. Pop out a tab with "Supports input" on, and set the pop-out's channel
+      picker to **Say** (the main window stays on FC, say). In the main window,
+      type `/lgc1`.
+- [ ] 41. Type `hi` in the pop-out. It goes only to LookingGlass. B sees
+      nothing in Say.
+- [ ] 42. Set the pop-out to Party and type `hi` again. Only LookingGlass.
+- [ ] 43. Set the pop-out to a tell to B, and type `hi`. It goes to B as a tell
+      (ChatTwo sends tells itself; the "Now talking in" line says so).
+
+### Tells and leaving in ChatTwo
+
+- [ ] 44. Switch ChatTwo's main input to a tell, then type `/lgc1`. It is
+      refused: "Switch ChatTwo away from a /tell first…".
+- [ ] 45. `/lgc1` from Say, then type `/s` in ChatTwo. It stops with a line,
+      and ChatTwo's channel name goes back to plain "Say".
+- [ ] 46. `/lgc1`, then disconnect in `/lg` and type `secret` in ChatTwo. "Not
+      sent…didn't go to game chat either"; nothing in Say.
+- [ ] 47. `/lgc1`, then turn ChatTwo off and on again in the plugin installer.
+      Its channel name shows "LookingGlass [sky] …" again once it's back.
+
+## Part 3: ExtraChat
+
+- [ ] 48. Turn ExtraChat (or ExtraChat Reborn) on. `/lgc1`. Besides "Now
+      talking in", a warning says ExtraChat is also on and to turn it off.
+      Type `hello`: note where it went (LookingGlass, ExtraChat, or both), and
+      what ChatTwo's channel name shows.
+- [ ] 49. Turn ExtraChat off again.
+
+## What to send back
+
+For any box you couldn't tick, note the step number, what you saw, and
+whether ChatTwo was on. If anything reached Say, Party or FC when the steps
+say it shouldn't, that's the most important thing to report.
