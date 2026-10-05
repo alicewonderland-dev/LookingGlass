@@ -106,6 +106,12 @@ public sealed class Harness : IAsyncDisposable {
 
     public static CancellationToken Ct => TestContext.Current.CancellationToken;
 
+    /// <summary>
+    /// Held by tests of a server that refuses to start: it sets the process's exit code, which they check and then put back,
+    /// and which every test running at the same time shares (two at once would put back each other's).
+    /// </summary>
+    public static readonly SemaphoreSlim ExitCodeGate = new(1, 1);
+
     /// <summary>A StartRegistration's client nonce, as a client makes it: 32 random bytes.</summary>
     public static ByteString NewClientNonce() => ByteString.CopyFrom(System.Security.Cryptography.RandomNumberGenerator.GetBytes(LodestoneCode.ClientNonceSize));
 

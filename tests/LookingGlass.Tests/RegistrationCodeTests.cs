@@ -456,6 +456,7 @@ public sealed class RegistrationCodeTests {
     [InlineData("1440")]
     public async Task AServerWithAChallengeLifetimeOutsideOneToSixtyMinutesDoesntStart(string minutes) {
         var logs = new CapturingLoggerProvider();
+        await ExitCodeGate.WaitAsync(Ct);
         var exitCode = Environment.ExitCode;
         var directory = Path.Combine(Path.GetTempPath(), "lgt-" + Guid.NewGuid().ToString("N"));
         try {
@@ -474,6 +475,7 @@ public sealed class RegistrationCodeTests {
             Assert.Equal(1, Environment.ExitCode);
         } finally {
             Environment.ExitCode = exitCode;
+            ExitCodeGate.Release();
             DeleteDirectory(directory);
         }
     }
