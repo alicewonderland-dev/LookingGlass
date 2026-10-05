@@ -1681,8 +1681,10 @@ How it could work:
   window.
 - **Messages it can show** are those received since the player logged in,
   like the game's own chat log, which keeps nothing between logins either.
-  The owner accepted this (2026-10-05): no local history is planned for the
-  windows.
+  The owner accepted this (2026-10-05). Stored history isn't planned, but
+  isn't ruled out: if it comes later, it would be opt-in, kept on the
+  player's computer and encrypted like the secrets file (see the open
+  question on message history).
 - **Typing in the window** takes keyboard focus from the game, as other
   plugin windows do; pressing Escape or clicking away gives it back.
 - **The same send path** as `/lgc`: the same rate limits, "not sent" errors,
