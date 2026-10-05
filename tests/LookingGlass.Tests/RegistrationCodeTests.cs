@@ -150,6 +150,40 @@ public sealed class RegistrationCodeTests {
     }
 
     /// <summary>
+    /// The refused code is neither logged nor shown, anywhere: the warning names the address the client connected to and
+    /// the character, which is enough to look into it, and nothing a user could paste into their profile.
+    /// </summary>
+    [Fact]
+    public async Task ARefusedCodeIsNeitherLoggedNorShown() {
+        await using var relay = Relay.Create();
+        var fromB = await relay.StartOnBAsync(relay.MalloryKeys);
+        relay.Rewrite = frame => {
+            if (frame.Response?.RegistrationChallenge != null) {
+                frame.Response.RegistrationChallenge = fromB.Clone();
+            }
+
+            return frame;
+        };
+
+        var user = await relay.StartUserAsync();
+        var refused = await Assert.ThrowsAsync<RelayedRegistrationCodeException>(() => user.Session.StartRegistrationAsync(Character, Ct));
+
+        var warning = Assert.Single(relay.Logs, entry => entry.Level == NoticeLevel.Warning && entry.Text.Contains("registration code"));
+        Assert.Contains("wss://m.example:443", warning.Text);
+        Assert.Contains(fromB.LodestoneId.ToString(), warning.Text);
+        foreach (var text in relay.Logs.Select(entry => entry.Text).Concat(user.Notices.Select(notice => notice.Text))
+                     .Append(refused.Message).Append(user.Session.Snapshot.StatusText ?? "")) {
+            AssertNoCode(fromB.Code, text);
+        }
+    }
+
+    /// <summary>Not <paramref name="code"/>, in any case, nor anything shaped like a code.</summary>
+    private static void AssertNoCode(string code, string text) {
+        Assert.DoesNotContain(code[LodestoneCode.Prefix.Length..], text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotMatch(new System.Text.RegularExpressions.Regex("(?i)LGC-[0-9A-Z]{4}"), text);
+    }
+
+    /// <summary>
     /// A plugin from before codes were derived sends StartRegistration without the server address it connected to, and
     /// is asked to update, for real characters and debug accounts alike, before the Lodestone is asked anything.
     /// </summary>
@@ -188,6 +222,69 @@ public sealed class RegistrationCodeTests {
             }
         } finally {
             DeleteDirectory(server.DataDirectory);
+        }
+    }
+
+    /// <summary>
+    /// The relay, set up: an honest server B (at <see cref="BUrl"/>), a server M (at <see cref="MUrl"/>) whose answers
+    /// to the user's client go through <see cref="Rewrite"/> (as a malicious M would change them), M's own client of B,
+    /// and the user's identity key for M.
+    /// </summary>
+    private sealed class Relay : IAsyncDisposable {
+        private RawConnection? _mallory;
+
+        private Relay() {
+            this.B = new Harness(lodestone: this.LodestoneB, settings: ("LookingGlass:PublicUrls:0", BUrl));
+            this.M = new Harness(lodestone: this.LodestoneM, settings: ("LookingGlass:PublicUrls:0", MUrl));
+            var (signing, agreement) = this.UserKeys.ExportPrivateKeys();
+            this.Store.Save(new ClientSecrets { SigningPrivateKey = signing, AgreementPrivateKey = agreement });
+        }
+
+        public static Relay Create() => new();
+
+        public FakeLodestone LodestoneB { get; } = new() { Name = Name, World = World };
+        public FakeLodestone LodestoneM { get; } = new() { Name = Name, World = World };
+        public Harness B { get; }
+        public Harness M { get; }
+
+        /// <summary>The user's identity key for M (the plugin keeps one per server address), in <see cref="Store"/>.</summary>
+        public IdentityKeys UserKeys { get; } = IdentityKeys.Generate();
+
+        public InMemorySecretStore Store { get; } = new();
+        public IdentityKeys MalloryKeys { get; } = IdentityKeys.Generate();
+
+        /// <summary>Everything the user's client logs (what the plugin writes to the Dalamud log).</summary>
+        public ConcurrentQueue<(NoticeLevel Level, string Text)> Logs { get; } = new();
+
+        /// <summary>What M does to each frame on its way to the user's client (by default, nothing).</summary>
+        public Func<ServerFrame, ServerFrame> Rewrite { get; set; } = frame => frame;
+
+        /// <summary>M, as a client of B, starts registering the user's character there with <paramref name="keys"/>, for B's address.</summary>
+        public async Task<RegistrationChallenge> StartOnBAsync(IdentityKeys keys) {
+            this._mallory ??= await this.B.ConnectRawAsync();
+            var response = await this._mallory.SendAsync(new ClientFrame {
+                StartRegistration = new StartRegistration { Character = Character, Identity = keys.ToBundle(), ServerUrl = BUrl },
+            });
+            var challenge = response.RegistrationChallenge!;
+            Assert.False(string.IsNullOrEmpty(challenge.Code));
+            return challenge;
+        }
+
+        /// <summary>The user's client, connected to M (through <see cref="Rewrite"/>), not registered yet.</summary>
+        public async Task<TestClient> StartUserAsync() {
+            var user = this.M.StartClient(Name, this.Store, this.M.Options(serverUri: new Uri(MUrl), log: (level, text) => this.Logs.Enqueue((level, text)),
+                wrap: inner => new RewritingWebSocket(inner, frame => this.Rewrite(frame))));
+            await WaitFor(() => user.Session.Snapshot.State == ConnectionState.Unregistered ? new object() : null);
+            return user;
+        }
+
+        public async ValueTask DisposeAsync() {
+            await this.M.DisposeAsync();
+            await this.B.DisposeAsync();
+            this.UserKeys.Dispose();
+            this.MalloryKeys.Dispose();
+            DeleteDirectory(this.B.DataDirectory);
+            DeleteDirectory(this.M.DataDirectory);
         }
     }
 }

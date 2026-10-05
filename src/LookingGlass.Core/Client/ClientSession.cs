@@ -273,7 +273,8 @@ public sealed class ClientSession : IAsyncDisposable {
 
             challenge = response.RegistrationChallenge ?? throw Unexpected(response);
             if (CheckCode(challenge, serverUrl, identity) is { } wrong) {
-                this.Log(NoticeLevel.Warning, $"Refused the registration code the server sent ({wrong}). It may be passing on another server's code; it wasn't shown.");
+                // Never the code itself, which is what a user mustn't paste: the log may be read out, or shared to ask for help.
+                this.Log(NoticeLevel.Warning, $"Refused the registration code the server sent ({wrong}). It may be passing on another server's code; it wasn't shown or logged.");
                 lock (this._lock) {
                     // The server replaced any earlier registration on this connection with this one, which is refused.
                     this._challenge = null;
@@ -307,26 +308,27 @@ public sealed class ClientSession : IAsyncDisposable {
     /// connected to, its own identity key, the nonce the server sent and the character the server named. A debug account
     /// has no code (and nothing to put in a profile).
     /// </summary>
-    /// <returns>Why it isn't, for the log, or null if it is.</returns>
+    /// <returns>
+    /// Why it isn't, for the log, or null if it is: the address and the character, never the code (a code someone else
+    /// may hold the registration for, which nobody should be shown, not even in a log they may share).
+    /// </returns>
     internal static string? CheckCode(RegistrationChallenge challenge, string serverUrl, IdentityKeys identity) {
         if (challenge.VerificationSkipped && challenge.Code.Length == 0) {
             return null;
         }
 
-        // From the server: shortened and without control characters, as it is logged.
-        var code = new string(challenge.Code.Where(c => !char.IsControl(c)).Take(40).ToArray());
         if (ServerOrigin.FromUrl(serverUrl) is not { } origin) {
-            return $"\"{code}\", for an address with no origin, {serverUrl}";
+            return $"for character {challenge.LodestoneId}, from an address with no origin, {serverUrl}";
         }
 
         if (challenge.Nonce.Length != RegistrationProof.NonceSize) {
-            return $"\"{code}\", with a nonce of {challenge.Nonce.Length} bytes";
+            return $"for character {challenge.LodestoneId}, from {origin}, with a nonce of {challenge.Nonce.Length} bytes";
         }
 
         var expected = LodestoneCode.Derive(origin, identity.SigningPublicKey, challenge.Nonce.Span, challenge.LodestoneId);
         return challenge.Code == expected
             ? null
-            : $"\"{code}\" for character {challenge.LodestoneId} isn't the code for {origin}, this client's identity key and the nonce sent with it";
+            : $"for character {challenge.LodestoneId}, from {origin}: it isn't the code for that address, this client's identity key and the nonce sent with it";
     }
 
     /// <summary>
