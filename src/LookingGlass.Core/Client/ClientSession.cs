@@ -78,6 +78,8 @@ public sealed class ClientSession : IAsyncDisposable {
     private readonly Dictionary<string, ChannelState> _channels = new();
     // _channels holds the server's complete list, fetched on the current connection.
     private bool _channelsLoaded;
+    // The last attempt to connect failed, and none has worked since.
+    private bool _connectionFailed;
     private readonly Dictionary<string, InviteState> _invites = new();
     // Verified membership per channel (and per channel invited to). Saved in _secrets.Memberships.
     private readonly Dictionary<string, IChannelMembership> _memberships = new();
@@ -624,6 +626,23 @@ public sealed class ClientSession : IAsyncDisposable {
     }
 
     public async Task RespondToInviteAsync(string channelId, bool accept, CancellationToken ct = default) {
+        if (!accept) {
+            // An invite made for an old key (before a reset) can't be declined with the new one: only that key could
+            // sign it. Declining it removes it from the list instead.
+            IChannelMembership? membership;
+            try {
+                membership = await this.SyncLogAsync(channelId, ct);
+            } catch (ServerErrorException) {
+                // Gone, say: declining finds out below.
+                membership = null;
+            }
+
+            if (membership != null && this.Read(() => this.HoldsOldKeyPlace(membership))) {
+                await this.ForgetChannelAsync(channelId, ct);
+                return;
+            }
+        }
+
         Response response;
         try {
             response = await this.AnswerInviteAsync(channelId, accept, ct);
@@ -688,6 +707,11 @@ public sealed class ClientSession : IAsyncDisposable {
     public async Task LeaveAsync(string channelId, CancellationToken ct = default) {
         var (identity, me) = this.RequireIdentityAndUser();
         await this.AppendEntryAsync(channelId, ct, membership => {
+            if (membership.FindMember(me.UserId) is { } mine && mine.Keys != MemberKeys.Of(identity)) {
+                // Only the old keys could sign it. Said before anything is sent, in plain words.
+                throw new InvalidOperationException(PlainMessages.CantLeaveOldKeyChannel);
+            }
+
             var entry = membership.Create(MembershipEntryKind.Leave, me.UserId, identity, me.UserId, this.NowMs());
             return (entry, new ClientFrame { LeaveChannel = new LeaveChannel { ChannelId = channelId, Entry = entry } });
         });
@@ -729,6 +753,75 @@ public sealed class ClientSession : IAsyncDisposable {
                 : current.Create(MembershipEntryKind.SetRank, userId, identity, me.UserId, this.NowMs(), rank: rank);
             return (entry, new ClientFrame { SetMemberRank = new SetMemberRank { ChannelId = channelId, Entry = entry } });
         });
+    }
+
+    /// <summary>
+    /// "Remove from my list", for a channel (or invite) whose place belongs to identity keys this user no longer has (see
+    /// <see cref="ChannelView.OldKeyMembership"/>): such a place can't be left, as only the old keys could sign that.
+    /// Not a log entry (see <see cref="ForgetChannel"/> in the protocol): the server just stops listing the channel to
+    /// this account, and this client forgets it (its keys; the plugin drops its slot, nickname and colour with it). The
+    /// other members still see the old key as a member, until a moderator removes it.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">This user is a member under their current keys: leave instead.</exception>
+    public async Task ForgetChannelAsync(string channelId, CancellationToken ct = default) {
+        this.RequireIdentityAndUser();
+        if (this.Read(() => this.IsMember(channelId))) {
+            throw new InvalidOperationException("You're a member of this channel with your current identity key: leave it instead.");
+        }
+
+        try {
+            await this.RequestAsync(new ClientFrame { ForgetChannel = new ForgetChannel { ChannelId = channelId } }, ct);
+        } catch (ServerErrorException ex) when (ex.Code == ErrorCode.NotFound) {
+            // The server doesn't list it to this account (any more): nothing left to do there.
+        }
+
+        lock (this._lock) {
+            this._invites.Remove(channelId);
+        }
+
+        this.RemoveChannel(channelId);
+    }
+
+    /// <summary>
+    /// "Reset my identity", first step, while the old key still exists: leaves every channel <see cref="IdentityResetPlan"/>
+    /// says to (with a leave signed by that key) and declines every invite, one by one. One that fails is reported, and the
+    /// rest go on; but then (or if anything changed meanwhile) the cleanup says to stop before the key is retired
+    /// (<see cref="IdentityResetCleanup.StopReason"/>), so the user can try again while the old key can still sign. Refused
+    /// unless the plan allows a reset: never while this user is the admin of a channel (handing that on, disbanding or
+    /// leaving is the user's own choice), and only connected and logged in, with the complete channel list, every channel checked.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The plan doesn't allow a reset now (see <see cref="IdentityResetPlan.Readiness"/>).</exception>
+    public async Task<IdentityResetCleanup> LeaveChannelsForResetAsync(CancellationToken ct = default) {
+        var plan = IdentityResetPlan.Of(this.Snapshot);
+        if (plan.Readiness != ResetReadiness.Ready) {
+            throw new InvalidOperationException(plan.Explanation);
+        }
+
+        var left = ImmutableArray.CreateBuilder<ChannelView>();
+        var declined = ImmutableArray.CreateBuilder<InviteView>();
+        var failed = ImmutableArray.CreateBuilder<ResetFailure>();
+        foreach (var channel in plan.ToLeave) {
+            try {
+                await this.LeaveAsync(channel.Id, ct);
+                left.Add(channel);
+            } catch (Exception ex) when (ex is not OperationCanceledException) {
+                failed.Add(new ResetFailure(channel.Id, channel.DisplayName, PlainMessages.Of(ex is ServerErrorException server ? server.ServerMessage : ex.Message)));
+            }
+        }
+
+        foreach (var invite in plan.Declines) {
+            try {
+                await this.RespondToInviteAsync(invite.ChannelId, accept: false, ct);
+                declined.Add(invite);
+            } catch (Exception ex) when (ex is not OperationCanceledException) {
+                failed.Add(new ResetFailure(invite.ChannelId, invite.ChannelName ?? ChannelView.PlaceholderName(invite.ChannelId),
+                    PlainMessages.Of(ex is ServerErrorException server ? server.ServerMessage : ex.Message)));
+            }
+        }
+
+        // The plan again, as things are now that the channels were left.
+        return new IdentityResetCleanup(left.ToImmutable(), declined.ToImmutable(), plan.Kept.ToImmutableArray(), failed.ToImmutable(),
+            IdentityResetPlan.Of(this.Snapshot).WhyStopAfterLeaving(failed));
     }
 
     public async Task DisbandAsync(string channelId, CancellationToken ct = default) {
@@ -807,6 +900,9 @@ public sealed class ClientSession : IAsyncDisposable {
                 // Not allowed by this client's copy of the log, which may be behind (say, after the
                 // server stored an entry made elsewhere): catch up, and decide on that.
                 continue;
+            } catch (MembershipException) when (this.Read(() => this.HoldsOldKeyPlace(membership))) {
+                // Rather than "it isn't signed with the key the log knows its author by": what that means here.
+                throw new InvalidOperationException(PlainMessages.OldKeyCantChangeMembers);
             }
 
             Response response;
@@ -992,7 +1088,7 @@ public sealed class ClientSession : IAsyncDisposable {
                 var channel = this._channels.GetValueOrDefault(channelId) ?? throw new InvalidOperationException("You're not in that channel.");
                 if (!this.IsMember(channelId)) {
                     throw new InvalidOperationException(this.MembershipOf(channelId).FindMember(me.UserId) != null
-                        ? "Your place in that channel belongs to an identity key you no longer have. A moderator must remove you and invite you again."
+                        ? PlainMessages.OldKeyChannel
                         : "You haven't joined that channel.");
                 }
 
@@ -1074,6 +1170,10 @@ public sealed class ClientSession : IAsyncDisposable {
                     ev => this.OnEvent(connection, ev), response => this.OnResponse(connection, response), this.AddTrace);
                 this._connection = connection;
                 connection.Start();
+                lock (this._lock) {
+                    // Reached: this attempt hasn't failed (yet). Set again below if the handshake does.
+                    this._connectionFailed = false;
+                }
 
                 await this.HandshakeAsync(connection, ct);
                 delay = this._options.ReconnectMinDelay;
@@ -1087,6 +1187,7 @@ public sealed class ClientSession : IAsyncDisposable {
                 this.Log(NoticeLevel.Warning, failure);
                 lock (this._lock) {
                     this._status = failure;
+                    this._connectionFailed = true;
                 }
             } finally {
                 this._connection = null;
@@ -2871,6 +2972,10 @@ public sealed class ClientSession : IAsyncDisposable {
             channel.EncryptedName = info.Name;
         }
 
+        // Only a hint too, but one that holds back a reset (see ChannelView.AdminPerServer).
+        channel.ServerAdminAt = this._me != null && info.Members.Any(member => member.User?.UserId == this._me.UserId && member.Rank == Rank.Admin)
+            ? info.LogHead?.Seq ?? 0
+            : null;
         this.TryDecryptName(info.ChannelId);
         return channel;
     }
@@ -2914,6 +3019,19 @@ public sealed class ClientSession : IAsyncDisposable {
         if (this._channels.TryGetValue(channelId, out var channel)) {
             this.TryDecryptName(channel.Id);
         }
+    }
+
+    /// <summary>
+    /// True if the log has this user as a member, or invited, under identity keys other than their current ones: a place
+    /// only those (gone) keys could sign anything for. Call inside the lock.
+    /// </summary>
+    private bool HoldsOldKeyPlace(IChannelMembership membership) {
+        if (this._me == null || this._myKeys == null) {
+            return false;
+        }
+
+        var keys = membership.FindMember(this._me.UserId)?.Keys ?? membership.FindInvitee(this._me.UserId)?.Keys;
+        return keys != null && keys != this._myKeys;
     }
 
     /// <summary>True if this user is a member of the channel under their current identity keys.</summary>
@@ -3201,7 +3319,8 @@ public sealed class ClientSession : IAsyncDisposable {
                 this._channelsLoaded && this._state == ConnectionState.Ready,
                 this._loginRejected && this._state is ConnectionState.LoginNotRecognized or ConnectionState.Registering,
                 // As the server said on this connection; nothing while there is none.
-                this._state is ConnectionState.Stopped or ConnectionState.Connecting or ConnectionState.Reconnecting ? null : this._addressNotListed);
+                this._state is ConnectionState.Stopped or ConnectionState.Connecting or ConnectionState.Reconnecting ? null : this._addressNotListed,
+                this._connectionFailed);
             this._snapshot = snapshot;
         }
 
@@ -3239,15 +3358,17 @@ public sealed class ClientSession : IAsyncDisposable {
             .ToImmutableArray();
 
         var mine = this._me == null ? null : membership.FindMember(this._me.UserId);
+        var oldKey = mine != null && this._myKeys != null && mine.Keys != this._myKeys;
         var warning = channel.MembershipWarning ?? channel.RemovalWarning;
-        if (warning == null && mine != null && mine.Keys != this._myKeys) {
-            warning = "Your place in this channel belongs to the identity key you had before you registered again. A moderator must remove you and invite you again.";
+        if (warning == null && oldKey) {
+            warning = PlainMessages.OldKeyChannel;
         }
 
         var keyEpoch = this.KeyEpochOf(channel.Id);
+        var adminPerServer = channel.ServerAdminAt is { } adminAt && (membership.Head == null || membership.Head.Seq < adminAt);
         return new ChannelView(channel.Id, channel.Name, keyEpoch ?? channel.ServerEpoch, channel.ServerEpoch,
             this.HasCurrentKey(channel.Id), this.NeedsRekey(channel), mine != null && mine.Keys == this._myKeys ? mine.Rank : Rank.Unspecified,
-            members, membership.Head?.Clone(), warning);
+            members, membership.Head?.Clone(), warning, oldKey, adminPerServer);
     }
 
     // ================================================================ plumbing
@@ -3315,7 +3436,7 @@ public sealed class ClientSession : IAsyncDisposable {
             } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
                 // Stopping.
             } catch (Exception ex) when (Volatile.Read(ref this._disposed) == 0) {
-                this.RaiseNotice(NoticeLevel.Warning, $"{what} failed: {ex.Message}");
+                this.RaiseNotice(NoticeLevel.Warning, PlainMessages.Of($"{what} failed: {ex.Message}"));
             } catch {
                 // Shutting down; nobody to tell.
             }
@@ -3412,6 +3533,9 @@ public sealed class ClientSession : IAsyncDisposable {
 
         /// <summary>The newest membership log position the server reported. A hint for when to fetch the log.</summary>
         public LogPosition? LogHead { get; set; }
+
+        /// <summary>The log position at which the server last listed this user as the channel's admin, or null if it didn't.</summary>
+        public ulong? ServerAdminAt { get; set; }
 
         /// <summary>A fork or hidden change seen in the channel's membership, to keep showing.</summary>
         public string? MembershipWarning { get; set; }

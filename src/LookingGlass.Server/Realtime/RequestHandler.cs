@@ -64,6 +64,10 @@ public sealed class RequestHandler(
         "This identity key is already registered to another character on this server, and each character needs its own. " +
         "Use \"Reset my identity\" in Settings to make new keys for this character, then register.";
 
+    // Acting through a place in a channel whose keys aren't the account's current ones. The plugin says this in plain words (see PlainMessages).
+    private const string OldKeyPlace =
+        "Your place in this channel belongs to the identity key you had before you registered again. A moderator must remove you and invite you again.";
+
     /// <summary>Why a server outside Development without <see cref="ServerOptions.PublicUrls"/> doesn't start, and what to set.</summary>
     internal const string PublicUrlsRequired =
         "LookingGlass:PublicUrls is not set, so the server won't start. Outside Development it must know every address clients connect to: " +
@@ -176,6 +180,7 @@ public sealed class RequestHandler(
                 ClientFrame.BodyOneofCase.KickMember => this.KickMember(connection, frame.KickMember),
                 ClientFrame.BodyOneofCase.SetMemberRank => this.SetMemberRank(connection, frame.SetMemberRank),
                 ClientFrame.BodyOneofCase.DisbandChannel => this.DisbandChannel(connection, frame.DisbandChannel),
+                ClientFrame.BodyOneofCase.ForgetChannel => this.ForgetChannel(connection, frame.ForgetChannel),
                 ClientFrame.BodyOneofCase.RenameChannel => this.RenameChannel(connection, frame.RenameChannel),
                 ClientFrame.BodyOneofCase.SubmitRekey => this.SubmitRekey(connection, frame.SubmitRekey),
                 ClientFrame.BodyOneofCase.FetchEpochKeys => this.FetchEpochKeys(connection, frame.FetchEpochKeys),
@@ -1035,8 +1040,9 @@ public sealed class RequestHandler(
         this.RequireAllowed(channelId, me, ChannelAction.Leave);
         var entry = RequireEntry(request.Entry, channelId, me, MembershipEntryKind.Leave);
 
-        if (db.GetMembers(channelId).Count == 1) {
-            // The last member is leaving, so the channel goes, and with it any pending invites.
+        if (db.GetMembers(channelId).All(member => member.User.UserId == me.UserId || member.Forgotten)) {
+            // The last member is leaving (but for places their owners removed from their lists, whom nobody would ever
+            // see again), so the channel goes, and with it any pending invites.
             this.CheckEntry(channelId, me, entry);
             if (this.BeforeAbandonedChannelDeletedForTests is { } hook) {
                 this.BeforeAbandonedChannelDeletedForTests = null;
@@ -1063,15 +1069,24 @@ public sealed class RequestHandler(
         var entry = RequireEntry(request.Entry, channelId, me, MembershipEntryKind.Remove, MembershipEntryKind.CancelInvite);
         var target = db.GetUser(entry.Subject.UserId) ?? throw new RequestException(ErrorCode.NotFound, "No such user.");
 
+        // A place its owner removed from their list: they don't follow the channel any more, so aren't told.
+        var targetForgot = db.GetMembers(channelId).Concat(db.GetInvitees(channelId)).Any(place => place.User.UserId == target.UserId && place.Forgotten);
+
         // The log's rules decide who may remove whom (strictly lower ranks only).
         this.AppendEntry(channelId, me, entry);
         if (entry.Kind == MembershipEntryKind.CancelInvite) {
-            registry.Send(target.UserId, new Event { InviteRevoked = new InviteRevoked { ChannelId = channelId } });
+            if (!targetForgot) {
+                registry.Send(target.UserId, new Event { InviteRevoked = new InviteRevoked { ChannelId = channelId } });
+            }
+
             this.BroadcastEntry(channelId, entry, target, me);
             return Ack();
         }
 
-        registry.Send(target.UserId, new Event { ChannelRemoved = new ChannelRemoved { ChannelId = channelId, Reason = RemovalReason.Kicked } });
+        if (!targetForgot) {
+            registry.Send(target.UserId, new Event { ChannelRemoved = new ChannelRemoved { ChannelId = channelId, Reason = RemovalReason.Kicked } });
+        }
+
         this.BroadcastEntry(channelId, entry, target, me);
         this.RequestRekey(channelId, preferred: me.UserId, excluding: null);
         return Ack();
@@ -1097,10 +1112,34 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.RateLimited, "You're disbanding channels too quickly; try again later.");
         }
 
-        var everyone = db.GetMembers(channelId).Concat(db.GetInvitees(channelId)).Select(member => member.User.UserId).ToList();
+        var everyone = this.Recipients(channelId).Concat(this.InviteRecipients(channelId)).ToList();
         db.DeleteChannel(channelId);
         registry.SendToAll(everyone, new Event { ChannelRemoved = new ChannelRemoved { ChannelId = channelId, Reason = RemovalReason.Disbanded } }, except: me.UserId);
         return Ack();
+    }
+
+    /// <summary>
+    /// "Remove from my list", for a channel (or invite) whose place belongs to keys the account no longer has (see
+    /// <see cref="Database.ForgetStaleMembership"/>). Not a log entry: nobody's log changes, and the old keys stay a
+    /// member (or invited) for the log, rekeys and the other members, until a moderator removes them. The account just
+    /// stops seeing the channel, and can do nothing in it through that place (it couldn't before either: every change
+    /// needs the old keys' signature). Only ever for a stale place: a current one is left (or declined) instead, signed.
+    /// </summary>
+    private Response ForgetChannel(ClientConnection connection, ForgetChannel request) {
+        var me = RequireUser(connection);
+        var channelId = RequireChannelId(request.ChannelId);
+        // A transaction of reads (and maybe a write) each time, asked for however often a client likes.
+        this.RequireReadBudget(me);
+        switch (db.ForgetStaleMembership(channelId, me.UserId)) {
+            case ForgetResult.Forgotten:
+                logger.LogDebug("User {User} removed channel {Channel} (a place under an old key) from their list", me.UserId, channelId);
+                return Ack();
+            case ForgetResult.Current:
+                throw new RequestException(ErrorCode.Forbidden,
+                    "You're in this channel (or invited to it) with your current identity key, so it isn't removed from your list: leave it (or decline the invite) instead.");
+            default:
+                throw new RequestException(ErrorCode.NotFound, "You're not in that channel.");
+        }
     }
 
     private Response RenameChannel(ClientConnection connection, RenameChannel request) {
@@ -1139,7 +1178,7 @@ public sealed class RequestHandler(
         if (!db.RenameChannel(channelId, name)) {
             throw new RequestException(ErrorCode.Conflict, "The channel changed while renaming; try again.");
         }
-        var members = db.GetMembers(channelId).Select(member => member.User.UserId);
+        var members = this.Recipients(channelId);
         registry.SendToAll(members, new Event { ChannelRenamed = new ChannelRenamed { ChannelId = channelId, Name = name } }, except: me.UserId);
         return Ack();
     }
@@ -1175,7 +1214,6 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.InvalidRequest, "Every key in a rekey must name the rekey's membership log position.");
         }
 
-        this.RequireMembershipKeys(channelId, me);
         foreach (var key in request.Keys) {
             if (key.Box == null || !groupKeys.VerifyEpochKey(key, channelId, request.NewEpoch, me.UserId, me.SigningKey)) {
                 throw new RequestException(ErrorCode.InvalidRequest, "A key in the rekey is wrongly signed.");
@@ -1195,7 +1233,9 @@ public sealed class RequestHandler(
                 throw new RequestException(ErrorCode.Conflict, "Membership changed; rekey for the members at the log's head.");
         }
 
-        foreach (var key in request.Keys.Where(key => key.RecipientId != me.UserId)) {
+        // Every member gets a key (the log says who they are), but places removed from their owners' lists aren't told.
+        var recipients = this.Recipients(channelId).ToHashSet();
+        foreach (var key in request.Keys.Where(key => key.RecipientId != me.UserId && recipients.Contains(key.RecipientId))) {
             registry.Send(key.RecipientId, new Event {
                 EpochAdvanced = new EpochAdvanced {
                     ChannelId = channelId,
@@ -1263,7 +1303,7 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.InvalidRequest, "Message signature is invalid.");
         }
 
-        var members = db.GetMembers(channelId).Select(member => member.User.UserId);
+        var members = this.Recipients(channelId);
         registry.SendToAll(members, new Event { ChatMessage = message }, except: me.UserId);
         return Ack();
     }
@@ -1314,7 +1354,7 @@ public sealed class RequestHandler(
         }
 
         var members = db.GetMembers(channelId);
-        var online = members.Where(member => registry.IsOnline(member.User.UserId)).ToList();
+        var online = members.Where(member => !member.Forgotten && registry.IsOnline(member.User.UserId)).ToList();
         var designated = ChooseRekeyer(online, preferred, excluding);
         registry.SendToAll(online.Select(member => member.User.UserId), new Event {
             RekeyNeeded = new RekeyNeeded {
@@ -1332,6 +1372,9 @@ public sealed class RequestHandler(
     /// nobody else is online.
     /// </summary>
     private static long? ChooseRekeyer(List<MemberRow> online, long? preferred, long? excluding) {
+        // Only members who can: one whose place belongs to keys they no longer have (they registered again, or reset
+        // their identity) can't sign a rekey, and would leave the channel waiting for one.
+        online = online.Where(member => member is { Forgotten: false, CurrentKeys: true }).ToList();
         var candidates = online.Where(member => member.User.UserId != excluding).ToList();
         if (candidates.Count == 0) {
             candidates = online;
@@ -1342,9 +1385,22 @@ public sealed class RequestHandler(
         return designated?.User.UserId;
     }
 
+    /// <summary>
+    /// Who is told about what happens in a channel: its members, but for places removed from the owner's list (see
+    /// <see cref="ForgetChannel"/>), which aren't theirs to follow any more.
+    /// </summary>
+    private List<long> Recipients(string channelId) {
+        return db.GetMembers(channelId).Where(member => !member.Forgotten).Select(member => member.User.UserId).ToList();
+    }
+
+    /// <summary>Who is told about what happens to their invite: its invitees, but for those who removed it from their list.</summary>
+    private List<long> InviteRecipients(string channelId) {
+        return db.GetInvitees(channelId).Where(invitee => !invitee.Forgotten).Select(invitee => invitee.User.UserId).ToList();
+    }
+
     /// <summary>Tells the channel's members (except the actor, who knows) about a new log entry. They check it themselves.</summary>
     private void BroadcastEntry(string channelId, MembershipEntry entry, UserRow subject, UserRow actor) {
-        var recipients = db.GetMembers(channelId).Select(member => member.User.UserId).ToList();
+        var recipients = this.Recipients(channelId);
         registry.SendToAll(recipients, new Event {
             LogEntryAdded = new LogEntryAdded {
                 ChannelId = channelId,
@@ -1373,8 +1429,7 @@ public sealed class RequestHandler(
         // Say why, rather than "wrongly signed", when someone who registered again acts with their new keys.
         var bound = state.FindMember(me.UserId)?.Keys ?? state.FindInvitee(me.UserId)?.Keys;
         if (bound != null && bound != me.Keys) {
-            throw new RequestException(ErrorCode.Forbidden,
-                "Your place in this channel belongs to the identity key you had before you registered again. A moderator must remove you and invite you again.");
+            throw new RequestException(ErrorCode.Forbidden, OldKeyPlace);
         }
 
         var verdict = state.Check(entry);
@@ -1388,7 +1443,7 @@ public sealed class RequestHandler(
     }
 
     private void AppendEntry(string channelId, UserRow me, MembershipEntry entry, SealedBox? sealedName = null, byte[]? inviteSignature = null) {
-        var invitedBefore = db.GetInvitees(channelId).Select(invitee => invitee.User.UserId).ToHashSet();
+        var invitedBefore = this.InviteRecipients(channelId).ToHashSet();
         var after = this.CheckEntry(channelId, me, entry);
         if (!db.AppendEntry(channelId, entry, sealedName, inviteSignature)) {
             throw new RequestException(ErrorCode.Conflict, "The channel's membership changed meanwhile; refresh and try again.");
@@ -1401,31 +1456,29 @@ public sealed class RequestHandler(
         logger.LogDebug("Channel {Channel} log entry {Seq} ({Kind}) by {User}", channelId, entry.Seq, entry.Kind, me.UserId);
     }
 
-    /// <summary>Someone who registered again can't rekey for a channel their new key isn't a member of.</summary>
-    private void RequireMembershipKeys(string channelId, UserRow me) {
-        var checkpoint = db.GetMembershipCheckpoint(channelId) ?? throw new RequestException(ErrorCode.NotFound, "No such channel.");
-        var mine = checkpoint.Members.FirstOrDefault(member => member.UserId == me.UserId);
-        if (mine == null || new MemberKeys(mine.SigningPublicKey, mine.AgreementPublicKey) != me.Keys) {
-            throw new RequestException(ErrorCode.Forbidden,
-                "Your place in this channel belongs to the identity key you had before you registered again. A moderator must remove you and invite you again.");
-        }
-    }
-
+    /// <summary>
+    /// Checks the user may do <paramref name="action"/> in the channel: by their place's rank (<see cref="Policy"/>), and
+    /// only through a place under their current keys. A place under keys they no longer have (they registered again, or
+    /// reset their identity, without leaving) has no say: whatever its rank, it can't send, rekey, fetch keys, rename or
+    /// disband, as none of that is signed by the keys the log knows it by (and a disband would end the channel for
+    /// everyone). It can still read the log, which is how the client sees whose place it is; and it can be removed from the
+    /// user's list (<see cref="ForgetChannel"/>, which doesn't come here). A place removed from the list isn't one at all.
+    /// </summary>
     private Rank RequireAllowed(string channelId, UserRow me, ChannelAction action) {
         if (db.GetChannel(channelId) == null) {
             throw new RequestException(ErrorCode.NotFound, "No such channel.");
         }
 
-        var rank = db.GetRank(channelId, me.UserId);
-        if (rank == null) {
-            throw new RequestException(ErrorCode.NotFound, "You're not in that channel.");
+        var place = db.GetPlace(channelId, me.UserId) ?? throw new RequestException(ErrorCode.NotFound, "You're not in that channel.");
+        if (!place.CurrentKeys && action != ChannelAction.FetchLog) {
+            throw new RequestException(ErrorCode.Forbidden, OldKeyPlace);
         }
 
-        if (!Policy.Can(rank, action)) {
+        if (!Policy.Can(place.Rank, action)) {
             throw new RequestException(ErrorCode.Forbidden, $"Your rank can't {action.ToString().ToLowerInvariant()} in this channel.");
         }
 
-        return rank.Value;
+        return place.Rank;
     }
 
     /// <param name="position">The log position the name must be made at.</param>

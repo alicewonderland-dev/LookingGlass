@@ -40,6 +40,11 @@ public enum ConnectionState {
 /// Set while connected to a server that lists its own addresses (Welcome's public_urls) without the one this client uses:
 /// what to tell the user, naming both. Such a server refuses registering, key login and "Reset my identity" through it.
 /// </param>
+/// <param name="ConnectionFailed">
+/// The last attempt to connect failed (the server didn't answer, or the connection broke before logging in), and none has
+/// worked since. While <see cref="ConnectionState.Connecting"/> or <see cref="ConnectionState.Reconnecting"/>, it tells a
+/// server that can't be reached from one that is still being reached.
+/// </param>
 public sealed record SessionSnapshot(
     ConnectionState State,
     string? StatusText,
@@ -53,7 +58,8 @@ public sealed record SessionSnapshot(
     ImmutableArray<User> BlockedUsers,
     bool ChannelsLoaded,
     bool LoginRejected = false,
-    string? AddressNotListed = null) {
+    string? AddressNotListed = null,
+    bool ConnectionFailed = false) {
     public static readonly SessionSnapshot Empty = new(
         ConnectionState.Stopped, null, null, null,
         ImmutableArray<ChannelView>.Empty, ImmutableArray<InviteView>.Empty,
@@ -77,6 +83,15 @@ public sealed record SessionSnapshot(
 /// <param name="Members">Members and invitees according to the verified membership log, never the server's list.</param>
 /// <param name="LogHead">The newest membership log entry this client has verified.</param>
 /// <param name="MembershipWarning">Something wrong with the channel's membership the user should know about (a fork, a hidden change).</param>
+/// <param name="OldKeyMembership">
+/// The verified log has this user as a member under identity keys they no longer have (they reset their identity, or
+/// registered again). Nothing can be done here with the current keys: not reading, sending or leaving (a leave must be
+/// signed by the old keys). Offer "Remove from my list" (<see cref="ClientSession.ForgetChannelAsync"/>) instead of Leave.
+/// </param>
+/// <param name="AdminPerServer">
+/// The server last listed this user as the channel's admin, at a point of the log this client hasn't verified up to (yet):
+/// only a hint, but one that holds back "Reset my identity" (see <see cref="IdentityResetPlan"/>) until the log catches up.
+/// </param>
 public sealed record ChannelView(
     string Id,
     string? Name,
@@ -87,7 +102,9 @@ public sealed record ChannelView(
     Rank MyRank,
     ImmutableArray<MemberView> Members,
     LogPosition? LogHead = null,
-    string? MembershipWarning = null) {
+    string? MembershipWarning = null,
+    bool OldKeyMembership = false,
+    bool AdminPerServer = false) {
     public string DisplayName => this.Name ?? PlaceholderName(this.Id);
 
     /// <summary>What to show before a channel's name has been decrypted. Safe for IDs of any length.</summary>

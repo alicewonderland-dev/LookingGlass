@@ -458,9 +458,16 @@ public sealed class FakeLodestone : HttpMessageHandler {
     }
 }
 
-/// <summary>A WebSocket to the server driven request by request, with no client logic in between. Events are skipped.</summary>
+/// <summary>
+/// A WebSocket to the server driven request by request, with no client logic in between. Events are kept (in
+/// <see cref="Events"/>) as they arrive while waiting for a response: send a Ping to collect those sent before it.
+/// </summary>
 public sealed class RawConnection(WebSocket socket) : IAsyncDisposable {
+    private readonly ConcurrentQueue<Event> _events = new();
     private uint _nextRequestId;
+
+    /// <summary>Every event received so far, oldest first.</summary>
+    public IReadOnlyCollection<Event> Events => this._events.ToArray();
 
     public async Task<Response> SendAsync(ClientFrame frame) {
         frame.RequestId = ++this._nextRequestId;
@@ -482,6 +489,10 @@ public sealed class RawConnection(WebSocket socket) : IAsyncDisposable {
 
             var received = ServerFrame.Parser.ParseFrom(message.ToArray());
             message.SetLength(0);
+            if (received.Event is { } ev) {
+                this._events.Enqueue(ev);
+            }
+
             if (received.Response is { } response && response.RequestId == frame.RequestId) {
                 return response;
             }

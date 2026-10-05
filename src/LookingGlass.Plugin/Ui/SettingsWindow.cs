@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Text;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Game.Text;
 using Dalamud.Interface;
@@ -26,6 +27,9 @@ public sealed class SettingsWindow : Window {
     // A backup of the identity the user may restore, looked for in the background, and for whom.
     private Task<SecretsBackup?>? _backupCheck;
     private (ulong ContentId, string ServerUrl)? _backupFor;
+
+    // The user said the server is gone for good (or won't accept their login): reset without leaving their channels first.
+    private bool _resetWithoutLeaving;
 
     public SettingsWindow(Configuration config, SessionManager sessions, UiActions actions) : base("LookingGlass settings###lookingglass-settings") {
         this._config = config;
@@ -320,12 +324,20 @@ public sealed class SettingsWindow : Window {
 
         ImGui.Spacing();
         var player = this._sessions.Player;
-        ImGui.BeginDisabled(this._actions.Busy || player == null);
+        // Worked out again every frame, so it follows the channels as the user deals with them.
+        var plan = this._sessions.ResetPlan();
+        if (!plan.CanOverride) {
+            this._resetWithoutLeaving = false;
+        }
+
+        var allowed = plan.Readiness == ResetReadiness.Ready || (plan.CanOverride && this._resetWithoutLeaving);
+        ImGui.BeginDisabled(this._actions.Busy || player == null || !allowed);
         if (ImGui.Button("Reset my identity...") && player != null) {
             var serverUrl = this._config.ServerUrl;
-            this._modals.Confirm("Reset my identity", ResetText(player.Name, serverUrl), "Reset my identity", () => {
+            var withoutLeaving = plan.Readiness != ResetReadiness.Ready;
+            this._modals.Confirm("Reset my identity", ResetText(player.Name, serverUrl, plan), "Reset my identity", () => {
                 // On the framework thread (the dialog's button); the returned task finishes the reset.
-                var reset = this._sessions.ResetIdentity();
+                var reset = this._sessions.ResetIdentity(withoutLeaving);
                 this._actions.Run("Resetting your identity", () => reset);
                 // The backup, if any, no longer holds the old identity afterwards: look again once done.
                 this._backupFor = (player.ContentId, serverUrl);
@@ -334,8 +346,60 @@ public sealed class SettingsWindow : Window {
         }
 
         ImGui.EndDisabled();
-        Widgets.Tooltip("New identity keys for this character on this server. Only if your key was lost or may have been stolen.");
+        Widgets.Tooltip("New identity keys for this character on this server. Only if your key was lost or may have been stolen.",
+            allowed ? null : "Unavailable for now: see below.");
+        this.DrawResetBlock(plan);
         this.DrawBackup(player);
+    }
+
+    /// <summary>
+    /// Why "Reset my identity" is unavailable, if it is: the channels in the way, a way to check them again, and (without a
+    /// live login, once connecting has failed) the explicit way past it.
+    /// </summary>
+    private void DrawResetBlock(IdentityResetPlan plan) {
+        if (plan.Readiness == ResetReadiness.Ready) {
+            return;
+        }
+
+        ImGui.Spacing();
+        ImGui.PushTextWrapPos();
+        var waiting = plan.Readiness is ResetReadiness.Loading or ResetReadiness.Connecting or ResetReadiness.Checking;
+        ImGui.TextColored(waiting ? Widgets.Muted : Widgets.Warning, plan.Explanation);
+        var listed = plan.Readiness switch {
+            ResetReadiness.AdminOfChannels => plan.AdminOf,
+            ResetReadiness.Checking => plan.Unchecked,
+            _ => [],
+        };
+        foreach (var channel in listed) {
+            ImGui.BulletText(channel.DisplayName);
+        }
+
+        if (plan.CanOverride && !plan.LastKnownAdminOf.IsEmpty) {
+            ImGui.TextColored(Widgets.Warning, "When you were last connected, you were the admin of:");
+            foreach (var channel in plan.LastKnownAdminOf) {
+                ImGui.BulletText(channel.DisplayName);
+            }
+        }
+
+        ImGui.PopTextWrapPos();
+        if (plan.Readiness == ResetReadiness.Checking && this._sessions.Session is { } session) {
+            ImGui.BeginDisabled(this._actions.Busy);
+            if (ImGui.Button("Refresh my channels")) {
+                this._actions.Run("Refreshing your channels", () => session.RefreshAsync());
+            }
+
+            ImGui.EndDisabled();
+            Widgets.Tooltip("Fetch your channels and their membership again, to check them.");
+        }
+
+        if (plan.CanOverride) {
+            ImGui.Checkbox(plan.Readiness == ResetReadiness.Offline
+                    ? "I can't connect to this server any more: reset without leaving my channels"
+                    : "The server doesn't accept my login: reset without leaving my channels",
+                ref this._resetWithoutLeaving);
+            Widgets.Tooltip("Your channels aren't checked or left: any you're the admin of are left without one for good, and the others " +
+                            "stay in your list under your old key, to remove with \"Remove from my list\".");
+        }
     }
 
     /// <summary>
@@ -385,18 +449,48 @@ public sealed class SettingsWindow : Window {
         "- If you have reset your identity on this server since, its key no longer counts there: you'd have to reset again.\n\n" +
         "The backup file itself is kept.";
 
-    private static string ResetText(string name, string serverUrl) =>
-        $"This makes new identity keys for {name} on {serverUrl}. Only do this if your key was lost or may have been stolen. " +
-        "If you just can't sign in, you don't need it: registering again keeps your key.\n\n" +
-        "First, if you're connected, LookingGlass tells the server to retire your old key: from then on it can't sign in or be " +
-        "registered again there, and every login made with it stops working. If you're not connected (or the server can't be told), " +
-        "they keep working there until you register again, so connect first if you can.\n\n" +
-        "After a reset:\n" +
-        "- You register again through the Lodestone.\n" +
-        "- You lose your place in every channel on this server. To get back in, someone must remove you and invite you again.\n" +
-        "- Everyone who knows you sees a \"key changed\" warning for you.\n" +
-        "- Copies of the old identity kept for this server's other addresses, and in backups, are removed too.\n\n" +
-        "Your identity on other servers isn't affected.";
+    private static string ResetText(string name, string serverUrl, IdentityResetPlan plan) {
+        var text = new StringBuilder();
+        text.Append($"This makes new identity keys for {name} on {serverUrl}. Only do this if your key was lost or may have been stolen. ")
+            .Append("If you just can't sign in, you don't need it: registering again keeps your key.\n\n");
+
+        if (plan.Readiness == ResetReadiness.Ready) {
+            var leave = plan.ToLeave.ToList();
+            text.Append("First, LookingGlass leaves your channels with your old key, while it still exists, so the others see you go");
+            text.Append(leave.Count == 0 ? " (you're in none right now)" : $": {string.Join(", ", leave.Select(channel => $"\"{channel.DisplayName}\""))}");
+            text.Append(plan.Declines.IsEmpty ? ".\n" : $", and declines your {plan.Declines.Length} invite{(plan.Declines.Length == 1 ? "" : "s")}.\n");
+            foreach (var group in plan.Kept.GroupBy(step => step.Action)) {
+                var kept = string.Join(", ", group.Select(step => $"\"{step.Channel.DisplayName}\""));
+                text.Append(group.Key == ResetChannelAction.KeepOldKey
+                        ? $"These already belong to your old key from before (an earlier reset, or registering again), so they can't be left and stay in your list: {kept}. "
+                        : $"These haven't been checked yet, so they can't be left and stay in your list: {kept}. ")
+                    .Append("Remove them afterwards with \"Remove from my list\" in their menu.\n");
+            }
+
+            text.Append("If leaving one fails, or anything changes meanwhile, you're told and the reset stops there, before your old key is ")
+                .Append("retired, so you can try again.\n\n")
+                .Append("Then LookingGlass tells the server to retire your old key: from then on it can't sign in or be registered again there, ")
+                .Append("and every login made with it stops working.\n\n");
+        } else {
+            text.Append(plan.Explanation);
+            if (!plan.LastKnownAdminOf.IsEmpty) {
+                text.Append($"\n\nWhen you were last connected, you were the admin of: {string.Join(", ", plan.LastKnownAdminOf.Select(channel => $"\"{channel.DisplayName}\""))}. ")
+                    .Append("Those would have no admin, for good.");
+            }
+
+            text.Append("\n\nYou chose to reset anyway: your channels aren't left, and the server isn't told to retire your old key, so it and ")
+                .Append("its logins keep working there until you register again. Channels you were in stay in your list, under your old key: ")
+                .Append("remove them with \"Remove from my list\".\n\n");
+        }
+
+        text.Append("After a reset:\n")
+            .Append("- You register again through the Lodestone.\n")
+            .Append("- To get back into a channel, someone must invite your new key.\n")
+            .Append("- Everyone who knows you sees a \"key changed\" warning for you.\n")
+            .Append("- Copies of the old identity kept for this server's other addresses, and in backups, are removed too.\n\n")
+            .Append("Your identity on other servers isn't affected.");
+        return text.ToString();
+    }
 
     private void DrawBlockedUsers() {
         Widgets.Heading("Blocked users");

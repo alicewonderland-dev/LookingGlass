@@ -69,7 +69,8 @@ public sealed class ConnectionRegistry(Database db, ILogger<ConnectionRegistry> 
 
     /// <summary>
     /// Tells a channel's online members that <paramref name="userId"/>, who just joined it, is online, if
-    /// they still are. Members who already shared a channel with them knew; the others couldn't have.
+    /// they still are. Members who already shared a channel with them knew; the others couldn't have. Not those whose place
+    /// there was removed from their list: they're told nothing about the channel.
     /// </summary>
     public void AnnounceJoined(string channelId, long userId) {
         lock (this._presence) {
@@ -77,7 +78,7 @@ public sealed class ConnectionRegistry(Database db, ILogger<ConnectionRegistry> 
                 return;
             }
 
-            var members = db.GetMembers(channelId).Select(member => member.User.UserId);
+            var members = db.GetMembers(channelId).Where(member => !member.Forgotten).Select(member => member.User.UserId);
             this.SendToAll(members, PresenceEvent(userId, true), except: userId);
         }
     }

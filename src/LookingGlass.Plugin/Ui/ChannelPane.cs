@@ -50,7 +50,9 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
         this.DrawHeader(channel, session);
         if (channel.MembershipWarning is { } warning) {
             ImGuiHelpers.ScaledDummy(4);
-            Widgets.IconText(FontAwesomeIcon.ExclamationTriangle, "Check this channel's members", Widgets.Warning);
+            // A fork or hidden change is shown rather than the old key's place (see ChannelView.MembershipWarning): the title says which.
+            Widgets.IconText(FontAwesomeIcon.ExclamationTriangle,
+                warning == PlainMessages.OldKeyChannel ? "Your current key isn't a member here" : "Check this channel's members", Widgets.Warning);
             Widgets.WrappedColoured(Widgets.Warning, warning);
         }
 
@@ -145,6 +147,14 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
     /// <summary>One muted line under the name: your rank, the members, and the key.</summary>
     private void DrawSummary(ChannelView channel) {
         var first = true;
+        if (channel.OldKeyMembership) {
+            // Nothing else here means anything for the current key: no key is coming, and nothing can be done but removing it.
+            Segment(ref first, "Your old key's place", Widgets.Warning,
+                "Your place here belongs to the identity key you had before you reset your identity (or registered again). Your current key " +
+                "isn't a member: use \"Remove from my list\" in the channel's menu.", FontAwesomeIcon.ExclamationTriangle);
+            return;
+        }
+
         Segment(ref first, RankLabel(channel.MyRank), channel.MyRank >= Rank.Member ? Widgets.Muted : Widgets.Warning, channel.MyRank switch {
             Rank.Admin => "You are an admin of this channel: you can invite, remove, promote and rename.",
             Rank.Moderator => "You are a moderator of this channel: you can invite and remove members.",
@@ -221,11 +231,38 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
         Widgets.Tooltip("This channel's colour in chat and in the channel list. Only you see it.");
         ImGui.Separator();
 
-        if (Widgets.MenuItem(FontAwesomeIcon.SignOutAlt, "Leave channel...", enabled)) {
-            modals.Confirm("Leave channel", $"Leave \"{name}\"? You'll need a new invite to come back.", "Leave", () => {
+        if (channel.OldKeyMembership) {
+            // Leave can never work here (only the old key could sign it), and disbanding isn't this key's either.
+            if (Widgets.MenuItem(FontAwesomeIcon.EyeSlash, "Remove from my list...", enabled)) {
+                modals.Confirm("Remove from my list",
+                    $"Remove \"{name}\" from your channel list?\n\n" +
+                    "Your place in it belongs to the identity key you had before you reset your identity (or registered again), so you can't " +
+                    "leave it, read it or send to it. This only takes it off your list: the others still see your old key as a member until " +
+                    "a moderator removes it. To come back, ask a moderator to remove your old key and invite you again.",
+                    "Remove", () => {
+                        actions.Run($"Removing {name} from your list", () => session.ForgetChannelAsync(channel.Id));
+                        this.Closed?.Invoke();
+                    });
+            }
+
+            Widgets.Tooltip("Take this channel off your list. It isn't left: only your old identity key could do that.");
+            ImGui.EndPopup();
+            return open;
+        }
+
+        // The log doesn't let the admin leave while others remain: hand admin on, or disband, first.
+        var othersRemain = channel.Members.Any(member => member.Rank >= Rank.Member && member.User.UserId != sessions.Snapshot.Me?.UserId);
+        var adminStays = admin && othersRemain;
+        if (Widgets.MenuItem(FontAwesomeIcon.SignOutAlt, "Leave channel...", enabled && !adminStays)) {
+            modals.Confirm("Leave channel", $"Leave \"{name}\"? You'll need a new invite to come back." +
+                                            (admin ? " You're its only member, so the channel is gone for good." : ""), "Leave", () => {
                 actions.Run($"Leaving {name}", () => session.LeaveAsync(channel.Id));
                 this.Closed?.Invoke();
             });
+        }
+
+        if (adminStays) {
+            Widgets.Tooltip("You're the admin, and others are still here: make another member admin first (their \"...\" menu), or disband the channel.");
         }
 
         if (admin && Widgets.MenuItem(FontAwesomeIcon.Trash, "Disband channel...", enabled, Widgets.Error)) {
@@ -637,6 +674,16 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
 
         if (channel.MyRank == Rank.Admin && member.Rank is Rank.Moderator && Widgets.MenuItem(FontAwesomeIcon.ArrowDown, "Make member", enabled)) {
             actions.Run($"Demoting {user.Name}", () => session.SetRankAsync(channel.Id, user.UserId, Rank.Member));
+        }
+
+        // Not to someone who registered again: their place belongs to a key they no longer have, which couldn't act as admin.
+        if (channel.MyRank == Rank.Admin && member.Rank is (Rank.Member or Rank.Moderator) && !member.KeyReplaced
+            && Widgets.MenuItem(FontAwesomeIcon.Crown, "Make admin (hand over)...", enabled)) {
+            modals.Confirm("Hand over admin",
+                $"Make {name} the admin of \"{channel.DisplayName}\"?\n\n" +
+                "A channel has one admin, so you become a moderator: you can still invite and remove members, but no longer rename the " +
+                $"channel, change ranks or disband it. Only {user.Name} can make you admin again, and as admin they can also remove you.",
+                "Make admin", () => actions.Run($"Making {user.Name} admin", () => session.SetRankAsync(channel.Id, user.UserId, Rank.Admin)));
         }
 
         if (channel.MyRank >= Rank.Moderator && member.Rank < channel.MyRank) {

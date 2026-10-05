@@ -46,6 +46,7 @@ message ClientFrame {
     StartKeyLogin start_key_login = 30;
     CompleteKeyLogin complete_key_login = 31;
     RetireIdentity retire_identity = 32;
+    ForgetChannel forget_channel = 33;
   }
 }
 
@@ -567,6 +568,18 @@ message SetMemberRank {
 }
 
 message DisbandChannel {
+  string channel_id = 1;
+}
+
+// "Remove from my list", for a channel (or an invite) whose place belongs to identity keys the account no longer has: it
+// registered again, or reset its identity, so the keys the log knows it by are gone and can't sign a leave (or a
+// decline) any more. Not a membership log entry: the log, and every other member's view of it, stay as they are (the
+// old keys stay a member, or invited, until a moderator removes them, and rekeys still include them). The server only
+// stops listing the channel (or invite) to the account and sending it the channel's events, and no longer counts it
+// towards the account's limits; the stale place can do nothing else. Refused (FORBIDDEN) while the account is listed in
+// the channel under its current keys: leave it, or decline the invite, instead. NOT_FOUND if the account isn't listed in
+// the channel. Answered with Ack. Added in 0.2 without a version change: an older server answers "Unknown request.".
+message ForgetChannel {
   string channel_id = 1;
 }
 

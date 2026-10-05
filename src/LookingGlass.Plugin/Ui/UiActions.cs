@@ -1,6 +1,7 @@
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface;
+using LookingGlass.Core.Client;
 using LookingGlass.Core.Crypto;
 
 namespace LookingGlass.Plugin.Ui;
@@ -36,7 +37,8 @@ public sealed class UiActions(Func<string?>? shownCode = null) {
                 await action();
                 this.SetResult($"{description}: done.", false);
             } catch (Exception ex) {
-                this.SetResult(LodestoneCode.Redact($"{description} failed: {ex.Message}", shownCode?.Invoke()), true);
+                // Messages about an old key's place (from the log's rules, or a server) in the words the user needs.
+                this.SetResult(LodestoneCode.Redact(PlainMessages.Of($"{description} failed: {ex.Message}"), shownCode?.Invoke()), true);
             }
         });
     }
