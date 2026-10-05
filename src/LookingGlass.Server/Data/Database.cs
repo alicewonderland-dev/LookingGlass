@@ -42,7 +42,8 @@ public sealed record ChannelRow(string ChannelId, ulong Epoch, bool RekeyPending
 /// <param name="CurrentKeys">The row's keys (those the log admitted them with) are the user's current keys.</param>
 /// <param name="AwaitingKey">
 /// The place moved to the user's new keys (a key recovered entry), and no rekey has given them the channel's key since: they
-/// can't make one themselves, not knowing the channel's name, so they aren't asked to.
+/// can't carry the channel's name into a new one, so they aren't asked to, unless nobody else holds the key (then one of
+/// them names it anew; see "When nobody holds the key" in docs/design.md).
 /// </param>
 public sealed record MemberRow(UserRow User, Rank Rank, bool Forgotten = false, bool CurrentKeys = true, bool AwaitingKey = false);
 
