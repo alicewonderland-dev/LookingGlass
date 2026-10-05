@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.Net.WebSockets;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Channels;
 using Google.Protobuf;
@@ -248,9 +249,10 @@ public sealed class ClientSession : IAsyncDisposable {
 
     /// <summary>
     /// Starts registering <paramref name="character"/>: the server answers with the code to put in the Lodestone profile.
-    /// The code must be the one derived from the address this client connected to, its identity key, the server's nonce
-    /// and the character (see <see cref="LodestoneCode"/>); any other is refused, never shown, since it was made for
-    /// another server or key, which is what a malicious server passing on another server's code would send.
+    /// The code must be the one derived from the address this client connected to, its identity key, the server's nonce,
+    /// this request's fresh client nonce and the character (see <see cref="LodestoneCode"/>); any other is refused, never
+    /// shown, since it was made for another server, key or request, which is what a malicious server passing on another
+    /// server's code would send.
     /// </summary>
     /// <exception cref="RelayedRegistrationCodeException">The server sent a code that isn't this server's for this key.</exception>
     public async Task<RegistrationChallenge> StartRegistrationAsync(Character character, CancellationToken ct = default) {
@@ -266,13 +268,18 @@ public sealed class ClientSession : IAsyncDisposable {
 
             // Exactly the address this connection was made to, as for CompleteRegistration: the code is derived from its origin.
             var serverUrl = this._options.ServerUri.AbsoluteUri;
+            // Fresh for this request, so a server can only look for a code matching another server's once asked, and only
+            // until this request times out.
+            var clientNonce = RandomNumberGenerator.GetBytes(LodestoneCode.ClientNonceSize);
             // Lodestone lookups are queued server-side, so allow more time than usual.
             var response = await this.RequestAsync(connection, new ClientFrame {
-                StartRegistration = new StartRegistration { Character = character, Identity = identity.ToBundle(), ServerUrl = serverUrl },
+                StartRegistration = new StartRegistration {
+                    Character = character, Identity = identity.ToBundle(), ServerUrl = serverUrl, ClientNonce = ByteString.CopyFrom(clientNonce),
+                },
             }, ct, RegistrationRequestTimeout);
 
             challenge = response.RegistrationChallenge ?? throw Unexpected(response);
-            if (CheckCode(challenge, serverUrl, identity) is { } wrong) {
+            if (CheckCode(challenge, serverUrl, identity, clientNonce) is { } wrong) {
                 // Never the code itself, which is what a user mustn't paste: the log may be read out, or shared to ask for help.
                 this.Log(NoticeLevel.Warning, $"Refused the registration code the server sent ({wrong}). It may be passing on another server's code; it wasn't shown or logged.");
                 lock (this._lock) {
@@ -305,14 +312,14 @@ public sealed class ClientSession : IAsyncDisposable {
 
     /// <summary>
     /// Whether a registration challenge's code is the one this client expects: derived from the origin of the address it
-    /// connected to, its own identity key, the nonce the server sent and the character the server named. A debug account
-    /// has no code (and nothing to put in a profile).
+    /// connected to, its own identity key, the nonce the server sent, the nonce this client sent (<paramref name="clientNonce"/>)
+    /// and the character the server named. A debug account has no code (and nothing to put in a profile).
     /// </summary>
     /// <returns>
     /// Why it isn't, for the log, or null if it is: the address and the character, never the code (a code someone else
     /// may hold the registration for, which nobody should be shown, not even in a log they may share).
     /// </returns>
-    internal static string? CheckCode(RegistrationChallenge challenge, string serverUrl, IdentityKeys identity) {
+    internal static string? CheckCode(RegistrationChallenge challenge, string serverUrl, IdentityKeys identity, byte[] clientNonce) {
         if (challenge.VerificationSkipped && challenge.Code.Length == 0) {
             return null;
         }
@@ -325,10 +332,10 @@ public sealed class ClientSession : IAsyncDisposable {
             return $"for character {challenge.LodestoneId}, from {origin}, with a nonce of {challenge.Nonce.Length} bytes";
         }
 
-        var expected = LodestoneCode.Derive(origin, identity.SigningPublicKey, challenge.Nonce.Span, challenge.LodestoneId);
+        var expected = LodestoneCode.Derive(origin, identity.SigningPublicKey, challenge.Nonce.Span, clientNonce, challenge.LodestoneId);
         return challenge.Code == expected
             ? null
-            : $"for character {challenge.LodestoneId}, from {origin}: it isn't the code for that address, this client's identity key and the nonce sent with it";
+            : $"for character {challenge.LodestoneId}, from {origin}: it isn't the code for that address, this client's identity key and the nonces";
     }
 
     /// <summary>

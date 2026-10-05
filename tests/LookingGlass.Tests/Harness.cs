@@ -106,6 +106,9 @@ public sealed class Harness : IAsyncDisposable {
 
     public static CancellationToken Ct => TestContext.Current.CancellationToken;
 
+    /// <summary>A StartRegistration's client nonce, as a client makes it: 32 random bytes.</summary>
+    public static ByteString NewClientNonce() => ByteString.CopyFrom(System.Security.Cryptography.RandomNumberGenerator.GetBytes(LodestoneCode.ClientNonceSize));
+
     /// <summary>The server's database, for tests that play a malicious or misbehaving server.</summary>
     public Database Database => this.Factory.Services.GetRequiredService<Database>();
 
@@ -352,9 +355,9 @@ public sealed class HoldingWebSocket(WebSocket inner) : WebSocket {
 /// <summary>
 /// A client's WebSocket on which a test plays the server the client thinks it reaches: every frame the real server sends
 /// goes through <c>rewrite</c> on its way to the client, as a malicious server (or one passing on another's answers)
-/// would change it. Requests go to the real server unchanged.
+/// would change it. Requests go to the real server unchanged, and to <c>sent</c> (if given) first, for a test to look at.
 /// </summary>
-public sealed class RewritingWebSocket(WebSocket inner, Func<ServerFrame, ServerFrame> rewrite) : WebSocket {
+public sealed class RewritingWebSocket(WebSocket inner, Func<ServerFrame, ServerFrame> rewrite, Action<ClientFrame>? sent = null) : WebSocket {
     private readonly byte[] _chunk = new byte[16 * 1024];
     private readonly MemoryStream _message = new();
     // The rewritten frame being handed to the client, and how much of it has been.
@@ -403,11 +406,16 @@ public sealed class RewritingWebSocket(WebSocket inner, Func<ServerFrame, Server
         return new ValueWebSocketReceiveResult(result.Count, result.MessageType, result.EndOfMessage);
     }
 
-    public override Task SendAsync(ArraySegment<byte> buffer, WebSocketMessageType messageType, bool endOfMessage, CancellationToken cancellationToken) =>
-        inner.SendAsync(buffer, messageType, endOfMessage, cancellationToken);
+    public override Task SendAsync(ArraySegment<byte> buffer, WebSocketMessageType messageType, bool endOfMessage, CancellationToken cancellationToken) {
+        // The client sends each request as one message.
+        sent?.Invoke(ClientFrame.Parser.ParseFrom(buffer.AsSpan()));
+        return inner.SendAsync(buffer, messageType, endOfMessage, cancellationToken);
+    }
 
-    public override ValueTask SendAsync(ReadOnlyMemory<byte> buffer, WebSocketMessageType messageType, bool endOfMessage, CancellationToken cancellationToken) =>
-        inner.SendAsync(buffer, messageType, endOfMessage, cancellationToken);
+    public override ValueTask SendAsync(ReadOnlyMemory<byte> buffer, WebSocketMessageType messageType, bool endOfMessage, CancellationToken cancellationToken) {
+        sent?.Invoke(ClientFrame.Parser.ParseFrom(buffer.Span));
+        return inner.SendAsync(buffer, messageType, endOfMessage, cancellationToken);
+    }
 
     public override Task CloseAsync(WebSocketCloseStatus closeStatus, string? statusDescription, CancellationToken cancellationToken) => inner.CloseAsync(closeStatus, statusDescription, cancellationToken);
 

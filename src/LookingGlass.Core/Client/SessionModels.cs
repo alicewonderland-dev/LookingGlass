@@ -153,7 +153,7 @@ public sealed record TraceEntry(DateTimeOffset Time, bool Outgoing, string Summa
 /// <summary>
 /// The server answered a request with an error. Its message is shown to the user, so it holds no registration code but
 /// <paramref name="keepCode"/>, the one this client checked (see <see cref="Crypto.LodestoneCode.Redact"/>): a server
-/// could otherwise answer "LGC-… isn't in your Lodestone profile yet" with another server's code.
+/// could otherwise answer "LGC-... isn't in your Lodestone profile yet" with another server's code.
 /// </summary>
 public sealed class ServerErrorException(ErrorCode code, string message, string? keepCode = null)
     : Exception($"{Crypto.LodestoneCode.Redact(message, keepCode)} ({code})") {

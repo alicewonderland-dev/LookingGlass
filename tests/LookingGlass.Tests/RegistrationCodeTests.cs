@@ -30,14 +30,19 @@ public sealed class RegistrationCodeTests {
         var server = new Harness(lodestone: lodestone, settings: ("LookingGlass:PublicUrls:0", BUrl));
         try {
             await using (server) {
-                var alice = server.StartClient(Name, options: server.Options(serverUri: new Uri(BUrl)));
+                var sent = new ConcurrentQueue<ClientFrame>();
+                var alice = server.StartClient(Name, options: server.Options(serverUri: new Uri(BUrl),
+                    wrap: inner => new RewritingWebSocket(inner, frame => frame, sent.Enqueue)));
                 await WaitFor(() => alice.Session.Snapshot.State == ConnectionState.Unregistered ? new object() : null);
 
                 var challenge = await alice.Session.StartRegistrationAsync(Character, Ct);
                 Assert.False(challenge.VerificationSkipped);
                 Assert.Equal(lodestone.CharacterId, challenge.LodestoneId);
+                var clientNonce = Assert.Single(sent, frame => frame.StartRegistration != null).StartRegistration.ClientNonce;
+                Assert.Equal(LodestoneCode.ClientNonceSize, clientNonce.Length);
                 using (var keys = alice.LoadIdentity()) {
-                    Assert.Equal(LodestoneCode.Derive(ServerOrigin.FromUrl(BUrl)!, keys.SigningPublicKey, challenge.Nonce.Span, challenge.LodestoneId), challenge.Code);
+                    Assert.Equal(LodestoneCode.Derive(ServerOrigin.FromUrl(BUrl)!, keys.SigningPublicKey, challenge.Nonce.Span, clientNonce.Span, challenge.LodestoneId),
+                        challenge.Code);
                 }
 
                 Assert.Equal(challenge.Code, alice.Session.Snapshot.PendingChallenge?.Code);
@@ -83,7 +88,7 @@ public sealed class RegistrationCodeTests {
                 await using var mallory = await b.ConnectRawAsync();
                 var fromB = (await mallory.SendAsync(new ClientFrame {
                     StartRegistration = new StartRegistration {
-                        Character = Character, Identity = (forUsersKey ? userKeys : malloryKeys).ToBundle(), ServerUrl = BUrl,
+                        Character = Character, Identity = (forUsersKey ? userKeys : malloryKeys).ToBundle(), ServerUrl = BUrl, ClientNonce = NewClientNonce(),
                     },
                 })).RegistrationChallenge!;
                 Assert.False(string.IsNullOrEmpty(fromB.Code));
@@ -207,7 +212,7 @@ public sealed class RegistrationCodeTests {
 
     /// <summary>
     /// The relay without a code to relay: M answers registering honestly, but writes B's code into what it says (its
-    /// announcement, the error when verifying fails), as "LGC-… isn't in your Lodestone profile yet", hoping the user
+    /// announcement, the error when verifying fails), as "LGC-... isn't in your Lodestone profile yet", hoping the user
     /// pastes that one. The client removes every code from what the server says, wherever it is shown or logged, except
     /// its own, checked one, which it still shows where it should.
     /// </summary>
@@ -258,7 +263,7 @@ public sealed class RegistrationCodeTests {
         try {
             await using (server) {
                 using var keys = IdentityKeys.Generate();
-                var code = LodestoneCode.Derive(ServerOrigin.FromUrl(BUrl)!, keys.SigningPublicKey, new byte[RegistrationProof.NonceSize], 1);
+                var code = LodestoneCode.Derive(ServerOrigin.FromUrl(BUrl)!, keys.SigningPublicKey, new byte[RegistrationProof.NonceSize], new byte[LodestoneCode.ClientNonceSize], 1);
                 var logs = new ConcurrentQueue<string>();
                 var user = await server.RegisterAsync("Code Name", options: server.Options(log: (_, text) => logs.Enqueue(text), wrap: inner => new RewritingWebSocket(inner, frame => {
                     if (frame.Response?.AuthenticateOk is { } ok) {
@@ -295,7 +300,7 @@ public sealed class RegistrationCodeTests {
                 using var keys = IdentityKeys.Generate();
                 await using var raw = await server.ConnectRawAsync();
                 var old = await raw.SendAsync(new ClientFrame {
-                    StartRegistration = new StartRegistration { Character = new Character { Name = Name, WorldName = world }, Identity = keys.ToBundle() },
+                    StartRegistration = new StartRegistration { Character = new Character { Name = Name, WorldName = world }, Identity = keys.ToBundle(), ClientNonce = NewClientNonce() },
                 });
 
                 Assert.Null(old.RegistrationChallenge);
@@ -313,12 +318,84 @@ public sealed class RegistrationCodeTests {
 
                 // The same request with the address goes ahead.
                 var current = await raw.SendAsync(new ClientFrame {
-                    StartRegistration = new StartRegistration { Character = new Character { Name = Name, WorldName = world }, Identity = keys.ToBundle(), ServerUrl = BUrl },
+                    StartRegistration = new StartRegistration {
+                        Character = new Character { Name = Name, WorldName = world }, Identity = keys.ToBundle(), ServerUrl = BUrl, ClientNonce = NewClientNonce(),
+                    },
                 });
                 Assert.NotNull(current.RegistrationChallenge);
             }
         } finally {
             DeleteDirectory(server.DataDirectory);
+        }
+    }
+
+    /// <summary>
+    /// The client's nonce: 32 random bytes, fresh for each StartRegistration, which the code is derived from too. A server
+    /// can't know it before the client asks, so it can't have looked for inputs of its own whose code matches one another
+    /// server issued ahead of time; a code made for any other client nonce (here one M prepared, honest in every other
+    /// way: its own address, the user's key) is refused like any other relayed code.
+    /// </summary>
+    [Fact]
+    public async Task TheCodeIsForTheClientsFreshNonce() {
+        await using var relay = Relay.Create();
+        var sent = new ConcurrentQueue<ClientFrame>();
+        var prepared = System.Security.Cryptography.RandomNumberGenerator.GetBytes(LodestoneCode.ClientNonceSize);
+        var precompute = false;
+        relay.Rewrite = frame => {
+            if (precompute && frame.Response?.RegistrationChallenge is { } challenge) {
+                challenge.Code = LodestoneCode.Derive(ServerOrigin.FromUrl(MUrl)!, relay.UserKeys.SigningPublicKey, challenge.Nonce.Span, prepared, challenge.LodestoneId);
+            }
+
+            return frame;
+        };
+
+        var user = relay.M.StartClient(Name, relay.Store, relay.M.Options(serverUri: new Uri(MUrl), log: (level, text) => relay.Logs.Enqueue((level, text)),
+            wrap: inner => new RewritingWebSocket(inner, frame => relay.Rewrite(frame), sent.Enqueue)));
+        await WaitFor(() => user.Session.Snapshot.State == ConnectionState.Unregistered ? new object() : null);
+
+        // Two starts, two fresh nonces of 32 bytes.
+        await user.Session.StartRegistrationAsync(Character, Ct);
+        await user.Session.StartRegistrationAsync(Character, Ct);
+        var nonces = sent.Where(frame => frame.StartRegistration != null).Select(frame => frame.StartRegistration.ClientNonce).ToList();
+        Assert.Equal(2, nonces.Count);
+        Assert.All(nonces, nonce => Assert.Equal(LodestoneCode.ClientNonceSize, nonce.Length));
+        Assert.NotEqual(nonces[0], nonces[1]);
+
+        precompute = true;
+        await Assert.ThrowsAsync<RelayedRegistrationCodeException>(() => user.Session.StartRegistrationAsync(Character, Ct));
+        Assert.Null(user.Session.Snapshot.PendingChallenge);
+    }
+
+    /// <summary>
+    /// How long a registration challenge lives (LookingGlass:Lodestone:ChallengeMinutes) bounds how long a server passing
+    /// on another's code can hold it, so it is 1 to 60 minutes: a server set otherwise doesn't start, and says why.
+    /// </summary>
+    [Theory]
+    [InlineData("0")]
+    [InlineData("-1")]
+    [InlineData("61")]
+    [InlineData("1440")]
+    public async Task AServerWithAChallengeLifetimeOutsideOneToSixtyMinutesDoesntStart(string minutes) {
+        var logs = new CapturingLoggerProvider();
+        var exitCode = Environment.ExitCode;
+        var directory = Path.Combine(Path.GetTempPath(), "lgt-" + Guid.NewGuid().ToString("N"));
+        try {
+            Exception? failed = null;
+            try {
+                await using var server = new Harness(directory, logs: logs, settings: ("LookingGlass:Lodestone:ChallengeMinutes", minutes));
+                await using var raw = await server.ConnectRawAsync();
+            } catch (Exception ex) {
+                failed = ex;
+            }
+
+            Assert.NotNull(failed);
+            var critical = Assert.Single(logs.AtLeast(Microsoft.Extensions.Logging.LogLevel.Critical));
+            Assert.Contains("LookingGlass:Lodestone:ChallengeMinutes", critical);
+            Assert.Contains("1 to 60", critical);
+            Assert.Equal(1, Environment.ExitCode);
+        } finally {
+            Environment.ExitCode = exitCode;
+            DeleteDirectory(directory);
         }
     }
 
@@ -360,7 +437,7 @@ public sealed class RegistrationCodeTests {
         public async Task<RegistrationChallenge> StartOnBAsync(IdentityKeys keys) {
             this._mallory ??= await this.B.ConnectRawAsync();
             var response = await this._mallory.SendAsync(new ClientFrame {
-                StartRegistration = new StartRegistration { Character = Character, Identity = keys.ToBundle(), ServerUrl = BUrl },
+                StartRegistration = new StartRegistration { Character = Character, Identity = keys.ToBundle(), ServerUrl = BUrl, ClientNonce = NewClientNonce() },
             });
             var challenge = response.RegistrationChallenge!;
             Assert.False(string.IsNullOrEmpty(challenge.Code));

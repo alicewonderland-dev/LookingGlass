@@ -239,7 +239,17 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.RegistrationFailed, UpdateToRegister);
         }
 
-        var minutes = options.Value.Lodestone.ChallengeMinutes;
+        if (request.ClientNonce.IsEmpty) {
+            // Likewise: a plugin from before the code was derived from the client's nonce too.
+            throw new RequestException(ErrorCode.RegistrationFailed, UpdateToRegister);
+        }
+
+        if (request.ClientNonce.Length != LodestoneCode.ClientNonceSize) {
+            throw new RequestException(ErrorCode.InvalidRequest, $"The client's registration nonce must be {LodestoneCode.ClientNonceSize} bytes.");
+        }
+
+        // Checked when the server starts; kept in range here too, for a handler made without that check.
+        var minutes = Math.Clamp(options.Value.Lodestone.ChallengeMinutes, LodestoneOptions.MinChallengeMinutes, LodestoneOptions.MaxChallengeMinutes);
         if (ProtocolInfo.IsDebugWorld(worldName)) {
             if (!options.Value.Dev.AllowDebugAccounts) {
                 throw new RequestException(ErrorCode.RegistrationFailed, "Debug accounts are disabled on this server.");
@@ -293,9 +303,10 @@ public sealed class RequestHandler(
         // Once the account is known (the lookup is cached, so asking again costs nothing).
         this.CheckKeyRegistrable(found.Id, request.Identity);
         // For this address, the key this registration is for (only it can complete it: see CheckRegistrationProof), a fresh
-        // nonce and the character, so the client can check it was made for its own server and key before showing it.
+        // nonce, the client's nonce and the character, so the client can check it was made for its own server, key and
+        // request before showing it.
         var nonce = NewRegistrationNonce();
-        var code = LodestoneCode.Derive(origin, request.Identity.SigningPublicKey.Span, nonce, found.Id);
+        var code = LodestoneCode.Derive(origin, request.Identity.SigningPublicKey.Span, nonce, request.ClientNonce.Span, found.Id);
         connection.PendingRegistration = new PendingRegistration(
             found.Id, found.Name, character.WorldId, found.WorldName, request.Identity, code, DateTimeOffset.UtcNow.AddMinutes(minutes), false, nonce);
         connection.VerifyAttempts = 0;

@@ -41,12 +41,16 @@ public sealed class RequestHandlerTests : IDisposable {
     }
 
     /// <param name="publicUrls">The server's addresses. The handler isn't in Development, so with none it trusts no address.</param>
-    private RequestHandler NewHandler(params string[] publicUrls) {
+    private RequestHandler NewHandler(params string[] publicUrls) => this.NewHandler(15, publicUrls);
+
+    /// <param name="challengeMinutes">How long a registration challenge lives.</param>
+    /// <param name="publicUrls">The server's addresses (by default the one the clients here sign for).</param>
+    private RequestHandler NewHandler(int challengeMinutes, string[]? publicUrls = null) {
         var options = Options.Create(new ServerOptions {
             Dev = { AllowDebugAccounts = true },
-            Lodestone = { BaseUrl = "https://lodestone.test", MinDelaySeconds = 0 },
+            Lodestone = { BaseUrl = "https://lodestone.test", MinDelaySeconds = 0, ChallengeMinutes = challengeMinutes },
             Limits = { RegistrationsPerHourPerIp = 3 },
-            PublicUrls = publicUrls,
+            PublicUrls = publicUrls ?? [Url],
         });
         var lodestone = new LodestoneClient(new HttpClient(this._lodestone), options, NullLogger<LodestoneClient>.Instance);
         var logger = Microsoft.Extensions.Logging.LoggerFactory.Create(logging => logging.AddProvider(this._logs)).CreateLogger<RequestHandler>();
@@ -172,8 +176,8 @@ public sealed class RequestHandlerTests : IDisposable {
 
     /// <summary>
     /// The code is no random string but the one derived from the address the client connected to, the key it registers,
-    /// this connection's nonce and the character (see <see cref="LodestoneCode"/>), which the client checks before showing
-    /// it. Debug accounts get no code.
+    /// this connection's nonce, the client's nonce and the character (see <see cref="LodestoneCode"/>), which the client
+    /// checks before showing it. Debug accounts get no code.
     /// </summary>
     [Fact]
     public async Task TheCodeIsDerivedFromTheAddressKeyNonceAndCharacter() {
@@ -185,8 +189,10 @@ public sealed class RequestHandlerTests : IDisposable {
                      ("wss://chat.example.com/ws", keys), ("wss://chat.example.com/ws", keys), ("ws://100.64.0.1:5000/ws", keys), ("wss://chat.example.com/ws", otherKeys),
                  }) {
             // From an address each, as the limit is three an hour.
-            var challenge = (await this.StartRegistrationAsync(await this.HelloAsync($"203.0.113.{100 + codes.Count}"), keys: identity, url: url)).RegistrationChallenge!;
-            Assert.Equal(LodestoneCode.Derive(Core.Client.ServerOrigin.FromUrl(url)!, identity.SigningPublicKey, challenge.Nonce.Span, LodestoneId), challenge.Code);
+            var clientNonce = System.Security.Cryptography.RandomNumberGenerator.GetBytes(LodestoneCode.ClientNonceSize);
+            var challenge = (await this.StartRegistrationAsync(await this.HelloAsync($"203.0.113.{100 + codes.Count}"), keys: identity, url: url, clientNonce: clientNonce))
+                .RegistrationChallenge!;
+            Assert.Equal(LodestoneCode.Derive(Core.Client.ServerOrigin.FromUrl(url)!, identity.SigningPublicKey, challenge.Nonce.Span, clientNonce, LodestoneId), challenge.Code);
             Assert.Equal(LodestoneId, challenge.LodestoneId);
             codes.Add(challenge.Code);
         }
@@ -197,6 +203,44 @@ public sealed class RequestHandlerTests : IDisposable {
         var debug = (await this.StartRegistrationAsync(await this.HelloAsync("203.0.113.63"), "Debug Person", ProtocolInfo.DebugWorldName, keys)).RegistrationChallenge!;
         Assert.True(debug.VerificationSkipped);
         Assert.Equal("", debug.Code);
+    }
+
+    /// <summary>
+    /// The client's nonce is exactly 32 bytes: without one (a plugin from before), registering is refused asking to
+    /// update; any other length is an invalid request. Checked before the Lodestone is asked, for debug accounts too.
+    /// </summary>
+    [Theory]
+    [InlineData(World)]
+    [InlineData(ProtocolInfo.DebugWorldName)]
+    public async Task TheClientNonceIsRequiredAndIs32Bytes(string world) {
+        var connection = await this.HelloAsync("203.0.113.70");
+        var old = await this.StartRegistrationAsync(connection, world: world, clientNonce: []);
+        Assert.Equal(ErrorCode.RegistrationFailed, old.Error?.Code);
+        Assert.Contains("update the plugin", old.Error!.Message);
+
+        foreach (var length in new[] { 1, 16, 31, 33, 64 }) {
+            var wrong = await this.StartRegistrationAsync(connection, world: world, clientNonce: new byte[length]);
+            Assert.Equal(ErrorCode.InvalidRequest, wrong.Error?.Code);
+        }
+
+        Assert.Null(connection.PendingRegistration);
+        Assert.Equal(0, this._lodestone.Requests);
+        Assert.NotNull((await this.StartRegistrationAsync(connection, world: world, clientNonce: new byte[32])).RegistrationChallenge);
+    }
+
+    /// <summary>A challenge lives for ChallengeMinutes, kept between 1 and 60 even by a handler made without the startup check.</summary>
+    [Theory]
+    [InlineData(-5, 1)]
+    [InlineData(0, 1)]
+    [InlineData(15, 15)]
+    [InlineData(60, 60)]
+    [InlineData(10_000, 60)]
+    public async Task AChallengeLivesBetweenOneAndSixtyMinutes(int configured, int minutes) {
+        this._handler = this.NewHandler(challengeMinutes: configured);
+        var started = DateTimeOffset.UtcNow;
+        var challenge = (await this.StartRegistrationAsync(await this.HelloAsync("203.0.113.71"))).RegistrationChallenge!;
+        var lifetime = DateTimeOffset.FromUnixTimeSeconds(challenge.ExpiresUnix) - started;
+        Assert.InRange(lifetime.TotalMinutes, minutes - 0.1, minutes + 0.1);
     }
 
     /// <summary>
@@ -357,7 +401,7 @@ public sealed class RequestHandlerTests : IDisposable {
         var response = await this.SendAsync(connection, new ClientFrame {
             StartRegistration = new StartRegistration {
                 Character = new Character { Name = "Zero Key", WorldName = ProtocolInfo.DebugWorldName },
-                Identity = CryptoTests.BundleWithAgreementKey(keys, new byte[32]),
+                Identity = CryptoTests.BundleWithAgreementKey(keys, new byte[32]), ServerUrl = Url, ClientNonce = NewClientNonce(),
             },
         });
 
@@ -399,11 +443,14 @@ public sealed class RequestHandlerTests : IDisposable {
 
     /// <param name="keys">The identity to register (by default new keys, thrown away).</param>
     /// <param name="url">The address the client says it connected to.</param>
-    private Task<Response> StartRegistrationAsync(ClientConnection connection, string name = "Test Person", string world = World, IdentityKeys? keys = null, string url = Url) {
+    /// <param name="clientNonce">The client's nonce (by default a new one).</param>
+    private Task<Response> StartRegistrationAsync(ClientConnection connection, string name = "Test Person", string world = World, IdentityKeys? keys = null, string url = Url,
+        byte[]? clientNonce = null) {
         using var generated = keys == null ? IdentityKeys.Generate() : null;
         return this.SendAsync(connection, new ClientFrame {
             StartRegistration = new StartRegistration {
                 Character = new Character { Name = name, WorldName = world }, Identity = (keys ?? generated!).ToBundle(), ServerUrl = url,
+                ClientNonce = clientNonce == null ? NewClientNonce() : Google.Protobuf.ByteString.CopyFrom(clientNonce),
             },
         });
     }

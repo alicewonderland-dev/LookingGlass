@@ -222,9 +222,10 @@ asked to update.
 
 **Your code is for this server.** The code you put in your Lodestone profile
 isn't random: it is worked out from the server's address as the plugin
-connected to it, the identity key being registered, a one-time value from the
-server and your character, and the plugin works it out again itself before
-showing it. A malicious server can't show you a code another server issued
+connected to it, the identity key being registered, one-time values from the
+server and from the plugin, and your character, and the plugin works it out
+again itself before showing it. A malicious server can't show you a code
+another server issued
 (say, one it asked for there for your character, with its own key, to take
 your account there once you put it in your profile): that code was made for
 the other server's address, and the plugin says "This server sent a
@@ -484,8 +485,8 @@ What the encryption does today:
   client signs the server's challenge with the identity key it registers, so
   nobody can register someone else's public key as theirs. The code for the
   Lodestone profile is derived (SHA-256, 100 bits kept) from the server's
-  address, that key, the server's nonce and the character, and the client
-  checks it before showing it, so a server can't pass on a code another
+  address, that key, the server's nonce, a fresh nonce from the client and the
+  character, and the client checks it before showing it, so a server can't pass on a code another
   server issued (to its own key) and take your account there. A key belongs
   to one account at most, and a key an account replaced or retired is refused
   for that account only.

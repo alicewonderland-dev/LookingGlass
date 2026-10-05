@@ -159,7 +159,7 @@ public sealed class IdentityResetTests : IAsyncLifetime {
 
         // Registering again with the key it has is fine while that key is the account's...
         await using var early = await this._server.ConnectRawAsync();
-        var challenge = (await early.SendAsync(new ClientFrame { StartRegistration = new StartRegistration { Character = character, Identity = oldKeys.ToBundle(), ServerUrl = this._server.ServerUri.AbsoluteUri } }))
+        var challenge = (await early.SendAsync(new ClientFrame { StartRegistration = new StartRegistration { Character = character, Identity = oldKeys.ToBundle(), ServerUrl = this._server.ServerUri.AbsoluteUri, ClientNonce = NewClientNonce() } }))
             .RegistrationChallenge!;
 
         // ...but then the account registers new keys (a reset elsewhere).
@@ -176,7 +176,7 @@ public sealed class IdentityResetTests : IAsyncLifetime {
         Assert.Equal(ErrorCode.RegistrationFailed, late.Error?.Code);
         Assert.Contains("Reset my identity", late.Error!.Message);
         await using var again = await this._server.ConnectRawAsync();
-        var refused = await again.SendAsync(new ClientFrame { StartRegistration = new StartRegistration { Character = character, Identity = oldKeys.ToBundle(), ServerUrl = this._server.ServerUri.AbsoluteUri } });
+        var refused = await again.SendAsync(new ClientFrame { StartRegistration = new StartRegistration { Character = character, Identity = oldKeys.ToBundle(), ServerUrl = this._server.ServerUri.AbsoluteUri, ClientNonce = NewClientNonce() } });
         Assert.Equal(ErrorCode.RegistrationFailed, refused.Error?.Code);
         Assert.Contains("Reset my identity", refused.Error!.Message);
 
@@ -223,7 +223,7 @@ public sealed class IdentityResetTests : IAsyncLifetime {
         Assert.Equal(ErrorCode.NotAuthenticated, (await raw.SendAsync(new ClientFrame { Authenticate = new Authenticate { DeviceToken = otherToken } })).Error?.Code);
         Assert.Equal(ErrorCode.NotAuthenticated, (await KeyLoginAsync(raw, oldKeys, userId, url)).Error?.Code);
         var register = await raw.SendAsync(new ClientFrame {
-            StartRegistration = new StartRegistration { Character = new Character { Name = alice.Name, WorldName = ProtocolInfo.DebugWorldName }, Identity = oldKeys.ToBundle(), ServerUrl = this._server.ServerUri.AbsoluteUri },
+            StartRegistration = new StartRegistration { Character = new Character { Name = alice.Name, WorldName = ProtocolInfo.DebugWorldName }, Identity = oldKeys.ToBundle(), ServerUrl = this._server.ServerUri.AbsoluteUri, ClientNonce = NewClientNonce() },
         });
         Assert.Equal(ErrorCode.RegistrationFailed, register.Error?.Code);
         await Assert.ThrowsAsync<ServerErrorException>(() => alice.Session.RefreshAsync(Ct));

@@ -60,6 +60,15 @@ try {
     return;
 }
 
+// A registration challenge's lifetime bounds how long its Lodestone code can be held open (see LodestoneCode).
+if (options.Lodestone.ChallengeMinutes is < LodestoneOptions.MinChallengeMinutes or > LodestoneOptions.MaxChallengeMinutes) {
+    app.Logger.LogCritical(
+        "LookingGlass:Lodestone:ChallengeMinutes is {Minutes}, so the server won't start: it must be {Min} to {Max} (minutes a registration challenge lasts; 15 by default).",
+        options.Lodestone.ChallengeMinutes, LodestoneOptions.MinChallengeMinutes, LodestoneOptions.MaxChallengeMinutes);
+    Environment.ExitCode = 1;
+    return;
+}
+
 // Likewise for the key login addresses: a typo would otherwise only show as every key login failing.
 IReadOnlyList<ServerOrigin> publicOrigins;
 try {

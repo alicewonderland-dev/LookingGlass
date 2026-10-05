@@ -32,7 +32,15 @@ public sealed class LodestoneOptions {
     /// <summary>Minimum gap between Lodestone requests, server-wide.</summary>
     public double MinDelaySeconds { get; set; } = 2;
 
+    /// <summary>
+    /// How long a registration challenge (and its Lodestone code) can be completed, from <see cref="MinChallengeMinutes"/>
+    /// to <see cref="MaxChallengeMinutes"/>: the server doesn't start with anything else. It bounds how long a malicious
+    /// server can hold this server's codes open while looking for one it can pass on (see LodestoneCode).
+    /// </summary>
     public int ChallengeMinutes { get; set; } = 15;
+
+    public const int MinChallengeMinutes = 1;
+    public const int MaxChallengeMinutes = 60;
 }
 
 public sealed class DevOptions {

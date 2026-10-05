@@ -209,11 +209,17 @@ message StartRegistration {
   // except for debug accounts). Without it (an older plugin), registering is refused, asking to update. Added in 0.2
   // without a version change.
   string server_url = 3;
+  // 32 random bytes, fresh for each StartRegistration, which the code is derived from too (after the server's nonce).
+  // A server can't know it in advance, so one passing on another server's code can't search for a match ahead of time:
+  // only between this request and the client giving up waiting. Any other length is refused; without it (an older
+  // plugin), registering is refused, asking to update. Added in 0.2 without a version change.
+  bytes client_nonce = 4;
 }
 
 message RegistrationChallenge {
   // Text the user places in their Lodestone profile: "LGC-" and 20 characters in groups of four, derived from the
-  // origin of StartRegistration.server_url, identity.signing_public_key, nonce and lodestone_id (see
+  // origin of StartRegistration.server_url, identity.signing_public_key, nonce, StartRegistration.client_nonce and
+  // lodestone_id (see
   // LookingGlass.Core.Crypto.LodestoneCode), so the client can recompute it from its own address and key and refuse a
   // code made for another server or key (one a malicious server passes on from another). Empty for debug accounts.
   string code = 1;
