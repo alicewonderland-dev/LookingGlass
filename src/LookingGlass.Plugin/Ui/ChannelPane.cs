@@ -50,8 +50,9 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
         this.DrawHeader(channel, session);
         if (channel.MembershipWarning is { } warning) {
             ImGuiHelpers.ScaledDummy(4);
+            // A fork or hidden change is shown rather than the old key's place (see ChannelView.MembershipWarning): the title says which.
             Widgets.IconText(FontAwesomeIcon.ExclamationTriangle,
-                channel.OldKeyMembership ? "Your current key isn't a member here" : "Check this channel's members", Widgets.Warning);
+                warning == PlainMessages.OldKeyChannel ? "Your current key isn't a member here" : "Check this channel's members", Widgets.Warning);
             Widgets.WrappedColoured(Widgets.Warning, warning);
         }
 
@@ -681,7 +682,7 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
             modals.Confirm("Hand over admin",
                 $"Make {name} the admin of \"{channel.DisplayName}\"?\n\n" +
                 "A channel has one admin, so you become a moderator: you can still invite and remove members, but no longer rename the " +
-                $"channel, change ranks or disband it. Only {user.Name} can make you admin again.",
+                $"channel, change ranks or disband it. Only {user.Name} can make you admin again, and as admin they can also remove you.",
                 "Make admin", () => actions.Run($"Making {user.Name} admin", () => session.SetRankAsync(channel.Id, user.UserId, Rank.Admin)));
         }
 

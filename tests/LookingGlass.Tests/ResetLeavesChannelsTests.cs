@@ -26,6 +26,7 @@ public sealed class ResetLeavesChannelsTests : IAsyncLifetime {
     /// <summary>The reset as the plugin does it: leave first, then retire the key, then new keys, registered again.</summary>
     private async Task<(IdentityResetCleanup Cleanup, TestClient Reset)> ResetAsync(TestClient client) {
         var cleanup = await client.Session.LeaveChannelsForResetAsync(Ct);
+        Assert.True(cleanup.MayRetire, cleanup.StopReason);
         await client.Session.RetireIdentityAsync(Ct);
         await client.Session.DisposeAsync();
         var secrets = client.Store.Load();
@@ -134,9 +135,12 @@ public sealed class ResetLeavesChannelsTests : IAsyncLifetime {
         await bob.Session.SendTextAsync(handed, "mine now", Ct);
     }
 
-    /// <summary>A leave that fails (here: the server refuses it) is reported, in plain words, and the rest goes on.</summary>
+    /// <summary>
+    /// A leave that fails (here: the server refuses it) is reported, in plain words, and the rest goes on; but the reset
+    /// stops there, before the old key is retired, so the user can try again while that key can still sign the leave.
+    /// </summary>
     [Fact]
-    public async Task AFailedLeaveIsReportedAndTheRestGoesOn() {
+    public async Task AFailedLeaveIsReportedAndStopsTheResetBeforeTheKeyIsRetired() {
         var alice = await this._server.RegisterAsync("Alice Refused Leave");
         var bob = await this._server.RegisterAsync("Bob Refuses");
         var refused = await bob.Session.CreateChannelAsync("Refused", Ct);
@@ -153,6 +157,114 @@ public sealed class ResetLeavesChannelsTests : IAsyncLifetime {
         Assert.Equal(refused, failure.ChannelId);
         Assert.Equal("Refused", failure.What);
         Assert.NotEmpty(failure.Error);
+        Assert.False(cleanup.MayRetire);
+        Assert.Contains("\"Refused\"", cleanup.StopReason);
+        Assert.Contains("try again", cleanup.StopReason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Something changing while the channels are left (here, a new invite arriving) stops the reset before the old key is
+    /// retired: whatever came in would otherwise stay behind under a key that can't answer it.
+    /// </summary>
+    [Fact]
+    public async Task AChangeWhileLeavingStopsTheResetBeforeTheKeyIsRetired() {
+        HoldingWebSocket? socket = null;
+        var alice = await this._server.RegisterAsync("Alice Invited Meanwhile", options: this._server.Options(wrap: inner => {
+            var holding = new HoldingWebSocket(inner);
+            Volatile.Write(ref socket, holding);
+            return holding;
+        }));
+        var bob = await this._server.RegisterAsync("Bob Invites Meanwhile");
+        var left = await bob.Session.CreateChannelAsync("Left", Ct);
+        await AddMemberAsync(bob, left, alice);
+        var later = await bob.Session.CreateChannelAsync("Invited Later", Ct);
+
+        Volatile.Read(ref socket)!.HoldNext(ClientFrame.BodyOneofCase.LeaveChannel);
+        var cleaning = alice.Session.LeaveChannelsForResetAsync(Ct);
+        await Volatile.Read(ref socket)!.Held.WaitAsync(Harness.Timeout, Ct);
+        await bob.Session.InviteAsync(later, alice.Name, ProtocolInfo.DebugWorldName, Ct);
+        await WaitFor(() => alice.Session.Snapshot.Invites.FirstOrDefault(i => i.ChannelId == later));
+        Volatile.Read(ref socket)!.Release();
+        var cleanup = await cleaning;
+
+        Assert.Equal([left], cleanup.Left.Select(channel => channel.Id));
+        Assert.Empty(cleanup.Failed);
+        Assert.False(cleanup.MayRetire);
+        Assert.Contains("try again", cleanup.StopReason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// A channel whose membership log this client can't verify (here, a server that spoils its signatures) may be one the
+    /// user is the admin of (the server says so): the reset waits for it rather than go ahead and lose it.
+    /// </summary>
+    [Fact]
+    public async Task AChannelWhoseLogCantBeCheckedBlocksTheReset() {
+        var store = new InMemorySecretStore();
+        var alice = await this._server.RegisterAsync("Alice Unverifiable", store);
+        var channelId = await alice.Session.CreateChannelAsync("Unverifiable", Ct);
+        await alice.Session.DisposeAsync();
+        // Nothing verified of it is kept, so the client depends on what the server sends now.
+        var secrets = store.Load();
+        secrets.Memberships.Remove(channelId);
+        store.Save(secrets);
+
+        var again = this._server.StartClient(alice.Name, store, this._server.Options(wrap: inner => new RewritingWebSocket(inner, frame => {
+            foreach (var info in frame.Response?.ChannelList?.Channels.Where(info => info.ChannelId == channelId) ?? []) {
+                Spoil(info.Log);
+            }
+
+            if (frame.Response?.MembershipLog is { } log && log.ChannelId == channelId) {
+                Spoil(log.Entries);
+            }
+
+            return frame;
+        })));
+        await WaitFor(() => again.Session.Snapshot is { State: ConnectionState.Ready, ChannelsLoaded: true } snapshot ? snapshot.FindChannel(channelId) : null);
+        // Settled: the log was fetched (and refused) again.
+        await again.Session.RefreshAsync(Ct);
+
+        var channel = again.Session.Snapshot.FindChannel(channelId)!;
+        Assert.Equal(Rank.Unspecified, channel.MyRank);
+        Assert.False(channel.OldKeyMembership);
+        Assert.True(channel.AdminPerServer);
+        var plan = IdentityResetPlan.Of(again.Session.Snapshot);
+        Assert.Equal(ResetReadiness.Checking, plan.Readiness);
+        Assert.Equal([channelId], plan.AdminOf.Select(c => c.Id));
+        Assert.Equal([channelId], plan.Unchecked.Select(c => c.Id));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => again.Session.LeaveChannelsForResetAsync(Ct));
+        Assert.NotNull(this._server.Database.GetChannel(channelId));
+
+        static void Spoil(IEnumerable<MembershipEntry> entries) {
+            foreach (var entry in entries) {
+                var signature = entry.Signature.ToByteArray();
+                signature[0] ^= 1;
+                entry.Signature = Google.Protobuf.ByteString.CopyFrom(signature);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The way past checking (resetting without leaving) is only offered once connecting has failed: while the first
+    /// attempt is still under way, the reset waits.
+    /// </summary>
+    [Fact]
+    public async Task ResettingWithoutLeavingIsOfferedOnlyOnceConnectingHasFailed() {
+        var fail = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var client = this._server.StartClient("Alice Can't Connect", options: this._server.Options(beforeConnect: async ct => {
+            await fail.Task.WaitAsync(ct);
+            throw new IOException("The server isn't answering.");
+        }));
+
+        await WaitFor(() => client.Session.Snapshot.State == ConnectionState.Connecting ? new object() : null);
+        var connecting = IdentityResetPlan.Of(client.Session.Snapshot);
+        Assert.Equal(ResetReadiness.Connecting, connecting.Readiness);
+        Assert.False(connecting.CanOverride);
+
+        fail.SetResult();
+        await WaitFor(() => client.Session.Snapshot.ConnectionFailed ? new object() : null);
+        var failed = IdentityResetPlan.Of(client.Session.Snapshot);
+        Assert.Equal(ResetReadiness.Offline, failed.Readiness);
+        Assert.True(failed.CanOverride);
     }
 
     [Fact]

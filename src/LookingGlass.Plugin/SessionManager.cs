@@ -25,6 +25,9 @@ public sealed class SessionManager : IDisposable {
     // Framework thread only. Bumped by every start and stop, so a start that was
     // waiting for the previous session to close is dropped if anything changed meanwhile.
     private int _generation;
+    // Framework thread only. The last snapshot of the session stopped last, and whose it was (character and address): what
+    // "Reset my identity" shows, while disconnected, of the channels the character was the admin of when last connected.
+    private (ulong ContentId, string ServerUrl, SessionSnapshot Snapshot)? _stopped;
 
     public SessionManager(Configuration config, PlayerTracker player, ChatOutput chat) {
         this._config = config;
@@ -106,7 +109,14 @@ public sealed class SessionManager : IDisposable {
     /// <summary>What "Reset my identity" would do now, for the logged-in character's session (see <see cref="IdentityResetPlan"/>). Call on the framework thread.</summary>
     public IdentityResetPlan ResetPlan() {
         var session = this._sessionPlayer is { } owner && owner.ContentId == this._player.Current?.ContentId ? this.Session : null;
-        return IdentityResetPlan.Of(session?.Snapshot ?? SessionSnapshot.Empty);
+        if (session != null) {
+            return IdentityResetPlan.Of(session.Snapshot);
+        }
+
+        // Disconnected: nothing is checked, but the channels as they were when last connected say what resetting anyway loses.
+        return IdentityResetPlan.Of(this._stopped is { } stopped && stopped.ContentId == this._player.Current?.ContentId && stopped.ServerUrl == this._config.ServerUrl
+            ? stopped.Snapshot
+            : SessionSnapshot.Empty);
     }
 
     /// <summary>
@@ -115,8 +125,9 @@ public sealed class SessionManager : IDisposable {
     /// <item>Never while the character is the admin of a channel there (see <see cref="IdentityResetPlan"/>): the user hands
     /// admin on, disbands or leaves it first. Without a live login nothing can be checked, so only with
     /// <paramref name="withoutLeaving"/>, the user's explicit say-so.</item>
-    /// <item>It leaves every channel and declines every invite with the old key (see <see cref="ClientSession.LeaveChannelsForResetAsync"/>);
-    /// one that fails is reported, and the reset goes on (it can be removed from the list afterwards).</item>
+    /// <item>It leaves every channel and declines every invite with the old key (see <see cref="ClientSession.LeaveChannelsForResetAsync"/>).
+    /// If one fails, or anything changed meanwhile, it is reported and the reset stops there, before the key is retired, so
+    /// the user can try again while the old key can still sign.</item>
     /// <item>If the session is logged in, it asks the server to retire the old key (see <see cref="ClientSession.RetireIdentityAsync"/>),
     /// which ends every login made with it there at once. If it can't (not connected, or the server refuses or is too
     /// old), the reset goes on, and the user is told the old key and login keep working on the server until they register again.</item>
@@ -138,7 +149,12 @@ public sealed class SessionManager : IDisposable {
             // Checked again here, on the newest snapshot: the dialog's may be older.
             var plan = IdentityResetPlan.Of(session?.Snapshot ?? SessionSnapshot.Empty);
             if (plan.Readiness == ResetReadiness.Ready) {
-                this.ReportCleanup(await session!.LeaveChannelsForResetAsync());
+                var cleanup = await session!.LeaveChannelsForResetAsync();
+                this.ReportCleanup(cleanup);
+                if (cleanup.StopReason is { } stop) {
+                    // Before anything is retired or replaced: the old key can still sign the leaves that failed.
+                    throw new InvalidOperationException(stop);
+                }
             } else if (!(plan.CanOverride && withoutLeaving)) {
                 throw new InvalidOperationException(plan.Explanation);
             }
@@ -179,9 +195,12 @@ public sealed class SessionManager : IDisposable {
         Services.Log.Information($"Before resetting an identity: left {cleanup.Left.Length} channels, declined {cleanup.Declined.Length} invites, " +
                                  $"kept {cleanup.Kept.Length}, {cleanup.Failed.Length} failed");
         foreach (var failure in cleanup.Failed) {
-            this._chat.Notice(NoticeLevel.Warning,
-                $"Couldn't leave \"{failure.What}\" before resetting your identity ({failure.Error}). It stays in your channel list under your old key: " +
-                "remove it with \"Remove from my list\" in its menu.");
+            this._chat.Notice(NoticeLevel.Warning, $"Couldn't leave \"{failure.What}\" before resetting your identity: {failure.Error}");
+        }
+
+        if (!cleanup.MayRetire) {
+            // The reset stops (the caller says why): what is kept is only kept once it goes ahead.
+            return;
         }
 
         foreach (var kept in cleanup.Kept) {
@@ -235,6 +254,8 @@ public sealed class SessionManager : IDisposable {
     /// </summary>
     private Task<T> ReplaceSecrets<T>(PlayerInfo player, Func<T> work) {
         this.Stop();
+        // Another identity from here on: the stopped session's channels aren't its.
+        this._stopped = null;
         var closing = this._closing ?? Task.CompletedTask;
         var replacing = Task.Run(async () => {
             await closing;
@@ -451,6 +472,10 @@ public sealed class SessionManager : IDisposable {
     private void Stop() {
         this._generation++;
         var session = Interlocked.Exchange(ref this._session, null);
+        if (session != null && this._sessionPlayer is { } player) {
+            this._stopped = (player.ContentId, this._config.ServerUrl, session.Snapshot with { State = ConnectionState.Stopped, ChannelsLoaded = false });
+        }
+
         this._sessionPlayer = null;
         this.RefreshCommandCache();
         this.Unread.Reset();

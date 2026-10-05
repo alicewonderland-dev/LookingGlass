@@ -78,6 +78,8 @@ public sealed class ClientSession : IAsyncDisposable {
     private readonly Dictionary<string, ChannelState> _channels = new();
     // _channels holds the server's complete list, fetched on the current connection.
     private bool _channelsLoaded;
+    // The last attempt to connect failed, and none has worked since.
+    private bool _connectionFailed;
     private readonly Dictionary<string, InviteState> _invites = new();
     // Verified membership per channel (and per channel invited to). Saved in _secrets.Memberships.
     private readonly Dictionary<string, IChannelMembership> _memberships = new();
@@ -783,9 +785,10 @@ public sealed class ClientSession : IAsyncDisposable {
     /// <summary>
     /// "Reset my identity", first step, while the old key still exists: leaves every channel <see cref="IdentityResetPlan"/>
     /// says to (with a leave signed by that key) and declines every invite, one by one. One that fails is reported, and the
-    /// rest go on: what is left over can be removed from the list afterwards. Refused unless the plan allows a reset: never
-    /// while this user is the admin of a channel (handing that on, disbanding or leaving is the user's own choice), and
-    /// only connected and logged in, with the complete channel list.
+    /// rest go on; but then (or if anything changed meanwhile) the cleanup says to stop before the key is retired
+    /// (<see cref="IdentityResetCleanup.StopReason"/>), so the user can try again while the old key can still sign. Refused
+    /// unless the plan allows a reset: never while this user is the admin of a channel (handing that on, disbanding or
+    /// leaving is the user's own choice), and only connected and logged in, with the complete channel list, every channel checked.
     /// </summary>
     /// <exception cref="InvalidOperationException">The plan doesn't allow a reset now (see <see cref="IdentityResetPlan.Readiness"/>).</exception>
     public async Task<IdentityResetCleanup> LeaveChannelsForResetAsync(CancellationToken ct = default) {
@@ -816,7 +819,33 @@ public sealed class ClientSession : IAsyncDisposable {
             }
         }
 
-        return new IdentityResetCleanup(left.ToImmutable(), declined.ToImmutable(), plan.Kept.ToImmutableArray(), failed.ToImmutable());
+        return new IdentityResetCleanup(left.ToImmutable(), declined.ToImmutable(), plan.Kept.ToImmutableArray(), failed.ToImmutable(),
+            WhyStopBeforeRetiring(failed, IdentityResetPlan.Of(this.Snapshot)));
+    }
+
+    /// <summary>
+    /// Why the reset must stop after leaving the channels, before the old key is retired, or null if it may go on: once it
+    /// is retired, nothing that key still holds can be left any more. A leave or decline that failed, or anything that
+    /// changed meanwhile (a channel joined, an invite or admin role received, the connection lost) is the user's to try again.
+    /// </summary>
+    /// <param name="after">The plan again, as things are now that the channels were left.</param>
+    private static string? WhyStopBeforeRetiring(IReadOnlyList<ResetFailure> failed, IdentityResetPlan after) {
+        const string NothingReset = "Nothing was reset, so your old key still works and you can try again.";
+        if (failed.Count > 0) {
+            return $"Couldn't leave (or decline) {string.Join(", ", failed.Select(failure => $"\"{failure.What}\""))}. {NothingReset} " +
+                   "What was left stays left. If one still can't be left, open it to see why.";
+        }
+
+        if (after.Readiness != ResetReadiness.Ready) {
+            return $"Something changed while your channels were being left. {NothingReset} {after.Explanation}";
+        }
+
+        if (after.ToLeave.Any() || !after.Declines.IsEmpty) {
+            return $"While your channels were being left, you joined another channel or were invited to one. {NothingReset} " +
+                   "Resetting again leaves that too.";
+        }
+
+        return null;
     }
 
     public async Task DisbandAsync(string channelId, CancellationToken ct = default) {
@@ -1168,6 +1197,10 @@ public sealed class ClientSession : IAsyncDisposable {
 
                 await this.HandshakeAsync(connection, ct);
                 delay = this._options.ReconnectMinDelay;
+                lock (this._lock) {
+                    this._connectionFailed = false;
+                }
+
                 await this.RetryRejectedLoginAsync(connection, ct);
                 await connection.Closed.WaitAsync(ct);
                 this.Log(NoticeLevel.Info, connection.CloseReason);
@@ -1178,6 +1211,7 @@ public sealed class ClientSession : IAsyncDisposable {
                 this.Log(NoticeLevel.Warning, failure);
                 lock (this._lock) {
                     this._status = failure;
+                    this._connectionFailed = true;
                 }
             } finally {
                 this._connection = null;
@@ -2962,6 +2996,10 @@ public sealed class ClientSession : IAsyncDisposable {
             channel.EncryptedName = info.Name;
         }
 
+        // Only a hint too, but one that holds back a reset (see ChannelView.AdminPerServer).
+        channel.ServerAdminAt = this._me != null && info.Members.Any(member => member.User?.UserId == this._me.UserId && member.Rank == Rank.Admin)
+            ? info.LogHead?.Seq ?? 0
+            : null;
         this.TryDecryptName(info.ChannelId);
         return channel;
     }
@@ -3305,7 +3343,8 @@ public sealed class ClientSession : IAsyncDisposable {
                 this._channelsLoaded && this._state == ConnectionState.Ready,
                 this._loginRejected && this._state is ConnectionState.LoginNotRecognized or ConnectionState.Registering,
                 // As the server said on this connection; nothing while there is none.
-                this._state is ConnectionState.Stopped or ConnectionState.Connecting or ConnectionState.Reconnecting ? null : this._addressNotListed);
+                this._state is ConnectionState.Stopped or ConnectionState.Connecting or ConnectionState.Reconnecting ? null : this._addressNotListed,
+                this._connectionFailed);
             this._snapshot = snapshot;
         }
 
@@ -3350,9 +3389,10 @@ public sealed class ClientSession : IAsyncDisposable {
         }
 
         var keyEpoch = this.KeyEpochOf(channel.Id);
+        var adminPerServer = channel.ServerAdminAt is { } adminAt && (membership.Head == null || membership.Head.Seq < adminAt);
         return new ChannelView(channel.Id, channel.Name, keyEpoch ?? channel.ServerEpoch, channel.ServerEpoch,
             this.HasCurrentKey(channel.Id), this.NeedsRekey(channel), mine != null && mine.Keys == this._myKeys ? mine.Rank : Rank.Unspecified,
-            members, membership.Head?.Clone(), warning, oldKey);
+            members, membership.Head?.Clone(), warning, oldKey, adminPerServer);
     }
 
     // ================================================================ plumbing
@@ -3517,6 +3557,9 @@ public sealed class ClientSession : IAsyncDisposable {
 
         /// <summary>The newest membership log position the server reported. A hint for when to fetch the log.</summary>
         public LogPosition? LogHead { get; set; }
+
+        /// <summary>The log position at which the server last listed this user as the channel's admin, or null if it didn't.</summary>
+        public ulong? ServerAdminAt { get; set; }
 
         /// <summary>A fork or hidden change seen in the channel's membership, to keep showing.</summary>
         public string? MembershipWarning { get; set; }

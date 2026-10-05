@@ -348,29 +348,55 @@ public sealed class SettingsWindow : Window {
         ImGui.EndDisabled();
         Widgets.Tooltip("New identity keys for this character on this server. Only if your key was lost or may have been stolen.",
             allowed ? null : "Unavailable for now: see below.");
-        DrawResetBlock(plan, ref this._resetWithoutLeaving);
+        this.DrawResetBlock(plan);
         this.DrawBackup(player);
     }
 
-    /// <summary>Why "Reset my identity" is unavailable, if it is, and (offline) the explicit way past it.</summary>
-    private static void DrawResetBlock(IdentityResetPlan plan, ref bool withoutLeaving) {
+    /// <summary>
+    /// Why "Reset my identity" is unavailable, if it is: the channels in the way, a way to check them again, and (without a
+    /// live login, once connecting has failed) the explicit way past it.
+    /// </summary>
+    private void DrawResetBlock(IdentityResetPlan plan) {
         if (plan.Readiness == ResetReadiness.Ready) {
             return;
         }
 
         ImGui.Spacing();
         ImGui.PushTextWrapPos();
-        ImGui.TextColored(plan.Readiness == ResetReadiness.Loading ? Widgets.Muted : Widgets.Warning, plan.Explanation);
-        foreach (var channel in plan.AdminOf) {
+        var waiting = plan.Readiness is ResetReadiness.Loading or ResetReadiness.Connecting or ResetReadiness.Checking;
+        ImGui.TextColored(waiting ? Widgets.Muted : Widgets.Warning, plan.Explanation);
+        var listed = plan.Readiness switch {
+            ResetReadiness.AdminOfChannels => plan.AdminOf,
+            ResetReadiness.Checking => plan.Unchecked,
+            _ => [],
+        };
+        foreach (var channel in listed) {
             ImGui.BulletText(channel.DisplayName);
         }
 
+        if (plan.CanOverride && !plan.LastKnownAdminOf.IsEmpty) {
+            ImGui.TextColored(Widgets.Warning, "When you were last connected, you were the admin of:");
+            foreach (var channel in plan.LastKnownAdminOf) {
+                ImGui.BulletText(channel.DisplayName);
+            }
+        }
+
         ImGui.PopTextWrapPos();
+        if (plan.Readiness == ResetReadiness.Checking && this._sessions.Session is { } session) {
+            ImGui.BeginDisabled(this._actions.Busy);
+            if (ImGui.Button("Refresh my channels")) {
+                this._actions.Run("Refreshing your channels", () => session.RefreshAsync());
+            }
+
+            ImGui.EndDisabled();
+            Widgets.Tooltip("Fetch your channels and their membership again, to check them.");
+        }
+
         if (plan.CanOverride) {
             ImGui.Checkbox(plan.Readiness == ResetReadiness.Offline
                     ? "I can't connect to this server any more: reset without leaving my channels"
                     : "The server doesn't accept my login: reset without leaving my channels",
-                ref withoutLeaving);
+                ref this._resetWithoutLeaving);
             Widgets.Tooltip("Your channels aren't checked or left: any you're the admin of are left without one for good, and the others " +
                             "stay in your list under your old key, to remove with \"Remove from my list\".");
         }
@@ -433,18 +459,26 @@ public sealed class SettingsWindow : Window {
             text.Append("First, LookingGlass leaves your channels with your old key, while it still exists, so the others see you go");
             text.Append(leave.Count == 0 ? " (you're in none right now)" : $": {string.Join(", ", leave.Select(channel => $"\"{channel.DisplayName}\""))}");
             text.Append(plan.Declines.IsEmpty ? ".\n" : $", and declines your {plan.Declines.Length} invite{(plan.Declines.Length == 1 ? "" : "s")}.\n");
-            var kept = plan.Kept.Select(step => $"\"{step.Channel.DisplayName}\"").ToList();
-            if (kept.Count > 0) {
-                text.Append($"These can't be left (your current key isn't a member), so they stay in your list: {string.Join(", ", kept)}. ")
+            foreach (var group in plan.Kept.GroupBy(step => step.Action)) {
+                var kept = string.Join(", ", group.Select(step => $"\"{step.Channel.DisplayName}\""));
+                text.Append(group.Key == ResetChannelAction.KeepOldKey
+                        ? $"These already belong to your old key from before (an earlier reset, or registering again), so they can't be left and stay in your list: {kept}. "
+                        : $"These haven't been checked yet, so they can't be left and stay in your list: {kept}. ")
                     .Append("Remove them afterwards with \"Remove from my list\" in their menu.\n");
             }
 
-            text.Append("If leaving one fails, you're told, and it stays in your list to remove the same way.\n\n")
+            text.Append("If leaving one fails, or anything changes meanwhile, you're told and the reset stops there, before your old key is ")
+                .Append("retired, so you can try again.\n\n")
                 .Append("Then LookingGlass tells the server to retire your old key: from then on it can't sign in or be registered again there, ")
                 .Append("and every login made with it stops working.\n\n");
         } else {
-            text.Append(plan.Explanation)
-                .Append("\n\nYou chose to reset anyway: your channels aren't left, and the server isn't told to retire your old key, so it and ")
+            text.Append(plan.Explanation);
+            if (!plan.LastKnownAdminOf.IsEmpty) {
+                text.Append($"\n\nWhen you were last connected, you were the admin of: {string.Join(", ", plan.LastKnownAdminOf.Select(channel => $"\"{channel.DisplayName}\""))}. ")
+                    .Append("Those would have no admin, for good.");
+            }
+
+            text.Append("\n\nYou chose to reset anyway: your channels aren't left, and the server isn't told to retire your old key, so it and ")
                 .Append("its logins keep working there until you register again. Channels you were in stay in your list, under your old key: ")
                 .Append("remove them with \"Remove from my list\".\n\n");
         }

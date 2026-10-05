@@ -74,17 +74,68 @@ public sealed class IdentityResetPlanTests {
     }
 
     [Fact]
-    public void ChannelsTheCurrentKeyIsntAMemberOfAreKeptAndDontBlock() {
+    public void AnOldKeysPlaceIsKeptAndDoesntBlock() {
         var plan = IdentityResetPlan.Of(Snapshot([
-            // An earlier reset's leftover, where the old key is the admin: only that key could do anything there.
-            Channel("old", Rank.Unspecified, oldKey: true, others: Member(Bob, Rank.Member)),
-            // Its log isn't verified yet, so nothing can be signed for it.
-            Channel("unverified", Rank.Unspecified) with { LogHead = null, Members = [] },
+            // An earlier reset's leftover, where the old key is the admin (as the server says too): only that key could do anything there.
+            Channel("old", Rank.Unspecified, oldKey: true, others: Member(Bob, Rank.Member)) with { AdminPerServer = true },
+            Channel("a", Rank.Member, others: Member(Bob, Rank.Admin)),
         ]));
 
         Assert.Equal(ResetReadiness.Ready, plan.Readiness);
+        Assert.Empty(plan.AdminOf);
+        Assert.Equal(["a"], plan.ToLeave.Select(channel => channel.Id));
+        Assert.Equal([ResetChannelAction.KeepOldKey], plan.Kept.Select(step => step.Action));
+    }
+
+    /// <summary>
+    /// A channel whose log this client hasn't verified (yet) may be one this user is the admin of: until it is, the reset
+    /// waits, saying which, rather than go ahead and lose it.
+    /// </summary>
+    [Fact]
+    public void AChannelNotCheckedYetBlocksTheReset() {
+        var plan = IdentityResetPlan.Of(Snapshot([
+            Channel("unverified", Rank.Unspecified) with { LogHead = null, Members = [] },
+            Channel("a", Rank.Member, others: Member(Bob, Rank.Admin)),
+        ]));
+
+        Assert.Equal(ResetReadiness.Checking, plan.Readiness);
+        Assert.Equal(["unverified"], plan.Unchecked.Select(channel => channel.Id));
+        Assert.Empty(plan.AdminOf);
+        Assert.False(plan.CanOverride);
+        Assert.Contains("Channel unverified", plan.Explanation);
+        Assert.Contains("refresh", plan.Explanation, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// The server says this user is the admin at a point of the log this client hasn't verified up to (made admin since,
+    /// say): the reset waits for the log, and counts the channel as one they're the admin of meanwhile.
+    /// </summary>
+    [Theory]
+    [InlineData(Rank.Unspecified)]
+    [InlineData(Rank.Member)]
+    [InlineData(Rank.Moderator)]
+    public void TheServerSayingThisUserIsTheAdminBlocksTheReset(Rank verified) {
+        var plan = IdentityResetPlan.Of(Snapshot([
+            Channel("made admin", verified, others: Member(Bob, Rank.Admin)) with { AdminPerServer = true },
+        ]));
+
+        Assert.Equal(ResetReadiness.Checking, plan.Readiness);
+        Assert.Equal(["made admin"], plan.AdminOf.Select(channel => channel.Id));
+        Assert.Equal(["made admin"], plan.Unchecked.Select(channel => channel.Id));
         Assert.Empty(plan.ToLeave);
-        Assert.Equal([ResetChannelAction.KeepOldKey, ResetChannelAction.KeepUnverified], plan.Channels.Select(step => step.Action));
+    }
+
+    /// <summary>What to do about a channel this user is the admin of comes first: it needs them, where checking needs a moment.</summary>
+    [Fact]
+    public void AnAdminChannelIsExplainedBeforeOneNotCheckedYet() {
+        var plan = IdentityResetPlan.Of(Snapshot([
+            Channel("mine", Rank.Admin, others: Member(Bob, Rank.Member)),
+            Channel("unverified", Rank.Unspecified) with { LogHead = null, Members = [] },
+        ]));
+
+        Assert.Equal(ResetReadiness.AdminOfChannels, plan.Readiness);
+        Assert.Equal(["mine"], plan.AdminOf.Select(channel => channel.Id));
+        Assert.Equal(["unverified"], plan.Unchecked.Select(channel => channel.Id));
     }
 
     [Fact]
@@ -98,22 +149,45 @@ public sealed class IdentityResetPlanTests {
 
     /// <summary>
     /// Not connected, admin status can't be checked and nothing can be left: blocked, with "connect first". Only the user's
-    /// explicit say-so (the server is gone for good, or doesn't know the login any more) lets it go ahead without that.
+    /// explicit say-so (the server is gone for good, or doesn't know the login any more) lets it go ahead without that, and
+    /// only once connecting has failed (or stopped): while it is still trying, the answer is to wait. The say-so is to losing
+    /// the admin of their channels for good, which is said, with the channels they were the admin of when last connected.
     /// </summary>
     [Theory]
-    [InlineData(ConnectionState.Stopped, ResetReadiness.Offline)]
-    [InlineData(ConnectionState.Connecting, ResetReadiness.Offline)]
-    [InlineData(ConnectionState.Reconnecting, ResetReadiness.Offline)]
-    [InlineData(ConnectionState.Unregistered, ResetReadiness.NotLoggedIn)]
-    [InlineData(ConnectionState.LoginNotRecognized, ResetReadiness.NotLoggedIn)]
-    [InlineData(ConnectionState.Registering, ResetReadiness.NotLoggedIn)]
-    public void WithoutALiveLoginNothingCanBeCheckedOrLeft(ConnectionState state, ResetReadiness readiness) {
+    [InlineData(ConnectionState.Stopped, false, ResetReadiness.Offline)]
+    [InlineData(ConnectionState.Connecting, true, ResetReadiness.Offline)]
+    [InlineData(ConnectionState.Reconnecting, true, ResetReadiness.Offline)]
+    [InlineData(ConnectionState.Unregistered, false, ResetReadiness.NotLoggedIn)]
+    [InlineData(ConnectionState.LoginNotRecognized, false, ResetReadiness.NotLoggedIn)]
+    [InlineData(ConnectionState.Registering, false, ResetReadiness.NotLoggedIn)]
+    public void WithoutALiveLoginNothingCanBeCheckedOrLeft(ConnectionState state, bool failed, ResetReadiness readiness) {
         // Even a channel the (stale) list says this user is the admin of: it can't be checked.
-        var plan = IdentityResetPlan.Of(Snapshot([Channel("a", Rank.Admin, others: Member(Bob, Rank.Member))], state: state, loaded: false));
+        var plan = IdentityResetPlan.Of(Snapshot([
+            Channel("a", Rank.Admin, others: Member(Bob, Rank.Member)),
+            Channel("b", Rank.Member, others: Member(Bob, Rank.Admin)) with { AdminPerServer = true },
+            Channel("c", Rank.Member, others: Member(Bob, Rank.Admin)),
+        ], state: state, loaded: false) with { ConnectionFailed = failed });
 
         Assert.Equal(readiness, plan.Readiness);
         Assert.True(plan.CanOverride);
         Assert.Contains(readiness == ResetReadiness.Offline ? "connect" : "login", plan.Explanation, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("admin", plan.Explanation);
+        Assert.Contains("for good", plan.Explanation);
+        Assert.Equal(["a", "b"], plan.LastKnownAdminOf.Select(channel => channel.Id));
+        Assert.Empty(plan.AdminOf);
+        Assert.Empty(plan.ToLeave);
+    }
+
+    /// <summary>Connecting (or reconnecting after a connection that worked) with no attempt failed yet: wait, nothing to override.</summary>
+    [Theory]
+    [InlineData(ConnectionState.Connecting)]
+    [InlineData(ConnectionState.Reconnecting)]
+    public void WhileStillConnectingTheResetWaits(ConnectionState state) {
+        var plan = IdentityResetPlan.Of(Snapshot([Channel("a", Rank.Admin, others: Member(Bob, Rank.Member))], state: state, loaded: false));
+
+        Assert.Equal(ResetReadiness.Connecting, plan.Readiness);
+        Assert.False(plan.CanOverride);
+        Assert.NotEqual("", plan.Explanation);
     }
 
     [Fact]
