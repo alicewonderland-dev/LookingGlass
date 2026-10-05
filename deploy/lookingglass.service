@@ -15,7 +15,7 @@
 # LookingGlass__PublicUrls__0 below must be the address clients connect to (add
 # LookingGlass__PublicUrls__1, __2, ... for any others): registrations, key logins and
 # identity resets are only accepted when signed for one of them, and outside Development
-# the server refuses to start without any (see "The server's addresses" in README.md).
+# the server refuses to start without any (see "The server's addresses" in docs/server.md).
 
 [Unit]
 Description=LookingGlass server

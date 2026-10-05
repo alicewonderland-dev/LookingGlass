@@ -1,638 +1,145 @@
 # LookingGlass
 
-End-to-end encrypted, cross-world linkshells for FFXIV: a Dalamud plugin and
-a small server. The server relays ciphertext only; channel names and messages
-are encrypted between members. This is a clean-room rewrite inspired by the
-ideas of ExtraChat; no code is shared with it.
+LookingGlass is a Dalamud plugin for Final Fantasy XIV that adds extra
+linkshells, called channels, that work across worlds and data centres. You
+talk in them from the game's chat box, and their messages appear in your
+normal chat log. Channel names and messages are encrypted on your computer,
+so the server that passes them along can't read them.
 
-Status: **0.2, authenticated membership** — registration, channels, invites,
-automatic rekeying, encrypted messaging, ranks, debug tooling, and a signed
-membership log that every client checks for itself. ChatTwo integration and
-the import wizard come next (see [docs/design.md](docs/design.md)).
+It is a fresh plugin inspired by ExtraChat, and uses its own servers. It is in
+early testing (version 0.2).
 
-> **Security status.** Message contents are encrypted end to end, and since
-> 0.2 clients work out who is in a channel from a signed membership log they
-> verify themselves, not from the server's word. A malicious server still
-> sees who is in which channel, can drop or delay anything, and can hand you
-> its own key the first time you invite someone by name: compare fingerprints
-> over /tell (see "Security model" below).
+## Features
 
-## Layout
-
-| Path | What it is |
-| --- | --- |
-| `src/LookingGlass.Protocol` | The wire protocol (`Protos/lookingglass.proto`), shared by everything |
-| `src/LookingGlass.Core` | Crypto, the membership log, the client session, and the echo bot. No Dalamud dependency |
-| `src/LookingGlass.Server` | ASP.NET Core server with SQLite. Runs on Linux and Windows |
-| `src/LookingGlass.Plugin` | The Dalamud plugin (`/lookingglass` or `/lg`, `/lgc1`–`/lgc50`, `/lgc <nickname>`, `/lgdebug`) |
-| `tools/LookingGlass.DevTool` | `lgdev`: run an echo bot, or smoke-test a server |
-| `tests/LookingGlass.Tests` | Crypto, policy, membership log and end-to-end tests, including a malicious in-process server |
-
-## Build and test
-
-Needs the .NET 10 SDK (newer SDKs work too). The plugin also needs Dalamud's
-dev files, which XIVLauncher installs.
-
-```sh
-dotnet build LookingGlass.slnx -c Release
-dotnet test LookingGlass.slnx -c Release
-```
-
-## Running a test server (Tailscale)
-
-On the server machine (Linux or Windows):
-
-```sh
-./scripts/run-dev-server.sh        # Linux / macOS
-```
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\run-dev-server.ps1   # Windows
-```
-
-(Windows blocks `.ps1` scripts by default; `-ExecutionPolicy Bypass` applies to
-that one run only and changes no system setting.)
-
-The database lives outside the build output, so rebuilding, cleaning or running
-from another checkout of the code keeps your registrations and channels:
-`%USERPROFILE%\.lookingglass\dev-server` on Windows,
-`~/.local/share/lookingglass/dev-server` on Linux (the script prints it). Set
-`LookingGlass__DataDirectory` first to use another folder; the script says so
-when it does. (Not under `AppData` on Windows: Windows redirects packaged apps'
-`AppData` writes to a private folder, so a tool started from one, such as an AI
-coding assistant, would see a different database than you do.)
-
-This listens on port 5180 on all interfaces in **Development** mode, which
-turns on debug accounts and runs an echo bot inside the server. Only do this
-on a private network such as your tailnet: anyone who can reach a Development
-server can register (or take over) any debug account, including the echo bot.
-
-1. Make sure the machine's firewall allows TCP 5180 from the tailnet.
-2. In game, open `/lookingglass`, click the gear in its title bar (or the
-   plugin's settings button in Dalamud's plugin list), and set the server URL
-   to `ws://<machine-name>:5180/ws` (the Tailscale MagicDNS name or 100.x IP).
-   If the server lists its addresses (below), use exactly one of those: the
-   plugin warns as soon as it connects through any other.
-3. Register your character. The main window walks you through it: get a
-   code (`LGC-` and five groups of four letters and digits), paste it into
-   your Lodestone profile, then press **Verify**. The plugin only shows a
-   code made for the server address it connects to and its own identity key
-   (see "Your code is for this server" below).
-
-Tailscale already encrypts traffic between devices, and message contents are
-end-to-end encrypted regardless. For TLS anyway, `tailscale serve` (or
-`tailscale funnel`, to reach it from outside the tailnet) can put HTTPS in
-front of port 5180 (see `tailscale serve --help` for your version); the
-plugin URL then becomes `wss://<machine>.<tailnet>.ts.net/ws`.
-
-**List the server's addresses.** Registering, signing in with the identity
-key (key login) and "Reset my identity" all depend on this list: once it is
-set, the server refuses each of them through any address that isn't on it
-(see "The server's addresses" below), and plugins can only keep their
-identity when moving between addresses on it (see "Moving the server"). So
-list **every** address a tester's plugin uses, exactly as typed into the
-plugin: the MagicDNS name, the 100.x IP if anyone connects by it, the Funnel
-or `tailscale serve` `wss://` name, and `ws://127.0.0.1:5180/ws` for a plugin
-on the server machine itself. Scheme, host and port must match; the path
-doesn't. For example:
-
-```powershell
-$env:LookingGlass__PublicUrls__0 = 'ws://<machine-name>:5180/ws'
-$env:LookingGlass__PublicUrls__1 = 'ws://100.x.y.z:5180/ws'
-$env:LookingGlass__PublicUrls__2 = 'wss://<machine-name>.<tailnet>.ts.net/ws'
-$env:LookingGlass__PublicUrls__3 = 'ws://127.0.0.1:5180/ws'
-```
-
-(`export LookingGlass__PublicUrls__0=...` on Linux; or a `PublicUrls` list in
-`appsettings.json`.) A plugin connected through an address that isn't listed
-says so as soon as it connects, naming the listed ones, and the server's
-refusal names both too; the server logs each refusal as a warning. Without
-any list, a Development server goes by the address each connection names
-(weaker, see below) and says so when it starts; a server not in Development
-refuses to start.
-
-**Each listed address must be this server's alone.** The server tells its
-own addresses from another server's by name only, so an address another
-server can have too protects nothing against that server: a short MagicDNS
-name (a machine on someone else's tailnet can have the same name), a LAN
-name (`.local`, `.lan`, ...), a private, CGNAT (Tailscale's 100.x), loopback
-or link-local IP, or any plain `ws://` address (whatever answers at that
-name on the user's network is taken for this server). A malicious server a
-user reaches under the same address could pass their registration (with its
-Lodestone code) or key login on to this one. On your own tailnet, with
-testers who use only servers you run, that's fine. For a server other people
-may also run under the same name, list and use only `wss://` addresses with
-a fully qualified name, such as `wss://<machine-name>.<tailnet>.ts.net/ws`
-or `wss://chat.example.com/ws`. The server logs a warning when it starts for
-each listed address that may not be its alone.
-
-Check a server from any machine:
-
-```sh
-dotnet run --project tools/LookingGlass.DevTool -c Release -- smoke --server ws://<machine-name>:5180/ws
-```
-
-It registers a throwaway debug user, creates a channel, invites the echo bot,
-sends a message and waits for the reply.
-
-## Testing alone (debug tooling)
-
-- **Echo bot.** On a Development server, invite `Echo Bot` on world `Debug`.
-  It accepts, takes part in rekeys, and echoes everything. Send `!ping`,
-  `!rekey` or `!leave` to exercise those paths. Run extra bots with
-  `lgdev bot --server ... --name "Another Bot"`.
-- **`/lgdebug`** in game: connection state, fingerprint, limits, a protocol
-  trace (frame types only, never contents), recent notices, and buttons to
-  ping, reconnect, refresh, force a rekey, send a test message, or print a
-  simulated incoming message locally.
-- **Debug accounts** (`LookingGlass:Dev:AllowDebugAccounts`) let characters on
-  the fake world `Debug` register without Lodestone. Never enable this on a
-  public server.
-
-## Loading the plugin
-
-Build in Release, then in Dalamud settings → Experimental → Dev Plugin
-Locations add `src/LookingGlass.Plugin/bin/Release/LookingGlass.dll`.
-
-Each character's identity and channel keys, per server address, are kept
-encrypted in a `secrets-<character>-<address hash>.bin` file in the plugin's
-config folder (under XIVLauncher's `pluginConfigs`). The file also records
-the address it belongs to, and the plugin refuses to use it for any other
-address, so one server's keys and login are never sent to another. Every save
-keeps the previous version next to it as `secrets-….bin.bak`, and if the file
-is missing or damaged the plugin loads the backup and says so in chat.
-Earlier versions named these files after a shorter hash (12 hex digits); the
-plugin moves each one to its new name the first time its address is used (at
-startup for the configured address), and keeps the old file as a backup. It
-moves a file only once: if the new file (and its `.bak`) are lost later, the
-plugin doesn't go back to the old one by itself, since it may hold an older
-login, older channel keys, or a key you have reset since. Instead Settings
-says "A backup of your identity from <date> exists. Restore it?", and restores
-it only if you confirm. No file is ever deleted.
-
-**Signing in.** The Lodestone proves the character is yours once, when you
-register. After that the plugin signs in with the login (a device token) it
-was given, and if the server doesn't recognise that (say, it was restored
-from a backup), with your identity key: the server checks a signature made
-with it and gives this device a new login, with no Lodestone step. Only if
-the server doesn't accept the key either (it has never known your account,
-you reset your identity elsewhere, the key is gone, or you connect through an
-address the server doesn't list, which the plugin warns about) does the main
-window say "Login not recognised". The plugin keeps
-your login and tries it again every minute or so, so it works again by itself
-once the right server is back; "Retry now" tries the login and the key at
-once. Register again through the Lodestone only if your key was lost, or the
-server has never known your account.
-Registering again keeps the identity key the plugin has, so your channels
-keep working.
-
-**Lost your secrets file, or playing on a new computer?** (The file is
-protected with Windows' DPAPI, which doesn't move between machines.) Just
-register through the Lodestone as the main window shows you: the plugin makes
-new identity keys, and once the Lodestone shows the character is yours, the
-server moves everything of yours there to the new key: every channel you're
-in, with your rank (admin too), and your open invites. The main window says so
-before you start, and you're told how many came back. The server retires your
-old key at the same time: it can never sign in or be registered for your
-account there again, and every login made with it (say, on a stolen laptop)
-stops working. The other members of each channel see "*Name* re-verified their
-character and has a new key." (so does anyone who had your old key pinned and
-first reads about the change later, say in a channel they're invited to) and
-you show as **New key** to them until they compare fingerprints with you. If
-your old computer is still about, it can't sign in any more, and says that if
-it wasn't you who re-verified, "Reset my identity" takes your channels back. A channel works again for you as soon as a
-member who is online gives it a new key (they do so automatically), which the
-old key can't read; until then you can already remove members and change
-ranks there (as your rank allows), but not read, send, invite or rename.
-If nobody else is in a channel, or nobody else there holds its key any more
-(they re-verified too, or only an old key's place is left), you (or another
-member in the same spot) make its new key, and since nobody can tell you its
-name then, it comes back as "Restored channel": the admin can rename it (the
-real name can't come back after that). While someone who holds the key may
-still come back, the channel waits for them. An invite that comes back shows its channel's name once you've
-joined (the name in it was sealed to your old key).
-
-**Reset my identity** (Settings, under "Your identity") is for a key that may
-have been stolen (or that you want to replace for any other reason). It asks
-the server to retire the old key (a request signed with that key, for your
-current login and that server's address, so a stolen login alone can't do it,
-and nor can a signature made for another server): every login made with it
-stops working at once, and the key can never sign in to your account or be
-registered for it on that server again. Then it makes new identity keys for
-the character on this server, and keeps nothing of the old identity there (its
-login and channel keys): not in this address's file, not in the copies a move
-made for the server's other addresses, and not in backups (`.bak` files and
-the old-style file), though what they hold about others (pinned keys, blocked
-users, channel positions) is kept. You then register again through the
-Lodestone, which brings your channels, ranks and invites along to the new key,
-as on a new computer (above). Nothing is left or declined, and you don't need
-to hand admin on first. If you weren't connected, or the server couldn't be
-told (an older server doesn't know how), the plugin says so: the old key and
-logins then keep working on the server until you have registered again (which
-retires the old key then). Between the two, the account has no working login,
-as if the server had lost it, and others still see your old key. Your identity
-on other servers isn't affected.
-
-**Remove from my list.** A channel whose place belongs to a key you no longer
-have (left behind by registering again with new keys on a server from before
-registering brought channels along) says so in plain words, and its menu
-offers **Remove from my list...** instead of Leave and Disband: a leave can
-only be signed by the old key. (Nor can the old key's
-place do anything else there: whatever its rank, the server refuses sending,
-renaming, disbanding or fetching keys through it, and only lets it read the
-membership log, which is how the plugin sees whose place it is.) It isn't a
-membership change: the server just stops listing the channel (or the invite)
-to you and sending you anything about it (its messages, its members' presence,
-its end), and the plugin forgets its key, number, nickname and colour. The
-others still see your old key as a member until a moderator removes it;
-rekeys still include it, so nothing breaks for them, and when the last other
-member leaves, the channel ends as usual. If you're
-invited again with your new key (after a moderator removed the old one), that
-works as usual. Declining an invite made for your old key removes it the same
-way. Registering through the Lodestone with new keys (after "Reset my
-identity") brings such a place along to them as well, unless you removed it
-from your list: that stays removed.
-
-A key replaced on the server, by "Reset my identity" or by registering again
-with new keys, is never accepted for your account there again: registering it
-says to reset your identity instead, and it can't sign in. This is per
-account: nothing another account does can retire your key.
-
-**Your key is yours.** Registering proves that the plugin holds the identity
-key it registers: it signs the server's registration challenge, your
-character's ID and the server's address with it. Anyone who shares a channel
-with you can see your public key, but can't register it as theirs. A key is
-registered to one character at most on a server (the plugin makes separate
-keys for each character), so registering a second character with one
-character's keys is refused. A plugin from before registrations were signed is
-asked to update.
-
-**Your code is for this server.** The code you put in your Lodestone profile
-isn't random: it is worked out from the server's address as the plugin
-connected to it, the identity key being registered, one-time values from the
-server and from the plugin, and your character, and the plugin works it out
-again itself before showing it. A malicious server can't show you a code
-another server issued
-(say, one it asked for there for your character, with its own key, to take
-your account there once you put it in your profile): that code was made for
-the other server's address, and the plugin says "This server sent a
-registration code that doesn't belong to it. It may be passing on another
-server's code. Don't put it in your Lodestone profile." instead of showing it.
-If you see that, don't register with that server. Nor can it slip one into
-what it says (an error such as "LGC-... isn't in your Lodestone profile yet", an
-announcement, a name): the plugin shows "[code removed]" in place of any code
-but the one it checked. The server only gives out a
-code for an address it lists as its own, and only lets the key it was made
-for finish the registration. Typed by hand, any case works, and O, I and L
-are read as 0, 1 and 1. A plugin from before codes were checked is asked to
-update by servers that check them, but it is **not protected** against a
-malicious server, which can still show it another server's code (and an old
-plugin shows any code it is sent): update the plugin before registering
-anywhere.
-
-**Moving the server.** Identities are kept per address, so
-`ws://lookingglasschat:5180/ws`, `ws://127.0.0.1:5180/ws` and
-`wss://lookingglasschat.<tailnet>.ts.net/ws` count as different servers. When
-you change the address in Settings and a character has an identity for the
-old address but none for the new one, the plugin first asks the server at the
-old address (which you already trust with your login) whether the new address
-is one of its own, and then the server at the new address whether the old one
-is one of its own. Only if the new address is `wss://` and both list the other
-(in `LookingGlass:PublicUrls`) does it offer "This is the same server. Keep
-your identity?": yes asks both servers once more (the dialog may have been
-open a while) and, if they still agree, copies the character's keys, login and
-channels to the new address, so you don't register again and stay in your
-channels. Otherwise it says why (the new address isn't `wss://`, the old
-server doesn't list the new address, the new one doesn't list the old, one of
-them can't be reached, or the server lists no addresses), and the new address
-counts as a different server: you'd register there with new keys. A server at
-a new address can never get your identity by claiming to be the old one: the
-old server has to say so. Only `wss://` counts because the servers vouch for
-names, not for whoever answers at them: over plain `ws://`, or a short name the
-local network resolves, someone else could answer at the new name, repeat the
-real server's addresses, and receive your login in the clear; TLS proves which
-server answers. Either way the identity for the old address is kept, so
-switching back works. Numbers, nicknames and colours belong to the character
-and the channels, so they follow along.
+- **Channels across worlds.** Be in up to 50 channels, each with up to 500
+  members from any world or data centre.
+- **Chat commands.** `/lgc1` to `/lgc50` send to a channel by its number, and
+  `/lgc <nickname>` by a nickname you choose.
+- **Invites and ranks.** Invite people by character name and home world. Each
+  channel has an admin, and can have moderators who help with invites and
+  removals.
+- **Nicknames and colours.** Give a channel a short nickname and one of the
+  game's chat colours. Chat lines are tagged with the nickname, as in `[sky]`,
+  or the number, as in `[LGC3]`.
+- **Unread counts.** The channel list counts new messages, and the window's
+  title shows the total.
+- **Who's online.** Each member's icon is green while they're connected.
+- **Blocking.** Hide someone's messages and silently decline their invites.
+- **Privacy.** Only the members of a channel can read its name and messages.
+  The server still sees who is in which channel and when messages are sent.
 
 ## Commands
 
 | Command | What it does |
 | --- | --- |
 | `/lookingglass` or `/lg` | Open the main window: register, create and manage channels and invites |
-| `/lgc1 <message>` … `/lgc50 <message>` | Send to the channel on that number |
-| `/lgc <nickname> <message>` | Send to the channel with that nickname, numbered or not |
-| `/lgdebug` | Open the debug window |
+| `/lgc1 <message>` … `/lgc50 <message>` | Send to the channel with that number |
+| `/lgc <nickname> <message>` | Send to the channel with that nickname |
+| `/lgdebug` | Open the debug window (connection details, for reporting problems) |
 
-Only `/lgc` is listed in Dalamud's command help (`/xlhelp`); the fifty
-numbered commands are hidden there to keep the list short. `/lgc` on its own
-prints how to use it.
+`/lgc` on its own explains how to use it. Only `/lgc` is listed in Dalamud's
+command help (`/xlhelp`), to keep the list short.
 
-**Numbers.** Each channel you're in gets a number automatically, and keeps it
-across restarts until you leave it (or it's disbanded, or you're removed);
-the freed number then goes to the next channel without one. To change a
-channel's number, select it in the main window's channel list and click its
-`/lgcN` tag under the name: if another channel has the number you pick, the
-two swap. The list shows which channel has each number. Typing a number with
-no channel on it says so.
+## Installing
 
-**Nicknames.** Select a channel, click **+ nickname** (or its `/lgc <nickname>`
-tag) next to its number, type one and press **Set** (or **Clear** to
-remove it). A nickname is 1 to 16 letters, digits, `-` or `_`,
-can't be only digits (so `/lgc 3` is never confused with `/lgc3`), and must
-be different from your other channels' nicknames, ignoring case: `/lgc Sky hi`
-and `/lgc sky hi` go to the same channel. Problems are shown under the box.
-Nicknames, like numbers, are kept per character in the plugin's settings and
-are never sent to the server; a channel's nickname goes away when you leave it.
-In chat, a channel with a nickname is tagged with it, as in `[sky]`, instead of
-its number (`[LGC3]`); turn off **Show nicknames in chat tags** in Settings to
-always see numbers. A channel with neither (more than fifty channels, or a
-message that arrives before the channel list is in) is tagged `[LGC]`.
+LookingGlass isn't in Dalamud's plugin installer or a custom plugin repository
+yet. While it's in testing, it is loaded as a dev plugin:
 
-**Colours.** In a channel's menu (the ⋮ button next to its name), choose
-**Colour...** to give it one of the game's own chat colours, or click the
-coloured dot before its name. Its lines in chat take that colour (or only the
-tag, if you turn that off in Settings), and so does the bar beside it in the
-channel list. **Default** colours only the tag, as before. Colours are kept
-per character like nicknames.
+1. Get a build of `LookingGlass.dll` (see
+   [Loading a development build of the plugin](docs/server.md#loading-a-development-build-of-the-plugin)).
+2. In Dalamud's settings, open **Experimental**, add the full path to
+   `LookingGlass.dll` under **Dev Plugin Locations**, and save.
+3. Turn LookingGlass on in the plugin installer, where it is listed with your
+   dev plugins.
 
-**Unread messages.** The channel list counts messages from others since you
-last looked at a channel in the main window or talked in it, and the window's
-title shows the total. The counts start again from zero when you log in.
+## Getting started
 
-**Members.** The icon before each member says whether you've compared
-fingerprints with them (a question mark until you have, a check once you
-marked them verified, a circling arrow if they re-verified their character and
-have a new key you haven't compared yet, a warning if their key changed
-otherwise); click it to compare.
-Its colour says whether they're online: green while they're connected, grey
-when they aren't (a warning keeps its orange either way, and invitees stay
-grey until they join). Hover over it to see which. Their ⋮ menu has the rest. To remove someone, hold **Ctrl** while choosing
-**Remove from channel** (it stays greyed out otherwise); cancelling an invite
-happens straight away. Leaving or disbanding a channel (from the channel's ⋮
-menu) asks first.
+1. **Set the server address.** Type `/lg`, then click the gear in the window's
+   title bar to open Settings. Under **Server URL**, enter the address the
+   server's operator gave you (it looks like `wss://chat.example.com/ws`) and
+   press **Apply**. The plugin connects whenever you log in.
+2. **Register your character.** The main window walks you through it. Press
+   **Get a code**, paste the code (it starts with `LGC-`) anywhere in your
+   Lodestone character profile, save the profile, then press **Verify**. The
+   Lodestone can take a minute to show changes. Once you're registered, you can
+   delete the code from your profile. You do this once per character and
+   server.
+3. **Create or join a channel.** Press **Create a channel** and name it, or
+   accept an invite from the envelope at the top right of the main window. To
+   invite someone, select the channel and press **Invite**.
 
-## Server configuration
+## Using channels
 
-Settings live in `appsettings.json` next to the server binary, and can be
-overridden on the command line (`--LookingGlass:Announcement="Hello"`) or
-with environment variables (`LookingGlass__Dev__AllowDebugAccounts=true`).
-Relative paths, such as the default `data` folder for the database, resolve
-against the install folder.
+Select a channel in the main window to see its members and settings.
 
-Production deployment: `deploy/lookingglass.service` (systemd) or the
-`Dockerfile`. For systemd, `scripts/publish-linux.ps1` builds a self-contained
-Linux server and packs it with the unit and `deploy/install-linux.sh`; on the
-Linux machine, unpack it and run `sudo sh ./install-linux.sh <address>` (every
-address clients use, for example `wss://<machine>.<tailnet>.ts.net/ws` behind
-`tailscale funnel --bg 5180`). Run the same again to update: the database in
-`/var/lib/lookingglass` is kept, and the previous install is kept as
-`/opt/lookingglass.old`. By default the server only listens on `127.0.0.1:5180`; put a
-TLS reverse proxy (for example Caddy) in front and use `wss://` URLs. Outside
-Development the server **won't start until `LookingGlass:PublicUrls` lists
-its addresses** (see "The server's addresses" below), for example
-`LookingGlass__PublicUrls__0=wss://chat.example.com/ws`; it says so, and
-exits, if they're missing.
+- **Numbers.** Each channel gets a number automatically and keeps it. Click the
+  `/lgcN` tag under the channel's name to pick another; if another channel has
+  that number, the two swap.
+- **Nicknames.** Click **+ nickname** next to the number. A nickname is 1 to 16
+  letters, digits, `-` or `_`, and can't be only digits. Upper and lower case
+  count as the same. Nicknames stay on your computer.
+- **Colours.** Choose **Colour...** in the channel's menu (the ⋮ button), or
+  click the coloured dot before its name. In Settings you can choose whether
+  the whole line or only the tag takes the colour, and whether tags show
+  nicknames.
+- **Ranks.** Moderators can invite people and remove members below them. The
+  admin can also rename the channel, make or unmake moderators, hand over the
+  admin role and disband the channel. The admin can't leave while others
+  remain: hand over the admin role, or disband the channel, first.
+- **Removing someone.** Hold **Ctrl** while choosing **Remove from channel** in
+  their menu.
+- **Checking it's really them.** The icon before each member shows a question
+  mark until you've compared fingerprints with them. Click it, compare the
+  fingerprint with them over /tell, then press **Mark verified**. A warning
+  icon means their key changed unexpectedly: ask them before trusting it.
 
-**Upgrading from 0.1:** 0.1's channels have no membership log, and nobody can
-sign one for them now, so 0.2 refuses to start on a database that has any. It
-says which file it is and leaves it unchanged: stop the server, delete or move
-that file (with its `-wal` and `-shm` files, if any), and start again.
-Everyone registers again and creates their channels anew. A database without
-channels is upgraded in place.
+## Playing on a new computer, or lost your settings
 
-**Key recovery** (registering new keys brings a user's channels along) speaks
-protocol version 3: update the server and the plugins together, as a plugin
-from before is asked to update when it connects. The database is upgraded in
-place. Places an old server left under keys their users no longer have stay so
-until those users next register new keys through the Lodestone.
+LookingGlass keeps your keys protected by Windows on the computer they were
+made on, so they don't come with you to a new one. Just register again through
+the Lodestone, as the main window shows you. Every channel you were in comes
+back, with your rank, and so do your open invites.
 
-Per-IP limits (registrations and concurrent connections) only work if the
-server sees real client addresses. It reads them from `X-Forwarded-For`, but
-only when the connection comes from a trusted proxy: one on the same machine
-(loopback), or one listed in `LookingGlass:TrustedProxies`, which takes
-single addresses (`"10.0.0.5"`) and networks in CIDR form
-(`"172.17.0.0/16"`). Otherwise every client appears to be the proxy, and the
-limits apply to everyone together. IPv6 clients are counted per /64.
+The other members see that you re-verified your character and have a new key,
+and you show as **New key** to them until they compare fingerprints with you.
+A channel starts working again as soon as another member who is online passes
+you its new key, which happens automatically. If nobody else in a channel can,
+it comes back as "Restored channel", and its admin can rename it.
 
-**The server's addresses.** Registering, signing in with the identity key
-(key login) and "Reset my identity" are each signed with the plugin's
-identity key for the address it connected to, and the server only accepts
-one of its own addresses (scheme, host and port; not the path), so another
-server you use can't pass them on to this one. That matters most for
-registering: a malicious server you register with could otherwise forward
-your registration here and receive a login to your character's account. A
-registration's Lodestone code is made for that address too, and the server
-gives out none for an address that isn't its own.
-"Its own addresses" are the ones listed in `LookingGlass:PublicUrls`; list
-every address clients use, for example:
+Your old computer can't sign in any more after that.
 
-```sh
-LookingGlass__PublicUrls__0=wss://chat.example.com/ws
-# A private tailnet server, reached directly and through Tailscale Funnel
-# (the short name is fine only on a tailnet you control: see below):
-LookingGlass__PublicUrls__0=ws://<machine-name>:5180/ws
-LookingGlass__PublicUrls__1=wss://<machine-name>.<tailnet>.ts.net/ws
-```
+## Reset my identity
 
-The server also tells plugins these addresses, which is how a plugin moving
-between two of them keeps its identity (see "Moving the server" above), but
-only to a `wss://` one. Short names (a tailnet machine name), private,
-CGNAT or loopback IPs (`100.x.y.z`, `127.0.0.1`) and plain `ws://` addresses
-aren't this server's alone (see "Each listed address must be this server's
-alone" above): fine on a private network you control, where plugins just
-can't move their identity to them, but not for a server people use alongside
-servers others run, where only `wss://` addresses with a fully qualified
-name keep the checks meaningful. The server warns about each such address
-when it starts.
+Use **Reset my identity...** (Settings, under "Your identity") only if you
+think someone may have copied your LookingGlass files, or your keys were lost.
+It shuts out your old keys on that server, then you register again through the
+Lodestone and get your channels back as on a new computer. It doesn't affect
+other servers.
 
-**Without `PublicUrls`, a server outside Development refuses to start**,
-saying what to set. A server in Development starts without them, accepts
-the address each connection names in its `Host` header (and scheme, from
-`X-Forwarded-Proto` behind a trusted proxy), and warns that this is weaker:
-whoever opens a connection chooses its Host header, so a malicious server
-relaying your registration or signature simply sends the address you signed
-for. The plugin's separate identity keys per server address still stop a
-relayed key login there (the key you sign with for another server isn't
-registered on this one), but not a relayed registration, which registers
-whatever key signed it, nor a relayed Lodestone code (the server makes it for
-whatever address the Host header names, so the plugin accepts it). Fine for a
-private test server; list the addresses anywhere else.
+## Troubleshooting
 
-Key logins are limited per connection (3 challenges), per address
-(`KeyLoginsPerHourPerIp` challenges, and `KeyLoginFailuresPerHourPerIp`
-failures, under `LookingGlass:Limits`; a challenge counts as a failure until
-it is answered correctly, so an address that only asks for challenges is
-stopped too) and per account from each address (failed answers only: half
-the per-address failure limit, rounded up, so with the default of 10 an
-address may fail 5 times an hour for one account). Nothing is limited per
-account alone: a signature made with the identity key can't be guessed, so
-failures from other addresses never stop you signing in from yours (an
-address you share with an attacker, such as one NAT, still shares its
-per-address limits). Each user keeps their 20 most recently used devices;
-older ones are dropped as new ones are added.
+- **No messages in chat.** Messages go to the game chat channel chosen under
+  "Show messages in the chat channel" in Settings. Make sure your chat tab shows
+  that channel, or choose another.
+- **"This server doesn't recognise your login".** Check the server address in
+  Settings first. The plugin tries again every minute or so, and **Retry now**
+  tries at once. Register again only if your keys were lost or the server never
+  knew you; your channels come along either way.
+- **"This server doesn't accept the address you use".** Use one of the
+  addresses the plugin lists instead.
+- **A server sent "a registration code that doesn't belong to it".** Don't put
+  that code in your profile, and don't register with that server.
+- **A channel shows "Your old key's place".** It's left over from an older
+  version and can't be used. Choose **Remove from my list...** in its menu.
+- **The server moved to a new address.** Change it in Settings. If both
+  addresses belong to the same server, the plugin offers to keep your identity;
+  otherwise you register again there.
 
-**Docker:** a reverse proxy on the host reaches the container through Docker's
-bridge network, so inside the container the proxy's address is the bridge
-gateway (often `172.17.0.1`), not loopback. Trust the bridge network, for
-example `LookingGlass__TrustedProxies__0=172.17.0.0/16` (check yours with
-`docker network inspect bridge`). Only do this if nothing untrusted can
-connect to the container from that network; a proxy running in another
-container on a user-defined network needs that network trusted instead.
+## More
 
-## Security model
-
-What the encryption does today:
-
-- Each character has a long-term Ed25519 signing key and X25519 key. Others
-  see a 25-digit fingerprint. Clients pin each user's keys and name on first
-  use and show a persistent "key changed" warning when they change (or "New
-  key", without the warning, when a channel's log says they re-verified their
-  character: see below). Members
-  whose fingerprint you haven't compared show "not compared" (compare
-  fingerprints over /tell: click the icon before a member's name, or **Compare
-  fingerprints** in their ⋮ menu, then **Mark verified**).
-- Who is in a channel, and with what rank, comes from the channel's
-  membership log: a hash-chained list of changes, each signed by the member
-  who made it. Invites are signed by a moderator or the admin, accepts by the
-  exact key the invite named, removals by a moderator or admin ranked above
-  the member removed, and rank changes and admin transfers by the admin; the
-  admin can't leave while others remain, and an open invite lapses when
-  whoever made it is removed, leaves or is demoted. Every client replays
-  and checks the log itself, and saves the newest position it has verified,
-  so it carries on from there after a restart. The server checks entries
-  too, but nothing relies on that: it can't add a member, change a rank, or
-  reorder the log, because that takes a member's signature and breaks the
-  hash chain. Members are bound to the keys the log admitted them with, so a
-  removed member's key signs nothing that counts, and neither does a new key
-  of a member's, unless the log moves their place to it (below).
-- Re-verifying: when someone registers new keys through the Lodestone (a new
-  computer, a lost file, "Reset my identity"), the server adds a "key
-  recovered" entry to the log of each of their channels, which moves their
-  place (rank and all) or invite to the new keys. It is signed by the new keys,
-  agreeing to be that user, but whether that user is who they say is the
-  server's word: only it saw the Lodestone. Clients refuse one for someone not
-  in the channel, naming keys their place isn't under, or moving them to keys
-  they or anyone else in the channel already have. Every member is told, in
-  the channel, and sees "New key" for them until they compare fingerprints.
-  A member who is online makes the channel a new key at once (or the first
-  one to come online; if nobody left holds the key, a member waiting for one
-  makes it, under the name "Restored channel"), so the old key reads nothing
-  more; and it can't sign in again, nor can a session of it still connected
-  act through the moved place.
-- If a client sees two different, validly signed versions of the log (a
-  fork: someone is being shown a different member list), or the server
-  shows it an older log than it has already verified (it may be hiding a
-  change, such as a removal), it says so, keeps what it verified, and marks
-  the channel "check members".
-- Each channel has an epoch key. Any join, leave or removal makes a member
-  generate a new one, seal it to exactly the members at the log's head (with
-  the keys the log has for them), and sign it together with that log
-  position and a commitment to the key. The server refuses a rekey unless it
-  is for the log's head and every copy carries the same commitment, so a
-  member who hands someone a different or unreadable key is named in a
-  warning, and that client rekeys. The server stores and forwards the sealed
-  copies but can't open them.
-- Clients only accept a new epoch key from a member in their verified log,
-  only for a newer epoch than they hold, and only if it was made for the
-  current membership: a key made before the last join or leave is refused
-  (with a warning that the server may be hiding a change), and for a key
-  made at a newer position the client fetches and checks the log first.
-  They send with the newest key they hold, whatever epoch the server claims,
-  and rekey first if that key predates the last join or leave.
-- Messages are XChaCha20-Poly1305 encrypted under the epoch key and signed by
-  the sender. The server can't read them, alter them, or attribute them to
-  someone else. A message is only accepted from a member in the verified log,
-  signed with the key the log has for them, and under an older epoch only
-  within 2 minutes of the client getting the newer key.
-- Replays: clients remember the IDs of recent verified messages (in memory),
-  drop messages dated more than 10 minutes from their own clock, and save,
-  per channel and sender, the timestamp of the newest message accepted.
-  Messages more than 2 minutes older than that are dropped, even after a
-  restart. Those timestamps are saved with other changes, on shutdown, and
-  while messages arrive at least every 5 minutes, so a crash can lose up to
-  about 5 minutes of them. Your own messages aren't recorded this way, so
-  after a restart the server could replay one you sent in the last 10
-  minutes back to you.
-- Channel names carry a signed epoch, revision and log position. Clients only
-  accept a name encrypted under the key they use, signed by a member, made for
-  the current membership, and never one older than the newest they have
-  accepted (remembered across restarts), so a server can't roll a name back,
-  whether to a name from an older epoch, an earlier rename, or an older
-  membership. Only the admin renames; a rekey carries the name into the new
-  epoch, and clients warn if a member's rekey changed it.
-- Registering: the Lodestone check happens once, at registration, and the
-  client signs the server's challenge with the identity key it registers, so
-  nobody can register someone else's public key as theirs. The code for the
-  Lodestone profile is derived (SHA-256, 100 bits kept) from the server's
-  address, that key, the server's nonce, a fresh nonce from the client and the
-  character, and the client checks it before showing it, so a server can't pass on a code another
-  server issued (to its own key) and take your account there. A key belongs
-  to one account at most, and a key an account replaced or retired is refused
-  for that account only.
-- Signing in: after registering, a client signs in with its device token or,
-  if the server no longer knows the token, by signing a single-use challenge
-  with its current identity key (a key replaced or retired by "Reset my
-  identity" can't, and can't be registered for the account again either).
-  The signature, like a registration's and a retirement's, names the server's
-  address, and the server only accepts its configured `PublicUrls`, so a
-  server can't replay it to another (a server outside Development won't start
-  without them; a Development server without them goes by the Host header,
-  which doesn't stop this). The plugin
-  also keeps separate keys per server address, bound to the address inside
-  the file; never follows redirects, so a server can't hand your connection
-  and login to another; and only carries an identity to a new address when
-  it is `wss://` and the servers at both addresses list each other.
-- Clients can block users: their invites are declined unseen and their
-  messages hidden. An invite is only shown as verified once the client has
-  checked it against the channel's log, and one from someone whose identity
-  key changed can't be accepted until it is marked verified.
-
-What it does not do yet (0.2):
-
-- **You trust the keys of the people you invite on first use.** When you
-  invite someone by name, the server supplies their key and could substitute
-  its own. Each member shows "not compared" until you compare fingerprints
-  over /tell and mark them verified. There is no strict mode yet that refuses
-  to invite, or seal keys to, anyone not compared.
-- **A removal takes effect when the remover's client publishes it.** The
-  remover's client rekeys straight away. A server that suppresses that rekey
-  stops the channel working for everyone else, and the remover is warned; but
-  members who never saw the removal can be shown the old membership, and a
-  key they make for it reaches the removed member (anyone who did see the
-  removal refuses that key).
-- Key commitments rely on the server checking them: a member colluding with
-  the server can still give different members different keys, which shows up
-  as messages some members can't decrypt.
-- Rekeys seal the new key to every member in the log, including one whose
-  "key changed" warning you haven't cleared.
-- **The server vouches for re-verified keys.** Since clients can't check the
-  Lodestone, a malicious or compromised server can replace any member's keys
-  with its own, in any channel, whenever it likes: after the next rekey it
-  reads that channel and can act as that member, admin rights included. It
-  can't do it quietly: everyone in the channel is told that the member
-  re-verified their character, and the member shows "New key" until you
-  compare fingerprints with them over /tell (which doesn't go through the
-  server). If you didn't expect it, ask them. This is the trade-off Signal and
-  WhatsApp make: losing your keys doesn't lose your channels.
-- A place under a key its owner no longer has, left by registering again with
-  new keys on a server from before keys were recovered, stays with that key
-  until its owner registers new keys again (which brings it along) or a
-  moderator removes it; they can remove it from their own list meanwhile.
-- The log only grows. Clients fetch just the new entries, but someone new to a
-  channel (or invited to it) replays it from the start.
-- The server sees metadata (who is in which channel, when messages are sent)
-  and can drop or delay anything.
-- Members who share a channel see when each other are online: the server
-  tells them when a fellow member connects or disconnects, and when someone
-  online joins. Invitees and people you share no channel with aren't told,
-  and you aren't shown to them. This comes from the server, which could lie
-  about it.
-- Debug accounts on a Development server can be taken over by anyone who can
-  reach it, channels and all.
-
-## License
-
-[GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0-only). If you
-run a modified version of the server for other people, you must offer them its
-source code (section 13).
+- [How it works](docs/design.md): the design, encryption and security model.
+- [Running a server](docs/server.md): setting up, configuring and deploying a
+  server, and building the plugin.
+- License: [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0-only).
+  If you run a modified version of the server for other people, you must offer
+  them its source code (section 13).
