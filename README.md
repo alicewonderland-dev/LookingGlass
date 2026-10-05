@@ -74,7 +74,10 @@ server can register (or take over) any debug account, including the echo bot.
    If the server lists its addresses (below), use exactly one of those: the
    plugin warns as soon as it connects through any other.
 3. Register your character. The main window walks you through it: get a
-   code, paste it into your Lodestone profile, then press **Verify**.
+   code (`LGC-` and five groups of four letters and digits), paste it into
+   your Lodestone profile, then press **Verify**. The plugin only shows a
+   code made for the server address it connects to and its own identity key
+   (see "Your code is for this server" below).
 
 Tailscale already encrypts traffic between devices, and message contents are
 end-to-end encrypted regardless. For TLS anyway, `tailscale serve` (or
@@ -202,6 +205,22 @@ keys for each character), so registering a second character with one
 character's keys is refused. A plugin from before registrations were signed is
 asked to update.
 
+**Your code is for this server.** The code you put in your Lodestone profile
+isn't random: it is worked out from the server's address as the plugin
+connected to it, the identity key being registered, a one-time value from the
+server and your character, and the plugin works it out again itself before
+showing it. A malicious server can't show you a code another server issued
+(say, one it asked for there for your character, with its own key, to take
+your account there once you put it in your profile): that code was made for
+the other server's address, and the plugin says "This server sent a
+registration code that doesn't belong to it. It may be passing on another
+server's code. Don't put it in your Lodestone profile." instead of showing it.
+If you see that, don't register with that server. The server only gives out a
+code for an address it lists as its own, and only lets the key it was made
+for finish the registration. Typed by hand, any case works, and O, I and L
+are read as 0, 1 and 1. A plugin from before codes were checked is asked to
+update.
+
 **Moving the server.** Identities are kept per address, so
 `ws://lookingglasschat:5180/ws`, `ws://127.0.0.1:5180/ws` and
 `wss://lookingglasschat.<tailnet>.ts.net/ws` count as different servers. When
@@ -319,7 +338,9 @@ identity key for the address it connected to, and the server only accepts
 one of its own addresses (scheme, host and port; not the path), so another
 server you use can't pass them on to this one. That matters most for
 registering: a malicious server you register with could otherwise forward
-your registration here and receive a login to your character's account.
+your registration here and receive a login to your character's account. A
+registration's Lodestone code is made for that address too, and the server
+gives out none for an address that isn't its own.
 "Its own addresses" are the ones listed in `LookingGlass:PublicUrls`; list
 every address clients use, for example:
 
@@ -345,8 +366,9 @@ relaying your registration or signature simply sends the address you signed
 for. The plugin's separate identity keys per server address still stop a
 relayed key login there (the key you sign with for another server isn't
 registered on this one), but not a relayed registration, which registers
-whatever key signed it. Fine for a private test server; list the addresses
-anywhere else.
+whatever key signed it, nor a relayed Lodestone code (the server makes it for
+whatever address the Host header names, so the plugin accepts it). Fine for a
+private test server; list the addresses anywhere else.
 
 Key logins are limited per connection (3 challenges), per address
 (`KeyLoginsPerHourPerIp` challenges, and `KeyLoginFailuresPerHourPerIp`
@@ -436,8 +458,12 @@ What the encryption does today:
   epoch, and clients warn if a member's rekey changed it.
 - Registering: the Lodestone check happens once, at registration, and the
   client signs the server's challenge with the identity key it registers, so
-  nobody can register someone else's public key as theirs. A key belongs to
-  one account at most, and a key an account replaced or retired is refused
+  nobody can register someone else's public key as theirs. The code for the
+  Lodestone profile is derived (SHA-256, 100 bits kept) from the server's
+  address, that key, the server's nonce and the character, and the client
+  checks it before showing it, so a server can't pass on a code another
+  server issued (to its own key) and take your account there. A key belongs
+  to one account at most, and a key an account replaced or retired is refused
   for that account only.
 - Signing in: after registering, a client signs in with its device token or,
   if the server no longer knows the token, by signing a single-use challenge
@@ -482,11 +508,6 @@ What it does not do yet (0.2):
   changes are no longer possible in that channel.
 - The log only grows. Clients fetch just the new entries, but someone new to a
   channel (or invited to it) replays it from the start.
-- **A registration code isn't tied to a server.** A malicious server you
-  register with could ask another server for a code for your character (with
-  its own keys) and show you that code as its own; if you put it in your
-  Lodestone profile, it holds your account on the other server. Listed
-  addresses don't stop this: the plugin never signs anything for it.
 - The server sees metadata (who is in which channel, when messages are sent)
   and can drop or delay anything.
 - Members who share a channel see when each other are online: the server
