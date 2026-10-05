@@ -186,7 +186,7 @@ public sealed class LodestoneCodeTests {
                      "lGc-" + body.Replace('0', 'o').Replace('1', 'I'),
                      "LGC-" + body.Replace('0', 'O').Replace('1', 'l'),
                      // Invisible: zero-width space, soft hyphen, a bidi override, a game macro byte.
-                     $"L​GC-{body[..2]}­{body[2..12]}‮{body[12..]}",
+                     $"L\u200BGC-{body[..2]}\u00AD{body[2..12]}\u202E{body[12..]}",
                      $"LGC-\u0002{body}",
                  }) {
             Assert.Equal($"[{LodestoneCode.Removed}]", LodestoneCode.Redact($"[{disguised}]"));

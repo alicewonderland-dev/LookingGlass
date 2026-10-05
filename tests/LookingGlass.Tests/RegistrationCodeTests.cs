@@ -202,7 +202,7 @@ public sealed class RegistrationCodeTests {
     /// <summary>The code as a server could write it so that a plain search doesn't find it: in lower case, with O, I and an invisible space.</summary>
     private static string Disguised(string code) {
         var body = code[LodestoneCode.Prefix.Length..].ToLowerInvariant().Replace('0', 'o').Replace('1', 'I');
-        return $"lgc-{body[..3]}​{body[3..]}";
+        return $"lgc-{body[..3]}\u200B{body[3..]}";
     }
 
     /// <summary>
