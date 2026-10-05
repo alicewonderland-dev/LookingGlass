@@ -13,15 +13,16 @@ internal interface IChatBoxListener {
     /// <summary>True while submitted text may have to be kept from the game. A field read, checked before anything else runs.</summary>
     bool Active { get; }
 
-    /// <summary>Decides what happens to a submitted line (its raw bytes, payloads and all).</summary>
+    /// <summary>Decides what happens to a submitted line (its raw bytes, payloads and all), and acts on it.</summary>
     /// <returns>True to keep it from the game.</returns>
     bool KeepFromGame(byte[] message);
 
     /// <summary><see cref="KeepFromGame"/> threw while <see cref="Active"/>: the line was kept from the game.</summary>
     void Failed(Exception ex);
 
-    /// <summary>Something asked the game to switch its chat channel (after the game did so).</summary>
-    void ChannelChangeRequested();
+    /// <summary>Something called the game's chat channel switch, which has returned.</summary>
+    /// <param name="fromTypedCommand">It was called while a line submitted through the chat box was being run (/s, /p).</param>
+    void ChannelSwitchCalled(bool fromTypedCommand);
 }
 
 /// <summary>
@@ -31,17 +32,21 @@ internal interface IChatBoxListener {
 /// <item><c>UIModule.ProcessChatBoxEntry</c>: what the chat box calls with the line typed when Enter is pressed (and
 /// what ChatTwo calls to send, see docs/design.md). Commands go on from there to the shell, plain text to the current
 /// channel. While talking in a channel, the detour asks the listener first and doesn't call the game for a line it
-/// keeps; if deciding throws, the line is kept (fail closed).</item>
+/// keeps; if deciding throws, the line is kept (fail closed, see <see cref="ChatBoxGate"/>). A kept line still goes into
+/// the chat input's history when the game would have put it there.</item>
 /// <item><c>RaptureShellModule.ChangeChatChannel</c>: switches the game's chat channel (/s, /p, ChatTwo's picker and
-/// tabs). Seen even when the channel switched to is the one it was on.</item>
+/// tabs). Seen even when the channel switched to is the one it was on; the listener is told whether a typed line
+/// (/s, /p) made the call, as ChatTwo also calls it with the channel already on at every tab change.</item>
 /// </list>
-/// Both hooks stay enabled while the plugin is loaded; their detours do nothing more than a field read unless talking in
-/// a channel. Reading the channel and the chat input's label needs no hook.
+/// Both hooks stay enabled while the plugin is loaded; unless talking in a channel, their detours only call the game
+/// (and count a running line). Reading the channel and the chat input's label needs no hook.
 /// </summary>
 internal sealed unsafe class ChatInterop : IDisposable {
     private readonly IChatBoxListener _listener;
     private Hook<UIModule.Delegates.ProcessChatBoxEntry>? _chatBoxHook;
     private Hook<RaptureShellModule.Delegates.ChangeChatChannel>? _changeChannelHook;
+    // Lines from the chat box being run by the game now (game thread only).
+    private int _linesRunning;
 
     public ChatInterop(IChatBoxListener listener) {
         this._listener = listener;
@@ -103,36 +108,51 @@ internal sealed unsafe class ChatInterop : IDisposable {
     }
 
     private void ChatBoxDetour(UIModule* module, Utf8String* message, nint a4, bool saveToHistory) {
-        if (this.KeepFromGame(message)) {
+        // The decision lives in Core (ChatBoxGate), where it is tested: while talking in a channel, a line whose fate
+        // couldn't be decided is kept from the game.
+        var address = (nint) message;
+        if (message != null && ChatBoxGate.KeepFromGame(this._listener.Active,
+                () => this._listener.KeepFromGame(((Utf8String*) address)->AsSpan().ToArray()), this._listener.Failed)) {
+            if (saveToHistory) {
+                AddToChatHistory(module, message);
+            }
+
             return;
         }
 
-        this._chatBoxHook!.Original(module, message, a4, saveToHistory);
+        // A channel switch while this runs came from the line: a typed /s, /p.
+        this._linesRunning++;
+        try {
+            this._chatBoxHook!.Original(module, message, a4, saveToHistory);
+        } finally {
+            this._linesRunning--;
+        }
     }
 
-    private bool KeepFromGame(Utf8String* message) {
-        if (!this._listener.Active || message == null) {
-            return false;
-        }
-
+    /// <summary>
+    /// Puts a line kept from the game in the chat input's history anyway, as the game would have, so the up arrow brings
+    /// it back (to send again after "Not sent"). Best effort: the history the game chat input uses, if it can be found.
+    /// </summary>
+    private static void AddToChatHistory(UIModule* module, Utf8String* message) {
         try {
-            return this._listener.KeepFromGame(message->AsSpan().ToArray());
-        } catch (Exception ex) {
-            // Fail closed: while talking in a channel, a line that couldn't be looked at never reaches game chat.
-            try {
-                this._listener.Failed(ex);
-            } catch {
-                // Nothing more can be done here; the line is still kept.
+            var addon = (AddonChatLog*) Services.GameGui.GetAddonByName("ChatLog").Address;
+            if (module == null || addon == null || addon->TextInput == null) {
+                return;
             }
 
-            return true;
+            int index = addon->TextInput->AtkHistoryIndex;
+            if (index >= 0 && index < module->AtkHistory.Length) {
+                module->AddAtkHistoryEntry(message, index);
+            }
+        } catch (Exception ex) {
+            Services.Log.Warning(ex, "Couldn't add a line to the chat input's history");
         }
     }
 
     private bool ChangeChannelDetour(RaptureShellModule* shell, int channel, uint linkshellIndex, Utf8String* tellTarget, bool setChatType) {
         var result = this._changeChannelHook!.Original(shell, channel, linkshellIndex, tellTarget, setChatType);
         try {
-            this._listener.ChannelChangeRequested();
+            this._listener.ChannelSwitchCalled(this._linesRunning > 0);
         } catch (Exception ex) {
             Services.Log.Error(ex, "Error handling a chat channel switch");
         }

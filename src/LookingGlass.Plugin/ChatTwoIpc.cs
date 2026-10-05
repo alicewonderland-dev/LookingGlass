@@ -7,8 +7,9 @@ namespace LookingGlass.Plugin;
 /// What sticky mode needs from ChatTwo, which replaces the game's chat window with its own. Everything here is optional:
 /// with ChatTwo missing, older, or failing, sticky mode still never lets typed text reach game chat (see docs/design.md).
 /// <list type="bullet">
-/// <item><c>ChatTwo.GetChatInputState</c> (ChatTwo's typing IPC): the channel its input box sends to, so the command
-/// ChatTwo puts in front of plain text ("/s hello") is recognised.</item>
+/// <item><c>ChatTwo.GetChatInputState</c> (ChatTwo's typing IPC): whether its main input is on a /tell, which ChatTwo
+/// sends itself, so talking in a channel isn't started there. Only the main window's input: pop-outs aren't reported, which
+/// is why what ChatTwo sends is recognised by its channel commands instead (see <see cref="ChatChannelPrefixes"/>).</item>
 /// <item><c>ExtraChat.OverrideChannelColour</c>: ChatTwo's only way for another plugin to name the channel its input
 /// box shows. ChatTwo subscribes to it by that name (it was made for ExtraChat); LookingGlass sends its own channel's tag
 /// on it while talking in a channel, and null when it stops. It changes what ChatTwo shows, not where ChatTwo sends.</item>
@@ -18,6 +19,7 @@ namespace LookingGlass.Plugin;
 /// </summary>
 internal sealed class ChatTwoIpc : IDisposable {
     private const string InternalName = "ChatTwo";
+    private const string DisplayName = "Chat 2";
 
     private readonly ICallGateSubscriber<(bool, bool, bool, bool, int, ushort)> _inputState;
     private readonly ICallGateProvider<OverrideInfo, object> _override;
@@ -36,7 +38,7 @@ internal sealed class ChatTwoIpc : IDisposable {
     public bool Loaded {
         get {
             try {
-                if (Services.PluginInterface.InstalledPlugins.Any(plugin => plugin.IsLoaded && plugin.InternalName == InternalName)) {
+                if (Services.PluginInterface.InstalledPlugins.Any(plugin => plugin.IsLoaded && (plugin.InternalName == InternalName || plugin.Name == DisplayName))) {
                     return true;
                 }
             } catch (Exception ex) {

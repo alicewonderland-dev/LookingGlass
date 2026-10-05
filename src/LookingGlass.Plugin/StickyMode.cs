@@ -2,6 +2,7 @@ using Dalamud.Game.Addon.Lifecycle;
 using Dalamud.Game.Addon.Lifecycle.AddonArgTypes;
 using Dalamud.Game.Gui.Dtr;
 using Dalamud.Game.Text.SeStringHandling;
+using Dalamud.Game.Text.SeStringHandling.Payloads;
 using Dalamud.Plugin.Services;
 using LookingGlass.Core.Client;
 using Lumina.Excel.Sheets;
@@ -68,6 +69,10 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
         }
 
         this._chat.ChannelNotice(start.Text, this._sessions.ColourOf(channelId));
+        if (ExtraChatLoaded()) {
+            this._chat.Notice(NoticeLevel.Warning, StickyMessages.ExtraChatLoaded);
+        }
+
         this.ShowIndicators();
     }
 
@@ -78,36 +83,46 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
         }
 
         var tag = this.TagOf(channelId);
-        var text = SeString.Parse(message).TextValue;
-        var game = ChatInterop.CurrentChannel();
-        var chatTwo = this._chatTwo.Loaded;
-        var sentAs = ChatChannelPrefixes.SentAs(chatTwo, game, chatTwo ? this._chatTwo.InputChannel() : null);
-        switch (StickyRoute.For(channelId, tag, text, sentAs)) {
+        var line = SeString.Parse(message);
+        var notOnlyText = line.Payloads.Any(payload => payload is not TextPayload);
+        var route = StickyRoute.For(channelId, tag, line.TextValue, ChatChannelPrefixes.SentAs(this._chatTwo.Loaded), notOnlyText);
+        switch (route) {
             case StickyRoute.ToChannel send:
                 this._sender.Send(send.ChannelId, send.Text, tag);
-                return true;
-            case StickyRoute.Dropped dropped:
-                // Only links or symbols, no text: say so, as it wasn't sent anywhere. Blank lines go nowhere quietly.
-                var notice = dropped.Text ?? (message.Any(b => b > (byte) ' ') ? StickyMessages.NotSent(tag, StickyMessages.NoTextReason) : null);
-                if (notice != null) {
-                    this._chat.Notice(NoticeLevel.Warning, notice);
-                }
-
-                return true;
-            default:
-                return false;
+                break;
+            case StickyRoute.Dropped { Text: { } notice }:
+                this._chat.Notice(NoticeLevel.Warning, notice);
+                break;
         }
+
+        return route.KeepsFromGame;
     }
 
     /// <inheritdoc/>
     void IChatBoxListener.Failed(Exception ex) {
         Services.Log.Error(ex, "Error deciding where a chat line goes; it was kept from game chat");
-        var tag = this._state.ChannelId is { } channelId ? this.TagOf(channelId) : ChannelTag.Fallback;
+        var tag = this._shown?.Tag ?? ChannelTag.Fallback;
         this._chat.Notice(NoticeLevel.Error, StickyMessages.NotSent(tag, StickyMessages.SomethingWentWrongReason));
     }
 
     /// <inheritdoc/>
-    void IChatBoxListener.ChannelChangeRequested() => this.Leave(StickyEnd.ChannelSwitched);
+    void IChatBoxListener.ChannelSwitchCalled(bool fromTypedCommand) {
+        if (this._state.ChannelId is { } channelId && this._state.ChannelSwitchCalled(ChatInterop.CurrentChannel(), fromTypedCommand) is { } end) {
+            this.Ended(channelId, end);
+        }
+    }
+
+    /// <summary>ExtraChat, or a fork of it, is loaded: it shares ChatTwo's label IPC and hooks the chat box too.</summary>
+    private static bool ExtraChatLoaded() {
+        try {
+            return Services.PluginInterface.InstalledPlugins.Any(plugin => plugin.IsLoaded &&
+                (plugin.InternalName.StartsWith("ExtraChat", StringComparison.OrdinalIgnoreCase) ||
+                 plugin.Name.StartsWith("ExtraChat", StringComparison.OrdinalIgnoreCase)));
+        } catch (Exception ex) {
+            Services.Log.Warning(ex, "Couldn't list the loaded plugins");
+            return false;
+        }
+    }
 
     private void OnUpdate(IFramework framework) {
         try {
