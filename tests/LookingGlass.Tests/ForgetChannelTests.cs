@@ -80,11 +80,12 @@ public sealed class ForgetChannelTests : IAsyncLifetime {
         // The others chat, and rekey (sealing to every member in the log, the old key included), as before.
         await bob.Session.SendTextAsync(channelId, "still here", Ct);
         await WaitFor(() => carol.Messages.FirstOrDefault(m => m.Text == "still here"));
-        var epoch = bob.Session.Snapshot.FindChannel(channelId)!.Epoch;
-        await bob.Session.RekeyAsync(channelId, Ct, force: true);
-        await WaitFor(() => carol.Session.Snapshot.FindChannel(channelId) is { HasKey: true } c && c.Epoch == epoch + 1 ? c : null);
-        await carol.Session.SendTextAsync(channelId, "new key works", Ct);
-        await WaitFor(() => bob.Messages.FirstOrDefault(m => m.Text == "new key works"));
+        var epoch = carol.Session.Snapshot.FindChannel(channelId)!.Epoch;
+        // By carol: bob rekeys four times in this test already, and rekeys are rate-limited per member.
+        await carol.Session.RekeyAsync(channelId, Ct, force: true);
+        await WaitFor(() => bob.Session.Snapshot.FindChannel(channelId) is { HasKey: true } c && c.Epoch == epoch + 1 ? c : null);
+        await bob.Session.SendTextAsync(channelId, "new key works", Ct);
+        await WaitFor(() => carol.Messages.FirstOrDefault(m => m.Text == "new key works"));
         // Nothing of the channel reaches the account that removed it.
         Assert.DoesNotContain(again.Messages, m => m.ChannelId == channelId);
 
@@ -153,21 +154,21 @@ public sealed class ForgetChannelTests : IAsyncLifetime {
         var otherId = await bob.Session.CreateChannelAsync("Bob's Own", Ct);
 
         // Under the current key: leave it instead. Nothing changes.
-        var current = await alice.Session.SendRawAsync(Forget(channelId), Ct);
-        Assert.Equal(ErrorCode.Forbidden, current.Error?.Code);
-        Assert.Contains("leave", current.Error!.Message);
+        var current = await Assert.ThrowsAsync<ServerErrorException>(() => alice.Session.SendRawAsync(Forget(channelId), Ct));
+        Assert.Equal(ErrorCode.Forbidden, current.Code);
+        Assert.Contains("leave it", current.ServerMessage);
         Assert.Single(this._server.Database.GetChannelsForUser(alice.UserId));
         // The client refuses it too, before asking.
         await Assert.ThrowsAsync<InvalidOperationException>(() => alice.Session.ForgetChannelAsync(channelId, Ct));
 
         // Not in it at all, or no such channel.
-        Assert.Equal(ErrorCode.NotFound, (await alice.Session.SendRawAsync(Forget(otherId), Ct)).Error?.Code);
-        Assert.Equal(ErrorCode.NotFound, (await alice.Session.SendRawAsync(Forget(Guid.NewGuid().ToString("N")), Ct)).Error?.Code);
-        Assert.Equal(ErrorCode.InvalidRequest, (await alice.Session.SendRawAsync(Forget("not a channel"), Ct)).Error?.Code);
+        Assert.Equal(ErrorCode.NotFound, await ErrorOf(alice, Forget(otherId)));
+        Assert.Equal(ErrorCode.NotFound, await ErrorOf(alice, Forget(Guid.NewGuid().ToString("N"))));
+        Assert.Equal(ErrorCode.InvalidRequest, await ErrorOf(alice, Forget("not a channel")));
 
         // An invite under the current key: decline it instead.
         await bob.Session.InviteAsync(otherId, alice.Name, ProtocolInfo.DebugWorldName, Ct);
-        Assert.Equal(ErrorCode.Forbidden, (await alice.Session.SendRawAsync(Forget(otherId), Ct)).Error?.Code);
+        Assert.Equal(ErrorCode.Forbidden, await ErrorOf(alice, Forget(otherId)));
         Assert.Single(this._server.Database.GetInvitesForUser(alice.UserId));
 
         // Not before logging in.
@@ -198,12 +199,20 @@ public sealed class ForgetChannelTests : IAsyncLifetime {
                      new ClientFrame { SendMessage = new SendMessage { ChannelId = channelId, MessageId = ByteString.CopyFrom(new byte[16]) } },
                      Forget(channelId),
                  }) {
-            var response = await again.Session.SendRawAsync(request, Ct);
-            Assert.Equal(ErrorCode.NotFound, response.Error?.Code);
+            Assert.Equal(ErrorCode.NotFound, await ErrorOf(again, request));
         }
 
         Assert.NotNull(this._server.Database.GetChannel(channelId));
         Assert.Equal([again.UserId], this._server.Database.GetMembers(channelId).Where(m => m.Forgotten).Select(m => m.User.UserId));
+    }
+
+    private static async Task<ErrorCode?> ErrorOf(TestClient client, ClientFrame request) {
+        try {
+            await client.Session.SendRawAsync(request, Ct);
+            return null;
+        } catch (ServerErrorException ex) {
+            return ex.Code;
+        }
     }
 
     private static ClientFrame Forget(string channelId) => new() { ForgetChannel = new ForgetChannel { ChannelId = channelId } };

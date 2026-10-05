@@ -35,7 +35,9 @@ public sealed record ChannelAttention(AttentionLevel Level, ImmutableArray<strin
             warnings.Add($"Registered again: {string.Join(", ", replaced)}. Remove them and invite them again to let their new key in.");
         }
 
-        string? pending = channel.RekeyPending ? "A new channel key is pending."
+        // No key is coming for a place that belongs to an old key: its warning says what to do instead.
+        string? pending = channel.OldKeyMembership ? null
+            : channel.RekeyPending ? "A new channel key is pending."
             : !channel.HasKey ? "Waiting for the channel key."
             : null;
 
