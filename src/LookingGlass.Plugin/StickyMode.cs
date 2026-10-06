@@ -88,16 +88,16 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
         var start = this._state.Enter(channelId, tag, world, this._interop.InputHooked, chatTwo, chatTwoTell);
         if (!start.Entered) {
             Log(() => StickyDiagnostics.Refused(start.Text, chatTwo, world.Channel));
-            this._chat.Notice(NoticeLevel.Warning, start.Text);
+            this._chat.Notice(NoticeTone.Info, start.Text);
             return;
         }
 
         this._loggedChatBox = world.ChatBox;
         Log(() => StickyDiagnostics.Started(tag, chatTwo, world.Channel, wasOn, world.ChatBox));
-        this._chat.ChannelNotice(start.Text, this._sessions.ColourOf(channelId));
-        if (StickyMessages.ChatTwoNoteFor(tag, chatTwo, this._config.ChatTwoStickyNoteShown) is { } note) {
-            this._chat.Notice(NoticeLevel.Info, note);
-            this._config.ChatTwoStickyNoteShown = true;
+        this._chat.ChannelNotice(start.Text, tag, this._sessions.ColourOf(channelId));
+        if (StickyMessages.ChatTwoNoteFor(tag, chatTwo, this._config.ChatTwoOwnCommandNoteShown) is { } note) {
+            this._chat.Notice(NoticeTone.Info, note, tag, this._sessions.ColourOf(channelId));
+            this._config.ChatTwoOwnCommandNoteShown = true;
             this._config.Save();
         }
 
@@ -109,7 +109,7 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
     }
 
     /// <inheritdoc/>
-    bool IChatBoxListener.KeepFromGame(byte[] message, LineSource source) {
+    bool IChatBoxListener.KeepFromGame(byte[] message, LineSource source, ChatTwoLine? chatTwoLine) {
         if (this._state.ChannelId is not { } channelId) {
             return false;
         }
@@ -117,15 +117,17 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
         var tag = this.TagOf(channelId);
         var line = new ChatBoxLine(message, SeString.Parse(message).TextValue);
         var chatTwo = this._chatTwo.Loaded;
-        var (route, reason) = StickyRoute.Decide(channelId, tag, line, ChatChannelPrefixes.SentAs(), this._switches);
+        // Short commands: the player's one-off in the game's chat box; in ChatTwo's main input, all but its own channel's.
+        var rule = ShortCommandRule.For(source, chatTwoLine);
+        var (route, reason) = StickyRoute.Decide(channelId, tag, line, rule.AsText, this._switches);
         // Before acting on it, so the log has the line even if acting fails. Never the text itself.
-        Log(() => StickyDiagnostics.Line(tag, chatTwo, line, route, reason, this._switches, source));
+        Log(() => StickyDiagnostics.Line(tag, chatTwo, line, route, reason, this._switches, source, rule.Why));
         switch (route) {
             case StickyRoute.ToChannel send:
-                this._sender.Send(send.ChannelId, send.Text, tag);
+                this.SendTyped(send, tag, message.Length);
                 break;
             case StickyRoute.Dropped { Text: { } notice }:
-                this._chat.Notice(NoticeLevel.Warning, notice);
+                this._chat.Notice(NoticeTone.Info, notice);
                 break;
             case StickyRoute.LeaveThenGame:
                 // /s on its own: stop now, saying so and taking the labels down, then let the game switch. This doesn't
@@ -136,6 +138,31 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
 
         return route.KeepsFromGame;
     }
+
+    /// <summary>
+    /// Sends what was typed to the channel, links (the chat box's &lt;item&gt; and the like) as their names. A link whose
+    /// name can't be found is left out, and once the rest has been sent, one line says so: a message is either sent or
+    /// not, never both "sent" and an error.
+    /// </summary>
+    private void SendTyped(StickyRoute.ToChannel send, string tag, int bytes) {
+        var (text, leftOut) = LinkText.Resolve(send.Text, ChatInterop.LinkName);
+        if (string.IsNullOrWhiteSpace(text)) {
+            this._chat.Notice(NoticeTone.Info, StickyMessages.NotSent(tag, StickyMessages.NoTextReason));
+            return;
+        }
+
+        if (leftOut) {
+            Log(() => StickyDiagnostics.LinkLeftOut(tag, bytes));
+        }
+
+        this._sender.Send(send.ChannelId, text, tag, leftOut ? () => this._chat.Notice(NoticeTone.Info, StickyMessages.LinkNotSent) : null);
+    }
+
+    /// <inheritdoc/>
+    ChatTwoLine? IChatBoxListener.PluginLine(byte[] message) =>
+        this._chatTwo.InputState() is { } state
+            ? ChatTwoLine.Of(state.ChatType, state.HasText, state.TextLength, SeString.Parse(message).TextValue)
+            : null;
 
     /// <inheritdoc/>
     void IChatBoxListener.LinePassed() {
@@ -179,7 +206,8 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
     void IChatBoxListener.Failed(Exception ex) {
         Services.Log.Error(ex, "Error deciding where a chat line goes; it was kept from game chat");
         var tag = this._shown?.Tag ?? ChannelTag.Fallback;
-        this._chat.Notice(NoticeLevel.Error, StickyMessages.NotSent(tag, StickyMessages.SomethingWentWrongReason));
+        // Kept from the game, but something broke: a warning.
+        this._chat.Notice(NoticeTone.Warning, StickyMessages.NotSent(tag, StickyMessages.SomethingWentWrongReason));
     }
 
     /// <inheritdoc/>
@@ -323,7 +351,7 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
                     lineInFlight ? $"{where}, while a line runs" : where, before, world.ChatBox));
             }
 
-            // A line let through to the game (a command, a one-off "/party hi") may set the saved channel
+            // A line let through to the game (a command, a one-off "/p hi") may set the saved channel
             // while it runs: measured again once it is done (LinePassed), not counted as the player switching.
             if (this._state.Check(lineInFlight ? world with { ChatBox = null } : world) is { } end) {
                 this.Ended(channelId, end);
@@ -354,7 +382,7 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
             this.SyncIndicators();
         } finally {
             try {
-                this._chat.ChannelNotice(StickyMessages.Ended(tag, why), colour);
+                this._chat.ChannelNotice(StickyMessages.Ended(tag, why), tag, colour);
             } catch (Exception ex) {
                 Services.Log.Error(ex, $"Couldn't say that talking in a channel stopped ({why})");
             }

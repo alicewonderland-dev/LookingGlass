@@ -26,10 +26,10 @@ public readonly record struct GameChannel(int ChatType) {
 /// <item>"/ecl1" to "/ecl8", ExtraChat's commands: only offered while ExtraChat is loaded, and never game chat. Left to
 /// ExtraChat.</item>
 /// </list>
-/// Every input ChatTwo has (its main window, each tab, each pop-out with input) can be on any channel without the game
-/// knowing, so while talking in a channel with ChatTwo loaded, every one of these followed by anything at all (text, a
-/// link, an auto-translate phrase) goes to the channel. The long forms (/say, /party, /shout, /linkshell1,
-/// /cwlinkshell1) are only ever typed, and go to the game.
+/// Which of these, followed by text, stand for plain text while talking in a channel depends on where the line came from
+/// (see <see cref="ShortCommandRule"/>): none, typed in the game; only ChatTwo's current channel's, typed in ChatTwo's main
+/// input; all of them (fail safe), from anywhere else a plugin sends from, such as a ChatTwo pop-out with its own input.
+/// The long forms (/say, /party, /shout, /linkshell1, /cwlinkshell1) are only ever typed, and go to the game.
 /// <para>
 /// <see cref="Switches"/>: the commands that switch the game's chat channel when typed on their own (/s, /party, /l1),
 /// short and long, in English. The plugin adds the game's own names for them in the client's language.
@@ -57,12 +57,36 @@ public static class ChatChannelPrefixes {
     public const int ChatTwoTell = 12;
 
     /// <summary>
-    /// The commands that, followed by anything, stand for plain text while talking in a channel (see
-    /// <see cref="StickyRoute.For"/>): <see cref="ChatTwo"/>, whichever chat box is in use. ChatTwo sends plain text that
-    /// way, and a typed "/p hi" can't be told apart from it, so one rule holds for every line: "/p hi" goes to the
-    /// LookingGlass channel, and the long form ("/party hi") is the way to talk in a game channel once.
+    /// The strict rule: every short command ChatTwo can send plain text with stands for plain text (see
+    /// <see cref="StickyRoute.For"/>), for a line that may be ChatTwo's typing from an input whose channel isn't known.
+    /// <see cref="ShortCommandRule"/> chooses it, or a narrower one, for each line.
     /// </summary>
     public static IReadOnlyCollection<string> SentAs() => ChatTwo;
+
+    /// <summary>
+    /// The short command ChatTwo sends plain text with for one of its chat types (its own numbering, as
+    /// <c>ChatTwo.GetChatInputState</c> reports it: <c>ChatTwo.Code.ChatType</c>, mapped from its input channel by
+    /// <c>InputChannelExt.ToChatType</c>, and <c>InputChannelExt.Prefix</c> for the command, in 1.40.9), or null for one
+    /// LookingGlass doesn't know.
+    /// </summary>
+    public static string? OfChatTwoType(int chatType) => chatType switch {
+        10 => "/s",
+        11 => "/sh",
+        ChatTwoTell => "/t",
+        14 => "/p",
+        15 => "/a",
+        >= 16 and <= 23 => $"/l{chatType - 15}",
+        24 => "/fc",
+        27 => "/b",
+        30 => "/y",
+        36 => "/pt",
+        37 => "/cwl1",
+        >= 101 and <= 107 => $"/cwl{chatType - 99}",
+        // Echo: an input with no channel.
+        56 => "/e",
+        >= 1001 and <= 1008 => $"/ecl{chatType - 1000}",
+        _ => null,
+    };
 
     /// <summary><see cref="Switches"/> and <paramref name="more"/> (the game's own names for them), ignoring case.</summary>
     public static IReadOnlyCollection<string> SwitchesWith(IEnumerable<string> more) =>
@@ -160,7 +184,8 @@ public abstract record StickyRoute {
     /// (only a link) is kept from the game, saying so; a blank one quietly.</item>
     /// <item>A command in <paramref name="sentAs"/> followed by anything at all (text, a link, an auto-translate phrase):
     /// how ChatTwo sends what was typed in it (see <see cref="ChatChannelPrefixes"/>). The same: to the channel, or kept
-    /// from the game if it has no text.</item>
+    /// from the game if it has no text. Any other short channel command followed by something is the player's one-off
+    /// (/p brb talks in Party once), and goes to the game.</item>
     /// <item>A channel switch (<paramref name="switches"/>) on its own: <see cref="Leave"/>.</item>
     /// <item>Any other command goes to the game, /lgc included.</item>
     /// </list>
@@ -168,7 +193,7 @@ public abstract record StickyRoute {
     /// <param name="channelId">The channel being talked in, or null.</param>
     /// <param name="tag">The channel's tag, for what is said when nothing is sent.</param>
     /// <param name="line">What was submitted. Not trimmed first: only a "/" at the very start is a command.</param>
-    /// <param name="sentAs">Commands that stand for plain text (see <see cref="ChatChannelPrefixes.SentAs"/>).</param>
+    /// <param name="sentAs">Commands that stand for plain text for this line (see <see cref="ShortCommandRule"/>).</param>
     /// <param name="switches">Channel switches (<see cref="ChatChannelPrefixes.Switches"/> if null).</param>
     public static StickyRoute For(string? channelId, string tag, ChatBoxLine line, IReadOnlyCollection<string> sentAs,
         IReadOnlyCollection<string>? switches = null) =>
@@ -193,7 +218,7 @@ public abstract record StickyRoute {
             }
 
             if (!sentAs.Contains(command, StringComparer.OrdinalIgnoreCase)) {
-                return (Game, sentAs.Count == 0 ? "command (short-command rule off)" : "command");
+                return (Game, ChatChannelPrefixes.ChatTwo.Contains(command) ? "short command, to the game once" : "command");
             }
 
             var after = TextAfter(line.Text, command);
@@ -482,10 +507,13 @@ public static class StickyMessages {
 
     /// <summary>
     /// Said once ever, the first time talking in a channel starts with ChatTwo loaded: what ChatTwo's label means, and
-    /// how to talk in a game channel once.
+    /// the one short command that doesn't talk in a game channel once there (see <see cref="ShortCommandRule"/>).
     /// </summary>
     public static string ChatTwoNote(string tag) =>
-        $"ChatTwo's \"(Warning: …)\" only names the game channel underneath: messages still go only to {tag}, and the long form (/party hi) talks in a game channel once.";
+        $"ChatTwo's \"(Warning: …)\" names its own channel: typing still goes to {tag}, and so does that channel's short command (/p hi on Party), so use /party hi.";
+
+    /// <summary>Said after a message was sent with a link that couldn't be put in as its name, and was left out.</summary>
+    public const string LinkNotSent = "The link wasn't sent (links can't be sent yet).";
 
     /// <summary>The ChatTwo note to add after "Now talking in", or null: only with ChatTwo loaded, and only if never shown before.</summary>
     public static string? ChatTwoNoteFor(string tag, bool chatTwo, bool shownBefore) => chatTwo && !shownBefore ? ChatTwoNote(tag) : null;

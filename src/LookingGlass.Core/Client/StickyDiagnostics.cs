@@ -54,10 +54,15 @@ public static partial class StickyDiagnostics {
 
     /// <summary>One line seen by the gate while talking in a channel, and what was decided.</summary>
     /// <param name="source">Which way it came, if known.</param>
+    /// <param name="rule">The short-command rule used for it (<see cref="ShortCommands.Why"/>), if one was.</param>
     public static string Line(string tag, bool chatTwo, ChatBoxLine line, StickyRoute route, string reason, IReadOnlyCollection<string>? switches = null,
-        LineSource? source = null) =>
+        LineSource? source = null, string? rule = null) =>
         $"{Prefix} line{SourceOf(source)}: talking in {tag}, ChatTwo {YesNo(chatTwo)}, {Token(line, switches)}, {line.Raw.Length} bytes, " +
-        $"payload {YesNo(HasPayload(line))} -> {Decision(route)} ({reason})";
+        $"payload {YesNo(HasPayload(line))} -> {Decision(route)} ({reason}){(rule == null ? "" : $"; rule: {rule}")}";
+
+    /// <summary>A message sent with a link that couldn't be put in as its name, so it was left out (sizes only).</summary>
+    public static string LinkLeftOut(string tag, int bytes) =>
+        $"{Prefix} link left out: talking in {tag}, a link's name couldn't be found, sent the rest ({bytes} bytes before)";
 
     /// <summary>A line run inside a reply, passed to the game unjudged (see <see cref="NestedLines"/>).</summary>
     public static string NestedPassed(string tag, int bytes) =>
@@ -103,6 +108,7 @@ public static partial class StickyDiagnostics {
     private static string SourceOf(LineSource? source) => source switch {
         LineSource.Game => " from the game",
         LineSource.Plugin => " from a plugin (ProcessChatBoxEntry)",
+        LineSource.Unknown => " from an unknown way in (no ProcessChatBoxEntry hook)",
         _ => "",
     };
 
@@ -121,4 +127,10 @@ public enum LineSource {
 
     /// <summary>Through <c>UIModule.ProcessChatBoxEntry</c>: a plugin's chat box, such as ChatTwo.</summary>
     Plugin,
+
+    /// <summary>
+    /// Not known: the optional hook on <c>UIModule.ProcessChatBoxEntry</c> isn't in place, so a plugin's line can't be
+    /// told from the game's. Treated as possibly ChatTwo's typing (see <see cref="ShortCommandRule"/>).
+    /// </summary>
+    Unknown,
 }
