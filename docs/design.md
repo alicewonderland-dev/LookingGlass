@@ -2343,6 +2343,35 @@ or GagSpeak is gone, the message is sent as typed (it is cosmetic), with a
 warning in the log that never holds the text. The same words in simple and
 advanced mode.
 
+### Chat history
+
+Status: planned, details to be decided. Added by the owner (2026-10-06) after
+testers asked for it: with ExtraChat, losing messages to an untimely
+disconnect was a common problem. ChatTwo keeps its own log, but many players
+use the game's own chat, which keeps nothing, so LookingGlass should offer it
+itself. This replaces "stored history isn't planned" in Channel windows: it is
+planned now.
+
+Two different losses, which may need different answers:
+
+- **Messages sent while you were disconnected** never reach you today: the
+  server only relays to whoever is connected. Keeping recent messages on the
+  server (as the ciphertext it already relays, which it can't read) and
+  sending a returning member what they missed would fix this. The server
+  already keeps sealed epoch keys for catching up, so a member who reconnects
+  could read them. To decide: how long and how many messages to keep, per
+  channel limits, and whether a member removed in the meantime may still fetch
+  messages from before the removal (they could read them then).
+- **Messages you saw, but want to read again later** (after a crash, a
+  relog, or the next day): a log on the player's own computer. To decide:
+  opt-in or on by default, per channel or for all, how long it is kept and how
+  big it may grow, encrypted like the secrets file, shown in channel windows
+  (they show only messages since login today) and/or exported, and deleting it
+  (per channel, and when leaving a channel or resetting the identity).
+
+Either way the same privacy rules hold: nothing readable leaves the player's
+computer, and a log is never shared or uploaded.
+
 ### MLS
 
 MLS (RFC 9420) solves the same problems as the membership log and epoch keys,
@@ -2457,7 +2486,8 @@ The owner's decisions, and why.
   input's label; asking ChatTwo for a neutral override (one that names the
   command to send plain text with, and adds no "(Warning: ...)") would make
   the label exact.
-- **Message history:** in 1.0, or later?
+- **Message history:** planned (see Planned features, "Chat history"); how
+  it works is still to be decided.
 - **Limits:** confirm after beta load testing.
 - **Public hosting:** who runs it, the cost, a privacy note, and an acceptable
   Lodestone volume.
