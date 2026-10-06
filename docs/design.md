@@ -1723,8 +1723,9 @@ about it:
   its line (the owner's second retest: Say to Party, ended), and switching
   back doesn't start it again: type `/lgc1` again. Switching to a tab with no
   channel of its own, or one whose channel is the game's already, calls the
-  switch with the channel already on, which doesn't end it. Whether sticky
-  mode should be remembered for each tab is a question for the owner.
+  switch with the channel already on, which doesn't end it. Tabs don't
+  remember sticky mode: the owner decided (2026-10-06) that ending it on a
+  tab switch that changes the channel is fine.
 
 **Limits.** Only lines the game runs through the gate are caught: ChatTwo's
 tells to a known player (above), which it sends to the server itself, go as
@@ -1812,8 +1813,8 @@ off) and in ChatTwo. Four changes came from it:
   saying so, never both sent and an error.
 - *ChatTwo tabs* (step 36): the owner's tabs have channels of their own, so
   switching tabs moved the game from Say to Party and ended sticky mode, as
-  designed, and switching back didn't start it again. Unchanged for now (see
-  ChatTwo, *Tabs*).
+  designed, and switching back didn't start it again. The owner decided that
+  is fine (see ChatTwo, *Tabs*).
 
 ### Simple and advanced mode
 

@@ -193,9 +193,17 @@ second character, checks every step: the label alone proves nothing.
     still goes to [sky], and so does that channel's short command (`/p hi` on
     Party), so use `/party hi`. `/lgc1` again: only "Now talking in [sky]."
     this time.
-  - ChatTwo's channel name reads "LookingGlass [sky] (Warning: Party)".
+  - ChatTwo's channel name reads "LookingGlass [sky] (Warning: Party)". On a
+    tab with a channel of its own, ChatTwo shows that tab's channel ("Party")
+    instead; that's ChatTwo's choice, and the safe way round. Then the info
+    bar is the sign that you're talking in [sky].
   - The server info bar shows "LG [sky]".
 - [ ] 29. Type `hello`. It shows only in LookingGlass. B sees nothing in Party.
+- [ ] 29b. **(new)** Repeat 28–29 with ChatTwo on each other channel you have:
+      Say, FC, a linkshell (`/l1`), and cross-world linkshells 1 and 2 if you
+      have them. Each time `hello` reaches only LookingGlass, never that
+      channel. (This checks that LookingGlass knows the command ChatTwo puts
+      in front of your text for every channel.)
 
 ### Short and long commands (ChatTwo still on Party)
 
@@ -236,8 +244,8 @@ channel, so switching tabs was step 38, not 36.
       game's (for example a tab on FC while the game is on Party). A "Stopped
       talking in [sky]" line appears, and the info bar entry goes away. Type
       `test`: it goes to FC. Switching back to the first tab does not start
-      [sky] again: type `/lgc1`. (That is how it is meant to work for now; we
-      may ask whether you'd like each tab to remember it.)
+      [sky] again: type `/lgc1`. (That is how it is meant to work: you decided
+      tabs don't remember it.)
 - [ ] 39. Go back to the first tab, `/lgc1`. Pick another channel in ChatTwo's
       channel picker (the speech bubble). It stops, with a line.
 

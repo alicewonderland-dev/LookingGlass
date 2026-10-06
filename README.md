@@ -50,7 +50,9 @@ name, like `[Potion]`.
 back, type `/s` (or any channel) on its own. With ChatTwo, every ChatTwo chat
 box not set to a tell sends to the channel too, and so does the short command
 of ChatTwo's own channel (`/p hi` while ChatTwo is on Party): use `/party hi`
-for that one. Its "(Warning: ...)" only names ChatTwo's channel underneath.
+for that one (in a ChatTwo pop-out with its own input box, use the long form
+for every channel). Its "(Warning: ...)" only names ChatTwo's channel
+underneath.
 Turn ExtraChat off while you do this.
 
 ## Installing
