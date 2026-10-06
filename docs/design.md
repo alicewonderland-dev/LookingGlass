@@ -1280,6 +1280,19 @@ These are plugin settings, kept per character, and never sent to the server.
   **Default** colours only the tag.
 - **Chat channel.** Messages appear in one of the game's chat channels, chosen
   in Settings, so chat tabs can show or hide them.
+- **LookingGlass's own lines.** Everything LookingGlass itself says in the
+  chat log starts with "[LookingGlass]" in LookingGlass blue, and is in one of
+  three colours (rows of the game's UIColor sheet, chosen in one place,
+  `NoticeColours`, and tested):
+
+  | Tone | Colour | What |
+  |------|--------|------|
+  | Information | LookingGlass blue (UIColor 37, 0x0099FF, the default `[LGC]` tag's) | Status and replies: "Now talking in", "Stopped talking in", every "Not sent", "The link wasn't sent", "Not connected", refusals to start, `/lgc` usage, "No channel has the nickname", the ChatTwo note, server announcements, "Joined", other notices at Info level |
+  | Warning | light red (UIColor 508, 0xFF8080) | Every notice at Warning or Error level that isn't critical: a key changed, a name now another account, ExtraChat is on, the server not showing a membership (`MembershipHidden`), a stale key offered, a bad channel key, dropped messages, couldn't load keys, "something went wrong" (a line kept) |
+  | Critical | dark red (UIColor 534, 0xAE0000) | By kind, whatever the level: a forked membership (`MembershipForked`), members shown different memberships (`MembersShownDifferently`), a removal not in effect, so a removed member may still read (`RemovalNotInEffect`), the server refusing a key and hiding a change (`ServerRefusesKey`), a relayed registration code (`RelayedRegistrationCode`) |
+
+  A line about a channel ("Now talking in [sky].") shows the tag in the
+  channel's own colour within the blue.
 - **Unread counts.** The channel list counts messages from others since the
   user last looked at a channel in the main window or talked in it. The
   window's title shows the total. The counts start from zero at each login.
@@ -1295,11 +1308,14 @@ These are plugin settings, kept per character, and never sent to the server.
 `/lgc3` or `/lgc sky` with no message makes the chat box talk in that channel
 (a "sticky" channel): from then on, plain text typed in the chat box goes to
 the channel, as `/lgc3 <message>` would send it, and never to game chat.
-Commands still work. `/lgc` alone still explains itself, and `/lgc 3` is a
-nickname, never channel number 3. The rules live in the core library
-(`StickyChannel`, `StickyRoute`, `ChatChannelPrefixes`, `ChatBoxGate`), with
-no game types, and are unit tested; the plugin's `StickyMode` feeds them and
-acts on them, on the game thread only. The checks to make in game are in
+Commands still work, and so do the game's short channel commands as one-off
+modifiers, as in FFXIV: `/p brb` talks in Party once, and talking in the
+channel goes on (with one ChatTwo exception, below). `/lgc` alone still
+explains itself, and `/lgc 3` is a nickname, never channel number 3. The rules
+live in the core library (`StickyChannel`, `StickyRoute`, `ShortCommandRule`,
+`ChatTwoLine`, `ChatChannelPrefixes`, `LinkText`, `ChatBoxGate`), with no game
+types, and are unit tested; the plugin's `StickyMode` feeds them and acts on
+them, on the game thread only. The checks to make in game are in
 [docs/testing/sticky-channel-checklist.md](testing/sticky-channel-checklist.md).
 
 **Starting.** Only in a channel the player is a member of (any rank, under
@@ -1312,17 +1328,21 @@ another channel moves to that one. If ExtraChat (or a fork of it) is loaded
 too, one more line warns that it watches the same chat box and ChatTwo label,
 and to turn it off while doing this.
 
-**What it says.** Short lines, in the channel's colour, in the chat channel
+**What it says.** Short lines, in LookingGlass blue with the tag in the
+channel's colour (see LookingGlass's own lines, above), in the chat channel
 chosen in Settings (the same one for every line, so a ChatTwo tab that shows
 "Now talking in" shows "Stopped" too): "Now talking in [sky]." and "Stopped
 talking in [sky]." with a few words of reason where they help (": you logged
 out.", ": disconnected.", ": you're no longer in it.", ": LookingGlass was
 turned off.", ": the connection started over."). The first time ever that it
 starts with ChatTwo loaded, one more sentence follows (a saved setting,
-`ChatTwoStickyNoteShown`): ChatTwo's "(Warning: …)" only names the game
-channel underneath, messages still go only to the channel, and the long form
-(`/party hi`) talks in a game channel once. A message kept from the game says
-"Not sent to [sky] or game chat: *reason*".
+`ChatTwoOwnCommandNoteShown`; a new name, so players who saw the last round's
+note see the new one once): ChatTwo's "(Warning: …)" names its own channel,
+typing still goes to the channel, and so does that channel's short command
+(`/p hi` on Party), so use the long form (`/party hi`) for it. A message kept
+from the game says "Not sent to [sky] or game chat: *reason*", in blue: it is
+information, nothing went where it shouldn't. Only "Not sent … something went
+wrong" (deciding threw) is a warning.
 
 **The hooks.** Two required game functions, by the addresses
 FFXIVClientStructs gives (Dalamud resolves them at startup), hooked with
@@ -1343,10 +1363,10 @@ FFXIVClientStructs gives (Dalamud resolves them at startup), hooked with
     which ends here too;
   - about twenty other callers in the game: macro lines, gear sets, battle
     mode, general actions, joining the novice network. Their commands pass
-    through unchanged. A macro's plain text (or `/p text`) while sticky goes to
-    the LookingGlass channel instead of game chat: private, so it fails safe. A
-    raid macro's `/p Pull in 5` therefore goes to the channel while sticky; macros
-    meant for Party should use the long form, `/party`.
+    through unchanged, short channel commands with text included: a raid
+    macro's `/p Pull in 5` goes to Party while sticky (the owner saw this in the
+    second retest and wants it). A macro's plain text while sticky goes to the
+    LookingGlass channel instead of game chat: private, so it fails safe.
 
 *Lines run inside a line (a reviewer's reading of the game's code).* Two of
 the game's command handlers run the gate's function again while their own
@@ -1375,10 +1395,13 @@ Both or neither: if either address is missing, neither is hooked and sticky
 mode refuses to start, rather than catch lines without seeing switches. Both
 stay enabled while the plugin is loaded; when no channel is sticky, the
 detours only call the game (and count a running line, below). Three more are
-optional, for the diagnostic log and to see a switch sooner:
-`UIModule.ProcessChatBoxEntry` (a pass-through that only notes a line came from
-a plugin), `AgentChatLog.ChangeChannelName` and
-`AgentChatLog.InsertTextCommandParam`.
+optional: `UIModule.ProcessChatBoxEntry` (a pass-through that notes a line came
+from a plugin and, while sticky, asks ChatTwo what its main input holds as the
+line arrives; see Where a line goes), `AgentChatLog.ChangeChannelName` (to see
+a switch sooner) and `AgentChatLog.InsertTextCommandParam` (the diagnostic log
+only). Without the `ProcessChatBoxEntry` hook no line can be told to be the
+game's own, so every line is held to the strict short-command rule (the way
+in "unknown"): sticky mode stays safe, and `/p brb` goes to the channel.
 
 *Plugin commands (checked in Dalamud's source).* Dalamud dispatches plugin
 commands, `/lgc` included, from its own hook on
@@ -1412,13 +1435,33 @@ Sticky:
   shows the game's channel, which is where typing goes.
 - A short channel command (`/s`, `/p`, `/a`, `/y`, `/sh`, `/fc`, `/pt`, `/b`,
   `/l1` to `/l8`, `/cwl1` to `/cwl8`) followed by *anything* (text, a link's
-  payload bytes, a link placeholder, an auto-translate phrase) is the
-  channel's, like plain text, in both chat boxes. ChatTwo sends what was typed
-  in it that way (below), and a typed `/p hi` can't be told apart from that, so
-  one rule holds for every line. Only the bare
-  command is a switch (above). The command ends at the first space or control
-  byte, so a payload straight after it still counts. The long forms (`/party
-  hi`) are the way to talk in a game channel once.
+  payload bytes, a link placeholder, an auto-translate phrase) is the player's
+  one-off and goes to the game, which talks in that channel once; sticky mode
+  goes on. That is FFXIV's own rule, and what players type (almost nobody
+  types `/party`); the owner chose it after the second retest, because
+  sending `/p brb` to the LookingGlass channel could also put something meant
+  for Party where they didn't expect it. The exception is ChatTwo's typing:
+  ChatTwo sends plain text typed in it as "*its channel's short command*
+  *text*" ("hi" in an input on Party is sent as "/p hi"; below). Which short
+  commands stand for plain text is decided for each line by the way it came
+  in (`ShortCommandRule`):
+
+  | The line came from | Short command with text | Plain text |
+  |--------------------|-------------------------|------------|
+  | the game itself (its own chat box, a macro line, a gear set) | the game, once | LookingGlass |
+  | ChatTwo's main input, on Party (its current tab's channel, or its one-off channel) | `/p hi`: LookingGlass (that is how ChatTwo sends "hi"); any other (`/s hi`, `/fc hi`): the game, once | LookingGlass |
+  | ChatTwo's main input on echo (no channel), a tell or an ExtraChat channel | the game, once | (ChatTwo sends it as `/e …`, a tell or `/ecl…`: not game chat) |
+  | a plugin, but not ChatTwo's main input (a ChatTwo pop-out with its own input, ChatTwo's web interface, another plugin), or ChatTwo didn't answer, or named a channel LookingGlass doesn't know | LookingGlass (the strict rule: it may be ChatTwo's typing in an input whose channel isn't known) | LookingGlass |
+  | unknown (the `ProcessChatBoxEntry` hook is missing) | LookingGlass (strict) | LookingGlass |
+
+  The accepted edge: with ChatTwo on Party, typing `/p hi` explicitly goes to
+  the LookingGlass channel, because it is exactly what ChatTwo sends for "hi";
+  `/party hi`, or another channel's command, talks in a game channel once.
+  How ChatTwo's main input is recognised is under ChatTwo (*Sending*), below.
+  A short command whose line goes to LookingGlass is sent without it, like
+  plain text. Only the bare command is a switch (above). The command ends at
+  the first space or control byte, so a payload straight after it still
+  counts. The long forms (`/party hi`) always go to the game.
 - Any other line starting with `/` is a command and goes to the game
   untouched, `/lgc` commands included. Only a `/` at the very start counts: a
   line with a space before it goes to the channel, never the game.
@@ -1429,8 +1472,25 @@ Sticky:
   what the chat input holds for a link until the line is sent, put there by
   `AgentChatLog.InsertTextCommandParam`; the game makes them links only while
   running the line, after the gate, and ChatTwo's input holds them the same
-  way). In a line with text, a placeholder is sent as typed. A blank
-  line goes nowhere, quietly.
+  way; the owner's log shows the placeholder in both chat boxes). A blank line
+  goes nowhere, quietly.
+- *Links in a line with text* (`LinkText`). Channels carry text only, so a
+  link goes as its name in square brackets: "look `<item>`" is sent as "look
+  [Potion]". The plugin reads the name where the game keeps what the
+  placeholder stands for, as ChatTwo's input preview does (`Message.cs`,
+  `DecodeTextParam`, 1.40.9): `<item>` the item the chat log agent holds as
+  linked (`AgentChatLog.LinkedItem`, its base item id, named from the `Item`
+  sheet, `EventItem` for ids from 2,000,000; `LinkedItemName` if that fails),
+  `<status>` its `ContextStatusId` (the `Status` sheet; `ContextStatusName`),
+  `<flag>` the map flag (`AgentMap`, the first flag marker: the place name and
+  coordinates, as a map link shows them). A name is plain text (no game
+  formatting; `<`, `>`, `[` and `]` become brackets). A placeholder whose name
+  can't be found is taken out, with the spaces around it, the rest is sent,
+  and once it has been sent one blue line says "The link wasn't sent (links
+  can't be sent yet)." A link already in the line as payload bytes goes as its
+  text (its name) without help. A message is never both sent and an error:
+  the last round sent "look `<item>`" as typed. In a short command line going
+  to the game, links are left to the game.
 
 **Fail closed.** While sticky, a line never reaches game chat unless it is a
 command:
@@ -1549,24 +1609,48 @@ about it:
   `UIModule.ProcessChatBoxEntry`, which ends in the gate, but puts its input's
   channel command in front of plain text first: "hello" typed in an input on
   Party is sent as "/p hello" (`SendHandler.SendChatBox`,
-  `InputChannelExt.Prefix`). Every input has its own channel: the main window,
-  each tab (a tab can have a fixed channel), and each pop-out with input,
-  whose picker changes only that pop-out (`Popout.cs`), without the game
-  knowing. `ChatTwo.GetChatInputState` reports the main window's only. So,
-  while sticky with ChatTwo loaded, every short channel command ChatTwo can
-  send plain text with, followed by text, goes to the LookingGlass channel,
-  whatever channel the game or any input is on (`ChatChannelPrefixes.ChatTwo`):
-  `/s`, `/p`, `/a`, `/y`, `/sh`, `/fc`, `/pt`, `/b`, `/l1` to `/l8` and
-  `/cwl1` to `/cwl8`. Three of ChatTwo's are left to the game: `/t` (it sends
-  tells to a known player itself, below, and a `/t` line names the player
-  first), `/e` (echo, for an input with no channel, seen only by the player)
-  and `/ecl1` to `/ecl8` (ExtraChat's, not game chat). The cost, fail safe: a
-  one-off `/p hi` typed in ChatTwo while sticky goes to the LookingGlass
-  channel too. The long commands (`/party hi`, `/say`, `/shout`,
-  `/linkshell1`, `/cwlinkshell1` and so on) are never sent by ChatTwo, so they
-  still reach the game; the ChatTwo sentence after "Now talking in" says to
-  use them. The rule doesn't depend on ChatTwo being detected: it holds in
-  the game's own chat box too (Where a line goes).
+  `InputChannelExt.Prefix`); a line starting with `/` is sent as typed,
+  trimmed. Every input has its own channel: the main window's (its current
+  tab's, `Plugin.CurrentTab.CurrentChannel`, or the one-off channel a keybind
+  set there), and each pop-out with its own input (a tab with **Pop out** and
+  **Supports input** on, and **No input** off; `Popout.cs`), whose picker or
+  fixed channel changes only that pop-out, without the game knowing.
+- *Which input sent a line (verified in ChatTwo's source; the timing is
+  inferred).* `ChatTwo.GetChatInputState` returns `(InputVisible,
+  InputFocused, HasText, IsTyping, TextLength, ChannelType)`
+  (`Ipc/TypingIpc.cs`): for the main window only, `ChannelType` is the channel
+  a line typed there now goes to (the current tab's `UsedChannel`, its one-off
+  channel if set: the very field `SendChatBox` reads), in ChatTwo's own
+  `ChatType` numbering (`Code/ChatType.cs`: Say 10, Shout 11, a tell 12, Party
+  14, Alliance 15, linkshells 16 to 23, FC 24, Novice Network 27, Yell 30, PvP
+  team 36, cross-world linkshell 1 37 and 2 to 8 101 to 107, echo 56,
+  ExtraChat's 1001 to 1008; a ushort enum, which Dalamud converts to the
+  ushort LookingGlass asks for), and `TextLength` the main input's length as
+  typed. There is no IPC for a pop-out's input, and ChatTwo's settings say
+  only which tabs *could* have one, so LookingGlass doesn't read them (reading
+  another plugin's config file from `pluginConfigs` would be fragile, and is
+  out of bounds). Instead it recognises the main input by what it still holds:
+  `SendChatBox` empties the input only after `ProcessChatBoxEntry` returns, so
+  while the main input's line is on its way, the input holds it as typed (a
+  command, "/s hi", the same length as the line) or without the command
+  ChatTwo put in front (plain text: "hi", sent as "/p hi", the line's length
+  less "/p "). The plugin reads the IPC in its `ProcessChatBoxEntry` hook, so
+  before any other plugin's hook on the gate (GagSpeak's, on the owner's
+  machine) can change the line, and keeps it for that line only, not for
+  lines run inside it (`ChatTwoLine`). A line from a pop-out, the web
+  interface or another plugin finds the main input empty, or holding a draft
+  of another length, and is held to the strict rule (every short command is
+  text); a draft of exactly that length is the one way to mistake it, and only
+  for a short command other than the main input's. A main-input line whose
+  length doesn't match (spaces around a command, an auto-translate phrase,
+  another plugin changing it on the way in) also gets the strict rule: it goes
+  to the channel, never to game chat. So with ChatTwo: plain text and the main
+  input's own channel's short command go to the LookingGlass channel; another
+  short command typed in the main input goes to the game once; in a pop-out,
+  every short command goes to the LookingGlass channel (use the long form
+  there). Three of ChatTwo's prefixes are never text: `/t` (it sends tells to a
+  known player itself, below), `/e` (echo, for an input with no channel, seen
+  only by the player) and `/ecl1` to `/ecl8` (ExtraChat's, not game chat).
 - *Links (verified).* ChatTwo's input is plain text: a link put in it (its own
   "Link" menu item calls `AgentChatLog.LinkItem`) arrives through the game's
   chat log refresh event as a string ChatTwo adds to its input
@@ -1578,7 +1662,10 @@ about it:
   input on a cross-world linkshell is therefore sent as "/cwl1 <item>"
   (`SendHandler.SendChatBox`). Whether the game's string is always the
   placeholder, or sometimes the link's own bytes, isn't visible from ChatTwo's
-  side, so both are handled (Where a line goes).
+  side, so both are handled (Where a line goes). The preview reads what a
+  placeholder stands for from the game (`AgentChatLog.LinkedItem.ItemId`,
+  `ContextStatusId`, `AgentMap`'s flag markers), which is where LookingGlass
+  reads a link's name too (*Links in a line with text*).
 - *A channel command on its own (verified on ChatTwo's side).* Typed in
   ChatTwo, `/s` is sent as it is through `ProcessChatBoxEntry`, like any line
   starting with `/` (`SendHandler.SendChatBox`); ChatTwo doesn't act on it
@@ -1611,10 +1698,11 @@ about it:
   `/ecl1` to `/ecl8` are registered Dalamud commands. LookingGlass doesn't
   register ExtraChat's commands, so ChatTwo shows "LookingGlass [sky] (Warning:
   Party)". The ChatTwo sentence after "Now talking in" (shown once) says what
-  it means: the game's channel underneath; what is typed still goes to the
-  LookingGlass channel (from any ChatTwo input not set to a tell). Making it go away needs a change in
-  ChatTwo, such as an override that names a command to send plain text with
-  (`/lgc3`) and no warning.
+  it means: ChatTwo's own channel underneath; what is typed still goes to the
+  LookingGlass channel (from any ChatTwo input not set to a tell), and so does
+  that channel's short command, so `/party hi` is the way to talk in Party
+  once there. Making it go away needs a change in ChatTwo, such as an override
+  that names a command to send plain text with (`/lgc3`) and no warning.
 - *Why ExtraChat's sticky channel was unreliable with ChatTwo (inferred from
   ChatTwo's side only).* Typing `/ecl1` in ChatTwo sends the command, and the
   override renames ChatTwo's label, but ChatTwo's own input channel stays
@@ -1623,17 +1711,28 @@ about it:
   or party chat depended entirely on whether the other plugin's hook claimed a
   "/p" line as its own. Picking the ExtraChat channel in ChatTwo's picker put
   ChatTwo's input on it properly, but any game channel change, and every tab
-  switch, puts ChatTwo's input back on the game's channel. LookingGlass doesn't
-  depend on ChatTwo's input channel at all: the prefix rule catches every
-  input.
+  switch, puts ChatTwo's input back on the game's channel. LookingGlass reads
+  ChatTwo's main input's channel for each line as it is sent, and holds every
+  other input to the strict rule, so no input's typing reaches game chat.
+- *Tabs (verified).* A ChatTwo tab either has a channel of its own (its
+  **Input channel** setting) or none. Switching to a tab with a channel of its
+  own puts the game on that channel (`SetChannelWithExtraChat`), so if that is
+  another channel than the one sticky mode started in, sticky mode ends, with
+  its line (the owner's second retest: Say to Party, ended), and switching
+  back doesn't start it again: type `/lgc1` again. Switching to a tab with no
+  channel of its own, or one whose channel is the game's already, calls the
+  switch with the channel already on, which doesn't end it. Whether sticky
+  mode should be remembered for each tab is a question for the owner.
 
 **Limits.** Only lines the game runs through the gate are caught: ChatTwo's
 tells to a known player (above), which it sends to the server itself, go as
 tells. Everything else that runs a chat line goes through the gate, so while a
-channel is sticky, plain text (or a short channel command with text) from a
-macro, from another plugin, or from ChatTwo's special tells in Eureka and
-Bozja (`ExecuteCommandInner` with the message alone) is sent to the channel
-instead (private, so it fails safe). A channel command on its own that isn't
+channel is sticky, plain text from a macro, from another plugin, or from
+ChatTwo's special tells in Eureka and Bozja (`ExecuteCommandInner` with the
+message alone) is sent to the channel instead (private, so it fails safe), and
+so is a short channel command with text from another plugin (the strict
+rule). A plugin that calls `ExecuteCommandInner` itself with "/p text" looks
+like the game, and goes to Party: it chose the command. A channel command on its own that isn't
 known by name (neither English nor the client's language) ends sticky mode
 only if the game calls its channel switch while the line runs, or the channel
 changes.
@@ -1642,12 +1741,19 @@ changes.
 player copying anything, sticky mode writes one Information line to Dalamud's
 log (`dalamud.log`, tagged `[LookingGlass] [sticky]`, built by
 `StickyDiagnostics`) for every line the gate sees while sticky (saying
-whether it came from the game, or from a plugin through `ProcessChatBoxEntry`), every
+whether it came from the game, from a plugin through `ProcessChatBoxEntry`, or
+an unknown way when that hook is missing), every
 start (and refusal) and every end, and every `ChangeChatChannel` call while
 sticky. A line's entry has the channel's tag, whether ChatTwo is loaded,
 the leading command if it is a known one (otherwise "(text)", "(payload)",
 "(link placeholder)", "(blank)" or "(other command)"), its size in bytes,
-whether it held payloads, and the decision with a reason in fixed words. A
+whether it held payloads, the decision with a reason in fixed words ("short
+command, to the game once", "short command with text", "plain text" …), and
+the short-command rule used ("rule: typed in the game: short commands go to
+the game once", "rule: ChatTwo's main input on /p: only /p is text, other
+short commands go to the game once", "rule: not ChatTwo's main input: short
+commands are text", and so on: a known command at most). A message sent with
+a link left out adds a "link left out" entry (sizes only). A
 switch's has the chat type before and after the call, and whether a typed line
 was in flight. Never what was typed, a link's contents, or an unknown command's
 name (it could be a message typed after a "/"); tests check this. When sticky
@@ -1683,6 +1789,29 @@ saved channel of a one-off switch is watched; and the diagnostic log says
 which way each line came. (A guess in the round before, that the game's chat
 box has a "one-line channel" typed as "/s ", was wrong: the `Temp` fields hold
 the channel to go back to, see One-off switches.)
+
+**What the owner's second retest showed, and what changed (October 2026).**
+Everything worked and nothing leaked, in the game's own chat box (ChatTwo
+off) and in ChatTwo. Four changes came from it:
+
+- *Short commands are one-offs again* (the owner's decision): `/s hi`, `/p
+  brb`, `/cwl1 hi` talk in that game channel once, as in FFXIV, and a macro's
+  `/p Pull in 5` goes to Party. The one rule for every line had sent them to
+  the LookingGlass channel, which players don't expect, and which could put
+  something meant only for Party in a channel. Only ChatTwo's own channel's
+  command stays the channel's there (Where a line goes).
+- *Colours*: "Not sent" was red like a warning; it is information, in
+  LookingGlass blue, with light red kept for warnings and dark red for
+  critical ones (LookingGlass's own lines).
+- *Text and a link* (ChatTwo step 35c): "look " and a linked item were sent to
+  the channel as "look `<item>`", the placeholder as typed, and the owner saw
+  an error with it (not in the log: no LookingGlass error line was written
+  then). The link now goes as its name, or is left out with one blue line
+  saying so, never both sent and an error.
+- *ChatTwo tabs* (step 36): the owner's tabs have channels of their own, so
+  switching tabs moved the game from Say to Party and ended sticky mode, as
+  designed, and switching back didn't start it again. Unchanged for now (see
+  ChatTwo, *Tabs*).
 
 ### Simple and advanced mode
 
@@ -1962,7 +2091,9 @@ The owner's decisions, and why.
   by nickname (`/lgc sky`). See
   [Talking in a channel without /lgc](#talking-in-a-channel-without-lgc).
   ChatTwo is the owner's default chat window, so it is designed for, not
-  only tolerated.
+  only tolerated. After the second in-game retest the owner chose that short
+  channel commands (`/p brb`) stay FFXIV's one-off modifiers while talking in
+  a channel, except the one ChatTwo sends its own typing with.
 - **Friends-only local chat (2026-10-05).** No party or Free Company option,
   since those can include people a player doesn't trust.
 - **Key-change policy for re-verified keys.** Keys re-verified through the

@@ -42,13 +42,16 @@ early testing (version 0.2).
 command help (`/xlhelp`), to keep the list short. While you talk in a channel,
 its tag (like `[sky]`) shows where the chat box names its channel and in the
 server info bar; click that to stop. If a message can't be sent, you're told,
-and it doesn't go to game chat either. Links can't be sent, only text.
+and it doesn't go to game chat either. Only text is sent: a link goes as its
+name, like `[Potion]`.
 
-Even `/p hi` (and a macro's text) goes to the channel; `/party hi` talks in
-Party once, and tells (`/t`, `/r`) still go as tells. To go back, type `/s` (or
-any channel) on its own. With ChatTwo,
-every ChatTwo chat box not set to a tell sends to the channel too; its
-"(Warning: ...)" only names the game channel underneath. Turn ExtraChat off while you do this.
+`/p hi`, `/s hi` and the like still talk in that game channel once, as usual
+(a macro's `/p` line too), and tells (`/t`, `/r`) still go as tells. To go
+back, type `/s` (or any channel) on its own. With ChatTwo, every ChatTwo chat
+box not set to a tell sends to the channel too, and so does the short command
+of ChatTwo's own channel (`/p hi` while ChatTwo is on Party): use `/party hi`
+for that one. Its "(Warning: ...)" only names ChatTwo's channel underneath.
+Turn ExtraChat off while you do this.
 
 ## Installing
 
