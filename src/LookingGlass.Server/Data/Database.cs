@@ -112,15 +112,26 @@ public sealed class Database {
     public Database(string path, ILogger? logger = null) {
         this._path = path;
         this._logger = logger;
-        this._connectionString = new SqliteConnectionStringBuilder {
-            DataSource = path,
-            Mode = SqliteOpenMode.ReadWriteCreate,
-            Cache = SqliteCacheMode.Private,
-            Pooling = true,
-            DefaultTimeout = 30,
-        }.ToString();
-
+        this._connectionString = ConnectionStringFor(path);
         this.Migrate();
+    }
+
+    private static string ConnectionStringFor(string path) => new SqliteConnectionStringBuilder {
+        DataSource = path,
+        Mode = SqliteOpenMode.ReadWriteCreate,
+        Cache = SqliteCacheMode.Private,
+        Pooling = true,
+        DefaultTimeout = 30,
+    }.ToString();
+
+    /// <summary>
+    /// Closes the idle pooled connections to the database at <paramref name="path"/>, so the file can be moved, replaced or
+    /// deleted. Only that file's: <see cref="SqliteConnection.ClearAllPools"/> would also dispose connections other databases
+    /// in the process are using at that moment, failing whatever they were doing.
+    /// </summary>
+    internal static void ReleasePooledConnections(string path) {
+        using var connection = new SqliteConnection(ConnectionStringFor(path));
+        SqliteConnection.ClearPool(connection);
     }
 
     private SqliteConnection Open() {
