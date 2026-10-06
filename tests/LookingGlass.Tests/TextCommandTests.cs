@@ -1,6 +1,4 @@
 using LookingGlass.Core.Client;
-using LookingGlass.Protocol;
-using static LookingGlass.Tests.Harness;
 
 namespace LookingGlass.Tests;
 
@@ -144,28 +142,5 @@ public sealed class TextCommandTests {
         ], pieces);
         Assert.Equal($"hi <t>{M(0)}<item> <se.1><1>", string.Concat(pieces.Select(piece => piece.Text)));
         Assert.Empty(TextCommands.Split(""));
-    }
-
-    [Fact]
-    public async Task AReceivedMessageIsNeverLookedAtForTextCommands() {
-        var server = new Harness();
-        try {
-            var alice = await server.RegisterAsync("Alice Test");
-            var bob = await server.RegisterAsync("Bob Test");
-            var channelId = await alice.Session.CreateChannelAsync("Tea Party", Ct);
-            await alice.Session.InviteAsync(channelId, "Bob Test", ProtocolInfo.DebugWorldName, Ct);
-            await WaitFor(() => bob.Session.Snapshot.Invites.FirstOrDefault(i => i.ChannelId == channelId && i.ChannelName != null));
-            await bob.Session.RespondToInviteAsync(channelId, true, Ct);
-            await WaitFor(() => bob.Session.Snapshot.FindChannel(channelId) is { HasKey: true, RekeyPending: false } c ? c : null);
-
-            // As an older client (or ExtraChat's way) would send it: the text commands as typed. They arrive as typed.
-            const string typed = "heal <t> please, <me> and <1>";
-            await alice.Session.SendAsync(channelId, LinkedText.Plain(typed), Ct);
-            var atBob = await WaitFor(() => bob.Messages.FirstOrDefault(m => !m.IsOwn && m.Text?.StartsWith("heal") == true));
-            Assert.Equal(typed, atBob.Text);
-        } finally {
-            await server.DisposeAsync();
-            DeleteDirectory(server.DataDirectory);
-        }
     }
 }

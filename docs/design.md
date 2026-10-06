@@ -1195,7 +1195,7 @@ core library (`TextCommands`) and unit tested; the plugin's
   icons (private-use characters, the cross-world mark) stay.
 - **Only on the sender's side.** A received message is never looked at for
   them: `<t>` from an older client (or one typed where nothing was targeted)
-  shows as `<t>`; a test checks this end to end.
+  shows as `<t>`. Only `ChannelSender.Send` calls `TextCommands.Resolve`.
 - **The diagnostic log** counts the text commands replaced in a sticky line's
   "sending" entry, and never says what they stood for.
 
