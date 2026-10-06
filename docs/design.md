@@ -1096,6 +1096,58 @@ and rekey first if that key predates the last join or leave.
   client shows a kind it doesn't know as an unsupported message.
 - The plugin sanitises all remote text before it reaches the chat log.
 
+#### Links in messages
+
+An item, a map flag or a status linked in a message reaches the other members
+as the game's own interactive link, where it was in the sentence: hovering an
+item or a status shows its tooltip, clicking a map flag opens the map there,
+in the game's chat log and in ChatTwo. The format and the rules are in the
+core library (`MessageContent`, `ChatLinks`, `LinkText`), and unit tested;
+the plugin's `GameLinks` reads and builds the game's side, and is checked in
+game with
+[docs/testing/chat-links-checklist.md](testing/chat-links-checklist.md).
+
+- **Format.** A text message keeps its content kind and its text, which is
+  the whole message as plain text with each link as its name in square
+  brackets: "look [Potion]". Links are an added, repeated field of
+  `TextContent` (`TextLink`): where the link's "[name]" is in the text
+  (start and length, in UTF-16 code units) and what it points at, one of an
+  item (the game's raw item id: an `Item` row, +500,000 for a collectable,
+  +1,000,000 for high quality; from 2,000,000 an `EventItem` row), a map flag
+  (`TerritoryType` and `Map` rows, and world coordinates times 1,000, as the
+  game's map links carry them) or a status (a `Status` row). Ids and numbers
+  only: no name, no game bytes.
+- **Compatibility.** Older clients skip the unknown field and show the text,
+  "look [Potion]", as they always showed links. Messages without links are
+  exactly as before. Nothing about it reaches the server, which needed no
+  change: the field is inside the encrypted, signed plaintext, under the same
+  4 KiB ciphertext limit (five links with the longest names add well under
+  1 KiB).
+- **Checks on receipt.** A link is shown as one only if it passes every check;
+  otherwise the sender's "[name]" shows as plain text, sanitised like all
+  remote text ("[unknown link]" if nothing is left of it). A message with more
+  than five links shows as text only (a LookingGlass client never sends more).
+  Each link must stand over a bracketed name in the text, in order and not
+  overlapping, and be of a known kind with ids and coordinates in range. Then,
+  against the recipient's own game data: an item must be an `Item` row with a
+  name (high quality only if it can be, a collectable only if it is one) or an
+  `EventItem` row; a map flag's map must exist and belong to its territory,
+  and the position must be on that map (inside its square at its size factor
+  and offset, give or take a little); a status must be a `Status` row with a
+  name.
+- **Rebuilt, never copied.** A link that passes is built afresh from its ids
+  with Dalamud's own link builders (`SeString.CreateItemLink`,
+  `CreateMapLink`; a status as `StatusPayload`, the link arrow, its name and
+  the link terminator), so it looks as the game's links do (an item in its
+  rarity's colour, with the high-quality mark). The name shown is the
+  recipient's own game's, in their language, never the sender's text. No byte
+  from the network reaches the chat log except as sanitised text.
+- **Sending.** A link goes as a link only if the sender's own game data shows
+  it (the same checks); up to five per message, any more go as their names.
+  How a typed line's links are found is under
+  [Talking in a channel without /lgc](#talking-in-a-channel-without-lgc)
+  (*Links*); `/lgcN` and `/lgc <nickname>` find them the same way.
+
 ### Replay protection
 
 - Clients remember the IDs of recent verified messages (in memory) and drop
@@ -1224,6 +1276,7 @@ messages need no server change at all.
 | --- | --- | --- | --- |
 | Server capability | Message history, channel bans, file attachments, local chat | Yes | A new capability string and message types; old clients never see them |
 | Encrypted content kind | Emotes, replies, reactions, polls, typing state | No | A new content kind inside the ciphertext; older clients show "unsupported message" |
+| Encrypted field of a kind | Links in text messages | No | A new field of an existing kind, with a fallback in the old fields; older clients skip it and show the fallback (the text) |
 | Client-only feature | Chat filters, notifications, colours, sounds | No | A plugin update only |
 
 Within a major version, changes are additive only. Removing a field, or
@@ -1287,7 +1340,7 @@ These are plugin settings, kept per character, and never sent to the server.
 
   | Tone | Colour | What |
   |------|--------|------|
-  | Information | LookingGlass blue (UIColor 37, 0x0099FF, the default `[LGC]` tag's) | Status and replies: "Now talking in", "Stopped talking in", every "Not sent", "The link wasn't sent", "Not connected", refusals to start, `/lgc` usage, "No channel has the nickname", the ChatTwo note, server announcements, "Joined", other notices at Info level |
+  | Information | LookingGlass blue (UIColor 37, 0x0099FF, the default `[LGC]` tag's) | Status and replies: "Now talking in", "Stopped talking in", every "Not sent", "A link in it couldn't be read", "Not connected", refusals to start, `/lgc` usage, "No channel has the nickname", the ChatTwo note, server announcements, "Joined", other notices at Info level |
   | Warning | light red (UIColor 508, 0xFF8080) | Every notice at Warning or Error level that isn't critical: a key changed, a name now another account, ExtraChat is on, the server not showing a membership (`MembershipHidden`), a stale key offered, a bad channel key, dropped messages, couldn't load keys, "something went wrong" (a line kept) |
   | Critical | dark red (UIColor 534, 0xAE0000) | By kind, whatever the level: a forked membership (`MembershipForked`), members shown different memberships (`MembersShownDifferently`), a removal not in effect, so a removed member may still read (`RemovalNotInEffect`), the server refusing a key and hiding a change (`ServerRefusesKey`), a relayed registration code (`RelayedRegistrationCode`) |
 
@@ -1468,34 +1521,60 @@ Sticky:
 - Any other line starting with `/` is a command and goes to the game
   untouched, `/lgc` commands included. Only a `/` at the very start counts: a
   line with a space before it goes to the channel, never the game.
-- Anything else goes to the channel, trimmed, as text.
-- A line with nothing to send as text is kept from the game, with "Not sent to
-  [sky] or game chat: no text (links can't be sent)." That is a line with only
-  links (payloads) or only link placeholders (`<item>`, `<flag>`, `<status>`:
-  what the chat input holds for a link until the line is sent, put there by
+- Anything else goes to the channel, trimmed, as text and links. A line with
+  only a link goes too (it used to be kept from the game, "not sent", while
+  links couldn't be sent): that is a line with only links (payloads) or only
+  link placeholders (`<item>`, `<flag>`, `<status>`: what the chat input holds
+  for a link until the line is sent, put there by
   `AgentChatLog.InsertTextCommandParam`; the game makes them links only while
   running the line, after the gate, and ChatTwo's input holds them the same
-  way; the owner's log shows the placeholder in both chat boxes). A blank line
-  goes nowhere, quietly.
-- *Links in a line with text* (`LinkText`). Channels carry text only, so a
-  link goes as its name in square brackets: "look `<item>`" is sent as "look
-  [Potion]". The plugin reads the name where the game keeps what the
-  placeholder stands for, as ChatTwo's input preview does (`Message.cs`,
-  `DecodeTextParam`, 1.40.9): `<item>` the item the chat log agent holds as
-  linked (`AgentChatLog.LinkedItem`: its `ItemId` field, read rather than
-  calling the game, unless it is a symbolic item; the high-quality and
-  collectable offsets taken off; named from the `Item` sheet, `EventItem` for
-  ids from 2,000,000; `LinkedItemName` if that fails),
-  `<status>` its `ContextStatusId` (the `Status` sheet; `ContextStatusName`),
-  `<flag>` the map flag (`AgentMap`, the first flag marker: the place name and
-  coordinates, as a map link shows them). A name is plain text (no game
-  formatting; `<`, `>`, `[` and `]` become brackets). A placeholder whose name
-  can't be found is taken out, with the spaces around it, the rest is sent,
-  and once it has been sent one blue line says "The link wasn't sent (links
-  can't be sent yet)." A link already in the line as payload bytes goes as its
-  text (its name) without help. A message is never both sent and an error:
-  the last round sent "look `<item>`" as typed. In a short command line going
-  to the game, links are left to the game.
+  way; the owner's log shows the placeholder in both chat boxes). A short
+  command whose line goes to LookingGlass (above) with only a link goes the
+  same way. A line with something in it but nothing LookingGlass can send (a
+  payload that is neither text nor an item, map or status link) is kept from
+  the game, with "Not sent to [sky] or game chat: nothing in it can be sent to
+  a channel." A blank line goes nowhere, quietly.
+- *Links* (`LinkText`, and the plugin's `GameLinks`). A link goes as its name
+  in square brackets in the text, "look `<item>`" sent as "look [Potion]"
+  (what older clients show), and over that as the link itself (see
+  [Links in messages](#links-in-messages)). The plugin reads the line's bytes
+  with Dalamud (`SeString.Parse`): an `ItemPayload`, `MapLinkPayload` or
+  `StatusPayload` and the text up to its link terminator become one link (its
+  raw item id, territory, map and coordinates, or status id), held in the
+  line's text as a marker (a Unicode noncharacter, U+FDD0 on, which never
+  stands for anything in game text and is taken out of anything typed) so the
+  routing rules above see "text" and "links" apart and can cut the command off
+  without losing them. Any other link (a player, a quest) stays as its text.
+  A placeholder is resolved where the game keeps what it stands for, as
+  ChatTwo's input preview does (`Message.cs`, `DecodeTextParam`, 1.40.9):
+  `<item>` the item the chat log agent holds as linked
+  (`AgentChatLog.LinkedItem`: its `ItemId` and `Flags` fields, read rather than
+  calling the game, unless it is a symbolic item; high quality and collectable
+  from the id's offsets or the flags; `LinkedItemName` if the sheet has no
+  name), `<status>` its `ContextStatusId` (`ContextStatusName` if the sheet has
+  no name), `<flag>` the map flag (`AgentMap`, the first flag marker: world
+  coordinates to a thousandth, as the game and ChatTwo make a map link of it).
+  The order for each: what it points at, if the player's own game data shows
+  it (the checks in Links in messages), else name only; the name from the
+  player's sheet (in their language), else the game's text for it; neither:
+  left out. Each kind is asked once per line. A name is plain text (no game
+  formatting or icons; `<`, `>`, `[` and `]` become brackets). A link with a
+  name but nothing known about what it points at (a symbolic item) goes as
+  its name only. A link nothing at all is known about is taken out, with the
+  spaces around it, the rest is sent, and once it has been sent one blue line
+  says "A link in it couldn't be read, so it was left out." If nothing is
+  left, "Not sent to [sky] or game chat: the link couldn't be read." A message
+  is never both sent and an error. In a short command line going to the game
+  (the player's one-off `/p look <item>`), links are left to the game, as
+  before.
+- *Links in `/lgcN` and `/lgc <nickname>`.* Dalamud gives a command handler
+  its arguments as a string, in which a link's bytes would be garbled. So the
+  gate (`ExecuteCommandInner`, below) reads every line starting with `/lgc`
+  as above, placeholders resolved right then, and keeps it while the game runs
+  the line; the handler, which Dalamud runs inside that call, takes its
+  message from it. A `/lgc` command not run through the gate (another plugin
+  calling it, or the gate's hooks missing) is sent from Dalamud's string,
+  with any link bytes taken out and placeholders resolved when it is sent.
 
 **Fail closed.** While sticky, a line never reaches game chat unless it is a
 command:
@@ -1670,7 +1749,18 @@ about it:
   side, so both are handled (Where a line goes). The preview reads what a
   placeholder stands for from the game (`AgentChatLog.LinkedItem.ItemId`,
   `ContextStatusId`, `AgentMap`'s flag markers), which is where LookingGlass
-  reads a link's name too (*Links in a line with text*).
+  reads what a link points at too (*Links*, above).
+- *Links received (from ChatTwo's public source, 2026-10-06).* ChatTwo shows
+  what the game's chat log is given: it takes every printed message from
+  Dalamud's `ChatMessageUnhandled` (`MessageManager.cs`) and cuts it into
+  chunks by its Dalamud payloads (`ChunkUtil.ToChunks`): an `ItemPayload`,
+  `MapLinkPayload` or `StatusPayload` makes the text after it a link until
+  the link terminator (`RawPayload.LinkTerminator`, which Lumina's `PopLink`
+  and Dalamud's map link both end with), and `UIForeground` and `UIGlow` set
+  its colours. Hovering an item or a status shows ChatTwo's tooltip, clicking
+  a map link opens the map (`PayloadHandler.cs`: `HoverItem`, `HoverStatus`,
+  `GameGui.OpenMapWithMapLink`). So a link LookingGlass prints with those
+  payloads is clickable in ChatTwo too, with nothing ChatTwo-specific.
 - *A channel command on its own (verified on ChatTwo's side).* Typed in
   ChatTwo, `/s` is sent as it is through `ProcessChatBoxEntry`, like any line
   starting with `/` (`SendHandler.SendChatBox`); ChatTwo doesn't act on it
@@ -1758,8 +1848,9 @@ command, to the game once", "short command with text", "plain text" …), and
 the short-command rule used ("rule: typed in the game: short commands go to
 the game once", "rule: ChatTwo's main input on /p: only /p is text, other
 short commands go to the game once", "rule: not ChatTwo's main input: short
-commands are text", and so on: a known command at most). A message sent with
-a link left out adds a "link left out" entry (sizes only). A
+commands are text", and so on: a known command at most). A message sent
+adds a "sending" entry: sizes and counts only (bytes typed, characters
+sent, how many links, whether one was left out), never a name or an id. A
 switch's has the chat type before and after the call, and whether a typed line
 was in flight. Never what was typed, a link's contents, or an unknown command's
 name (it could be a message typed after a "/"); tests check this. When sticky
@@ -2100,6 +2191,15 @@ The owner's decisions, and why.
   only tolerated. After the second in-game retest the owner chose that short
   channel commands (`/p brb`) stay FFXIV's one-off modifiers while talking in
   a channel, except the one ChatTwo sends its own typing with.
+- **Links are interactive, as in ExtraChat (2026-10-06).** An item, a map
+  flag or a status linked in a channel message reaches the others as the
+  game's own clickable link, in the game's chat log and in ChatTwo, and a line
+  with only a link is sent. The owner confirmed ExtraChat did this with
+  ChatTwo on and off, and wants LookingGlass to be a strict upgrade. Links
+  travel as ids inside the encrypted message, beside a plain-text "[name]"
+  older clients show, and are rebuilt from the recipient's own game data
+  after checks, never from bytes off the network (see
+  [Links in messages](#links-in-messages)). No server change.
 - **Friends-only local chat (2026-10-05).** No party or Free Company option,
   since those can include people a player doesn't trust.
 - **Key-change policy for re-verified keys.** Keys re-verified through the

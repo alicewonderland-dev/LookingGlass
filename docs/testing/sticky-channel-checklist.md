@@ -20,8 +20,8 @@ What changed this round:
 - Colours: LookingGlass's own lines are blue (information, like "Now talking
   in", "Stopped talking in", "Not sent"), light red (warnings) or dark red
   (critical warnings). A channel's tag in them keeps its own colour.
-- A message with text and a link sends the link as its name, like
-  `look [Potion]`, with no error.
+- A message with text and a link sends the link as a link (the others can
+  hover or click it), and a link on its own is sent too, with no error.
 
 You don't need to copy anything out of the game. While you talk in a channel,
 LookingGlass writes one line per thing it decides to Dalamud's log
@@ -95,23 +95,26 @@ second character, checks every step: the label alone proves nothing.
       you are still in [sky]. Type `hello`: only in LookingGlass.
 - [ ] 10. Type `  /s hi` (with two spaces before the slash). It goes only to
       LookingGlass, as "/s hi", and not to Say.
-- [ ] 11. Link an item on its own (no text) and press Enter. You see "Not sent
-      to [sky] or game chat: no text (links can't be sent)." in blue. Nothing
-      appears in Say, Party or any linkshell.
+- [ ] 11. **(changed: links are sent now)** Link an item on its own (no text)
+      and press Enter. It goes only to LookingGlass, as a link (B sees it in
+      the [sky] line and can hover it). Nothing appears in Say, Party or any
+      linkshell. The links themselves are checked in
+      [chat-links-checklist.md](chat-links-checklist.md).
 - [ ] 11c. **(changed)** Type `/cwl1` and press Enter (the game is now on the
       cross-world linkshell; it stops talking in [sky]), then `/lgc1`. Link an
-      item on its own, press Enter: the same "Not sent" line; B sees nothing in
-      the linkshell. Then type `/cwl1 ` and link an item after it, press
+      item on its own, press Enter: it goes to [sky] as a link; B sees nothing
+      in the linkshell. Then type `/cwl1 ` and link an item after it, press
       Enter: that is a one-off to the linkshell, as usual, so the link goes to
       the linkshell, and you are still in [sky].
 - [ ] 11b. **(changed)** Link a map flag on its own (`<flag>`), press Enter:
-      the same "Not sent" line, nothing in game chat. Then type `look ` and
-      link an item after it, press Enter: only LookingGlass gets it, as
-      `look [the item's name]`, with no error line and nothing in game chat.
-      Do the same with `meet at ` and a map flag: `meet at [place ( x , y )]`.
-- [ ] 11d. **(new)** If a link's name can't be found, the rest of the message
-      is sent and one blue line says "The link wasn't sent (links can't be
-      sent yet)." (You may not be able to make this happen; skip it if not.)
+      it goes to [sky] as a map link, nothing in game chat. Then type `look `
+      and link an item after it, press Enter: only LookingGlass gets it, as
+      `look [the item's name]` with the item a link, with no error line and
+      nothing in game chat.
+- [ ] 11d. If a link can't be read at all (not even its name), the rest of the
+      message is sent and one blue line says "A link in it couldn't be read,
+      so it was left out." (You may not be able to make this happen; skip it
+      if not.)
 
 ### Leaving
 
@@ -221,11 +224,11 @@ second character, checks every step: the label alone proves nothing.
 - [ ] 35. Type `/em waves`. The emote plays.
 - [ ] 35b. Switch ChatTwo (and the game) to a cross-world linkshell (or any
       channel), `/lgc1`, then link an item on its own in ChatTwo's input and
-      press Enter. "Not sent to [sky] or game chat: no text (links can't be
-      sent)." in blue. Nothing in the linkshell or anywhere else.
+      press Enter. **(changed)** It goes to [sky] as a link. Nothing in the
+      linkshell or anywhere else.
 - [ ] 35c. **(changed)** Type `look ` and link an item after it, in ChatTwo.
-      Only LookingGlass gets it, as `look [the item's name]`, with no error
-      line; nothing in the linkshell.
+      Only LookingGlass gets it, as `look [the item's name]` with the item a
+      link, with no error line; nothing in the linkshell.
 - [ ] 35d. Have B send A a tell. While in [sky], type `/r hi` in ChatTwo. B
       gets the tell "hi", and nothing reaches LookingGlass.
 
