@@ -2,8 +2,9 @@ namespace LookingGlass.Core.Client;
 
 /// <summary>
 /// Counts the messages from others in each channel since it was last read, for the main
-/// window's unread markers. A channel is read when the window shows it (<see cref="Viewing"/>,
-/// every frame it's drawn) or when you send to it (<see cref="MarkRead"/>). Counts live only in
+/// window's unread markers. A channel is read when a window shows it (<see cref="Viewing(string?)"/>:
+/// the main window, every frame it's drawn; or a channel window, every frame it has the focus with
+/// that channel's tab selected) or when you send to it (<see cref="MarkRead"/>). Counts live only in
 /// memory. Safe from any thread: messages arrive on the session's threads, the window reads on
 /// the draw thread.
 /// </summary>
@@ -19,8 +20,8 @@ public sealed class UnreadCounter {
     private readonly Dictionary<string, int> _counts = new();
     private readonly HashSet<MessageKey> _seen = new();
     private readonly Queue<MessageKey> _seenOrder = new();
-    private string? _viewing;
-    private DateTimeOffset _viewedAt;
+    // What each window (the main window, each channel window) showed last, and when.
+    private readonly Dictionary<string, (string ChannelId, DateTimeOffset At)> _viewing = new();
     private int _total;
 
     public UnreadCounter(TimeProvider? time = null) {
@@ -68,13 +69,25 @@ public sealed class UnreadCounter {
     /// The window is showing this channel (call every frame it draws it), or none. Reads it, and
     /// keeps what arrives meanwhile from counting.
     /// </summary>
-    public void Viewing(string? channelId) {
+    public void Viewing(string? channelId) => this.Viewing(MainWindow, channelId);
+
+    /// <summary>The main window, as a viewer (see <see cref="Viewing(string, string?)"/>).</summary>
+    public const string MainWindow = "main";
+
+    /// <summary>
+    /// A window is showing this channel (call every frame it shows it), or none: one of several, each with a name of its
+    /// own (<see cref="MainWindow"/>, or a channel window's). A channel any of them shows is read, and what arrives meanwhile
+    /// doesn't count.
+    /// </summary>
+    public void Viewing(string viewer, string? channelId) {
         lock (this._lock) {
-            this._viewing = channelId;
-            this._viewedAt = this._time.GetUtcNow();
-            if (channelId != null) {
-                this.ClearCount(channelId);
+            if (channelId == null) {
+                this._viewing.Remove(viewer);
+                return;
             }
+
+            this._viewing[viewer] = (channelId, this._time.GetUtcNow());
+            this.ClearCount(channelId);
         }
     }
 
@@ -114,7 +127,7 @@ public sealed class UnreadCounter {
         lock (this._lock) {
             this._counts.Clear();
             this._total = 0;
-            this._viewing = null;
+            this._viewing.Clear();
         }
     }
 
@@ -126,7 +139,14 @@ public sealed class UnreadCounter {
     };
 
     private bool IsShowing(string channelId) {
-        return this._viewing == channelId && this._time.GetUtcNow() - this._viewedAt <= ViewingGrace;
+        var now = this._time.GetUtcNow();
+        foreach (var (shown, at) in this._viewing.Values) {
+            if (shown == channelId && now - at <= ViewingGrace) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private void ClearCount(string channelId) {

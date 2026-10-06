@@ -32,6 +32,7 @@ public sealed class MainWindow : Window {
     private readonly Action _openSettings;
     private readonly Modals _modals;
     private readonly ChannelPane _pane;
+    private readonly ChannelWindows _windows;
 
     private string? _selectedChannel;
     private volatile string? _selectAfterCreate;
@@ -44,14 +45,16 @@ public sealed class MainWindow : Window {
 
     /// <param name="toggleSettings">Opens the settings window, or closes it if open (the gear).</param>
     /// <param name="openSettings">Opens the settings window, and brings it to the front.</param>
-    public MainWindow(Configuration config, SessionManager sessions, UiActions actions, UiFonts fonts, Action toggleSettings, Action openSettings) : base(Title + Id) {
+    public MainWindow(Configuration config, SessionManager sessions, UiActions actions, UiFonts fonts, ChannelWindows windows, Action toggleSettings,
+        Action openSettings) : base(Title + Id) {
         this._config = config;
         this._sessions = sessions;
         this._actions = actions;
         this._toggleSettings = toggleSettings;
         this._openSettings = openSettings;
         this._modals = new Modals(actions, () => config.AdvancedMode);
-        this._pane = new ChannelPane(sessions, actions, this._modals, fonts);
+        this._windows = windows;
+        this._pane = new ChannelPane(sessions, actions, this._modals, fonts, windows);
         this._pane.Closed += () => this._selectedChannel = null;
 
         // Laid out to fit: the panes scroll, the window doesn't.
@@ -658,6 +661,14 @@ public sealed class MainWindow : Window {
         }
 
         var hovered = ImGui.IsItemHovered();
+        // Right-click: channel windows (pop-out chat), where what is typed only ever goes to that channel.
+        if (!channel.OldKeyMembership && ImGui.BeginPopupContextItem($"##row-menu-{channel.Id}")) {
+            ImGui.TextColored(Widgets.Muted, Widgets.Ellipsize(displayName, 240 * scale));
+            ImGui.Separator();
+            this._windows.DrawChannelMenuItems(channel.Id);
+            ImGui.EndPopup();
+        }
+
         // A selectable's rectangle reaches half the item spacing past the list's edges, where it's
         // clipped, so anything drawn at its very edge (the colour bar, the right-hand items) would be
         // cut off or touch the divider. Keep the drawing inside the list's visible area.

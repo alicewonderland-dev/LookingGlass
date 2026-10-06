@@ -23,6 +23,10 @@ early testing (version 0.2).
   or the number, as in `[LGC3]`.
 - **Unread counts.** The channel list counts new messages, and the window's
   title shows the total.
+- **Channel windows.** Right-click a channel in the list to chat in a window
+  of its own, with tabs for more channels (the **+**). What you type there only
+  ever goes to that channel, never to game chat, and you can choose which
+  channels also show in game chat (the channel's ⋮ menu).
 - **Who's online.** Each member's icon is green while they're connected.
 - **Blocking.** Hide someone's messages and silently decline their invites.
 - **Privacy.** Only the members of a channel can read its name and messages.

@@ -21,6 +21,7 @@ public sealed class SessionManager : IDisposable {
     private volatile ImmutableDictionary<string, int> _slots = ImmutableDictionary<string, int>.Empty;
     private volatile ImmutableDictionary<string, string> _nicknames = ImmutableDictionary<string, string>.Empty;
     private volatile ImmutableDictionary<string, ushort> _colours = ImmutableDictionary<string, ushort>.Empty;
+    private volatile ImmutableHashSet<string> _gameChatOff = ImmutableHashSet<string>.Empty;
     private Task? _closing;
     // Framework thread only. Bumped by every start and stop, so a start that was
     // waiting for the previous session to close is dropped if anything changed meanwhile.
@@ -49,6 +50,18 @@ public sealed class SessionManager : IDisposable {
 
     /// <summary>Unread messages per channel, for the current session. Safe from any thread.</summary>
     public UnreadCounter Unread { get; } = new();
+
+    /// <summary>
+    /// What channel windows show: each channel's messages and notices since this session started, in memory only. Cleared
+    /// whenever a session stops or starts (logging out, another character or server); reconnects keep it. Safe from any thread.
+    /// </summary>
+    public ChannelHistory History { get; } = new();
+
+    /// <summary>The character the current session is for, or null. Framework (and draw) thread.</summary>
+    public PlayerInfo? SessionPlayer => this._sessionPlayer;
+
+    /// <summary>The server address set now (the current session's, if there is one).</summary>
+    public string ServerUrl => this._config.ServerUrl;
 
     public IReadOnlyList<SessionNotice> RecentNotices {
         get {
@@ -237,6 +250,23 @@ public sealed class SessionManager : IDisposable {
     /// <summary>The colour (a UIColor row) of a channel for the current character, or null for the default. Safe from any thread.</summary>
     public ushort? ColourOf(string channelId) => ChannelColours.Of(this._colours, channelId);
 
+    /// <summary>
+    /// Whether a channel's messages also go to the game's chat log ("Also show in game chat"; on unless turned off). Off,
+    /// they show only in its channel windows, and its notices too, but warnings. Safe from any thread.
+    /// </summary>
+    public bool ShowsInGameChat(string channelId) => GameChatChannels.Shows(this._gameChatOff, channelId);
+
+    /// <summary>The channels turned off game chat, for the current character. Safe from any thread.</summary>
+    public IReadOnlySet<string> GameChatOff => this._gameChatOff;
+
+    /// <summary>Turns "Also show in game chat" on or off for a channel. Call on the framework (or draw) thread.</summary>
+    public void SetShowInGameChat(string channelId, bool show) {
+        if (this._sessionPlayer is { } player && GameChatChannels.Set(this._config.ForCharacter(player.ContentId).GameChatOff, channelId, show)) {
+            this._config.Save();
+            this.RefreshCommandCache();
+        }
+    }
+
     /// <summary>Sets a channel's colour (a UIColor row), or with null its default. Call on the framework thread.</summary>
     public void SetColour(string channelId, ushort? colour) {
         if (this._sessionPlayer is { } player) {
@@ -281,10 +311,12 @@ public sealed class SessionManager : IDisposable {
             this._slots = settings.ChannelSlots.ToImmutableDictionary();
             this._nicknames = settings.Nicknames.ToImmutableDictionary();
             this._colours = settings.ChannelColours.ToImmutableDictionary();
+            this._gameChatOff = settings.GameChatOff.ToImmutableHashSet();
         } else {
             this._slots = ImmutableDictionary<string, int>.Empty;
             this._nicknames = ImmutableDictionary<string, string>.Empty;
             this._colours = ImmutableDictionary<string, ushort>.Empty;
+            this._gameChatOff = ImmutableHashSet<string>.Empty;
         }
     }
 
@@ -296,10 +328,24 @@ public sealed class SessionManager : IDisposable {
         this.Deliver(new IncomingMessage(channelId, channel?.Name, sender, false, text, false, DateTimeOffset.Now));
     }
 
-    /// <summary>Prints a message and counts it as unread. From any thread.</summary>
-    private void Deliver(IncomingMessage message) {
+    /// <summary>
+    /// Keeps a message in its channel's history (for its windows), counts it as unread, and prints it in game chat unless
+    /// the channel is turned off there. From any thread.
+    /// </summary>
+    /// <param name="generation">The history's generation the session was started with (see <see cref="ChannelHistory.Generation"/>).</param>
+    private void Deliver(IncomingMessage message, int? generation = null) {
+        // Where it goes is read before checking it is still this session's: Stop starts the history's next generation
+        // before it empties this list, so a message caught in a logout is dropped, never printed as if no channel were off.
+        var off = this._gameChatOff;
+        if (generation != null && generation != this.History.Generation) {
+            return;
+        }
+
+        this.History.Add(message, generation);
         this.Unread.Add(message);
-        this._chat.Message(message, this.SlotOf(message.ChannelId), this.NicknameOf(message.ChannelId), this.ColourOf(message.ChannelId));
+        if (GameChatChannels.Shows(off, message.ChannelId)) {
+            this._chat.Message(message, this.SlotOf(message.ChannelId), this.NicknameOf(message.ChannelId), this.ColourOf(message.ChannelId));
+        }
     }
 
     private void OnPlayerChanged(PlayerInfo? player) {
@@ -359,15 +405,18 @@ public sealed class SessionManager : IDisposable {
             return;
         }
 
+        // A new session's history starts empty, and what an older one still delivers is dropped.
+        var history = this.History.Clear();
+
         // Events from a session that has since been replaced are ignored.
         session.MessageReceived += message => {
             if (this.Session == session) {
-                this.Deliver(message);
+                this.Deliver(message, history);
             }
         };
         session.Notice += notice => {
             if (this.Session == session) {
-                this.OnNotice(notice);
+                this.OnNotice(notice, history);
             }
         };
         // Snapshots can arrive out of order; always sync against the latest one of the current session.
@@ -385,12 +434,24 @@ public sealed class SessionManager : IDisposable {
         session.Start();
     }
 
-    private void OnNotice(SessionNotice notice) {
+    private void OnNotice(SessionNotice notice, int history) {
         lock (this._noticesLock) {
             this._notices.AddLast(notice);
             while (this._notices.Count > NoticeHistory) {
                 this._notices.RemoveFirst();
             }
+        }
+
+        // One about a channel shows in its windows too; in game chat unless the channel is turned off there (a warning always).
+        // The list is read before the session is checked, as in Deliver.
+        var off = this._gameChatOff;
+        if (history != this.History.Generation) {
+            return;
+        }
+
+        this.History.AddNotice(notice, history);
+        if (!GameChatChannels.NoticeToGameChat(off, notice)) {
+            return;
         }
 
         // In the words of the mode set now: switching modes changes the words of what comes next, never whether it is shown.
@@ -402,6 +463,8 @@ public sealed class SessionManager : IDisposable {
 
     private void SyncCommands(SessionSnapshot snapshot) {
         this.Unread.Retain(snapshot);
+        this.History.Retain(snapshot);
+        this.History.NoteNames(snapshot);
 
         // Only against the complete channel list; a partial one would free (and then hand out) slots in use, and drop nicknames.
         if (this._sessionPlayer is not { } player || snapshot is not { State: ConnectionState.Ready, ChannelsLoaded: true }) {
@@ -423,6 +486,8 @@ public sealed class SessionManager : IDisposable {
     private void Stop() {
         this._generation++;
         var session = Interlocked.Exchange(ref this._session, null);
+        // The history's next generation first, then the channel settings: see Deliver.
+        this.History.Clear();
         this._sessionPlayer = null;
         this.RefreshCommandCache();
         this.Unread.Reset();

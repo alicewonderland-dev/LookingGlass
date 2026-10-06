@@ -45,7 +45,8 @@ core ideas, shares no code with it, and doesn't talk to ExtraChat's servers.
 
 The current version is 0.2. It has registration, key login, identity recovery,
 channels, invites, ranks, automatic rekeys, encrypted messages, the signed
-membership log, online indicators, blocking and debug tooling. ChatTwo
+membership log, online indicators, blocking, channel windows (pop-out chat)
+and debug tooling. ChatTwo
 integration and the import wizard come next. Local chat and a move to MLS are
 planned (see [Planned features](#planned-features)).
 
@@ -1349,7 +1350,8 @@ Dalamud dependency.
   `Framework.RunOnFrameworkThread`.
 - **Sending.** `/lgc1` to `/lgc50` and `/lgc <nickname>`, or, after `/lgc3`
   or `/lgc sky` with no message, plain text typed in the chat box (see
-  [Talking in a channel without /lgc](#talking-in-a-channel-without-lgc)).
+  [Talking in a channel without /lgc](#talking-in-a-channel-without-lgc)), or
+  a channel window's own input box (see [Channel windows](#channel-windows)).
   Sending fails closed: an error never falls through to ordinary game chat.
 - **Game interop.** Signatures live in one module (`ChatInterop`), and come
   from FFXIVClientStructs. A missing one disables only its feature.
@@ -1401,8 +1403,9 @@ These are plugin settings, kept per character, and never sent to the server.
   A line about a channel ("Now talking in [sky].") shows the tag in the
   channel's own colour within the blue.
 - **Unread counts.** The channel list counts messages from others since the
-  user last looked at a channel in the main window or talked in it. The
-  window's title shows the total. The counts start from zero at each login.
+  user last looked at a channel in the main window (or in a channel window
+  that has the focus) or talked in it. The window's title shows the total. The
+  counts start from zero at each login.
 - **Member icons.** Besides the fingerprint state in advanced mode (see
   [Identity keys and fingerprints](#identity-keys-and-fingerprints)), the
   icon's colour shows presence: green while connected, grey when not. A
@@ -1981,6 +1984,140 @@ off) and in ChatTwo. Four changes came from it:
   designed, and switching back didn't start it again. The owner decided that
   is fine (see ChatTwo, *Tabs*).
 
+### Channel windows
+
+Built at the owner's request (2026-10-06): a channel can be read and written
+in an instant-messenger-style window of its own, apart from the game's chat
+log and ChatTwo. Several windows can be open at once, each with a tab for each
+of its channels. What is typed in a tab goes only to that tab's channel. Why:
+
+- **No leak path through game chat.** The window's input box is the plugin's
+  own (ImGui), so typed text never passes through the game's chat input or
+  ChatTwo, and never reaches a game channel, whatever state the game or
+  ChatTwo is in.
+- **No wrong-channel mistakes.** With ExtraChat, heavy users of several
+  channels sometimes sent sensitive or embarrassing messages to the wrong one.
+  The tab, the window's title and the input box's hint ("Message sky") all
+  name the channel the box sends to.
+
+The rules that need no game are in the core library (`ChannelHistory`,
+`ChannelWindowLayouts`, `GameChatChannels`, `UnreadCounter`) and unit tested;
+the plugin's `ChannelWindows` opens and remembers the windows and
+`ChannelWindow` draws one. The checks to make in game are in
+[docs/testing/channel-windows-checklist.md](testing/channel-windows-checklist.md).
+
+- **Opening.** Right-click a channel in the main window's channel list:
+  **Open in new window** (always a new window, with that channel as its only
+  tab); **Add to window ▸**, listing the open windows by their tabs' names
+  (ticked where the channel is a tab already: choosing it shows it there); and
+  **Show its window** when one has it. The channel's ⋮ menu has **Open in new
+  window** too. A place from the user's old keys (see *Stale places*) has none
+  of these.
+- **A window** is a Dalamud window like the main window, so Dalamud's own
+  settings for its transparency, pinning and click-through apply, and its
+  sizes follow the global scale. It can be resized and closed; Escape never
+  closes it. Its title is the selected tab's channel. Along the top, a tab per
+  channel: its nickname or (shortened) name in the channel's colour, and on a
+  tab not selected, the number of messages from others since it was last
+  shown; its tooltip has the full name and the channel's commands. A tab
+  closes with its ×, or **Close tab** in its right-click menu, and closing the
+  last closes the window. Tabs can be dragged into another order. The **+**
+  after them lists the channels the window doesn't have, in the channel list's
+  order; choosing one adds it as a tab and selects it.
+- **A tab** shows the channel's warnings at the top as the channel pane does
+  (the membership warning, and why nothing can be sent yet: an old key's
+  place, a new key pending, waiting for a member), then its lines, oldest at
+  the top, following the newest unless scrolled up (then **New messages**
+  takes it back down), then the input box.
+- **A line** is the time it arrived (HH:mm, by the computer's clock; the
+  plugin has no setting for the server's time), the sender's name in the
+  channel's colour (name and world in its tooltip), and the text, wrapped
+  under the name. A link is its name in brackets, coloured by kind: hovering
+  an item shows its name (and high quality, collectable or key item), a
+  status its name, and clicking a map flag opens the map there (Dalamud's
+  `OpenMapWithMapLink`, on the game thread), as the game's own links do. A
+  link passes the same checks as in chat (`ChatLinks.Check`, against the
+  player's own sheets) and shows the player's own game's name for it; one that
+  doesn't shows the sender's "[name]" as text. All remote text is sanitised as
+  for chat (`TextSanitizer`, `LinkedText.ShownParts`), and a "##" in a name
+  can't end a title or label early. LookingGlass's lines about the channel
+  (someone was invited, joined, left or was removed, set up LookingGlass
+  again; the channel's new name; a message that was dropped) are dimmed, and
+  warnings are light or dark red as in chat. Right-click a line to copy it.
+- **The input box** sends to its tab's channel only, through the same path as
+  `/lgc` (`ChannelSender.Send`): the same link placeholders, text commands,
+  rate limits, rekey waits and errors. Enter sends and keeps the keyboard in
+  the box; Enter on an empty box, or Escape, gives the keyboard back to the
+  game (Escape keeps what was typed, which ImGui would otherwise undo). Up to
+  500 characters, as in the game's chat box: the box itself stops there as
+  text is typed or pasted (an input callback), with a counter from 400, so
+  nothing is cut unseen. "Not sent: …" shows as a line in the tab, in
+  LookingGlass blue, never in game chat (and not at all if the session it was
+  typed in has ended), and what was typed goes back into the box to send
+  again, once the box is empty, into the box's own text if it is being typed
+  in (the same callback), so what it shows is what Enter sends.
+- **Links typed in the box.** `<item>`, `<flag>` and `<status>` resolve as
+  they do in chat, from what the game holds now (the item last linked, the
+  map flag, the status). The game's own ways of linking (an item's **Link**,
+  or a shortcut) insert the link into the game's chat box, not into this
+  window, so a link made that way goes to game chat unless it is cleared
+  there. No supported way to route it to the window is known, and nothing is
+  hooked for it; typing `<item>` in the window after linking it in game uses
+  the item the game holds as linked.
+- **Messages since login** (`ChannelHistory`). Each channel's last 500 lines,
+  kept with the session, not the windows, so closing and opening a window
+  loses nothing: messages from others, the user's own (as the server accepts
+  them, the same event that shows them in chat, so nothing shows that wasn't
+  sent, and nothing twice), notices about the channel, and the window's
+  feedback. In memory only, nothing written to disk, like the game's own chat
+  log. Emptied whenever a session stops or starts (logging out, another
+  character or server; a reconnect keeps it), and what an old session still
+  delivers is dropped (a generation number). A message delivered twice is
+  held once. A channel's lines go when the user is no longer in it. The owner
+  accepted showing only what came since login (2026-10-05). Stored history
+  isn't planned, but isn't ruled out: if it comes later, it would be opt-in,
+  kept on the player's computer and encrypted like the secrets file (see the
+  open question on message history).
+- **Also show in game chat.** Per channel, kept per character like its colour
+  (`CharacterSettings.GameChatOff`), in the channel's ⋮ menu and a tab's
+  right-click menu; on unless turned off, as before. Off, the channel's
+  messages and its notices go only to its history and windows
+  (`GameChatChannels`), except warnings, which go to game chat too, so a
+  warning is never kept from it. Turning it off while no window has the
+  channel opens one, and a channel off game chat is never left shown nowhere:
+  once no window has it (its last tab or window was closed, or none came back
+  at login), it goes back to game chat, with one blue line there ("[sky] shows
+  in game chat again, since no window shows it.", `GameChatChannels.ShownNowhere`).
+  Unread counts don't change. Where a message goes is read before the session
+  is checked, and a session that stops starts the history's next generation
+  before its channel settings are let go, so a message caught in a logout is
+  dropped rather than printed in game chat as if its channel weren't off.
+- **Unread.** A tab selected in the window that has the focus reads its
+  channel for the channel list too: `UnreadCounter` takes a viewer per window
+  (the main window, and each channel window while it has the focus), and a
+  channel any of them shows is read. A window without the focus doesn't read
+  its tab, so what arrives meanwhile counts in the channel list.
+- **Remembered** per character and server address
+  (`CharacterSettings.ChannelWindows`; the rules in `ChannelWindowLayouts`):
+  each window's tabs, their order (read off where ImGui shows the tabs once the
+  mouse is let go after a drag), the selected tab, and its position and size
+  in pixels (saved once a move or resize is over; not in ImGui's own settings
+  file). What a hand-edited settings file holds where a window or its tabs
+  should be counts as nothing, and a fault there is logged once without taking
+  the UI down; no empty list is kept for a server. They open again at login
+  once the channel list is in, without the channels the user is no longer in
+  (a window left with none isn't opened), where they were, and without taking
+  the focus from the game. They close without being forgotten at logout, when
+  the session changes, and when the plugin unloads; only closing one forgets
+  it. Windows are added to and taken from Dalamud's window system only between
+  frames (`ChannelWindows.Update`), never while it draws.
+- **Sticky mode is separate.** Talking in a channel from the chat box
+  (`/lgc3` with no message) works as before, and windows don't change it. The
+  window is the leak-proof way to talk in a channel: nothing the game, ChatTwo
+  or another plugin does can send what is typed there to game chat.
+- **Simple and advanced mode** apply as everywhere: the warnings and notices
+  in the mode's words, switching at once; nothing technical in simple mode.
+
 ### Simple and advanced mode
 
 Most players don't want to think about keys, so the plugin starts in **simple
@@ -2144,54 +2281,6 @@ What it costs, all accepted:
 - **Crowds.** One copy per recipient is fine for a handful of friends nearby.
   Cap recipients per message (about 50), and rate-limit like channel messages.
 
-### Channel windows (pop-out chat)
-
-Status: planned, not started. Requested by the owner (2026-10-05) for after
-the sticky channel is settled.
-
-A channel can be opened in its own instant-messenger-style window, apart from
-the game's chat log and ChatTwo. What you type there goes only to that
-channel.
-
-Why:
-
-- **No leak path through game chat.** The window's input box is the plugin's
-  own (ImGui), so typed text never passes through the game's chat input or
-  ChatTwo, and never reaches a game channel, whatever state the game or
-  ChatTwo is in.
-- **No wrong-channel mistakes.** Each window belongs to one channel, shown in
-  its title, colour and input box. With ExtraChat, heavy users of several
-  channels sometimes sent sensitive or embarrassing messages to the wrong one;
-  separate windows make the target obvious.
-
-How it could work:
-
-- **Opening:** from the channel's menu in the main window ("Open in window"),
-  and later perhaps a command. Several windows can be open at once; which
-  ones are open, and where, is remembered.
-- **Each window shows:** the channel's name and colour, its messages with
-  sender names and times, an input box, and optionally its members. Its own
-  unread count, and a mark in the main window's channel list.
-- **Game chat stays optional.** A per-channel setting decides whether that
-  channel's messages also appear in game chat (as today) or only in its
-  window.
-- **Messages it can show** are those received since the player logged in,
-  like the game's own chat log, which keeps nothing between logins either.
-  The owner accepted this (2026-10-05). Stored history isn't planned, but
-  isn't ruled out: if it comes later, it would be opt-in, kept on the
-  player's computer and encrypted like the secrets file (see the open
-  question on message history).
-- **Typing in the window** takes keyboard focus from the game, as other
-  plugin windows do; pressing Escape or clicking away gives it back.
-- **The same send path** as `/lgc`: the same rate limits, "not sent" errors,
-  rekey waits and plain-language warnings. The window shows the channel's
-  warnings at the top, as the channel pane does.
-- **Simple and advanced mode** apply as everywhere else.
-
-To decide when it's built: whether windows can be docked together as tabs
-(depends on what Dalamud's ImGui allows), and how the window looks with
-Dalamud's transparency.
-
 ### Garbled speech with GagSpeak
 
 Status: not possible at this time; nothing built, and no request made. The
@@ -2333,6 +2422,13 @@ The owner's decisions, and why.
   older clients show, and are rebuilt from the recipient's own game data
   after checks, never from bytes off the network (see
   [Links in messages](#links-in-messages)). No server change.
+- **Channel windows (2026-10-06).** In the owner's words, several windows can
+  be open at a time, each with tabs for several channels: right-click a
+  channel in the list to make a window for it (or add it to one), and a "+"
+  after the tabs to add another channel. They show only what came since login,
+  like the game's chat log (accepted 2026-10-05); stored history isn't planned
+  but isn't ruled out. Game chat stays optional per channel, warnings
+  excepted. See [Channel windows](#channel-windows).
 - **Friends-only local chat (2026-10-05).** No party or Free Company option,
   since those can include people a player doesn't trust.
 - **Key-change policy for re-verified keys.** Keys re-verified through the
