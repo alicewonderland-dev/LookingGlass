@@ -22,6 +22,13 @@ public sealed class TokenBucket(double perSecond, double burst, TimeProvider? ti
         }
     }
 
+    /// <summary>Gives back a token taken for something that turned out not to happen.</summary>
+    public void Refund() {
+        lock (this._lock) {
+            this._tokens = Math.Min(this._burst, this._tokens + 1);
+        }
+    }
+
     private void Refill() {
         var now = this._time.GetUtcNow();
         this._tokens = Math.Min(this._burst, this._tokens + Math.Max(0, (now - this._updated).TotalSeconds) * perSecond);
@@ -61,6 +68,13 @@ public class KeyedRateLimits<TKey>(double perSecond, double burst, TimeProvider?
         }
 
         return entry.Bucket.TryTake();
+    }
+
+    /// <summary>Gives back a token taken for the key, for something that turned out not to happen.</summary>
+    public void Refund(TKey key) {
+        if (this._buckets.TryGetValue(key, out var entry)) {
+            entry.Bucket.Refund();
+        }
     }
 }
 

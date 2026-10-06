@@ -187,10 +187,51 @@ public sealed class ServerLimitTests : IAsyncLifetime {
         Assert.Equal(ErrorCode.RateLimited, limited?.Code);
         Assert.Contains("You've invited Bob Invite Hog too often recently", limited!.Message);
 
-        // Alice can still invite him: he has his whole budget for everyone else.
-        var aliceChannels = this.SeedChannels(alice, 4);
+        // Her further tries are refused before they spend anything of his: the pair's limit is checked first.
+        for (var i = 0; i < 10; i++) {
+            var refused = await Assert.ThrowsAsync<ServerErrorException>(() => mallory.Session.SendRawAsync(this.Invite(channelId, mallory, bob.UserId, bob.Keys(),
+                at => ChannelCrypto.SealInvite("Hogging", channelId, at, bob.UserId, bobAgreement, malloryKeys, mallory.UserId)), Ct));
+            Assert.Contains("too often recently", refused.Message);
+        }
+
+        // Alice and Carol can still invite him: he has the rest of his budget (10) for everyone else.
+        var carol = await this._server.RegisterAsync("Carol Invite Hog");
         var invitee = new Invitee(bob.UserId, bob.Keys());
-        Assert.Equal(3, await this.InviteUntilLimitedAsync(alice, aliceChannels.Select(id => (id, invitee)).ToList()));
+        foreach (var other in new[] { alice, carol }) {
+            var channels = this.SeedChannels(other, 4);
+            Assert.Equal(3, await this.InviteUntilLimitedAsync(other, channels.Select(id => (id, invitee)).ToList()));
+        }
+    }
+
+    /// <summary>
+    /// An invite the server refuses for its log entry (made before someone else's change landed: the client fetches the log
+    /// and tries again) spends nothing: not the inviter's, the pair's or the invitee's allowance. Otherwise one invite,
+    /// retried, could use up all three of the pair's.
+    /// </summary>
+    [Fact]
+    public async Task AnInviteRefusedForItsLogEntrySpendsNothing() {
+        var mallory = await this._server.RegisterAsync("Mallory Invite Race");
+        var bob = await this._server.RegisterAsync("Bob Invite Race");
+        var carol = await this._server.RegisterAsync("Carol Invite Race");
+        var channelId = await mallory.Session.CreateChannelAsync("Race", Ct);
+        var before = this._server.ServerMembership(channelId).Head!;
+        await mallory.Session.InviteAsync(channelId, carol.Name, ProtocolInfo.DebugWorldName, Ct);
+        using var malloryKeys = mallory.LoadIdentity();
+        var bobAgreement = bob.LoadIdentity().AgreementPublicKey;
+
+        // Five tries with an entry made before Carol's invite: each refused as not the next one.
+        for (var i = 0; i < 5; i++) {
+            var stale = this._server.ForgeEntry(channelId, mallory, MembershipEntryKind.Invite, bob.UserId, bob.Keys(), after: before);
+            var (sealedName, signature) = ChannelCrypto.SealInvite("Race", channelId, MembershipEntries.PositionOf(stale), bob.UserId, bobAgreement, malloryKeys, mallory.UserId);
+            var refused = await Assert.ThrowsAsync<ServerErrorException>(() => mallory.Session.SendRawAsync(new ClientFrame {
+                InviteMember = new InviteMember { ChannelId = channelId, Entry = stale, SealedName = sealedName, Signature = ByteString.CopyFrom(signature) },
+            }, Ct));
+            Assert.Equal(ErrorCode.Conflict, refused.Code);
+        }
+
+        // The pair's three invites are all still there.
+        var invitee = new Invitee(bob.UserId, bob.Keys());
+        Assert.Equal(3, await this.InviteUntilLimitedAsync(mallory, this.SeedChannels(mallory, 4).Select(id => (id, invitee)).ToList()));
     }
 
     /// <summary>One inviter (with many channels) can't fill someone's pending invites: at most 5 from any one inviter wait at once.</summary>

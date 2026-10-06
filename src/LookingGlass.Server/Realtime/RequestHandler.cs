@@ -1075,10 +1075,20 @@ public sealed class RequestHandler(
         }
 
         if (!this._invitesReceived.TryTake(invitee.UserId)) {
+            this._invitesBetween.Refund((me.UserId, invitee.UserId));
             throw new RequestException(ErrorCode.RateLimited, $"{invitee.Name} has been sent too many invites recently; try again later.");
         }
 
-        this.AppendEntry(channelId, me, entry, request.SealedName, request.Signature.ToByteArray());
+        try {
+            this.AppendEntry(channelId, me, entry, request.SealedName, request.Signature.ToByteArray());
+        } catch (RequestException) {
+            // Refused for its log entry (most often made before someone else's change landed, which the client fetches and
+            // tries again after): no invite was sent, so none is counted, or one invite retried would use up the pair's.
+            this._invitesSent.Refund(me.UserId);
+            this._invitesBetween.Refund((me.UserId, invitee.UserId));
+            this._invitesReceived.Refund(invitee.UserId);
+            throw;
+        }
         var invite = db.GetInvite(channelId, invitee.UserId)!;
 
         registry.Send(invitee.UserId, new Event { InviteReceived = new InviteReceived { Invite = ToInviteInfo(invite) } });
