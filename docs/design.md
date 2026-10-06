@@ -1228,6 +1228,12 @@ them when a fellow member connects (their first connection) or disconnects
 channel with aren't told, and you aren't shown to them. This is the server's
 word, and it could lie.
 
+The server decides each change, and fills in the online flags of a channel
+list, under one lock, so a client never sees someone online (or offline)
+twice in a row. Whom to tell is looked up before taking it, so a slow lookup
+holds up nobody else's login; a change that a join may have overtaken looks
+again.
+
 ### Blocking and invites
 
 - A user can block others. Their invites are declined unseen, and their
