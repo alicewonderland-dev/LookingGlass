@@ -122,46 +122,75 @@ public sealed class StickyChannelTests {
     private static ChatBoxLine Line(string before, byte[] payload, string text) =>
         new([.. System.Text.Encoding.UTF8.GetBytes(before), .. payload], text);
 
+    private static readonly TypedLink Potion = new(new ChatLink.Item(5333), "Potion");
+
+    /// <summary>
+    /// A line with a link's bytes, as the plugin reads it: its text with a marker where the link is, and the link
+    /// (<see cref="ChatBoxLine.Links"/>).
+    /// </summary>
+    private static ChatBoxLine LinkLine(string before, byte[] payload, string after = "") =>
+        new([.. System.Text.Encoding.UTF8.GetBytes(before), .. payload, .. System.Text.Encoding.UTF8.GetBytes(after)],
+            before + LinkText.Marker(0) + after) { Links = [Potion] };
+
+    private static string Marked(string before, string after = "") => before + LinkText.Marker(0) + after;
+
     [Fact]
-    public void ALineWithOnlyALinkIsKeptFromTheGameSayingSo() {
-        var notSent = new StickyRoute.Dropped(StickyMessages.NotSent(Tag, StickyMessages.NoTextReason));
+    public void ALineWithOnlyALinkGoesToTheChannel() {
+        // The game's chat box: a link with no text, as the link's bytes, or as the "<item>" the chat input holds for it.
+        Assert.Equal(new StickyRoute.ToChannel("aaa", Marked("")), StickyRoute.For("aaa", Tag, LinkLine("", BareItemLink), NoPrefixes));
+        Assert.Equal(new StickyRoute.ToChannel("aaa", Marked("")), StickyRoute.For("aaa", Tag, LinkLine(" ", NamedItemLink, " "), NoPrefixes));
+        Assert.Equal(new StickyRoute.ToChannel("aaa", "<item>"), StickyRoute.For("aaa", Tag, ChatBoxLine.Plain("<item>"), NoPrefixes));
+        Assert.Equal(new StickyRoute.ToChannel("aaa", "<flag> <status>"), StickyRoute.For("aaa", Tag, ChatBoxLine.Plain(" <flag> <status> "), NoPrefixes));
+        Assert.Equal("links only", StickyRoute.Decide("aaa", Tag, LinkLine("", BareItemLink), NoPrefixes).Reason);
+        Assert.Equal("links only", StickyRoute.Decide("aaa", Tag, ChatBoxLine.Plain("<item>"), NoPrefixes).Reason);
 
-        // The game's chat box: a link with no text, as payloads only, or as the "<item>" the chat input holds for it.
-        Assert.Equal(notSent, StickyRoute.For("aaa", Tag, Line("", BareItemLink, ""), NoPrefixes));
-        Assert.Equal(notSent, StickyRoute.For("aaa", Tag, Line(" ", BareItemLink, " "), NoPrefixes));
-        Assert.Equal(notSent, StickyRoute.For("aaa", Tag, ChatBoxLine.Plain("<item>"), NoPrefixes));
-        Assert.Equal(notSent, StickyRoute.For("aaa", Tag, ChatBoxLine.Plain(" <flag> <status> "), NoPrefixes));
-
-        // With text, the text goes, links as their names.
-        Assert.Equal(new StickyRoute.ToChannel("aaa", "look"), StickyRoute.For("aaa", Tag, Line("look ", BareItemLink, "look "), NoPrefixes));
-        Assert.Equal(new StickyRoute.ToChannel("aaa", "look Potion"), StickyRoute.For("aaa", Tag, Line("look ", NamedItemLink, "look Potion"), NoPrefixes));
+        // With text, the text and the links go.
+        Assert.Equal(new StickyRoute.ToChannel("aaa", Marked("look ")), StickyRoute.For("aaa", Tag, LinkLine("look ", NamedItemLink), NoPrefixes));
         Assert.Equal(new StickyRoute.ToChannel("aaa", "look <item>"), StickyRoute.For("aaa", Tag, ChatBoxLine.Plain("look <item>"), NoPrefixes));
+
+        // Payloads with no text and no link LookingGlass can read: kept from the game, saying so.
+        var nothing = new StickyRoute.Dropped(StickyMessages.NotSent(Tag, StickyMessages.NoTextReason));
+        Assert.Equal(nothing, StickyRoute.For("aaa", Tag, Line("", BareItemLink, ""), NoPrefixes));
+        Assert.Equal(nothing, StickyRoute.For("aaa", Tag, Line(" ", BareItemLink, " "), NoPrefixes));
+        Assert.Equal("nothing to send", StickyRoute.Decide("aaa", Tag, Line("", BareItemLink, ""), NoPrefixes).Reason);
+    }
+
+    [Fact]
+    public void TheLinksOfALineGoWithItsText() {
+        var line = LinkLine("look ", NamedItemLink, " here");
+        Assert.Equal(new TypedLine(Marked("look ", " here"), [Potion]), line.Typed);
+        Assert.Equal(new StickyRoute.ToChannel("aaa", Marked("look ", " here")), StickyRoute.For("aaa", Tag, line, NoPrefixes));
+
+        // The text after a short command keeps its markers, so its links are still found.
+        var afterCommand = LinkLine("/cwl1 look ", NamedItemLink);
+        var sent = (StickyRoute.ToChannel) StickyRoute.For("aaa", Tag, afterCommand, ChatChannelPrefixes.SentAs());
+        Assert.Equal(("look [Potion]", 1), LinkText.Compose(afterCommand.Typed.WithText(sent.Text)) is var (message, _) ? (message.Text, message.Links.Count) : default);
     }
 
     [Theory]
     [MemberData(nameof(ChatTwoPrefixes))]
     public void WithChatTwoAShortCommandFollowedByAnythingIsTheChannels(string prefix) {
         // ChatTwo sends a link typed in an input on a cross-world linkshell as "/cwl1 <item>" (its input holds the link
-        // as the game's "<item>"), or with the link's own bytes after the command: never game chat.
+        // as the game's "<item>"), or with the link's own bytes after the command: never game chat, and now sent.
         var withChatTwo = ChatChannelPrefixes.SentAs();
-        var notSent = new StickyRoute.Dropped(StickyMessages.NotSent(Tag, StickyMessages.NoTextReason));
+        var linkOnly = new StickyRoute.ToChannel("aaa", Marked(""));
 
-        Assert.Equal(notSent, StickyRoute.For("aaa", Tag, ChatBoxLine.Plain($"{prefix} <item>"), withChatTwo));
-        Assert.Equal(notSent, StickyRoute.For("aaa", Tag, Line($"{prefix} ", BareItemLink, $"{prefix} "), withChatTwo));
+        Assert.Equal(new StickyRoute.ToChannel("aaa", "<item>"), StickyRoute.For("aaa", Tag, ChatBoxLine.Plain($"{prefix} <item>"), withChatTwo));
+        Assert.Equal(linkOnly, StickyRoute.For("aaa", Tag, LinkLine($"{prefix} ", BareItemLink), withChatTwo));
         // Straight after the command, with no space.
-        Assert.Equal(notSent, StickyRoute.For("aaa", Tag, Line(prefix, BareItemLink, prefix), withChatTwo));
-        Assert.Equal(notSent, StickyRoute.For("aaa", Tag, Line($"{prefix}  ", BareItemLink, $"{prefix}  "), withChatTwo));
+        Assert.Equal(linkOnly, StickyRoute.For("aaa", Tag, LinkLine(prefix, BareItemLink), withChatTwo));
+        Assert.Equal(linkOnly, StickyRoute.For("aaa", Tag, LinkLine($"{prefix}  ", BareItemLink), withChatTwo));
+        Assert.Equal("short command with links only", StickyRoute.Decide("aaa", Tag, LinkLine($"{prefix} ", BareItemLink), withChatTwo).Reason);
 
-        // Text, a named link, an auto-translate phrase: sent as their text.
-        Assert.Equal(new StickyRoute.ToChannel("aaa", "Potion"), StickyRoute.For("aaa", Tag, Line($"{prefix} ", NamedItemLink, $"{prefix} Potion"), withChatTwo));
-        Assert.Equal(new StickyRoute.ToChannel("aaa", "look at Potion"),
-            StickyRoute.For("aaa", Tag, Line($"{prefix} look at ", NamedItemLink, $"{prefix} look at Potion"), withChatTwo));
-        Assert.Equal(new StickyRoute.ToChannel("aaa", "Hello"), StickyRoute.For("aaa", Tag, Line($"{prefix} ", AutoTranslate, $"{prefix} Hello"), withChatTwo));
+        // Text and a link, an auto-translate phrase: sent.
+        Assert.Equal(new StickyRoute.ToChannel("aaa", Marked("look at ")), StickyRoute.For("aaa", Tag, LinkLine($"{prefix} look at ", NamedItemLink), withChatTwo));
+        Assert.Equal(new StickyRoute.ToChannel("aaa", "Hello"), StickyRoute.For("aaa", Tag, Line($"{prefix} ", AutoTranslate, $"{prefix} Hello"), withChatTwo));
 
         // Whatever it holds, it never reaches the game while talking in a channel.
         foreach (var payload in new[] { BareItemLink, NamedItemLink, AutoTranslate }) {
             Assert.True(StickyRoute.For("aaa", Tag, Line($"{prefix} ", payload, $"{prefix} "), withChatTwo).KeepsFromGame);
             Assert.True(StickyRoute.For("aaa", Tag, Line("", payload, ""), NoPrefixes).KeepsFromGame);
+            Assert.True(StickyRoute.For("aaa", Tag, LinkLine($"{prefix} ", payload), withChatTwo).KeepsFromGame);
         }
 
         // Only the bare command, with nothing at all after it (a string's closing zero byte is nothing), switches.
@@ -170,18 +199,22 @@ public sealed class StickyChannelTests {
     }
 
     [Fact]
-    public void InTheGamesChatBoxAShortCommandWithALinkIsKeptFromTheGameToo() {
-        // The owner's test, ChatTwo off: a link alone reached the cross-world linkshell (the game's chat box went past the
-        // old gate entirely). Now that its lines are caught, a short command with a link and no text, as "<item>" or the
-        // link's bytes, is kept from the game, saying so.
-        var notSent = new StickyRoute.Dropped(StickyMessages.NotSent(Tag, StickyMessages.NoTextReason));
-        Assert.Equal(notSent, StickyRoute.For("aaa", Tag, ChatBoxLine.Plain("/cwl1 <item>"), ChatChannelPrefixes.SentAs()));
-        Assert.Equal(notSent, StickyRoute.For("aaa", Tag, Line("/cwl1 ", BareItemLink, "/cwl1 "), ChatChannelPrefixes.SentAs()));
-        Assert.Equal(notSent, StickyRoute.For("aaa", Tag, Line("/p ", BareItemLink, "/p "), ChatChannelPrefixes.SentAs()));
+    public void InTheGamesChatBoxAShortCommandWithALinkIsStillAOneOff() {
+        // Typed in the game's own chat box, a short command with a link (and nothing else) is the player's one-off, as
+        // now: the game sends the link to that channel once, itself.
+        var typedInGame = ShortCommandRule.For(LineSource.Game, null).AsText;
+        Assert.Equal(StickyRoute.Game, StickyRoute.For("aaa", Tag, ChatBoxLine.Plain("/cwl1 <item>"), typedInGame));
+        Assert.Equal(StickyRoute.Game, StickyRoute.For("aaa", Tag, LinkLine("/cwl1 ", BareItemLink), typedInGame));
+        Assert.Equal(StickyRoute.Game, StickyRoute.For("aaa", Tag, LinkLine("/p look ", NamedItemLink), typedInGame));
+
+        // Where every short command stands for text (the strict rule), it goes to the channel with its link.
+        Assert.Equal(new StickyRoute.ToChannel("aaa", "<item>"), StickyRoute.For("aaa", Tag, ChatBoxLine.Plain("/cwl1 <item>"), ChatChannelPrefixes.SentAs()));
+        Assert.Equal(new StickyRoute.ToChannel("aaa", Marked("")), StickyRoute.For("aaa", Tag, LinkLine("/p ", BareItemLink), ChatChannelPrefixes.SentAs()));
 
         // The long form is the player's own one-off: the game's.
         Assert.Equal(StickyRoute.Game, StickyRoute.For("aaa", Tag, ChatBoxLine.Plain("/cwlinkshell1 <item>"), ChatChannelPrefixes.SentAs()));
     }
+
 
     /// <summary>Every short channel command ChatTwo 1.40.9 can put in front of plain text (InputChannelExt.Prefix), but /t, /e and /ecl.</summary>
     public static TheoryData<string> ChatTwoPrefixes() {
@@ -300,8 +333,8 @@ public sealed class StickyChannelTests {
         Assert.Equal(new StickyRoute.ToChannel("aaa", "hi"), Route("/p hi", LineSource.Plugin, MainInput(ChatTwoParty, "hi", "/p hi")));
         Assert.Equal(new StickyRoute.ToChannel("aaa", "hello there"),
             Route("/cwl1 hello there", LineSource.Plugin, MainInput(ChatTwoCrossLinkshell1, "hello there", "/cwl1 hello there")));
-        // A link alone: kept, saying so.
-        Assert.Equal(new StickyRoute.Dropped(StickyMessages.NotSent(Tag, StickyMessages.NoTextReason)),
+        // A link alone: sent to the channel too.
+        Assert.Equal(new StickyRoute.ToChannel("aaa", "<item>"),
             Route("/cwl1 <item>", LineSource.Plugin, MainInput(ChatTwoCrossLinkshell1, "<item>", "/cwl1 <item>")));
     }
 
@@ -398,43 +431,6 @@ public sealed class StickyChannelTests {
     public void EveryShortCommandChatTwoSendsTextWithHasItsChatType() {
         var named = Enumerable.Range(0, 1100).Select(ChatChannelPrefixes.OfChatTwoType).Where(prefix => prefix != null).ToHashSet();
         Assert.True(ChatChannelPrefixes.ChatTwo.All(named.Contains));
-    }
-
-    // ---------------------------------------------------------------- links in a message sent to the channel
-
-    private static string? Names(string placeholder) => placeholder switch {
-        "<item>" => "Potion",
-        "<flag>" => "Limsa Lominsa Lower Decks ( 9.5 , 11.2 )",
-        _ => null,
-    };
-
-    [Fact]
-    public void ALinkGoesAsItsNameInBrackets() {
-        Assert.Equal(("look [Potion]", false), LinkText.Resolve("look <item>", Names));
-        Assert.Equal(("meet at [Limsa Lominsa Lower Decks ( 9.5 , 11.2 )] now", false), LinkText.Resolve("meet at <flag> now", Names));
-        Assert.Equal(("[Potion] or [Potion]?", false), LinkText.Resolve("<ITEM> or <item>?", Names));
-        Assert.Equal(("no links here", false), LinkText.Resolve("no links here", Names));
-    }
-
-    [Fact]
-    public void ALinkWhoseNameIsntFoundIsLeftOutAndTheRestSent() {
-        Assert.Equal(("look at this", true), LinkText.Resolve("look at <status> this", Names));
-        Assert.Equal(("look", true), LinkText.Resolve("look <status>", _ => throw new InvalidOperationException()));
-        Assert.Equal(("look", true), LinkText.Resolve("look <item>", _ => "   "));
-    }
-
-    [Fact]
-    public void ANameIsAskedForOnceAndCantInjectAnything() {
-        var asked = 0;
-        Assert.Equal(("[a] [a]", false), LinkText.Resolve("<item> <item>", _ => {
-            asked++;
-            return "a";
-        }));
-        Assert.Equal(1, asked);
-
-        // Game formatting and anything that reads as a placeholder is plain text in a name.
-        var (text, _) = LinkText.Resolve("look <item>", _ => "Po\u0002tion <flag> [x]");
-        Assert.Equal("look [Potion (flag) (x)]", text);
     }
 
     // ---------------------------------------------------------------- the gate: fail closed
@@ -708,7 +704,7 @@ public sealed class StickyChannelTests {
         Assert.Equal("Not sent to [sky] or game chat: too fast.", StickyMessages.NotSent(Tag, "too fast"));
         Assert.Equal("Not sent to [sky] or game chat: too fast.", StickyMessages.NotSent(Tag, " too fast. "));
         Assert.Equal("Not sent to [sky] or game chat: Slow down (RateLimited).", StickyMessages.NotSent(Tag, "Slow down (RateLimited)"));
-        Assert.Equal("Not sent to [sky] or game chat: no text (links can't be sent).", StickyMessages.NotSent(Tag, StickyMessages.NoTextReason));
+        Assert.Equal("Not sent to [sky] or game chat: nothing in it can be sent to a channel.", StickyMessages.NotSent(Tag, StickyMessages.NoTextReason));
     }
 
     [Fact]
@@ -847,8 +843,8 @@ public sealed class StickyChannelTests {
         { "/cwl1 my secret plans", "/cwl1", "to LookingGlass" },
         { "/party my secret plans", "/party", "to game" },
         { "/s", "/s", "stop talking in the channel, then to game" },
-        { "/cwl1 <item>", "/cwl1", "kept from game" },
-        { "<item>", "(link placeholder)", "kept from game" },
+        { "/cwl1 <item>", "/cwl1", "to LookingGlass" },
+        { "<item>", "(link placeholder)", "to LookingGlass" },
         { "   ", "(blank)", "kept from game" },
         { "/t Secret Person@Zalera my secret plans", "/t", "to game" },
         { "/lgc3 my secret plans", "/lgc3", "to game" },
@@ -878,8 +874,10 @@ public sealed class StickyChannelTests {
         var withChatTwo = ChatChannelPrefixes.SentAs();
         foreach (var line in new[] {
                      Line("/cwl1 ", BareItemLink, "/cwl1 "),
-                     Line("/p secret ", NamedItemLink, "/p secret Potion"),
-                     Line("", NamedItemLink, "Potion"),
+                     LinkLine("/cwl1 ", BareItemLink),
+                     LinkLine("/p secret ", NamedItemLink),
+                     LinkLine("", NamedItemLink),
+                     LinkLine("secret ", NamedItemLink, " plans"),
                      Line("", BareItemLink, ""),
                  }) {
             var (route, reason) = StickyRoute.Decide("aaa", Tag, line, withChatTwo);
@@ -887,19 +885,40 @@ public sealed class StickyChannelTests {
             Assert.Contains("payload yes", log);
             Assert.Contains($"{line.Raw.Length} bytes", log);
             Assert.DoesNotContain("Potion", log);
+            Assert.DoesNotContain("5333", log);
             Assert.DoesNotContain("secret", log);
-            Assert.DoesNotContain("", log);
+            Assert.DoesNotContain("plans", log);
             Assert.All(log, c => Assert.True(c >= ' ' && c < 0x7F, $"Not plain ASCII in the log: {(int) c}"));
         }
 
         Assert.Equal("(payload)", StickyDiagnostics.Token(Line("", BareItemLink, "")));
-        Assert.Equal("(text)", StickyDiagnostics.Token(Line("", NamedItemLink, "Potion")));
-        var linkOnly = Line("/cwl1 ", BareItemLink, "/cwl1 ");
+        Assert.Equal("(payload)", StickyDiagnostics.Token(LinkLine("", NamedItemLink)));
+        Assert.Equal("(text)", StickyDiagnostics.Token(LinkLine("look ", NamedItemLink)));
+        Assert.Equal("(link placeholder)", StickyDiagnostics.Token(ChatBoxLine.Plain("<item>")));
+        var linkOnly = LinkLine("/cwl1 ", BareItemLink);
         var decided = StickyRoute.Decide("aaa", Tag, linkOnly, withChatTwo);
-        Assert.Equal("[sticky] line: talking in [sky], ChatTwo yes, /cwl1, 26 bytes, payload yes -> kept from game (short command with no text)",
+        Assert.Equal("[sticky] line: talking in [sky], ChatTwo yes, /cwl1, 26 bytes, payload yes -> to LookingGlass (short command with links only)",
             StickyDiagnostics.Line(Tag, true, linkOnly, decided.Route, decided.Reason));
     }
 
+    [Fact]
+    public void TheDiagnosticLogSaysWhatWasSentInCountsOnly() {
+        var (message, _) = LinkText.Compose(new TypedLine(Marked("secret ", " plans"), [Potion]));
+        var log = StickyDiagnostics.Sent(Tag, 40, message, false);
+        Assert.Equal("[sticky] sending: talking in [sky], 40 bytes typed, 21 characters, 1 link(s)", log);
+        Assert.DoesNotContain("Potion", log);
+        Assert.DoesNotContain("5333", log);
+        Assert.DoesNotContain("secret", log);
+
+        var flag = new TypedLink(new ChatLink.MapFlag(129, 11, 9500, -11200), "Limsa Lominsa Lower Decks ( 9.5 , 11.2 )");
+        var (withFlag, leftOut) = LinkText.Compose(new TypedLine($"{LinkText.Marker(0)} {LinkText.Marker(1)}", [flag, new TypedLink(null, null)]));
+        Assert.True(leftOut);
+        log = StickyDiagnostics.Sent(Tag, 30, withFlag, leftOut);
+        Assert.EndsWith(", 1 link(s), a link left out (couldn't be read)", log);
+        foreach (var secret in new[] { "Limsa", "129", "9500", "11200", "9.5" }) {
+            Assert.DoesNotContain(secret, log);
+        }
+    }
     [Fact]
     public void TheDiagnosticLogNamesSwitchesStartsAndEnds() {
         Assert.Equal("[sticky] channel switch: talking in [sky], chat type 1 -> 1, typed line in flight yes -> ended (ChannelSwitched)",
@@ -924,8 +943,6 @@ public sealed class StickyChannelTests {
             StickyDiagnostics.Line(Tag, false, line, route, reason, source: LineSource.Game, rule: rule.Why));
         Assert.StartsWith("[sticky] line from an unknown way in (no ProcessChatBoxEntry hook): ",
             StickyDiagnostics.Line(Tag, true, line, route, reason, source: LineSource.Unknown));
-        Assert.Equal("[sticky] link left out: talking in [sky], a link's name couldn't be found, sent the rest (14 bytes before)",
-            StickyDiagnostics.LinkLeftOut(Tag, 14));
     }
 
     [Fact]

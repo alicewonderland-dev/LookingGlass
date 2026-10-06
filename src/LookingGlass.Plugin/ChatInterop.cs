@@ -1,6 +1,4 @@
 using System.Text;
-using Dalamud.Game.Text.SeStringHandling;
-using Dalamud.Game.Text.SeStringHandling.Payloads;
 using Dalamud.Hooking;
 using FFXIVClientStructs.FFXIV.Client.System.String;
 using FFXIVClientStructs.FFXIV.Client.UI;
@@ -9,7 +7,6 @@ using FFXIVClientStructs.FFXIV.Client.UI.Shell;
 using FFXIVClientStructs.FFXIV.Component.Shell;
 using InteropGenerator.Runtime;
 using LookingGlass.Core.Client;
-using Lumina.Excel.Sheets;
 
 namespace LookingGlass.Plugin;
 
@@ -76,7 +73,8 @@ internal interface IChatBoxListener {
 /// kept (fail closed, see <see cref="ChatBoxGate"/>). Commands go on to the game unchanged, so Dalamud's plugin commands
 /// (/lgc included) still run: Dalamud dispatches them from its own hook on <c>ShellCommands.TryInvokeDebugCommand</c>,
 /// which the game calls while running a command it doesn't know, inside this function, and runs the handler right
-/// there. Another plugin hooking this same function is chained by Dalamud: whichever runs first passes the line on.</item>
+/// there. Another plugin hooking this same function is chained by Dalamud: whichever runs first passes the line on.
+/// A /lgc line is also read here, sticky or not, for its links (see <see cref="TypedCommandLine"/>).</item>
 /// <item><c>RaptureShellModule.ChangeChatChannel</c> (required): switches the game's chat channel (/s, /p, ChatTwo's
 /// picker and tabs). Seen even when the channel switched to is the one it was on; the listener is told whether a line
 /// being run made the call, as ChatTwo also calls it with the channel already on at every tab change. Some of the
@@ -115,6 +113,9 @@ internal sealed unsafe class ChatInterop : IDisposable {
     // The commands of the lines let through that are running now, outermost first (null: not a command, or not talking
     // in a channel when it started). Game thread only.
     private readonly List<string?> _running = [];
+    // Alongside them: a /lgc line, as read at the gate (its links, and what its placeholders stood for then), for its
+    // command handler, which Dalamud runs inside the game's call (see TypedCommandLine). Null for any other line.
+    private readonly List<TypedLine?> _typed = [];
 
     public ChatInterop(IChatBoxListener listener) {
         this._listener = listener;
@@ -143,6 +144,35 @@ internal sealed unsafe class ChatInterop : IDisposable {
         this._chatBoxHook?.Enable();
         this._renameHook?.Enable();
         this._insertParamHook?.Enable();
+    }
+
+    /// <summary>
+    /// The /lgc line being run by the game now, if <paramref name="command"/> (as Dalamud gives it to its handler) is
+    /// its command: its text (the command included) with a marker for each link, read at the gate before the game ran
+    /// it, and its links, the placeholders' already resolved (see <see cref="GameLinks"/>). Null if the line running is
+    /// another (a plugin called the command itself), or couldn't be read. Game thread only.
+    /// </summary>
+    public TypedLine? TypedCommandLine(string command) {
+        if (this._typed.Count == 0 || this._typed[^1] is not { } line) {
+            return null;
+        }
+
+        // Up to any space, as TypedLine.Arguments cuts it (a Japanese IME's full-width space too).
+        return string.Equals(line.Command(), command.Trim(), StringComparison.OrdinalIgnoreCase) ? line : null;
+    }
+
+    /// <summary>A /lgc line read for its handler (see <see cref="TypedCommandLine"/>), or null for any other line, or if reading it failed.</summary>
+    private static TypedLine? ReadCommandLine(ReadOnlySpan<byte> raw) {
+        if (raw.Length < 4 || !Ascii.EqualsIgnoreCase(raw[..4], "/lgc"u8)) {
+            return null;
+        }
+
+        try {
+            return LinkText.ResolvePlaceholders(GameLinks.ReadLine(raw), GameLinks.Placeholder);
+        } catch (Exception ex) {
+            Services.Log.Error(ex, "Couldn't read the links in a /lgc line; it is sent as typed");
+            return null;
+        }
     }
 
     /// <summary>A line is being run by the game now (game thread only).</summary>
@@ -226,12 +256,23 @@ internal sealed unsafe class ChatInterop : IDisposable {
         }
 
         // A channel switch while this runs came from the line: a typed /s, /p. Its command is noted for lines run inside it.
-        this._linesRunning++;
-        this._running.Add(bytes == null ? null : NestedLines.CommandOf(new ChatBoxLine(bytes, "")));
+        // Everything that can throw is read first, and every push is undone in the finally, so the stacks stay in step
+        // with the lines running whatever happens.
+        var runningCommand = bytes == null ? null : NestedLines.CommandOf(new ChatBoxLine(bytes, ""));
+        var typed = message == null ? null : ReadCommandLine(message->AsSpan());
+        var pushed = false;
         try {
+            this._linesRunning++;
+            this._running.Add(runningCommand);
+            this._typed.Add(typed);
+            pushed = true;
             this._commandHook!.Original(module, message, uiModule);
         } finally {
-            this._running.RemoveAt(this._running.Count - 1);
+            if (pushed) {
+                this._running.RemoveAt(this._running.Count - 1);
+                this._typed.RemoveAt(this._typed.Count - 1);
+            }
+
             this._linesRunning--;
         }
 
@@ -269,64 +310,6 @@ internal sealed unsafe class ChatInterop : IDisposable {
             this._pluginLines--;
             (this._pluginLine, this._pluginLineDepth) = (outerLine, outerDepth);
         }
-    }
-
-    /// <summary>
-    /// The name of what a link placeholder in the chat input stands for now (see <see cref="LinkText"/>): "&lt;item&gt;"
-    /// the item the chat log agent holds as linked, "&lt;flag&gt;" the map flag, "&lt;status&gt;" the status; null if
-    /// there is none, or it can't be read. Where the game keeps them is as ChatTwo 1.40.9 reads them for its input
-    /// preview (<c>Message.DecodeTextParam</c>). Game thread only.
-    /// </summary>
-    public static string? LinkName(string placeholder) {
-        switch (placeholder) {
-            case "<item>": {
-                var agent = AgentChatLog.Instance();
-                if (agent == null) {
-                    return null;
-                }
-
-                // The field, not a call into the game: a symbolic item (a link to another) holds no id there. Its
-                // high-quality (+1,000,000) and collectable (+500,000) forms, if present, are the same item.
-                var id = agent->LinkedItem.IsSymbolic ? 0 : agent->LinkedItem.ItemId;
-                if (id is > 0 and < 2_000_000) {
-                    id %= 500_000;
-                }
-
-                var name = id == 0 ? null
-                    : id >= 2_000_000 ? Services.Data.GetExcelSheet<EventItem>().GetRowOrDefault(id)?.Name.ExtractText()
-                    : Services.Data.GetExcelSheet<Item>().GetRowOrDefault(id)?.Name.ExtractText();
-                return string.IsNullOrWhiteSpace(name) ? TextOf(agent->LinkedItemName) : name;
-            }
-            case "<status>": {
-                var agent = AgentChatLog.Instance();
-                if (agent == null) {
-                    return null;
-                }
-
-                var id = agent->ContextStatusId;
-                var name = id == 0 ? null : Services.Data.GetExcelSheet<Status>().GetRowOrDefault(id)?.Name.ExtractText();
-                return string.IsNullOrWhiteSpace(name) ? TextOf(agent->ContextStatusName) : name;
-            }
-            case "<flag>": {
-                var map = AgentMap.Instance();
-                if (map == null || map->FlagMarkerCount == 0) {
-                    return null;
-                }
-
-                var flag = map->FlagMapMarkers[0];
-                var link = new MapLinkPayload(flag.TerritoryId, flag.MapId,
-                    (int) (MathF.Round(flag.XFloat, 3, MidpointRounding.AwayFromZero) * 1000),
-                    (int) (MathF.Round(flag.YFloat, 3, MidpointRounding.AwayFromZero) * 1000));
-                return $"{link.PlaceName} {link.CoordinateString}";
-            }
-            default:
-                return null;
-        }
-    }
-
-    private static string? TextOf(Utf8String text) {
-        var span = text.AsSpan();
-        return span.IsEmpty ? null : SeString.Parse(span).TextValue;
     }
 
     private bool ChangeChannelDetour(RaptureShellModule* shell, int channel, uint linkshellIndex, Utf8String* tellTarget, bool setChatType) {

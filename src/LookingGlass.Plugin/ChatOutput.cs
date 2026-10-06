@@ -33,8 +33,10 @@ public sealed class ChatOutput(Configuration config) {
             builder.AddText(sender);
             if (message.Unsupported) {
                 builder.AddItalics("(a message type this version can't show)");
-            } else {
+            } else if (message.Links.Count == 0) {
                 builder.AddText(TextSanitizer.Clean(message.Text));
+            } else {
+                AddLinked(builder, message.Linked);
             }
 
             if (wholeLine) {
@@ -43,6 +45,26 @@ public sealed class ChatOutput(Configuration config) {
 
             Services.Chat.Print(new XivChatEntry { Type = config.ChatType, Message = builder.Build() });
         });
+    }
+
+    /// <summary>
+    /// A message's text with its links where they were in the sentence: the text sanitised as all remote text is, and
+    /// each link rebuilt from its ids as the game's own interactive link if it checks out against the player's own game
+    /// data (see <see cref="GameLinks.TryAppend"/>), else the sender's "[name]", sanitised, as plain text. No byte that
+    /// came over the network reaches the chat log as anything but text.
+    /// </summary>
+    private static void AddLinked(SeStringBuilder builder, LinkedText message) {
+        // Sanitised, and within one length limit across all its pieces, as a message without links is.
+        foreach (var part in message.ShownParts()) {
+            switch (part) {
+                case MessagePart.Text text:
+                    builder.AddText(text.Value);
+                    break;
+                case MessagePart.Link link when !GameLinks.TryAppend(builder, link.Target):
+                    builder.AddText(link.Fallback);
+                    break;
+            }
+        }
     }
 
     /// <summary>

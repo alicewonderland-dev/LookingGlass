@@ -100,8 +100,17 @@ public static class ChatChannelPrefixes {
 /// <param name="Raw">
 /// Its bytes: an SeString, so text, with links and auto-translate phrases as payloads (each starts with the byte 2).
 /// </param>
-/// <param name="Text">Its text (the plugin reads it with Dalamud: links and auto-translate phrases become their text).</param>
+/// <param name="Text">
+/// Its text (the plugin reads it with Dalamud: auto-translate phrases become their text, and an item, map or status
+/// link a marker for it, see <see cref="TypedLine"/>; <see cref="Links"/> has what the markers stand for).
+/// </param>
 public sealed record ChatBoxLine(byte[] Raw, string Text) {
+    /// <summary>The links the markers in <see cref="Text"/> stand for (none for a line of plain text).</summary>
+    public IReadOnlyList<TypedLink> Links { get; init; } = [];
+
+    /// <summary>The line's text and links, as LookingGlass sends it.</summary>
+    public TypedLine Typed => new(this.Text, this.Links);
+
     /// <summary>
     /// What the chat box holds for a link until it is sent: the game puts these in the chat input when an item, a map
     /// flag or a status is linked, and makes them links only after the line has left the chat box function. ChatTwo's
@@ -112,14 +121,11 @@ public sealed record ChatBoxLine(byte[] Raw, string Text) {
     /// <summary>A line of plain text, as typed.</summary>
     public static ChatBoxLine Plain(string text) => new(Encoding.UTF8.GetBytes(text), text);
 
-    /// <summary>Anything but spaces in <paramref name="text"/>, not counting link placeholders.</summary>
-    public static bool HasText(string text) {
-        foreach (var placeholder in LinkPlaceholders) {
-            text = text.Replace(placeholder, " ", StringComparison.OrdinalIgnoreCase);
-        }
+    /// <summary>Anything but spaces in <paramref name="text"/>, not counting links (placeholders and markers).</summary>
+    public static bool HasText(string text) => !string.IsNullOrWhiteSpace(LinkText.WithoutLinks(text));
 
-        return !string.IsNullOrWhiteSpace(text);
-    }
+    /// <summary>Text or a link (a placeholder or a marker) in <paramref name="text"/>: something to send.</summary>
+    public static bool HasSomethingToSend(string text) => HasText(text) || LinkText.HasLink(text);
 
     /// <summary>
     /// Anything but spaces in <paramref name="bytes"/>: text, or any payload (a link, an auto-translate phrase), whose
@@ -180,12 +186,13 @@ public abstract record StickyRoute {
     /// <summary>
     /// The one decision for everything the chat box submits. Not talking in a channel: the game's. Otherwise:
     /// <list type="bullet">
-    /// <item>Anything that doesn't start with "/" goes to the channel, as text, and never to the game. A line with no text
-    /// (only a link) is kept from the game, saying so; a blank one quietly.</item>
+    /// <item>Anything that doesn't start with "/" goes to the channel, as text and links (a line with only a link too),
+    /// and never to the game. A line with nothing LookingGlass can send (only a payload that is neither text nor a link)
+    /// is kept from the game, saying so; a blank one quietly.</item>
     /// <item>A command in <paramref name="sentAs"/> followed by anything at all (text, a link, an auto-translate phrase):
     /// how ChatTwo sends what was typed in it (see <see cref="ChatChannelPrefixes"/>). The same: to the channel, or kept
-    /// from the game if it has no text. Any other short channel command followed by something is the player's one-off
-    /// (/p brb talks in Party once), and goes to the game.</item>
+    /// from the game if there is nothing to send. Any other short channel command followed by something (a link too) is
+    /// the player's one-off (/p brb talks in Party once), and goes to the game.</item>
     /// <item>A channel switch (<paramref name="switches"/>) on its own: <see cref="Leave"/>.</item>
     /// <item>Any other command goes to the game, /lgc included.</item>
     /// </list>
@@ -222,15 +229,17 @@ public abstract record StickyRoute {
             }
 
             var after = TextAfter(line.Text, command);
-            return (ToChannelOrDropped(channelId, tag, after), ChatBoxLine.HasText(after) ? "short command with text" : "short command with no text");
+            return (ToChannelOrDropped(channelId, tag, after), ChatBoxLine.HasText(after) ? "short command with text"
+                : LinkText.HasLink(after) ? "short command with links only" : "short command with nothing to send");
         }
 
         var text = line.Text.Trim();
-        if (!ChatBoxLine.HasText(text) && !ChatBoxLine.HasContent(line.Raw)) {
+        if (!ChatBoxLine.HasSomethingToSend(text) && !ChatBoxLine.HasContent(line.Raw)) {
             return (new Dropped(null), "blank");
         }
 
-        return (ToChannelOrDropped(channelId, tag, text), ChatBoxLine.HasText(text) ? "plain text" : "no text (links only)");
+        return (ToChannelOrDropped(channelId, tag, text), ChatBoxLine.HasText(text) ? "plain text"
+            : LinkText.HasLink(text) ? "links only" : "nothing to send");
     }
 
     /// <summary>For tests and plain text: <see cref="For(string?, string, ChatBoxLine, IReadOnlyCollection{string}, IReadOnlyCollection{string}?)"/>.</summary>
@@ -238,7 +247,7 @@ public abstract record StickyRoute {
         For(channelId, tag, ChatBoxLine.Plain(input), sentAs);
 
     private static StickyRoute ToChannelOrDropped(string channelId, string tag, string text) =>
-        ChatBoxLine.HasText(text) ? new ToChannel(channelId, text) : new Dropped(StickyMessages.NotSent(tag, StickyMessages.NoTextReason));
+        ChatBoxLine.HasSomethingToSend(text) ? new ToChannel(channelId, text) : new Dropped(StickyMessages.NotSent(tag, StickyMessages.NoTextReason));
 
     /// <summary>The text after the command: the line's text starts with it (the command is plain text in the line).</summary>
     private static string TextAfter(string text, string command) {
@@ -512,8 +521,8 @@ public static class StickyMessages {
     public static string ChatTwoNote(string tag) =>
         $"ChatTwo's \"(Warning: …)\" names its own channel: typing still goes to {tag}, and so does that channel's short command (/p hi on Party), so use /party hi.";
 
-    /// <summary>Said after a message was sent with a link that couldn't be put in as its name, and was left out.</summary>
-    public const string LinkNotSent = "The link wasn't sent (links can't be sent yet).";
+    /// <summary>Said after a message was sent with a link the game didn't say anything about (not even its name), so it was left out.</summary>
+    public const string LinkNotSent = "A link in it couldn't be read, so it was left out.";
 
     /// <summary>The ChatTwo note to add after "Now talking in", or null: only with ChatTwo loaded, and only if never shown before.</summary>
     public static string? ChatTwoNoteFor(string tag, bool chatTwo, bool shownBefore) => chatTwo && !shownBefore ? ChatTwoNote(tag) : null;
@@ -542,7 +551,11 @@ public static class StickyMessages {
 
     public const string NotConnectedReason = "not connected to LookingGlass.";
 
-    public const string NoTextReason = "no text (links can't be sent).";
+    /// <summary>A line with nothing LookingGlass can send: no text, and no link it can read.</summary>
+    public const string NoTextReason = "nothing in it can be sent to a channel.";
+
+    /// <summary>A line whose only links the game said nothing about (not even their names): nothing was left to send.</summary>
+    public const string LinkUnreadableReason = "the link couldn't be read.";
 
     public const string SomethingWentWrongReason = "something went wrong.";
 }

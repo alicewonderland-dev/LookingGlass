@@ -670,7 +670,46 @@ message Content {
 }
 
 message TextContent {
+  // The whole message as plain text, each link as its name in square brackets
+  // ("look [Potion]"). An older client shows only this.
   string text = 1;
+  // Links in the text, in order and not overlapping, each over its bracketed
+  // name. Added with chat links (October 2026); older clients skip the field
+  // (unknown protobuf fields are ignored) and show the text. A receiver
+  // rebuilds a link only from these fields, after checking them against its
+  // own game data, and otherwise shows the text.
+  repeated TextLink links = 2;
+}
+
+message TextLink {
+  // Where the link's "[name]" is in text, in UTF-16 code units.
+  uint32 start = 1;
+  uint32 length = 2;
+  oneof target {
+    ItemLink item = 3;
+    MapLink map = 4;
+    StatusLink status = 5;
+  }
+}
+
+message ItemLink {
+  // The game's raw item id: an Item row, +500,000 for a collectable, or
+  // +1,000,000 for high quality; 2,000,000 and up is an EventItem row.
+  uint32 raw_id = 1;
+}
+
+message MapLink {
+  // TerritoryType and Map rows, and the position as the game's map links
+  // carry it (world coordinates times 1,000).
+  uint32 territory_id = 1;
+  uint32 map_id = 2;
+  sint32 raw_x = 3;
+  sint32 raw_y = 4;
+}
+
+message StatusLink {
+  // A Status row.
+  uint32 status_id = 1;
 }
 
 // ---------------------------------------------------------------- events
