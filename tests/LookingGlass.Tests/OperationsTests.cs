@@ -108,7 +108,8 @@ public sealed class OperationsTests {
     /// </summary>
     [Fact]
     public async Task StoppingTheServerClosesConnectionsAndFoldsInTheLog() {
-        var server = new Harness();
+        // Its own folder, which the harness leaves for the test to look at after it stops.
+        var server = new Harness(Path.Combine(Path.GetTempPath(), "lgt-" + Guid.NewGuid().ToString("N")));
         try {
             await using (server) {
                 var alice = await server.RegisterAsync("Alice Shutdown");

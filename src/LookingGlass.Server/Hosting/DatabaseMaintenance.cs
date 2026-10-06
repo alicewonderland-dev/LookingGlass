@@ -34,10 +34,20 @@ public sealed class DatabaseMaintenance(Database db, IOptions<ServerOptions> opt
     }
 
     private void AfterStopping() {
-        this.Checkpoint("Shutdown");
-        // Closes the pooled connections: the last one to close folds the rest of the log in (unless another process, such as
-        // Litestream, still has the database open), and the files are left closed.
-        Database.ReleasePooledConnections(db.FilePath);
+        // Whatever goes wrong here, the server has stopped: nothing may be thrown back at the host, which is finishing.
+        try {
+            if (!File.Exists(db.FilePath)) {
+                // Moved away meanwhile (a test's folder deleted, say): opening it would make a new, empty one.
+                return;
+            }
+
+            this.Checkpoint("Shutdown");
+            // Closes the pooled connections: the last one to close folds the rest of the log in (unless another process, such
+            // as Litestream, still has the database open), and the files are left closed.
+            Database.ReleasePooledConnections(db.FilePath);
+        } catch (Exception) {
+            // Logging may be gone by now too.
+        }
     }
 
     private void Checkpoint(string when) {

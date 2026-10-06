@@ -37,6 +37,7 @@ public sealed class Harness : IAsyncDisposable {
     /// <param name="settings">Extra server configuration, for example <c>("LookingGlass:Limits:MaxIdentitiesPerRequest", "2")</c>.</param>
     public Harness(string? dataDirectory = null, bool allowDebugAccounts = true, TimeProvider? serverTime = null, string environment = "Development",
         CapturingLoggerProvider? logs = null, FakeLodestone? lodestone = null, params (string Key, string Value)[] settings) {
+        this._ownsDataDirectory = dataDirectory == null;
         this.DataDirectory = dataDirectory ?? Path.Combine(Path.GetTempPath(), "lgt-" + Guid.NewGuid().ToString("N"));
         this.Factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder => {
             builder.UseEnvironment(environment);
@@ -111,7 +112,13 @@ public sealed class Harness : IAsyncDisposable {
         return raw;
     }
 
+    /// <summary>
+    /// The server's data folder. One the harness made (none was given) is deleted when it is disposed; one a test gave is the
+    /// test's to keep or delete (to start another server on it, say).
+    /// </summary>
     public string DataDirectory { get; }
+
+    private readonly bool _ownsDataDirectory;
     public WebApplicationFactory<Program> Factory { get; }
 
     /// <summary>The server's connection registry: lets a test act as a malicious server and push arbitrary events.</summary>
@@ -318,6 +325,11 @@ public sealed class Harness : IAsyncDisposable {
         }
 
         await this.Factory.DisposeAsync();
+        if (this._ownsDataDirectory) {
+            // Each run of the suite would otherwise leave hundreds of these behind (TestFolders clears old ones too).
+            DeleteDirectory(this.DataDirectory);
+        }
+
         var errors = this._serverLogs.Entries.Where(entry => entry.Level == Microsoft.Extensions.Logging.LogLevel.Error).ToList();
         Assert.True(errors.Count == 0, "The server logged errors:\n" + string.Join("\n\n", errors.Select(error => $"[{error.Category}] {error.Message}")));
 
@@ -334,11 +346,26 @@ public sealed class Harness : IAsyncDisposable {
         }
     }
 
+    /// <summary>
+    /// Deletes a test's folder: first closing the pooled SQLite connections to each database in it (only those: see
+    /// <see cref="Database.ReleasePooledConnections"/>), then trying for a moment, as a server still closing may hold a file
+    /// briefly. Never fails a test: what is left, TestFolders clears in a later run.
+    /// </summary>
     public static void DeleteDirectory(string path) {
-        try {
-            Directory.Delete(path, true);
-        } catch {
-            // SQLite may still hold the file briefly.
+        for (var attempt = 0; attempt < 20 && Directory.Exists(path); attempt++) {
+            if (attempt > 0) {
+                Thread.Sleep(50);
+            }
+
+            try {
+                foreach (var database in Directory.EnumerateFiles(path, "*.db", SearchOption.AllDirectories)) {
+                    Database.ReleasePooledConnections(database);
+                }
+
+                Directory.Delete(path, true);
+            } catch {
+                // Held for a moment more; or gone already.
+            }
         }
     }
 }
