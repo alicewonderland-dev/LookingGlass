@@ -687,8 +687,12 @@ waits while someone who holds the key may still come back.
   sees.
 - Once a placeholder rekey has happened, the channel's real name is gone for
   good. Later keys carry the placeholder over. A member who still knew the
-  real name, if one came back, would see it replaced. The admin can rename the
-  channel.
+  real name, if one came back, would see it replaced, and is told who replaced
+  it (as for any rekey that changes a name it knew; a rekey naming the channel
+  anew carries no name over). The admin can rename the channel.
+- Only a member holding no key for the channel names it anew. One holding a
+  key whose name it can't show (a server can garble it, and claim nobody
+  holds the key) refuses, and waits for the name.
 - A member who holds the key but never comes back keeps the channel waiting.
   An admin who is back with a new key can remove them. The new key then comes
   from whoever is left, under the placeholder if nobody left holds it.

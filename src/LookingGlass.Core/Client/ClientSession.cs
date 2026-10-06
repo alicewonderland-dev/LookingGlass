@@ -922,9 +922,10 @@ public sealed class ClientSession : IAsyncDisposable {
                     return;
                 }
 
-                if (name == null && this.Read(() => this.NamesNewKeyItself(channelId))) {
+                if (name == null && this.Read(() => this.KeyEpochOf(channelId) == null && this.NamesNewKeyItself(channelId))) {
                     // Back with new keys where nobody else holds the key (or nobody else is in the channel): nobody can share
-                    // it, or tell its name, so it gets a name of its own, which can be changed.
+                    // it, or tell its name, so it gets a name of its own, which can be changed. Never while holding a key:
+                    // then the name exists, and only couldn't be shown (a server can garble it, and say nobody holds the key).
                     name = PlainMessages.RestoredChannelName;
                 } else if (name == null) {
                     throw PlainMessages.Failure(PlainMessages.NoKeyToRekey);
@@ -3211,8 +3212,10 @@ public sealed class ClientSession : IAsyncDisposable {
         // only the admin renames, as later revisions. But any member can rekey, so if this client
         // knows that version (or a newer one) under another name, say who changed it. If it missed
         // renames since, it can't tell, and the name is taken as the admin's.
-        if (offered is { Revision: 0, CarriedFrom: { } source } && channel.NameVersion is { } known && channel.Name is { } previous && previous != name
-            && new NameVersion(source.Epoch, source.Revision).CompareTo(known) <= 0) {
+        // A rekey that carries no name over names the channel anew (a member back with new keys, told nobody holds the key,
+        // makes one under a placeholder name): if this client knew the name, that replaced it, so it says who did too.
+        if (offered.Revision == 0 && channel.NameVersion is { } known && channel.Name is { } previous && previous != name
+            && (offered.CarriedFrom is { } source ? new NameVersion(source.Epoch, source.Revision).CompareTo(known) <= 0 : offered.Epoch > known.Epoch)) {
             var who = this.UserOf(offered.AuthorId);
             this._pendingNotices.Add(SessionNotice.Of(NoticeLevel.Warning,
                 PlainMessages.NameChangedWhileRekeying($"{who.Name}@{who.WorldName}", previous, name), channelId));

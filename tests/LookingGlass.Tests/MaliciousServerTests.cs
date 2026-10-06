@@ -26,6 +26,33 @@ public sealed class MaliciousServerTests : IAsyncLifetime {
         DeleteDirectory(this._server.DataDirectory);
     }
 
+    /// <summary>
+    /// "Nobody holds the key" is the server's word. A member who holds the key, but whose server garbled the channel's name
+    /// so that it can't show it, is told nobody holds the key and asked to rekey: it refuses to name the channel anew, which
+    /// would replace the real name for everyone, and waits for the name instead. Only a member holding no key at all names it.
+    /// </summary>
+    [Fact]
+    public async Task AMemberWhoHoldsTheKeyNeverNamesTheChannelAnew() {
+        var alice = await this._server.RegisterAsync("Alice Keeps Name");
+        var bob = await this._server.RegisterAsync("Bob Holds Key");
+        var channelId = await alice.Session.CreateChannelAsync("The Real Name", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        var epoch = this._server.Database.GetChannel(channelId)!.Epoch;
+        await WaitFor(() => bob.Session.Snapshot.FindChannel(channelId) is { Epoch: var held, HasKey: true } c && held == epoch ? c : null);
+
+        // The server garbles the name and says, to Bob only, that nobody holds the key.
+        await bob.Session.DisposeAsync();
+        this._server.ExecuteSql("UPDATE channels SET name_ciphertext = randomblob(48) WHERE channel_id = $id;", ("$id", channelId));
+        bob = await this._server.RestartAsync(bob, this._server.Options(autoRekey: false));
+        Assert.True(bob.Session.Snapshot.FindChannel(channelId) is { HasKey: true, Name: null });
+        await this._server.SendAndSettleAsync(bob, new Event {
+            RekeyNeeded = new RekeyNeeded { ChannelId = channelId, CurrentEpoch = epoch, DesignatedUserId = bob.UserId, NoKeyHolder = true },
+        });
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => bob.Session.RekeyAsync(channelId, Ct));
+        Assert.Equal(epoch, this._server.Database.GetChannel(channelId)!.Epoch);
+    }
+
     [Fact]
     public async Task EpochKeyFromNonMemberIsRejected() {
         var alice = await this._server.RegisterAsync("Alice Forge");
