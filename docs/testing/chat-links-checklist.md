@@ -47,8 +47,11 @@ it shows as odd characters. Nothing appears in Say, Party or any linkshell.
       them too.
 - [ ] 11b. **(new: /lgc messages now come from the chat line itself)** Target
       someone, then type `/lgc1 hi <t>` and press Enter. Write down what B
-      sees: `hi <t>` as typed, or `hi` and the target's name. Do the same with
-      `/lgc1 I am <me>`. (Either is fine; we need to know which.)
+      sees. The owner's test showed `hi <t>` as typed; since then,
+      LookingGlass replaces text commands itself, so B should see `hi` and the
+      target's name (the full checks are in
+      [placeholders-gagspeak-checklist.md](placeholders-gagspeak-checklist.md)).
+      Do the same with `/lgc1 I am <me>`.
 - [ ] 11c. In a duty or an instanced area (a trial, a dungeon, the Diadem,
       a private house or chamber), set a flag and send `/lgc1 here <flag>`. B
       sees a map link that opens the right map, or at least

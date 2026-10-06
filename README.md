@@ -43,7 +43,8 @@ command help (`/xlhelp`), to keep the list short. While you talk in a channel,
 its tag (like `[sky]`) shows where the chat box names its channel and in the
 server info bar; click that to stop. If a message can't be sent, you're told,
 and it doesn't go to game chat either. Item, map flag and status links work as in
-normal chat.
+normal chat, and so do text commands such as `<t>` and `<me>`, which are sent
+as the names they stand for.
 
 `/p hi`, `/s hi` and the like still talk in that game channel once, as usual
 (a macro's `/p` line too), and tells (`/t`, `/r`) still go as tells. To go

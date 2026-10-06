@@ -1154,6 +1154,54 @@ game with
   [Talking in a channel without /lgc](#talking-in-a-channel-without-lgc)
   (*Links*); `/lgcN` and `/lgc <nickname>` find them the same way.
 
+#### Text commands in messages
+
+In game chat, the game replaces its text commands before a line is sent:
+`<t>` becomes the target's name, `<me>` the player's own. The owner's in-game
+test showed LookingGlass sending them as typed: the game replaces them only
+while it runs the line, and a channel message is taken from the line before
+that (from the gate's copy, or kept from the game while sticky). So the
+sender's plugin replaces them itself, just before the message is encrypted,
+in `/lgcN`, `/lgc <nickname>` and sticky lines alike (`ChannelSender.Send`, on
+the game thread, in the same frame the line was typed). The rules are in the
+core library (`TextCommands`) and unit tested; the plugin's
+`GameTextCommands` asks the game.
+
+- **Which.** `<t>` (target), `<tt>` (target's target), `<f>` (focus target),
+  `<me>` (the player), `<mo>` (mouseover), `<lt>` (last target), `<1>` to
+  `<8>` (party members), `<r>` (last tell partner) and `<pos>` (the player's
+  position). Anything else between angle brackets (`<se.1>`, `<hp>`,
+  `<wait.3>`) is text, sent as typed. The link placeholders (`<item>`,
+  `<flag>`, `<status>`) are links, as above.
+- **How: the game's own expander.** Each text command in the line, on its
+  own, goes through `PronounModule.ProcessString` (FFXIVClientStructs; the
+  function the game runs on a chat line, and the one ChatTwo uses for its
+  tells and its echo): first encoding it, which turns it into the game's fixed
+  macro (a player and their world, a map position), then decoding that into
+  what the chat log would show. What is shown is read as plain text: a player
+  as their name, and one from another world with the game's cross-world mark
+  and their world, as the game shows them; `<pos>` as the place and
+  coordinates, without the map link's arrow. The result is the module's own
+  buffer, copied at once. Each is asked once per line, as typed, so the game's
+  own rules on upper and lower case apply.
+- **Not replaced: as typed.** A text command the game hands back unchanged or
+  empty (nothing targeted, no such party member, no tell yet), or that can't be
+  read, stays as typed. Whether the game itself sends `<t>` with no target as
+  typed or as nothing is to be checked in game (the checklist has it).
+- **Plain text, never a link.** A name goes as text, cleaned like a link's
+  name: no game formatting, no line breaks, nothing that reads as a link's
+  marker, and `<` and `>` become round brackets, so what a text command stood
+  for is never read as a placeholder or a text command again. The game's own
+  icons (private-use characters, the cross-world mark) stay.
+- **Only on the sender's side.** A received message is never looked at for
+  them: `<t>` from an older client (or one typed where nothing was targeted)
+  shows as `<t>`; a test checks this end to end.
+- **The diagnostic log** counts the text commands replaced in a sticky line's
+  "sending" entry, and never says what they stood for.
+
+[docs/testing/placeholders-gagspeak-checklist.md](testing/placeholders-gagspeak-checklist.md)
+has the checks to make in game.
+
 ### Replay protection
 
 - Clients remember the IDs of recent verified messages (in memory) and drop
@@ -1474,10 +1522,12 @@ function while running a command, inside `ExecuteCommandInner`, so the gate
 sees `/lgc3` first, lets it through like any command, and the handler runs
 inside the gate's call to the game (which is also why a line counts as
 running, below). The two hooks are on different functions, so their order
-doesn't matter. Another plugin hooking `ExecuteCommandInner` too (GagSpeak, on
-the owner's machine) is chained by Dalamud: if it runs first and changes the
-text (gagged speech), the gate decides the changed text, which still goes to
-the channel.
+doesn't matter. Another plugin hooking `ExecuteCommandInner` too is chained by
+Dalamud: if it runs first and changes the text, the gate decides the changed
+text, which still goes to the channel. (GagSpeak, on the owner's machine,
+rewrites gagged speech in a hook of its own on the game's chat input, found by
+its own signature, `ProcessChatInput`, and only for the game channels its user
+picked; see [Garbled speech with GagSpeak](#garbled-speech-with-gagspeak).)
 
 **Where a line goes** (`StickyRoute.For`). It is decided from the line as the
 gate got it (`ChatBoxLine`): its bytes, an SeString in which links
@@ -1584,8 +1634,10 @@ Sticky:
   message from it, so a `/lgc` message is now the gate's copy of the line:
   what the game's chat box or ChatTwo handed the game, before the game runs
   it. Two consequences to check in game (the checklist has them): the game's
-  own text commands (`<t>`, `<me>`) may be expanded only while the line runs,
-  in which case they are sent as typed; and a plugin that rewrites lines in
+  own text commands (`<t>`, `<me>`) are expanded only while the line runs, so
+  they reached the gate's copy as typed (the owner saw them sent that way;
+  LookingGlass now replaces them itself, see
+  [Text commands in messages](#text-commands-in-messages)); and a plugin that rewrites lines in
   the same hook after LookingGlass (GagSpeak) would not have its rewrite
   sent, where one that runs first would. The command ends at any space,
   a full-width one too. A `/lgc` command not run through the gate (another
@@ -1868,7 +1920,8 @@ the game once", "rule: ChatTwo's main input on /p: only /p is text, other
 short commands go to the game once", "rule: not ChatTwo's main input: short
 commands are text", and so on: a known command at most). A message sent
 adds a "sending" entry: sizes and counts only (bytes typed, characters
-sent, how many links, whether one was left out), never a name or an id. A
+sent, how many links, whether one was left out, how many text commands were
+replaced), never a name or an id. A
 switch's has the chat type before and after the call, and whether a typed line
 was in flight. Never what was typed, a link's contents, or an unknown command's
 name (it could be a message typed after a "/"); tests check this. When sticky
@@ -2138,6 +2191,66 @@ How it could work:
 To decide when it's built: whether windows can be docked together as tabs
 (depends on what Dalamud's ImGui allows), and how the window looks with
 Dalamud's transparency.
+
+### Garbled speech with GagSpeak
+
+Status: waiting on GagSpeak; nothing built. Suggested by the owner
+(2026-10-06): an option in a channel's options, shown only while GagSpeak is
+loaded and set per channel, to garble the player's own speech there as
+GagSpeak garbles it in the game channels its user picks (LookingGlass's
+messages appear in a chat channel GagSpeak doesn't offer, such as Debug, and
+are sent from a copy of the line GagSpeak may not have rewritten).
+
+**What GagSpeak offers today** (its public source,
+github.com/Project-GagSpeak/client, Apache-2.0, read for its behaviour and
+public IPC only; version 2.2.2.1, commit `f82b6926`, 2026-09-15). Its only IPC
+provider (`Interop/Ipc/IpcProvider.cs`, `GagSpeakApiVersion = 2`) has six
+gates:
+
+| Gate | Type | What it is |
+|------|------|------------|
+| `GagSpeak.GetApiVersion` | `ICallGateProvider<int>` | returns 2 |
+| `GagSpeak.Ready` | `ICallGateProvider<object>` | sent when it has started |
+| `GagSpeak.Disposing` | `ICallGateProvider<object>` | sent when it stops |
+| `GagSpeak.PairRendered` | `ICallGateProvider<nint, object>` | a paired player's game object came into view |
+| `GagSpeak.PairUnrendered` | `ICallGateProvider<nint, object>` | that player went out of view |
+| `GagSpeak.GetAllRendered` | `ICallGateProvider<List<nint>>` | the paired players in view |
+
+None garbles a text, and none says whether the player is gagged. Its
+separate API repository (github.com/Project-GagSpeak/api) holds its server's
+contract only, with no Dalamud IPC, and there is no package on NuGet. The
+garbler itself is internal (`MufflerService.GarbleMessage`), run from its own
+hook on the game's chat input (`ProcessChatInput`, by its own signature) when
+its garbler is on, a gag is applied, and the line is for a channel its user
+allows. Its manifest's internal name is `ProjectGagSpeak`.
+
+**So it isn't viable now**, without hooking GagSpeak or copying its garbler,
+which LookingGlass won't do: the garbling is GagSpeak's, follows its user's
+gags and settings, and changes with it. LookingGlass waits for a supported
+way.
+
+**The IPC to ask GagSpeak for** (a proposal; names are GagSpeak's to choose):
+
+- `GagSpeak.GarbleText`, `ICallGateProvider<string, string>`: the text,
+  garbled for the player's gags now exactly as GagSpeak would garble a chat
+  line it allows (with its own length limit; the text unchanged when no gag
+  is applied or its garbler is off). Called on the game thread, synchronously,
+  for each piece of typed text.
+- `GagSpeak.IsGarbling`, `ICallGateProvider<bool>` (optional): whether a gag is
+  applied and its garbler is on, so the option can say so.
+- The API version raised, so LookingGlass can tell the gate is there.
+
+**How LookingGlass would use it.** A per-channel setting, **Garble my speech
+with GagSpeak** (kept per character in its settings, like a channel's colour
+and nickname, and never sent anywhere), in the channel's menu, shown only
+while GagSpeak is loaded (`ProjectGagSpeak` in Dalamud's loaded plugins) and
+its version has the gate. While on, the sender passes the typed text through
+the gate before the message is encrypted, only the typed pieces, never a link
+or what a text command stood for (the core library cuts the line into pieces
+already, `TextCommands.Split`), so links keep their places. If the gate fails,
+or GagSpeak is gone, the message is sent as typed (it is cosmetic), with a
+warning in the log that never holds the text. The same words in simple and
+advanced mode.
 
 ### MLS
 
