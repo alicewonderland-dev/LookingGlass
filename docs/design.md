@@ -2194,8 +2194,10 @@ Dalamud's transparency.
 
 ### Garbled speech with GagSpeak
 
-Status: waiting on GagSpeak; nothing built. Suggested by the owner
-(2026-10-06): an option in a channel's options, shown only while GagSpeak is
+Status: not possible at this time; nothing built, and no request made. The
+owner decided (2026-10-06) not to ask GagSpeak for it while GagSpeak's notes
+say IPC isn't a focus and it is busy with features and fixes; revisit if
+GagSpeak adds a garbling IPC. Suggested by the owner (2026-10-06): an option in a channel's options, shown only while GagSpeak is
 loaded and set per channel, to garble the player's own speech there as
 GagSpeak garbles it in the game channels its user picks (LookingGlass's
 messages appear in a chat channel GagSpeak doesn't offer, such as Debug, and
