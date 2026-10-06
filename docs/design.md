@@ -1057,7 +1057,10 @@ knows it by, and a disband would end the channel for everyone.
 first to come online. It never asks a forgotten place, a place under old keys,
 or a member waiting for a key, unless nobody holds the key (see
 [When nobody holds the key](#when-nobody-holds-the-key)). A remover's client
-rekeys straight away.
+rekeys straight away. A client remembers the epoch the channel was at when a
+rekey was asked for, and only a key for a later epoch settles it: one made
+before the request (its own rekey whose answer arrives after the request, or
+someone else's key arriving late) doesn't.
 
 **What clients accept.** A client accepts a new epoch key only:
 

@@ -644,6 +644,68 @@ public sealed class EndToEndTests : IAsyncLifetime {
         Assert.DoesNotContain(bob.Notices, n => n.Text.Contains("while rekeying"));
     }
 
+    /// <summary>
+    /// The server asks for a rekey at epoch N+1 (someone left just after Alice's rekey to N+1 was applied) before it
+    /// answers that rekey, as it can when the leave lands between the two. Her rekey, for N+1, doesn't settle a request
+    /// made at N+1: the channel still needs a new key.
+    /// </summary>
+    [Fact]
+    public async Task OwnRekeyDoesNotSettleALaterRequestForANewKey() {
+        var bob = await this._server.RegisterAsync("Bob Later Request");
+        long aliceId = 0;
+        var armed = 0;
+        var pushed = 0;
+        var alice = await this._server.RegisterAsync("Alice Later Request", options: this._server.Options(
+            wrap: socket => new RewritingWebSocket(socket, frame => frame, sent: frame => {
+                // On its way to the server: queued for her before the server's answer. Nobody is asked to make it.
+                if (frame.SubmitRekey is { } rekey && Volatile.Read(ref armed) == 1 && Interlocked.Exchange(ref pushed, 1) == 0) {
+                    this._server.Registry.Send(aliceId, new Event { RekeyNeeded = new RekeyNeeded { ChannelId = rekey.ChannelId, CurrentEpoch = rekey.NewEpoch } });
+                }
+            })));
+        aliceId = alice.UserId;
+        var channelId = await alice.Session.CreateChannelAsync("Later Request", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        var epoch = alice.Session.Snapshot.FindChannel(channelId)!.Epoch;
+
+        Volatile.Write(ref armed, 1);
+        await alice.Session.RekeyAsync(channelId, Ct, force: true);
+
+        Assert.Equal(1, pushed);
+        var channel = alice.Session.Snapshot.FindChannel(channelId)!;
+        Assert.Equal(epoch + 1, channel.Epoch);
+        Assert.True(channel.RekeyPending);
+    }
+
+    /// <summary>
+    /// Likewise for a key someone else made: the server asked for a rekey at epoch N+1, so a key for N+1 (Bob's, sent
+    /// before the request but arriving after it) doesn't settle it. Only a key for a later epoch does.
+    /// </summary>
+    [Fact]
+    public async Task AKeyFromBeforeARequestForANewKeyDoesNotSettleIt() {
+        var alice = await this._server.RegisterAsync("Alice Earlier Key");
+        var bob = await this._server.RegisterAsync("Bob Earlier Key");
+        var channelId = await alice.Session.CreateChannelAsync("Earlier Key", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        var epoch = alice.Session.Snapshot.FindChannel(channelId)!.Epoch;
+
+        using var bobKeys = bob.LoadIdentity();
+        var position = PositionOf(alice, channelId);
+        var next = ChannelCrypto.NewEpochKey();
+        var sealedKey = ChannelCrypto.SealEpochKey(next, channelId, epoch + 1, position, bobKeys, bob.UserId, alice.UserId, alice.LoadIdentity().AgreementPublicKey);
+        await this._server.SendAndSettleAsync(alice,
+            new Event { RekeyNeeded = new RekeyNeeded { ChannelId = channelId, CurrentEpoch = epoch + 1 } },
+            new Event { EpochAdvanced = new EpochAdvanced { ChannelId = channelId, Epoch = epoch + 1, AuthorId = bob.UserId, MyKey = sealedKey } });
+
+        var channel = alice.Session.Snapshot.FindChannel(channelId)!;
+        Assert.Equal(epoch + 1, channel.Epoch);
+        Assert.True(channel.RekeyPending);
+
+        // A key for the epoch after the one the request was made at settles it.
+        var later = ChannelCrypto.SealEpochKey(ChannelCrypto.NewEpochKey(), channelId, epoch + 2, position, bobKeys, bob.UserId, alice.UserId, alice.LoadIdentity().AgreementPublicKey);
+        await this._server.SendAndSettleAsync(alice, new Event { EpochAdvanced = new EpochAdvanced { ChannelId = channelId, Epoch = epoch + 2, AuthorId = bob.UserId, MyKey = later } });
+        Assert.False(alice.Session.Snapshot.FindChannel(channelId)!.RekeyPending);
+    }
+
     /// <summary>Alice (admin), Bob and Carol in one channel, all holding its current key.</summary>
     private async Task<(TestClient Alice, TestClient Bob, TestClient Carol, string ChannelId)> ThreeMembersAsync(string suffix) {
         var alice = await this._server.RegisterAsync("Alice " + suffix);
