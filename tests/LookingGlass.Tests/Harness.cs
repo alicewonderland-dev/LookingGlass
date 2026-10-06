@@ -39,9 +39,11 @@ public sealed class Harness : IAsyncDisposable {
         CapturingLoggerProvider? logs = null, FakeLodestone? lodestone = null, params (string Key, string Value)[] settings) {
         this._ownsDataDirectory = dataDirectory == null;
         this.DataDirectory = dataDirectory ?? Path.Combine(Path.GetTempPath(), "lgt-" + Guid.NewGuid().ToString("N"));
+        Live[Path.GetFullPath(this.DataDirectory)] = this;
         this.Factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder => {
             builder.UseEnvironment(environment);
-            builder.ConfigureLogging(logging => logging.AddProvider(this._serverLogs));
+            // Only to these: not to the console, nor (on Windows) to the machine's Event Log, which the server's defaults include.
+            builder.ConfigureLogging(logging => logging.ClearProviders().AddProvider(this._serverLogs));
             if (logs != null) {
                 builder.ConfigureLogging(logging => logging.AddProvider(logs));
             }
@@ -71,7 +73,13 @@ public sealed class Harness : IAsyncDisposable {
                     .ConfigurePrimaryHttpMessageHandler(() => lodestone));
             }
         });
-        _ = this.Factory.Server;
+        try {
+            _ = this.Factory.Server;
+        } catch {
+            // Never started (it refused to): nothing will dispose it.
+            Live.TryRemove(new KeyValuePair<string, Harness>(Path.GetFullPath(this.DataDirectory), this));
+            throw;
+        }
     }
 
     /// <summary>The address clients connect to, as <see cref="Options"/> gives it (what they sign for key login).</summary>
@@ -119,6 +127,12 @@ public sealed class Harness : IAsyncDisposable {
     public string DataDirectory { get; }
 
     private readonly bool _ownsDataDirectory;
+
+    // Asked to delete its folder (by DeleteDirectory) while it still ran: done when it is disposed.
+    private volatile bool _deleteOnDispose;
+
+    // The servers running now, by their data folder.
+    private static readonly ConcurrentDictionary<string, Harness> Live = new(StringComparer.OrdinalIgnoreCase);
     public WebApplicationFactory<Program> Factory { get; }
 
     /// <summary>The server's connection registry: lets a test act as a malicious server and push arbitrary events.</summary>
@@ -325,12 +339,15 @@ public sealed class Harness : IAsyncDisposable {
         }
 
         await this.Factory.DisposeAsync();
-        if (this._ownsDataDirectory) {
+        // What the server logged while it ran. The test server can leave a request it abandoned running after it is disposed,
+        // into a folder deleted below: that is no failure of the server's.
+        var errors = this._serverLogs.Entries.Where(entry => entry.Level == Microsoft.Extensions.Logging.LogLevel.Error).ToList();
+        Live.TryRemove(new KeyValuePair<string, Harness>(Path.GetFullPath(this.DataDirectory), this));
+        if (this._ownsDataDirectory || this._deleteOnDispose) {
             // Each run of the suite would otherwise leave hundreds of these behind (TestFolders clears old ones too).
             DeleteDirectory(this.DataDirectory);
         }
 
-        var errors = this._serverLogs.Entries.Where(entry => entry.Level == Microsoft.Extensions.Logging.LogLevel.Error).ToList();
         Assert.True(errors.Count == 0, "The server logged errors:\n" + string.Join("\n\n", errors.Select(error => $"[{error.Category}] {error.Message}")));
 
         var names = this._clients.Select(client => client.Name)
@@ -352,6 +369,15 @@ public sealed class Harness : IAsyncDisposable {
     /// briefly. Never fails a test: what is left, TestFolders clears in a later run.
     /// </summary>
     public static void DeleteDirectory(string path) {
+        // A server still running on it (a test's finally runs before its `await using` server is disposed) would go on with an
+        // empty database in its place: it is deleted when that server is disposed instead.
+        if (Live.TryGetValue(Path.GetFullPath(path), out var running)) {
+            running._deleteOnDispose = true;
+            if (Live.ContainsKey(Path.GetFullPath(path))) {
+                return;
+            }
+        }
+
         for (var attempt = 0; attempt < 20 && Directory.Exists(path); attempt++) {
             if (attempt > 0) {
                 Thread.Sleep(50);
