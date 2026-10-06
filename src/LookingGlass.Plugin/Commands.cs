@@ -57,15 +57,35 @@ public sealed class Commands : IDisposable {
             return;
         }
 
-        this.Run(ChannelCommand.ForSlot(this._sessions.Slots, slot, arguments));
+        var typed = this.Typed(command, arguments);
+        this.Run(ChannelCommand.ForSlot(this._sessions.Slots, slot, typed.Text), typed);
     }
 
     private void OnNicknameCommand(string command, string arguments) {
-        this.Run(ChannelCommand.ForNickname(this._sessions.Nicknames, arguments));
+        var typed = this.Typed(command, arguments);
+        this.Run(ChannelCommand.ForNickname(this._sessions.Nicknames, typed.Text), typed);
+    }
+
+    /// <summary>
+    /// The command's arguments with their links: as read at the gate when the game is running the line (its links' bytes
+    /// and placeholders, see <see cref="StickyMode.TypedCommandLine"/>), or else Dalamud's text for them (another plugin
+    /// ran the command), whose placeholders are resolved when it is sent.
+    /// </summary>
+    private TypedLine Typed(string command, string arguments) {
+        try {
+            if (this._sticky.TypedCommandLine(command) is { } line) {
+                return line.Arguments();
+            }
+        } catch (Exception ex) {
+            Services.Log.Error(ex, "Couldn't read a command's links; it is sent as text");
+        }
+
+        return TypedLine.FromArguments(arguments);
     }
 
     /// <summary>The one path for both kinds of channel command.</summary>
-    private void Run(ChannelCommand command) {
+    /// <param name="typed">The arguments' links: a message's text is a part of the arguments, with the same markers.</param>
+    private void Run(ChannelCommand command, TypedLine typed) {
         switch (command) {
             case ChannelCommand.Usage usage:
                 this._chat.Notice(NoticeTone.Info, usage.Text);
@@ -87,7 +107,7 @@ public sealed class Commands : IDisposable {
                 this._chat.Notice(NoticeTone.Info, notFound.Text);
                 break;
             case ChannelCommand.Send send:
-                this._sender.Send(send.ChannelId, send.Text);
+                this._sender.Send(send.ChannelId, typed.WithText(send.Text));
                 break;
         }
     }

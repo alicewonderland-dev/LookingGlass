@@ -131,7 +131,9 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
         }
 
         var tag = this.TagOf(channelId);
-        var line = new ChatBoxLine(message, SeString.Parse(message).TextValue);
+        // Its text with a marker for each link in its bytes (see GameLinks.ReadLine), and those links.
+        var typed = GameLinks.ReadLine(message);
+        var line = new ChatBoxLine(message, typed.Text) { Links = typed.Links };
         var chatTwo = this._chatTwo.Loaded;
         // Short commands: the player's one-off in the game's chat box; in ChatTwo's main input, all but its own channel's.
         var rule = ShortCommandRule.For(source, chatTwoLine);
@@ -140,7 +142,7 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
         Log(() => StickyDiagnostics.Line(tag, chatTwo, line, route, reason, this._switches, source, rule.Why));
         switch (route) {
             case StickyRoute.ToChannel send:
-                this.SendTyped(send, tag, message.Length);
+                this.SendTyped(send, line, tag);
                 break;
             case StickyRoute.Dropped { Text: { } notice }:
                 this._chat.Notice(NoticeTone.Info, notice);
@@ -156,23 +158,17 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
     }
 
     /// <summary>
-    /// Sends what was typed to the channel, links (the chat box's &lt;item&gt; and the like) as their names. A link whose
-    /// name can't be found is left out, and once the rest has been sent, one line says so: a message is either sent or
-    /// not, never both "sent" and an error.
+    /// Sends what was typed to the channel, with its links (the line's own link bytes, and the chat box's &lt;item&gt;
+    /// and the like, read now): see <see cref="ChannelSender.Send"/>. The diagnostic log gets sizes and counts only.
     /// </summary>
-    private void SendTyped(StickyRoute.ToChannel send, string tag, int bytes) {
-        var (text, leftOut) = LinkText.Resolve(send.Text, ChatInterop.LinkName);
-        if (string.IsNullOrWhiteSpace(text)) {
-            this._chat.Notice(NoticeTone.Info, StickyMessages.NotSent(tag, StickyMessages.NoTextReason));
-            return;
+    private void SendTyped(StickyRoute.ToChannel send, ChatBoxLine line, string tag) {
+        if (this._sender.Send(send.ChannelId, line.Typed.WithText(send.Text), tag) is var (message, leftOut)) {
+            Log(() => StickyDiagnostics.Sent(tag, line.Raw.Length, message, leftOut));
         }
-
-        if (leftOut) {
-            Log(() => StickyDiagnostics.LinkLeftOut(tag, bytes));
-        }
-
-        this._sender.Send(send.ChannelId, text, tag, leftOut ? () => this._chat.Notice(NoticeTone.Info, StickyMessages.LinkNotSent) : null);
     }
+
+    /// <summary>The /lgc line being run now, as read at the gate, if its command is <paramref name="command"/> (see <see cref="ChatInterop.TypedCommandLine"/>).</summary>
+    internal TypedLine? TypedCommandLine(string command) => this._interop.TypedCommandLine(command);
 
     /// <inheritdoc/>
     ChatTwoLine? IChatBoxListener.PluginLine(byte[] message) =>

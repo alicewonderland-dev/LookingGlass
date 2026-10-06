@@ -41,6 +41,14 @@ public static partial class StickyDiagnostics {
             : "(blank)";
     }
 
+    /// <summary>
+    /// What a message sent while talking in a channel held, in sizes and counts only: how long it is, how many links went
+    /// as links, whether one was left out. Never a link's name or what it points at.
+    /// </summary>
+    public static string Sent(string tag, int bytes, LinkedText message, bool leftOut) =>
+        $"{Prefix} sending: talking in {tag}, {bytes} bytes typed, {message.Text.Length} characters, " +
+        $"{message.Links.Count} link(s){(leftOut ? ", a link left out (couldn't be read)" : "")}";
+
     /// <summary>The line holds SeString payloads (links, auto-translate phrases): a byte 2 anywhere.</summary>
     public static bool HasPayload(ChatBoxLine line) => line.Raw.AsSpan().Contains((byte) 0x02);
 
@@ -59,10 +67,6 @@ public static partial class StickyDiagnostics {
         LineSource? source = null, string? rule = null) =>
         $"{Prefix} line{SourceOf(source)}: talking in {tag}, ChatTwo {YesNo(chatTwo)}, {Token(line, switches)}, {line.Raw.Length} bytes, " +
         $"payload {YesNo(HasPayload(line))} -> {Decision(route)} ({reason}){(rule == null ? "" : $"; rule: {rule}")}";
-
-    /// <summary>A message sent with a link that couldn't be put in as its name, so it was left out (sizes only).</summary>
-    public static string LinkLeftOut(string tag, int bytes) =>
-        $"{Prefix} link left out: talking in {tag}, a link's name couldn't be found, sent the rest ({bytes} bytes before)";
 
     /// <summary>A line run inside a reply, passed to the game unjudged (see <see cref="NestedLines"/>).</summary>
     public static string NestedPassed(string tag, int bytes) =>

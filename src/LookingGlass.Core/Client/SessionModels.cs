@@ -195,6 +195,7 @@ public sealed record InviteView(
     bool InviterKeyChanged,
     string? InviterFingerprint);
 
+/// <param name="Text">The message as plain text, each link as its "[name]".</param>
 public sealed record IncomingMessage(
     string ChannelId,
     string? ChannelName,
@@ -202,7 +203,16 @@ public sealed record IncomingMessage(
     bool IsOwn,
     string? Text,
     bool Unsupported,
-    DateTimeOffset Timestamp);
+    DateTimeOffset Timestamp) {
+    /// <summary>
+    /// The links in <see cref="Text"/> that passed the checks every received link must (<see cref="MessageContent.ValidLinks"/>);
+    /// before one is shown as a link, it is checked against the game's data too (<see cref="ChatLinks.Check"/>).
+    /// </summary>
+    public IReadOnlyList<MessageLink> Links { get; init; } = [];
+
+    /// <summary>The text and its links (see <see cref="LinkedText.Parts"/>).</summary>
+    public LinkedText Linked => new(this.Text ?? "", this.Links);
+}
 
 public enum NoticeLevel {
     Debug,

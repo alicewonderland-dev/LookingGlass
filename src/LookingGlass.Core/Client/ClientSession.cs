@@ -1057,12 +1057,27 @@ public sealed class ClientSession : IAsyncDisposable {
 
     // ================================================================ messages
 
-    public async Task SendTextAsync(string channelId, string text, CancellationToken ct = default) {
+    public Task SendTextAsync(string channelId, string text, CancellationToken ct = default) =>
+        this.SendAsync(channelId, LinkedText.Plain(text), ct);
+
+    /// <summary>
+    /// Sends a message with links (see <see cref="MessageContent"/>): its text as older clients show it, and its links,
+    /// all inside the encrypted, signed plaintext. At most <see cref="ChatLinks.MaxPerMessage"/> links, each over a
+    /// "[name]" in the text.
+    /// </summary>
+    public async Task SendAsync(string channelId, LinkedText linked, CancellationToken ct = default) {
+        var text = linked.Text;
         if (string.IsNullOrWhiteSpace(text)) {
-            throw new ArgumentException("Message is empty.", nameof(text));
+            throw new ArgumentException("Message is empty.", nameof(linked));
         }
 
-        var content = new Content { Text = new TextContent { Text = text } };
+        // What a recipient would accept, and nothing else: a link that wouldn't pass there isn't sent as one.
+        var content = MessageContent.Encode(linked);
+        var links = MessageContent.ValidLinks(text, content.Text.Links);
+        if (links.Count != linked.Links.Count) {
+            throw new ArgumentException("A link in the message isn't one LookingGlass can send.", nameof(linked));
+        }
+
         for (var attempt = 0; attempt < 4; attempt++) {
             var (identity, me) = this.RequireIdentityAndUser();
             var pending = this.Read(() => {
@@ -1130,7 +1145,7 @@ public sealed class ClientSession : IAsyncDisposable {
                 channelId,
                 this.Read(() => this._channels.GetValueOrDefault(channelId)?.Name),
                 me, true, text, false,
-                DateTimeOffset.FromUnixTimeMilliseconds(timestamp)));
+                DateTimeOffset.FromUnixTimeMilliseconds(timestamp)) { Links = links });
             return;
         }
 
@@ -2570,8 +2585,9 @@ public sealed class ClientSession : IAsyncDisposable {
         }
 
         var isOwn = message.SenderId == this.Read(() => this._me?.UserId);
-        this.RaiseMessage(content.KindCase == Content.KindOneofCase.Text
-            ? new IncomingMessage(message.ChannelId, channelName, senderUser, isOwn, content.Text.Text, false, timestamp)
+        // Links only as the checks in MessageContent leave them: the rest of each is its text, as an older client shows it.
+        this.RaiseMessage(MessageContent.Decode(content) is { } text
+            ? new IncomingMessage(message.ChannelId, channelName, senderUser, isOwn, text.Text, false, timestamp) { Links = text.Links }
             : new IncomingMessage(message.ChannelId, channelName, senderUser, isOwn, null, true, timestamp));
     }
 
