@@ -69,12 +69,22 @@ public sealed class UserRateLimits(double perSecond, double burst, TimeProvider?
 
 /// <summary>
 /// Counts events per key in a sliding window. Keys whose events have all expired are dropped now and then (when the
-/// counter is used, at most once per window), so an address seen once isn't kept forever.
+/// counter is used, at most once per window), so an address seen once isn't kept forever. And at most
+/// <see cref="MaxKeys"/> keys are kept: past that, a new key sweeps at once, and if every key is still in its window,
+/// the least recently counted are forgotten (their limits start afresh), so a stream of new addresses within one window
+/// can't grow memory without bound either.
 /// </summary>
 public sealed class WindowCounter(int limit, TimeSpan window, TimeProvider? time = null) {
+    /// <summary>The default for <see cref="MaxKeys"/>: far more addresses than a small server sees in an hour.</summary>
+    public const int DefaultMaxKeys = 100_000;
+
     private readonly TimeProvider _time = time ?? TimeProvider.System;
     private readonly ConcurrentDictionary<string, Entry> _entries = new();
+    private readonly Lock _trimming = new();
     private long _lastSweepTicks = (time ?? TimeProvider.System).GetUtcNow().UtcTicks;
+
+    /// <summary>Most keys kept at once (see the class summary).</summary>
+    public int MaxKeys { get; init; } = DefaultMaxKeys;
 
     /// <summary>How many keys are tracked now, for tests.</summary>
     internal int TrackedKeys => this._entries.Count;
@@ -82,6 +92,10 @@ public sealed class WindowCounter(int limit, TimeSpan window, TimeProvider? time
     public bool TryAdd(string key) {
         var now = this._time.GetUtcNow();
         this.SweepIfDue(now);
+        if (this._entries.Count >= this.MaxKeys && !this._entries.ContainsKey(key)) {
+            this.Trim(now);
+        }
+
         while (true) {
             var entry = this._entries.GetOrAdd(key, _ => new Entry());
             lock (entry) {
@@ -90,6 +104,7 @@ public sealed class WindowCounter(int limit, TimeSpan window, TimeProvider? time
                     continue;
                 }
 
+                entry.LastSeen = now;
                 this.Expire(entry.Events, now);
                 if (entry.Events.Count >= limit) {
                     return false;
@@ -136,16 +151,62 @@ public sealed class WindowCounter(int limit, TimeSpan window, TimeProvider? time
             return;
         }
 
+        this.Sweep(now);
+    }
+
+    private void Sweep(DateTimeOffset now) {
         foreach (var (key, entry) in this._entries) {
             lock (entry) {
                 this.Expire(entry.Events, now);
                 if (entry.Events.Count == 0) {
-                    // Marked under its lock, so nothing is counted in it after it's gone (see TryAdd).
-                    entry.Removed = true;
-                    this._entries.TryRemove(new KeyValuePair<string, Entry>(key, entry));
+                    this.Remove(key, entry);
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// At the cap: sweeps now, and if that leaves too many, forgets the keys least recently used, down to nine tenths of
+    /// the cap (so this, which goes through every key, runs once per tenth of the cap new keys at most). One trim at a time;
+    /// a key added meanwhile by another thread may overshoot the cap by a few.
+    /// </summary>
+    private void Trim(DateTimeOffset now) {
+        if (!this._trimming.TryEnter()) {
+            return;
+        }
+
+        try {
+            this.Sweep(now);
+            var excess = this._entries.Count - this.MaxKeys * 9 / 10;
+            if (excess <= 0) {
+                return;
+            }
+
+            var oldest = this._entries
+                .Select(pair => (pair.Key, pair.Value, Seen: LastSeen(pair.Value)))
+                .OrderBy(item => item.Seen)
+                .Take(excess)
+                .ToList();
+            foreach (var (key, entry, _) in oldest) {
+                lock (entry) {
+                    this.Remove(key, entry);
+                }
+            }
+        } finally {
+            this._trimming.Exit();
+        }
+
+        static DateTimeOffset LastSeen(Entry entry) {
+            lock (entry) {
+                return entry.LastSeen;
+            }
+        }
+    }
+
+    /// <summary>Call under the entry's lock: marked there, so nothing is counted in it after it's gone (see TryAdd).</summary>
+    private void Remove(string key, Entry entry) {
+        entry.Removed = true;
+        this._entries.TryRemove(new KeyValuePair<string, Entry>(key, entry));
     }
 
     private void Expire(LinkedList<DateTimeOffset> events, DateTimeOffset now) {
@@ -157,5 +218,8 @@ public sealed class WindowCounter(int limit, TimeSpan window, TimeProvider? time
     private sealed class Entry {
         public readonly LinkedList<DateTimeOffset> Events = new();
         public bool Removed;
+
+        /// <summary>When the key was last counted or refused: what the cap forgets least recently first.</summary>
+        public DateTimeOffset LastSeen;
     }
 }

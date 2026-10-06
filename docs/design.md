@@ -2167,6 +2167,12 @@ one transaction for every multi-step change.
 - **Storage.** SQLite in WAL mode. Conditional updates (on epoch and rank)
   guard against races. The schema is upgraded in place at startup; the
   current schema version is 8.
+- **Memory.** Nothing kept per address, user or name grows without bound.
+  Per-address counters drop addresses whose window has passed, and keep at
+  most 100,000 (past that, the least recently seen are forgotten and start
+  afresh). Per-user and per-pair rate limits drop keys unused for an hour.
+  Lodestone searches are cached for an hour (ten minutes if not found),
+  swept every ten minutes, and at most 10,000 are kept.
 - **Errors.** Typed errors map to protocol error codes.
 - **Addresses.** The server refuses to start outside Development without
   `PublicUrls`, and with a `ChallengeMinutes` outside 1 to 60.
