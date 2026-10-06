@@ -151,8 +151,11 @@ internal static unsafe class GameLinks {
         return LinkText.PlaceholderLink(sheetName == null ? null : target, sheetName, gameText);
     }
 
-    /// <summary>The name of what a link points at in the player's own sheets, or null if it isn't one the game can show.</summary>
-    private static string? SheetName(ChatLink? link) {
+    /// <summary>
+    /// The name of what a link points at in the player's own sheets, or null if it isn't one the game can show: the
+    /// checks a received link must pass (see <see cref="ChatLinks.Check"/>), and for a map flag its place and coordinates.
+    /// </summary>
+    internal static string? SheetName(ChatLink? link) {
         if (link == null) {
             return null;
         }
@@ -208,6 +211,20 @@ internal static unsafe class GameLinks {
         } catch (Exception ex) {
             Services.Log.Warning(ex, "Couldn't build a link");
             return false;
+        }
+    }
+
+    /// <summary>
+    /// Opens the map at a received map flag, as clicking the game's own map link does (Dalamud's <c>OpenMapWithMapLink</c>),
+    /// if it checks out against the player's own sheets. Game thread.
+    /// </summary>
+    public static void OpenMap(ChatLink.MapFlag map) {
+        try {
+            if (ChatLinks.Check(map, Sheets) != null) {
+                Services.GameGui.OpenMapWithMapLink(new MapLinkPayload(map.TerritoryId, map.MapId, map.RawX, map.RawY));
+            }
+        } catch (Exception ex) {
+            Services.Log.Warning(ex, "Couldn't open the map at a link");
         }
     }
 

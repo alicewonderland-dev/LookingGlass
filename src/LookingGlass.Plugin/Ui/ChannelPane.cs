@@ -13,9 +13,10 @@ namespace LookingGlass.Plugin.Ui;
 /// <summary>
 /// The right-hand side of the main window: one channel's name (in the header font) with a line
 /// about it underneath, the commands to talk in it, and its members with their actions. Its
-/// colour, rename, leave and disband are in the channel menu.
+/// colour, rename, leave and disband are in the channel menu, and so are opening it in a channel
+/// window and whether it also shows in game chat.
 /// </summary>
-internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Modals modals, UiFonts fonts) {
+internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Modals modals, UiFonts fonts, ChannelWindows windows) {
     private const int MaxChannelNameBytes = 64;
 
     private string? _channelId;
@@ -64,7 +65,7 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
     }
 
     /// <summary>The heading of a channel's warning: which one it is shows in its advanced-mode text (see <see cref="ChannelView.MembershipWarning"/>).</summary>
-    private static string WarningTitle(ChannelView channel, bool advanced) {
+    internal static string WarningTitle(ChannelView channel, bool advanced) {
         if (channel.MembershipWarning == PlainMessages.OldKeyChannel) {
             return advanced ? "Your current key isn't a member here" : "This place belongs to your old setup";
         }
@@ -159,22 +160,48 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
     }
 
     /// <summary>One muted line under the name: your rank, the members, and the key (in simple mode, whether the channel is ready).</summary>
-    private static void DrawSummary(ChannelView channel, bool advanced) {
-        var first = true;
+    /// <summary>
+    /// Why nothing can be sent in a channel now, if so: its place belongs to keys this client no longer has, or its key is
+    /// being changed or hasn't come yet. Shown in the summary line here, and above a channel window's messages.
+    /// </summary>
+    /// <returns>A few words, what they mean (for a tooltip), and an icon.</returns>
+    internal static (string Text, string Tooltip, FontAwesomeIcon Icon)? Problem(ChannelView channel, bool advanced) {
         if (channel.OldKeyMembership && channel.KeyMovedAway) {
             // Re-verified with another key (normally on another computer): this one can do nothing here any more.
-            Segment(ref first, advanced ? "Moved to another key" : "Moved elsewhere", Widgets.Warning, PlainMessages.KeyMovedAwayWording.For(advanced),
-                FontAwesomeIcon.ExclamationTriangle);
-            return;
+            return (advanced ? "Moved to another key" : "Moved elsewhere", PlainMessages.KeyMovedAwayWording.For(advanced), FontAwesomeIcon.ExclamationTriangle);
         }
 
         if (channel.OldKeyMembership) {
             // Nothing else here means anything for the current key: no key is coming, and nothing can be done but removing it.
-            Segment(ref first, advanced ? "Your old key's place" : "From your old setup", Widgets.Warning, advanced
+            return (advanced ? "Your old key's place" : "From your old setup", advanced
                 ? "Your place here belongs to an identity key you no longer have, from before registering again brought channels along to the new " +
                   "key. Your current key isn't a member: use \"Remove from my list\" in the channel's menu."
                 : "Your place here belongs to your old LookingGlass setup, from before you registered again, so you can't use this channel. " +
                   "Use \"Remove from my list\" in the channel's menu.", FontAwesomeIcon.ExclamationTriangle);
+        }
+
+        if (channel.RekeyPending) {
+            return (advanced ? "New key pending" : "Updating", advanced
+                    ? "Someone joined, left or got a new identity key since the key in use was made, so the channel needs a new one before anyone sends. A member makes it automatically."
+                    : "Its members changed (someone joined, left or set up LookingGlass again), so the channel is being updated before anyone sends. This happens by itself.",
+                FontAwesomeIcon.HourglassHalf);
+        }
+
+        if (!channel.HasKey) {
+            return (advanced ? "Waiting for the key" : "Waiting for a member", advanced
+                    ? "Messages can't be read or sent here until a member shares the channel key with you."
+                    : "Messages can't be read or sent here until another member who is online lets you in. This happens by itself.",
+                FontAwesomeIcon.HourglassHalf);
+        }
+
+        return null;
+    }
+
+    private static void DrawSummary(ChannelView channel, bool advanced) {
+        var first = true;
+        var problem = Problem(channel, advanced);
+        if (channel.OldKeyMembership && problem is var (oldText, oldTooltip, oldIcon)) {
+            Segment(ref first, oldText, Widgets.Warning, oldTooltip, oldIcon);
             return;
         }
 
@@ -194,16 +221,8 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
                 _ => $"Besides them, {invited} invites are waiting for an answer.",
             });
 
-        if (channel.RekeyPending) {
-            Segment(ref first, advanced ? "New key pending" : "Updating", Widgets.Warning, advanced
-                    ? "Someone joined, left or got a new identity key since the key in use was made, so the channel needs a new one before anyone sends. A member makes it automatically."
-                    : "Its members changed (someone joined, left or set up LookingGlass again), so the channel is being updated before anyone sends. This happens by itself.",
-                FontAwesomeIcon.HourglassHalf);
-        } else if (!channel.HasKey) {
-            Segment(ref first, advanced ? "Waiting for the key" : "Waiting for a member", Widgets.Warning, advanced
-                    ? "Messages can't be read or sent here until a member shares the channel key with you."
-                    : "Messages can't be read or sent here until another member who is online lets you in. This happens by itself.",
-                FontAwesomeIcon.HourglassHalf);
+        if (problem is var (text, tooltip, icon)) {
+            Segment(ref first, text, Widgets.Warning, tooltip, icon);
         } else if (advanced) {
             Segment(ref first, $"End-to-end encrypted, key {channel.Epoch}", Widgets.Muted,
                 "Only the members below hold this channel's key. A new key is made when someone joins or leaves.",
@@ -256,6 +275,23 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
         }
 
         Widgets.Tooltip("This channel's colour in chat and in the channel list. Only you see it.");
+        if (!channel.OldKeyMembership) {
+            if (Widgets.MenuItem(FontAwesomeIcon.WindowRestore, "Open in new window")) {
+                windows.OpenNew(channel.Id);
+            }
+
+            Widgets.Tooltip("Chat here in a window of its own. What you type there only ever goes to this channel.",
+                "Right-click a channel in the list to add it to a window that's open.");
+            var inGameChat = sessions.ShowsInGameChat(channel.Id);
+            if (Widgets.MenuItem(inGameChat ? FontAwesomeIcon.CheckSquare : FontAwesomeIcon.Square, "Also show in game chat")) {
+                windows.SetShowInGameChat(channel.Id, !inGameChat);
+            }
+
+            Widgets.Tooltip(inGameChat
+                ? "This channel's messages show in game chat and in its windows. Turn it off to see them only in its windows."
+                : "This channel's messages show only in its windows (warnings still show in game chat). Turn it on to see them in game chat too.");
+        }
+
         ImGui.Separator();
 
         if (channel.OldKeyMembership) {

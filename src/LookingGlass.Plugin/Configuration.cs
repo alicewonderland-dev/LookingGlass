@@ -66,20 +66,41 @@ public sealed class CharacterSettings {
     /// <summary>Channel ID → UIColor sheet row for its chat lines and its place in the channel list. Never sent to the server.</summary>
     public Dictionary<string, ushort> ChannelColours { get; set; } = new();
 
+    /// <summary>
+    /// Channels whose messages don't also go to the game's chat log ("Also show in game chat" turned off): they show only in
+    /// their channel windows. Every other channel's do. Never sent to the server.
+    /// </summary>
+    public HashSet<string> GameChatOff { get; set; } = new();
+
+    /// <summary>Server address → the channel windows open there, to open again at the next login. See <see cref="ChannelWindowLayouts"/>.</summary>
+    public Dictionary<string, List<ChannelWindowLayout>> ChannelWindows { get; set; } = new();
+
+    /// <summary>The channel windows on a server address (an empty list, kept, if there are none yet).</summary>
+    public List<ChannelWindowLayout> WindowsOn(string serverUrl) {
+        if (!this.ChannelWindows.TryGetValue(serverUrl, out var windows)) {
+            windows = new List<ChannelWindowLayout>();
+            this.ChannelWindows[serverUrl] = windows;
+        }
+
+        return windows;
+    }
+
     public int? SlotOf(string channelId) => this.ChannelSlots.TryGetValue(channelId, out var slot) ? slot : null;
 
     public string? ChannelInSlot(int slot) => CommandSlots.ChannelIn(this.ChannelSlots, slot);
 
     /// <summary>
-    /// See <see cref="CommandSlots.Sync"/>, <see cref="ChannelNicknames.Sync"/> and <see cref="Core.Client.ChannelColours.Sync"/>:
-    /// nothing changes until the snapshot holds the complete channel list.
+    /// See <see cref="CommandSlots.Sync"/>, <see cref="ChannelNicknames.Sync"/>, <see cref="Core.Client.ChannelColours.Sync"/>
+    /// and <see cref="GameChatChannels.Sync"/>: nothing changes until the snapshot holds the complete channel list. (Channel
+    /// windows follow it in <see cref="Ui.ChannelWindows"/>, which knows the server address.)
     /// </summary>
     /// <returns>True if anything changed.</returns>
     public bool Sync(SessionSnapshot snapshot) {
         var slots = CommandSlots.Sync(this.ChannelSlots, snapshot, Configuration.SlotCount);
         var nicknames = ChannelNicknames.Sync(this.Nicknames, snapshot);
         var colours = Core.Client.ChannelColours.Sync(this.ChannelColours, snapshot);
-        return slots || nicknames || colours;
+        var gameChat = GameChatChannels.Sync(this.GameChatOff, snapshot);
+        return slots || nicknames || colours || gameChat;
     }
 
     /// <summary>Sets a channel's colour (a UIColor row), or with null its default.</summary>

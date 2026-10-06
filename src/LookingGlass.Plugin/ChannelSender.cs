@@ -3,9 +3,10 @@ using LookingGlass.Core.Client;
 namespace LookingGlass.Plugin;
 
 /// <summary>
-/// The one send path for text typed in game: /lgcN &lt;message&gt;, /lgc &lt;nickname&gt; &lt;message&gt;, and plain text while
-/// talking in a channel. Call on the framework thread; the send itself runs in the background, and a failure is printed
-/// (a "Not sent" line is information, in LookingGlass blue: nothing went anywhere it shouldn't).
+/// The one send path for text typed in game or in a channel window: /lgcN &lt;message&gt;, /lgc &lt;nickname&gt; &lt;message&gt;,
+/// plain text while talking in a channel, and a channel window's input box. Call on the framework thread; the send itself
+/// runs in the background, and a failure is told (a "Not sent" line is information, in LookingGlass blue: nothing went
+/// anywhere it shouldn't): in game chat, or where the caller says (a channel window shows it in itself).
 /// </summary>
 public sealed class ChannelSender(SessionManager sessions, ChatOutput chat) {
     /// <summary>
@@ -20,16 +21,24 @@ public sealed class ChannelSender(SessionManager sessions, ChatOutput chat) {
     /// chat either, so the player knows to send it again.
     /// </param>
     /// <param name="sent">Run once the message has been sent (on a background thread), and only then.</param>
+    /// <param name="tell">
+    /// Where to say what went wrong (and that a link was left out), from any thread; null for game chat. A channel window
+    /// keeps it in the channel's history, so it shows where the message was typed.
+    /// </param>
+    /// <param name="notSent">Run (on any thread) once it is certain the message wasn't sent: a channel window puts it back to send again.</param>
     /// <returns>
     /// The message being sent, whether a link was left out, and how many text commands were replaced (a count, for the
     /// diagnostic log); null if nothing is sent.
     /// </returns>
-    internal (LinkedText Message, bool LeftOut, int TextCommands)? Send(string channelId, TypedLine typed, string? stickyTag = null, Action? sent = null) {
+    internal (LinkedText Message, bool LeftOut, int TextCommands)? Send(string channelId, TypedLine typed, string? stickyTag = null, Action? sent = null,
+        Action<NoticeTone, string>? tell = null, Action? notSent = null) {
+        tell ??= (tone, text) => chat.Notice(tone, text);
         var session = sessions.Session;
         if (session == null || session.Snapshot.State != ConnectionState.Ready) {
-            chat.Notice(NoticeTone.Info, stickyTag == null
+            tell(NoticeTone.Info, stickyTag == null
                 ? "Not connected to LookingGlass. Open /lookingglass to check."
                 : StickyMessages.NotSent(stickyTag, StickyMessages.NotConnectedReason));
+            notSent?.Invoke();
             return null;
         }
 
@@ -38,9 +47,10 @@ public sealed class ChannelSender(SessionManager sessions, ChatOutput chat) {
         var (resolved, replaced) = TextCommands.Resolve(LinkText.ResolvePlaceholders(typed, GameLinks.Placeholder), GameTextCommands.Resolve);
         var (message, leftOut) = LinkText.Compose(resolved);
         if (string.IsNullOrWhiteSpace(message.Text)) {
-            chat.Notice(NoticeTone.Info, stickyTag == null
+            tell(NoticeTone.Info, stickyTag == null
                 ? $"Not sent: {StickyMessages.LinkUnreadableReason}"
                 : StickyMessages.NotSent(stickyTag, StickyMessages.LinkUnreadableReason));
+            notSent?.Invoke();
             return null;
         }
 
@@ -52,13 +62,14 @@ public sealed class ChannelSender(SessionManager sessions, ChatOutput chat) {
             } catch (Exception ex) {
                 var advanced = sessions.AdvancedMode;
                 var reason = PlainMessages.MessageOf(ex, advanced);
-                chat.Notice(NoticeTone.Info, PlainMessages.Of(stickyTag == null ? $"Not sent: {reason}" : StickyMessages.NotSent(stickyTag, reason), advanced));
+                tell(NoticeTone.Info, PlainMessages.Of(stickyTag == null ? $"Not sent: {reason}" : StickyMessages.NotSent(stickyTag, reason), advanced));
+                notSent?.Invoke();
                 return;
             }
 
             try {
                 if (leftOut) {
-                    chat.Notice(NoticeTone.Info, StickyMessages.LinkNotSent);
+                    tell(NoticeTone.Info, StickyMessages.LinkNotSent);
                 }
 
                 sent?.Invoke();
