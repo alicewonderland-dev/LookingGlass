@@ -66,4 +66,24 @@ public sealed class ClientConnectTests {
             // Stopped.
         }
     }
+
+    /// <summary>
+    /// Stopping a session aborts its connection while the session's own loop disposes it. Disposing used to free what the
+    /// abort, already under way, went on to cancel, which threw ObjectDisposedException out of the session's DisposeAsync
+    /// (seen as an occasional test failure while a harness shut down). Disposing waits for a close in progress.
+    /// </summary>
+    [Fact]
+    public async Task DisposingAConnectionWhileItIsBeingAbortedIsSafe() {
+        var connection = new Connection(new ClosedWebSocket(), 1024, TimeSpan.FromSeconds(5), _ => { }, _ => { }, (_, _) => { });
+        Task? disposing = null;
+        connection.WhileClosingForTests = () => {
+            // The other side disposes now; with the fix it waits for this close to finish, so it can't complete here.
+            disposing = Task.Run(async () => await connection.DisposeAsync());
+            disposing.Wait(TimeSpan.FromMilliseconds(300));
+        };
+
+        connection.Abort("Session stopped");
+        await disposing!.WaitAsync(Harness.Timeout, Ct);
+        await connection.Closed.WaitAsync(Harness.Timeout, Ct);
+    }
 }

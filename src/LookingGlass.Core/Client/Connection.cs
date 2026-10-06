@@ -157,14 +157,22 @@ internal sealed class Connection : IAsyncDisposable {
         }
     }
 
+    /// <summary>Runs in <see cref="Close"/> once it has started, so tests can dispose the connection at that moment.</summary>
+    internal Action? WhileClosingForTests { get; set; }
+
     private void Close(string reason) {
         if (Interlocked.Exchange(ref this._closing, 1) == 1) {
             return;
         }
 
+        this.WhileClosingForTests?.Invoke();
         this._closeReason = reason;
         this._outbound.Writer.TryComplete();
-        this._cts.Cancel();
+        try {
+            this._cts.Cancel();
+        } catch (AggregateException) {
+            // A cancellation callback failed (the socket's, say). The connection is closing whatever they do.
+        }
 
         foreach (var (id, tcs) in this._pending) {
             if (this._pending.TryRemove(id, out _)) {
@@ -177,6 +185,8 @@ internal sealed class Connection : IAsyncDisposable {
 
     public async ValueTask DisposeAsync() {
         this.Close("Connection disposed");
+        // A close already under way on another thread (an abort) may not have cancelled yet: what it uses is disposed below.
+        await this._closed.Task;
         try {
             if (this._socket.State == WebSocketState.Open) {
                 using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
