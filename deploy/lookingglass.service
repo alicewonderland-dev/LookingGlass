@@ -1,5 +1,6 @@
 # systemd unit for a published server, for example:
 #   dotnet publish src/LookingGlass.Server -c Release -r linux-x64 --self-contained -o /opt/lookingglass
+#   (-r linux-arm64 on an ARM64 machine; scripts/publish-linux.ps1 -Runtime linux-arm64 makes the whole package)
 #   sudo useradd --system --no-create-home lookingglass
 #   sudo cp deploy/lookingglass.service /etc/systemd/system/
 #   sudo systemctl enable --now lookingglass
