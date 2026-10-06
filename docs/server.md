@@ -483,17 +483,26 @@ single file (no `-wal`).
 
 ```sh
 sudo systemctl stop lookingglass
+sudo systemctl stop litestream    # only if Litestream replicates this database
 cd /var/lib/lookingglass
 sudo cp backups/lookingglass-20261006-031500-123.db lookingglass.db.restoring
 sudo rm -f lookingglass.db-wal lookingglass.db-shm
 sudo mv lookingglass.db.restoring lookingglass.db
 sudo chown lookingglass:lookingglass lookingglass.db && sudo chmod 600 lookingglass.db
+sudo systemctl start litestream   # likewise
 sudo systemctl start lookingglass
 ```
 
 Remove the `-wal` and `-shm` files: they belong to the database being
-replaced. Logins made since the backup no longer work, but plugins sign back
-in with their identity keys by themselves (see [design.md](design.md#key-login)).
+replaced. If Litestream replicates the database, stop it first and start it
+again only once the restored file is in place: otherwise it goes on reading
+the old database's log while the file changes under it. (Stopping it pauses
+replication of any other database it handles too, for those few seconds.)
+With Litestream, restoring from its replica (below) is usually the better
+choice anyway: it is newer.
+
+Logins made since the backup no longer work, but plugins sign back in with
+their identity keys by themselves (see [design.md](design.md#key-login)).
 Anything else since (registrations, channels, invites, new keys) is gone, and
 users may need to register again.
 
@@ -522,17 +531,24 @@ To restore from the replica:
 
 ```sh
 sudo systemctl stop lookingglass
+sudo systemctl stop litestream
 cd /var/lib/lookingglass
 sudo litestream restore -config /etc/litestream.yml -o lookingglass.db.restoring /var/lib/lookingglass/lookingglass.db
 sudo rm -f lookingglass.db-wal lookingglass.db-shm
 sudo mv lookingglass.db.restoring lookingglass.db
 sudo chown lookingglass:lookingglass lookingglass.db && sudo chmod 600 lookingglass.db
+sudo systemctl start litestream
 sudo systemctl start lookingglass
 ```
 
-(`litestream restore` won't write over an existing file, hence the temporary
-name. Restoring onto a new machine works the same, before the first start.
-See Litestream's own documentation for restoring to a point in time.)
+Stop Litestream before putting the restored file in place, and start it again
+afterwards (before the server): a running Litestream would go on following the
+replaced database's log, and could replicate the wrong file. Stopping it
+pauses replication of any other database it handles, for those few seconds.
+`litestream restore` itself only reads the replica, and won't write over an
+existing file, hence the temporary name. Restoring onto a new machine works
+the same, before the server's first start. See Litestream's own
+documentation for restoring to a point in time.
 
 ## Docker
 
