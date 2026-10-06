@@ -189,6 +189,83 @@ public sealed class OperationsTests {
     }
 
     /// <summary>
+    /// The server's checkpoints are PASSIVE, so Litestream can replicate the database: one never waits for a reader (as
+    /// Litestream holds one), and never truncates or restarts the write-ahead log, which Litestream must read first.
+    /// </summary>
+    [Fact]
+    public void CheckpointsNeverWaitForReadersOrResetTheLog() {
+        var directory = Path.Combine(Path.GetTempPath(), "lgt-wal-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, "lookingglass.db");
+        try {
+            var db = new Database(path);
+            Register(db, 1, 20);
+
+            // A reader holds a snapshot (as Litestream does) while more is written.
+            using (var reader = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path, Pooling = false }.ToString())) {
+                reader.Open();
+                using var transaction = reader.BeginTransaction(deferred: true);
+                Assert.True(Convert.ToInt64(Scalar(reader, "SELECT COUNT(*) FROM users;")) > 0);
+                Register(db, 21, 40);
+
+                var clock = System.Diagnostics.Stopwatch.StartNew();
+                var (blocked, frames, done) = db.Checkpoint();
+                Assert.True(clock.Elapsed < TimeSpan.FromSeconds(5), $"The checkpoint waited {clock.Elapsed.TotalSeconds:0.0} s for the reader");
+                Assert.False(blocked, "The checkpoint waited for, or gave up on, the reader");
+                Assert.True(frames > 0);
+                Assert.True(done < frames, "Frames the reader may still need were folded in");
+            }
+
+            // With nobody reading, all of it is folded in, and the log stays as it is (only reused from the start later).
+            var (blockedAfter, allFrames, allDone) = db.Checkpoint();
+            Assert.False(blockedAfter);
+            Assert.Equal(allFrames, allDone);
+            Assert.True(new FileInfo(path + "-wal").Length > 0, "The checkpoint truncated the write-ahead log");
+            Database.ReleasePooledConnections(path);
+        } finally {
+            DeleteDirectory(directory);
+        }
+
+        static void Register(Database db, int from, int to) {
+            for (var id = from; id <= to; id++) {
+                using var keys = IdentityKeys.Generate();
+                db.RegisterUser(-id, $"Wal Writer {id}", 0, ProtocolInfo.DebugWorldName, keys.ToBundle(), true);
+            }
+        }
+    }
+
+    /// <summary>A backup is checked before it is put in place: a damaged database makes no backup, and replaces none.</summary>
+    [Fact]
+    public void ADamagedDatabaseMakesNoBackup() {
+        var directory = Path.Combine(Path.GetTempPath(), "lgt-damaged-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, "lookingglass.db");
+        var target = Path.Combine(directory, "backup.db");
+        try {
+            var db = new Database(path);
+            for (var id = 1; id <= 300; id++) {
+                using var keys = IdentityKeys.Generate();
+                db.RegisterUser(-id, $"Damaged User {id}", 0, ProtocolInfo.DebugWorldName, keys.ToBundle(), true);
+            }
+
+            // Everything in the main file, closed; then a page in the middle of the users table is overwritten.
+            Database.ReleasePooledConnections(path);
+            File.WriteAllText(target, "an older backup");
+            using (var file = new FileStream(path, FileMode.Open, FileAccess.ReadWrite)) {
+                var pages = file.Length / 4096;
+                file.Position = pages / 2 * 4096;
+                file.Write(Enumerable.Repeat((byte) 0xA5, 4096).ToArray());
+            }
+
+            Assert.ThrowsAny<Exception>(() => Database.BackupFile(path, target));
+            Assert.Equal("an older backup", File.ReadAllText(target));
+            Assert.Empty(Directory.GetFiles(directory, "backup.db.partial-*"));
+        } finally {
+            DeleteDirectory(directory);
+        }
+    }
+
+    /// <summary>
     /// <c>LookingGlass.Server --backup &lt;folder&gt; --keep N</c> makes a dated backup of the configured database without
     /// starting the server, and keeps only the newest N in that folder; for a timer or cron job.
     /// </summary>

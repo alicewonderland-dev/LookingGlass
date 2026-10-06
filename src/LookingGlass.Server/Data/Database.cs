@@ -141,12 +141,12 @@ public sealed class Database {
     /// Folds what it can of the write-ahead log into the database, without waiting for or blocking anyone (a PASSIVE
     /// checkpoint: Litestream, if it replicates the database, must read the log first, and holds a reader to make sure).
     /// </summary>
-    /// <returns>Frames in the log, and how many of them are now in the database.</returns>
-    public (long LogFrames, long Checkpointed) Checkpoint() {
+    /// <returns>Whether it was blocked (never, for a PASSIVE one), frames in the log, and how many of them are now in the database.</returns>
+    public (bool Blocked, long LogFrames, long Checkpointed) Checkpoint() {
         using var connection = this.Open();
         using var command = Command(connection, null, "PRAGMA wal_checkpoint(PASSIVE);");
         using var reader = command.ExecuteReader();
-        return reader.Read() ? (reader.GetInt64(1), reader.GetInt64(2)) : (0, 0);
+        return reader.Read() ? (reader.GetInt64(0) != 0, reader.GetInt64(1), reader.GetInt64(2)) : (false, 0, 0);
     }
 
     /// <summary>

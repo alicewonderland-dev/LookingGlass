@@ -156,6 +156,44 @@ public sealed class PresenceTests : IAsyncLifetime {
         }
     }
 
+    /// <summary>
+    /// The same going offline: Bob's lookup of whom to tell is made (without Carol) and held while he is still online; Carol
+    /// joins, and is shown him online. When he goes, she is told.
+    /// </summary>
+    [Fact]
+    public async Task SomeoneWhoJoinsWhileAMemberGoesOfflineIsToldTheyWent() {
+        var alice = await this._server.RegisterAsync("Alice Leaves Race");
+        var bob = await this._server.RegisterAsync("Bob Leaves Race");
+        var carol = await this._server.RegisterAsync("Carol Leaves Race");
+        var bobId = bob.UserId;
+        var channelId = await alice.Session.CreateChannelAsync("Leave Race", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        await alice.Session.InviteAsync(channelId, carol.Name, ProtocolInfo.DebugWorldName, Ct);
+        await WaitFor(() => carol.Session.Snapshot.Invites.FirstOrDefault(i => i.ChannelId == channelId && i.Verified));
+
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        this._server.Registry.AfterCoMemberQueryForTests = userId => {
+            if (userId == bobId && !entered.IsSet) {
+                entered.Set();
+                release.Wait(Harness.Timeout);
+            }
+        };
+
+        try {
+            await bob.Session.DisposeAsync();
+            Assert.True(entered.Wait(Harness.Timeout, Ct));
+            await carol.Session.RespondToInviteAsync(channelId, true, Ct).WaitAsync(TimeSpan.FromSeconds(5), Ct);
+            Assert.True(MemberOf(carol, channelId, bobId)!.Online);
+
+            release.Set();
+            await WaitFor(() => MemberOf(carol, channelId, bobId) is { Online: false } m ? m : null);
+        } finally {
+            release.Set();
+            this._server.Registry.AfterCoMemberQueryForTests = null;
+        }
+    }
+
     [Fact]
     public async Task ConnectionsOpeningAndClosingAtOnceStillAlternate() {
         var alice = await this._server.RegisterAsync("Alice Race");

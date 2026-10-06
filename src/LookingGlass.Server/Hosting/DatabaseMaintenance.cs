@@ -42,7 +42,7 @@ public sealed class DatabaseMaintenance(Database db, IOptions<ServerOptions> opt
 
     private void Checkpoint(string when) {
         try {
-            var (frames, done) = db.Checkpoint();
+            var (_, frames, done) = db.Checkpoint();
             logger.LogDebug("{When} checkpoint: {Done} of {Frames} write-ahead log frames in the database", when, done, frames);
         } catch (Exception ex) {
             logger.LogWarning(ex, "{When} checkpoint of the database failed", when);

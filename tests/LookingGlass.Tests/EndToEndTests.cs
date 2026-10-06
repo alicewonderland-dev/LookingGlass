@@ -731,6 +731,66 @@ public sealed class EndToEndTests : IAsyncLifetime {
         Assert.False(alice.Session.Snapshot.FindChannel(channelId)!.RekeyPending);
     }
 
+    /// <summary>
+    /// A channel list answered before Alice's own rekey (saying a rekey is pending at the epoch before it) arrives after
+    /// she holds the new key: that key, made later, settles it.
+    /// </summary>
+    [Fact]
+    public async Task AChannelListFromBeforeAKeyAlreadyHeldDoesNotMakeItPendingAgain() {
+        var bob = await this._server.RegisterAsync("Bob Old List");
+        var stale = 0;
+        string? channelId = null;
+        var alice = await this._server.RegisterAsync("Alice Old List", options: this._server.Options(
+            wrap: socket => new RewritingWebSocket(socket, frame => {
+                if (Volatile.Read(ref stale) == 1 && frame.Response?.ChannelList is { } list) {
+                    foreach (var info in list.Channels.Where(info => info.ChannelId == channelId)) {
+                        info.Epoch -= 1;
+                        info.RekeyPending = true;
+                    }
+                }
+
+                return frame;
+            })));
+        channelId = await alice.Session.CreateChannelAsync("Old List", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        var epoch = alice.Session.Snapshot.FindChannel(channelId)!.Epoch;
+
+        Volatile.Write(ref stale, 1);
+        await alice.Session.RefreshAsync(Ct);
+
+        var channel = alice.Session.Snapshot.FindChannel(channelId)!;
+        Assert.Equal(epoch, channel.Epoch);
+        Assert.False(channel.RekeyPending);
+    }
+
+    /// <summary>
+    /// A request for a new key at epoch N, then the new key's EpochAdvanced missed (lost on the way): the client fetches the
+    /// key when a message under it arrives, and that key, for a later epoch, settles the request.
+    /// </summary>
+    [Fact]
+    public async Task AKeyFetchedLaterSettlesARequestForANewKey() {
+        var bob = await this._server.RegisterAsync("Bob Missed Key");
+        var drop = 0;
+        var alice = await this._server.RegisterAsync("Alice Missed Key", options: this._server.Options(
+            wrap: socket => new RewritingWebSocket(socket, frame => Volatile.Read(ref drop) == 1 && frame.Event?.EpochAdvanced != null
+                ? new ServerFrame { Event = new Event { Seq = frame.Event.Seq, Announcement = new Announcement { Text = "Something was lost on the way." } } }
+                : frame)));
+        var channelId = await alice.Session.CreateChannelAsync("Missed Key", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        var epoch = alice.Session.Snapshot.FindChannel(channelId)!.Epoch;
+
+        Volatile.Write(ref drop, 1);
+        await this._server.SendAndSettleAsync(alice, new Event { RekeyNeeded = new RekeyNeeded { ChannelId = channelId, CurrentEpoch = epoch } });
+        Assert.True(alice.Session.Snapshot.FindChannel(channelId)!.RekeyPending);
+        await bob.Session.RekeyAsync(channelId, Ct, force: true);
+        await bob.Session.SendTextAsync(channelId, "under the new key", Ct);
+
+        await WaitFor(() => alice.Messages.FirstOrDefault(m => m.Text == "under the new key"));
+        var channel = alice.Session.Snapshot.FindChannel(channelId)!;
+        Assert.Equal(epoch + 1, channel.Epoch);
+        Assert.False(channel.RekeyPending);
+    }
+
     /// <summary>Alice (admin), Bob and Carol in one channel, all holding its current key.</summary>
     private async Task<(TestClient Alice, TestClient Bob, TestClient Carol, string ChannelId)> ThreeMembersAsync(string suffix) {
         var alice = await this._server.RegisterAsync("Alice " + suffix);
