@@ -59,6 +59,11 @@ box (ChatTwo off) and in ChatTwo's main input (ChatTwo on): four ticks a row.
 - [ ] `dalamud.log` while sticky: the "sending" entry ends with "N text
       command(s) replaced", and no name appears anywhere in the
       `[LookingGlass]` lines.
+- [ ] Game chat still expands after LookingGlass has: target someone, type
+      `/lgc1 hi <t>`, then `/s hi <t>` and `/echo <t>`, and run a macro with
+      `/echo <t>`. Each shows the target's name as normal. (LookingGlass uses
+      the game's own expander, so this checks it leaves the game's result
+      alone.)
 
 ## GagSpeak (nothing to turn on yet)
 
