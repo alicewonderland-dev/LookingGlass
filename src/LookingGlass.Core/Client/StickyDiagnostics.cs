@@ -43,11 +43,12 @@ public static partial class StickyDiagnostics {
 
     /// <summary>
     /// What a message sent while talking in a channel held, in sizes and counts only: how long it is, how many links went
-    /// as links, whether one was left out. Never a link's name or what it points at.
+    /// as links, whether one was left out, how many text commands (&lt;t&gt;, &lt;me&gt;) were replaced. Never a link's
+    /// name or what it points at, nor what a text command stood for (someone's name).
     /// </summary>
-    public static string Sent(string tag, int bytes, LinkedText message, bool leftOut) =>
+    public static string Sent(string tag, int bytes, LinkedText message, bool leftOut, int textCommands = 0) =>
         $"{Prefix} sending: talking in {tag}, {bytes} bytes typed, {message.Text.Length} characters, " +
-        $"{message.Links.Count} link(s){(leftOut ? ", a link left out (couldn't be read)" : "")}";
+        $"{message.Links.Count} link(s){(leftOut ? ", a link left out (couldn't be read)" : "")}, {textCommands} text command(s) replaced";
 
     /// <summary>The line holds SeString payloads (links, auto-translate phrases): a byte 2 anywhere.</summary>
     public static bool HasPayload(ChatBoxLine line) => line.Raw.AsSpan().Contains((byte) 0x02);

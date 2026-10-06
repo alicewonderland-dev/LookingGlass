@@ -162,8 +162,8 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
     /// and the like, read now): see <see cref="ChannelSender.Send"/>. The diagnostic log gets sizes and counts only.
     /// </summary>
     private void SendTyped(StickyRoute.ToChannel send, ChatBoxLine line, string tag) {
-        if (this._sender.Send(send.ChannelId, line.Typed.WithText(send.Text), tag) is var (message, leftOut)) {
-            Log(() => StickyDiagnostics.Sent(tag, line.Raw.Length, message, leftOut));
+        if (this._sender.Send(send.ChannelId, line.Typed.WithText(send.Text), tag) is var (message, leftOut, textCommands)) {
+            Log(() => StickyDiagnostics.Sent(tag, line.Raw.Length, message, leftOut, textCommands));
         }
     }
 

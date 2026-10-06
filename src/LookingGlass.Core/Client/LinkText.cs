@@ -140,6 +140,9 @@ public static partial class LinkText {
     /// <summary>Whether <paramref name="text"/> holds a link: a marker or a placeholder.</summary>
     public static bool HasLink(string text) => text.Any(c => MarkerIndex(c) != null) || Placeholder().IsMatch(text);
 
+    /// <summary>Whether <paramref name="text"/> is exactly one link placeholder (&lt;item&gt;, &lt;flag&gt;, &lt;status&gt;, any case).</summary>
+    public static bool IsPlaceholder(string text) => Placeholder().Match(text) is { Success: true } match && match.Length == text.Length;
+
     /// <summary><paramref name="text"/> with every placeholder and marker taken out: what is left as typed text.</summary>
     public static string WithoutLinks(string text) => Placeholder().Replace(StripMarkers(text), " ");
 

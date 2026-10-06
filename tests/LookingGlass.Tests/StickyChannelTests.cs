@@ -905,7 +905,7 @@ public sealed class StickyChannelTests {
     public void TheDiagnosticLogSaysWhatWasSentInCountsOnly() {
         var (message, _) = LinkText.Compose(new TypedLine(Marked("secret ", " plans"), [Potion]));
         var log = StickyDiagnostics.Sent(Tag, 40, message, false);
-        Assert.Equal("[sticky] sending: talking in [sky], 40 bytes typed, 21 characters, 1 link(s)", log);
+        Assert.Equal("[sticky] sending: talking in [sky], 40 bytes typed, 21 characters, 1 link(s), 0 text command(s) replaced", log);
         Assert.DoesNotContain("Potion", log);
         Assert.DoesNotContain("5333", log);
         Assert.DoesNotContain("secret", log);
@@ -914,7 +914,7 @@ public sealed class StickyChannelTests {
         var (withFlag, leftOut) = LinkText.Compose(new TypedLine($"{LinkText.Marker(0)} {LinkText.Marker(1)}", [flag, new TypedLink(null, null)]));
         Assert.True(leftOut);
         log = StickyDiagnostics.Sent(Tag, 30, withFlag, leftOut);
-        Assert.EndsWith(", 1 link(s), a link left out (couldn't be read)", log);
+        Assert.EndsWith(", 1 link(s), a link left out (couldn't be read), 0 text command(s) replaced", log);
         foreach (var secret in new[] { "Limsa", "129", "9500", "11200", "9.5" }) {
             Assert.DoesNotContain(secret, log);
         }
