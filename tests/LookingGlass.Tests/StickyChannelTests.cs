@@ -212,7 +212,7 @@ public sealed class StickyChannelTests {
         Assert.Equal(StickyRoute.Leave, StickyRoute.For("aaa", Tag, prefix, withChatTwo));
         Assert.Equal(StickyRoute.Leave, StickyRoute.For("aaa", Tag, $"{prefix}   ", withChatTwo));
 
-        // The rule is the same in the game's own chat box: one rule for every line, wherever it was typed.
+        // The strict rule, for a line from an input whose channel isn't known (see ShortCommandRule): always the channel's.
         Assert.Equal(new StickyRoute.ToChannel("aaa", "hello"), StickyRoute.For("aaa", Tag, ChatBoxLine.Plain($"{prefix} hello"), ChatChannelPrefixes.SentAs()));
 
         // Not talking in a channel: the game's, ChatTwo or not.
@@ -258,6 +258,183 @@ public sealed class StickyChannelTests {
         Assert.Equal(34 - 8 - 2, expected.Count); // ChatTwo's 34 short commands, less /ecl1 to /ecl8, /t and /e.
         Assert.True(expected.SetEquals(ChatChannelPrefixes.ChatTwo));
         Assert.Same(ChatChannelPrefixes.ChatTwo, ChatChannelPrefixes.SentAs());
+    }
+
+    // ---------------------------------------------------------------- short commands: the player's one-off, unless ChatTwo's typing
+
+    /// <summary>Where a line goes, decided as the plugin decides it: the rule for its way in, then the route.</summary>
+    private static StickyRoute Route(string input, LineSource source, ChatTwoLine? chatTwo = null) =>
+        StickyRoute.For("aaa", Tag, ChatBoxLine.Plain(input), ShortCommandRule.For(source, chatTwo).AsText);
+
+    /// <summary>ChatTwo's main input on <paramref name="chatType"/>, as it is while it sends <paramref name="typed"/>.</summary>
+    private static ChatTwoLine MainInput(int chatType, string typed, string sent) =>
+        ChatTwoLine.Of(chatType, typed.Trim().Length > 0, typed.Length, sent);
+
+    private const int ChatTwoSay = 10;
+    private const int ChatTwoParty = 14;
+    private const int ChatTwoFreeCompany = 24;
+    private const int ChatTwoCrossLinkshell1 = 37;
+
+    [Theory]
+    [MemberData(nameof(ChatTwoPrefixes))]
+    public void TypedInTheGameAShortCommandTalksInThatGameChannelOnce(string prefix) {
+        // FFXIV's own rule, and what players type: "/p brb" talks in Party once. Talking in the channel goes on (the
+        // route is the game's, not a switch), and plain text still goes to the channel.
+        Assert.Equal(StickyRoute.Game, Route($"{prefix} hi", LineSource.Game));
+        Assert.Equal(StickyRoute.Game, Route($"{prefix} <item>", LineSource.Game));
+        Assert.Equal(new StickyRoute.ToChannel("aaa", "hi"), Route("hi", LineSource.Game));
+        // On its own it is still a switch back.
+        Assert.Equal(StickyRoute.Leave, Route(prefix, LineSource.Game));
+    }
+
+    [Fact]
+    public void AMacrosShortCommandTalksInThatGameChannelOnce() {
+        // A raid macro's "/p Pull in 5" goes to Party, as the owner saw and wants; its plain text still goes to the channel.
+        Assert.Equal(StickyRoute.Game, Route("/p Pull in 5", LineSource.Game));
+        Assert.Equal(new StickyRoute.ToChannel("aaa", "hello"), Route("hello", LineSource.Game));
+    }
+
+    [Fact]
+    public void InChatTwoPlainTypingSentWithItsChannelsCommandGoesToTheChannel() {
+        // "hi" typed in ChatTwo on Party is sent as "/p hi" while its input still holds "hi".
+        Assert.Equal(new StickyRoute.ToChannel("aaa", "hi"), Route("/p hi", LineSource.Plugin, MainInput(ChatTwoParty, "hi", "/p hi")));
+        Assert.Equal(new StickyRoute.ToChannel("aaa", "hello there"),
+            Route("/cwl1 hello there", LineSource.Plugin, MainInput(ChatTwoCrossLinkshell1, "hello there", "/cwl1 hello there")));
+        // A link alone: kept, saying so.
+        Assert.Equal(new StickyRoute.Dropped(StickyMessages.NotSent(Tag, StickyMessages.NoTextReason)),
+            Route("/cwl1 <item>", LineSource.Plugin, MainInput(ChatTwoCrossLinkshell1, "<item>", "/cwl1 <item>")));
+    }
+
+    [Fact]
+    public void InChatTwoAnotherChannelsShortCommandTalksInThatGameChannelOnce() {
+        // ChatTwo on Party, "/s hi" typed: sent as typed, so the input holds the whole line. Say, once.
+        Assert.Equal(StickyRoute.Game, Route("/s hi", LineSource.Plugin, MainInput(ChatTwoParty, "/s hi", "/s hi")));
+        Assert.Equal(StickyRoute.Game, Route("/fc hi", LineSource.Plugin, MainInput(ChatTwoParty, "/fc hi", "/fc hi")));
+        Assert.Equal(StickyRoute.Game, Route("/cwl1 hi", LineSource.Plugin, MainInput(ChatTwoFreeCompany, "/cwl1 hi", "/cwl1 hi")));
+        Assert.Equal(StickyRoute.Game, Route("/p brb", LineSource.Plugin, MainInput(ChatTwoSay, "/p brb", "/p brb")));
+    }
+
+    [Fact]
+    public void InChatTwoItsOwnChannelsShortCommandTypedIsTheChannelsTheAcceptedEdge() {
+        // ChatTwo on Party, "/p hi" typed: indistinguishable from typing "hi" there, so it goes to the LookingGlass channel.
+        // The long form talks in Party.
+        Assert.Equal(new StickyRoute.ToChannel("aaa", "hi"), Route("/p hi", LineSource.Plugin, MainInput(ChatTwoParty, "/p hi", "/p hi")));
+        Assert.Equal(StickyRoute.Game, Route("/party hi", LineSource.Plugin, MainInput(ChatTwoParty, "/party hi", "/party hi")));
+    }
+
+    [Fact]
+    public void FromChatTwoWithoutItsMainInputsWordEveryShortCommandIsTheChannels() {
+        var notMain = MainInput(ChatTwoParty, "", "/s hi");
+        Assert.False(notMain.FromMainInput);
+        foreach (var chatTwo in new ChatTwoLine?[] {
+                     // A pop-out with its own input on Say, the main input empty (or holding a draft of another length).
+                     notMain,
+                     MainInput(ChatTwoParty, "a draft", "/s hi"),
+                     // ChatTwo's typing IPC didn't answer, or named a channel LookingGlass doesn't know.
+                     null,
+                     ChatTwoLine.Of(9999, true, 5, "/s hi"),
+                 }) {
+            Assert.Equal(new StickyRoute.ToChannel("aaa", "hi"), Route("/s hi", LineSource.Plugin, chatTwo));
+            Assert.Equal(new StickyRoute.ToChannel("aaa", "hi"), Route("/p hi", LineSource.Plugin, chatTwo));
+        }
+
+        // The way in not known (the ProcessChatBoxEntry hook missing): it could be ChatTwo's typing.
+        Assert.Equal(new StickyRoute.ToChannel("aaa", "hi"), Route("/s hi", LineSource.Unknown));
+        Assert.Equal(new StickyRoute.ToChannel("aaa", "hi"), Route("/s hi", LineSource.Unknown, MainInput(ChatTwoParty, "/s hi", "/s hi")));
+        // The long forms are the game's from anywhere.
+        Assert.Equal(StickyRoute.Game, Route("/say hi", LineSource.Plugin));
+        Assert.Equal(StickyRoute.Game, Route("/say hi", LineSource.Unknown));
+    }
+
+    [Fact]
+    public void ChatTwosMainInputIsKnownByWhatItHoldsWhileItSends() {
+        // Typed as a command: the input holds the line as sent.
+        Assert.True(ChatTwoLine.Of(ChatTwoParty, true, 5, "/s hi").FromMainInput);
+        // Plain text: the input holds it without the command ChatTwo put in front.
+        Assert.True(ChatTwoLine.Of(ChatTwoParty, true, 2, "/p hi").FromMainInput);
+        Assert.Equal("/p", ChatTwoLine.Of(ChatTwoParty, true, 2, "/p hi").Prefix);
+        // Not its channel's command, and not the whole line: some other input sent it.
+        Assert.False(ChatTwoLine.Of(ChatTwoParty, true, 2, "/s hi").FromMainInput);
+        // An empty input sent nothing.
+        Assert.False(ChatTwoLine.Of(ChatTwoParty, false, 0, "/s hi").FromMainInput);
+        Assert.False(ChatTwoLine.Of(ChatTwoParty, false, 5, "/s hi").FromMainInput);
+    }
+
+    [Fact]
+    public void InChatTwoOnEchoATellOrExtraChatEveryShortCommandIsTheGames() {
+        // None of the game's short commands is the typing of an input with no channel (echo), a tell or ExtraChat's.
+        Assert.Equal(StickyRoute.Game, Route("/p hi", LineSource.Plugin, MainInput(56, "/p hi", "/p hi")));
+        Assert.Equal(StickyRoute.Game, Route("/s hi", LineSource.Plugin, MainInput(1001, "/s hi", "/s hi")));
+        Assert.Equal(StickyRoute.Game, Route("/e hi", LineSource.Plugin, MainInput(56, "hi", "/e hi")));
+    }
+
+    [Theory]
+    [InlineData(10, "/s")]
+    [InlineData(11, "/sh")]
+    [InlineData(12, "/t")]
+    [InlineData(14, "/p")]
+    [InlineData(15, "/a")]
+    [InlineData(16, "/l1")]
+    [InlineData(23, "/l8")]
+    [InlineData(24, "/fc")]
+    [InlineData(27, "/b")]
+    [InlineData(30, "/y")]
+    [InlineData(36, "/pt")]
+    [InlineData(37, "/cwl1")]
+    [InlineData(101, "/cwl2")]
+    [InlineData(107, "/cwl8")]
+    [InlineData(56, "/e")]
+    [InlineData(1001, "/ecl1")]
+    [InlineData(1008, "/ecl8")]
+    [InlineData(32, null)] // ChatTwo's cross-party: no input channel
+    [InlineData(0, null)]
+    [InlineData(108, null)]
+    public void ChatTwosChatTypesNameTheirShortCommands(int chatType, string? prefix) {
+        // ChatTwo 1.40.9: ChatType numbers (Code/ChatType.cs) and InputChannelExt.Prefix.
+        Assert.Equal(prefix, ChatChannelPrefixes.OfChatTwoType(chatType));
+    }
+
+    [Fact]
+    public void EveryShortCommandChatTwoSendsTextWithHasItsChatType() {
+        var named = Enumerable.Range(0, 1100).Select(ChatChannelPrefixes.OfChatTwoType).Where(prefix => prefix != null).ToHashSet();
+        Assert.True(ChatChannelPrefixes.ChatTwo.All(named.Contains));
+    }
+
+    // ---------------------------------------------------------------- links in a message sent to the channel
+
+    private static string? Names(string placeholder) => placeholder switch {
+        "<item>" => "Potion",
+        "<flag>" => "Limsa Lominsa Lower Decks ( 9.5 , 11.2 )",
+        _ => null,
+    };
+
+    [Fact]
+    public void ALinkGoesAsItsNameInBrackets() {
+        Assert.Equal(("look [Potion]", false), LinkText.Resolve("look <item>", Names));
+        Assert.Equal(("meet at [Limsa Lominsa Lower Decks ( 9.5 , 11.2 )] now", false), LinkText.Resolve("meet at <flag> now", Names));
+        Assert.Equal(("[Potion] or [Potion]?", false), LinkText.Resolve("<ITEM> or <item>?", Names));
+        Assert.Equal(("no links here", false), LinkText.Resolve("no links here", Names));
+    }
+
+    [Fact]
+    public void ALinkWhoseNameIsntFoundIsLeftOutAndTheRestSent() {
+        Assert.Equal(("look at this", true), LinkText.Resolve("look at <status> this", Names));
+        Assert.Equal(("look", true), LinkText.Resolve("look <status>", _ => throw new InvalidOperationException()));
+        Assert.Equal(("look", true), LinkText.Resolve("look <item>", _ => "   "));
+    }
+
+    [Fact]
+    public void ANameIsAskedForOnceAndCantInjectAnything() {
+        var asked = 0;
+        Assert.Equal(("[a] [a]", false), LinkText.Resolve("<item> <item>", _ => {
+            asked++;
+            return "a";
+        }));
+        Assert.Equal(1, asked);
+
+        // Game formatting and anything that reads as a placeholder is plain text in a name.
+        var (text, _) = LinkText.Resolve("look <item>", _ => "Po\u0002tion <flag> [x]");
+        Assert.Equal("look [Potion (flag) (x)]", text);
     }
 
     // ---------------------------------------------------------------- the gate: fail closed
@@ -736,8 +913,34 @@ public sealed class StickyChannelTests {
             StickyDiagnostics.Ended(Tag, StickyEnd.Disconnected, new ChatBoxState(2, 0, "", 2, 0x12)));
         Assert.Equal("[sticky] end: stopped talking in [sky] (Stopped), chat box unreadable", StickyDiagnostics.Ended(Tag, StickyEnd.Stopped, null));
         Assert.StartsWith("[sticky] start refused: ChatTwo no, chat type 1: ", StickyDiagnostics.Refused(StickyMessages.StillLoading, false, Say));
-        // Whether the short-command rule was on is in the log.
-        Assert.Equal("command (short-command rule off)", StickyRoute.Decide("aaa", Tag, ChatBoxLine.Plain("/s hi"), NoPrefixes).Reason);
+        // A short command let through as the player's one-off says so, and which rule let it through.
+        Assert.Equal("short command, to the game once", StickyRoute.Decide("aaa", Tag, ChatBoxLine.Plain("/s hi"), NoPrefixes).Reason);
+        Assert.Equal("command", StickyRoute.Decide("aaa", Tag, ChatBoxLine.Plain("/party hi"), NoPrefixes).Reason);
+        var line = ChatBoxLine.Plain("/s my secret plans");
+        var rule = ShortCommandRule.For(LineSource.Game, null);
+        var (route, reason) = StickyRoute.Decide("aaa", Tag, line, rule.AsText);
+        Assert.Equal("[sticky] line from the game: talking in [sky], ChatTwo no, /s, 18 bytes, payload no -> to game (short command, to the game once); " +
+                     "rule: typed in the game: short commands go to the game once",
+            StickyDiagnostics.Line(Tag, false, line, route, reason, source: LineSource.Game, rule: rule.Why));
+        Assert.StartsWith("[sticky] line from an unknown way in (no ProcessChatBoxEntry hook): ",
+            StickyDiagnostics.Line(Tag, true, line, route, reason, source: LineSource.Unknown));
+        Assert.Equal("[sticky] link left out: talking in [sky], a link's name couldn't be found, sent the rest (14 bytes before)",
+            StickyDiagnostics.LinkLeftOut(Tag, 14));
+    }
+
+    [Fact]
+    public void EveryRuleIsLoggedInFixedWords() {
+        var rules = new[] {
+            ShortCommandRule.For(LineSource.Game, null),
+            ShortCommandRule.For(LineSource.Plugin, null),
+            ShortCommandRule.For(LineSource.Plugin, new ChatTwoLine(null, true)),
+            ShortCommandRule.For(LineSource.Plugin, new ChatTwoLine("/p", false)),
+            ShortCommandRule.For(LineSource.Plugin, new ChatTwoLine("/p", true)),
+            ShortCommandRule.For(LineSource.Plugin, new ChatTwoLine("/e", true)),
+            ShortCommandRule.For(LineSource.Unknown, new ChatTwoLine("/p", true)),
+        };
+        Assert.Equal(rules.Length, rules.Select(rule => rule.Why).Distinct().Count());
+        Assert.All(rules, rule => Assert.All(rule.Why, c => Assert.True(c >= ' ' && c < 0x7F, rule.Why)));
     }
 
     // ---------------------------------------------------------------- a one-off switch (the channel the game saves to go back to)

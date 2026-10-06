@@ -1,4 +1,6 @@
 using System.Text;
+using Dalamud.Game.Text.SeStringHandling;
+using Dalamud.Game.Text.SeStringHandling.Payloads;
 using Dalamud.Hooking;
 using FFXIVClientStructs.FFXIV.Client.System.String;
 using FFXIVClientStructs.FFXIV.Client.UI;
@@ -7,6 +9,7 @@ using FFXIVClientStructs.FFXIV.Client.UI.Shell;
 using FFXIVClientStructs.FFXIV.Component.Shell;
 using InteropGenerator.Runtime;
 using LookingGlass.Core.Client;
+using Lumina.Excel.Sheets;
 
 namespace LookingGlass.Plugin;
 
@@ -16,9 +19,20 @@ internal interface IChatBoxListener {
     bool Active { get; }
 
     /// <summary>Decides what happens to a line (its raw bytes, payloads and all), and acts on it.</summary>
-    /// <param name="source">Which way it came (for the diagnostic log).</param>
+    /// <param name="source">Which way it came: the short-command rule depends on it (see <see cref="ShortCommandRule"/>).</param>
+    /// <param name="chatTwo">
+    /// What ChatTwo's main input said about the line, if a plugin submitted it through <c>ProcessChatBoxEntry</c> and this
+    /// is that line (not one run inside it); see <see cref="PluginLine"/>.
+    /// </param>
     /// <returns>True to keep it from the game.</returns>
-    bool KeepFromGame(byte[] message, LineSource source);
+    bool KeepFromGame(byte[] message, LineSource source, ChatTwoLine? chatTwo);
+
+    /// <summary>
+    /// A plugin (ChatTwo) is submitting a line through <c>UIModule.ProcessChatBoxEntry</c>: what ChatTwo's main input says
+    /// about it, read now, before the line reaches the gate (where another plugin's hook may change it first). Null if
+    /// ChatTwo doesn't answer. Only while <see cref="Active"/>.
+    /// </summary>
+    ChatTwoLine? PluginLine(byte[] message);
 
     /// <summary><see cref="KeepFromGame"/> threw while <see cref="Active"/>: the line was kept from the game.</summary>
     void Failed(Exception ex);
@@ -68,8 +82,10 @@ internal interface IChatBoxListener {
 /// being run made the call, as ChatTwo also calls it with the channel already on at every tab change. Some of the
 /// game's own commands set the channel by another function ClientStructs doesn't name; the channel is also read once a
 /// frame and before each draw of the chat log, which sees those, and a channel command on its own is caught by the gate.</item>
-/// <item><c>UIModule.ProcessChatBoxEntry</c> (optional, pass-through): only notes that a line came from a plugin, for
-/// the diagnostic log.</item>
+/// <item><c>UIModule.ProcessChatBoxEntry</c> (optional, pass-through): notes that a line came from a plugin, and, while
+/// talking in a channel, asks ChatTwo what its main input holds as the line arrives (see <see cref="ChatTwoLine"/>). The
+/// short-command rule depends on it: without this hook, no line can be told to be the game's, and every short command
+/// with text counts as possibly ChatTwo's typing (<see cref="LineSource.Unknown"/>).</item>
 /// <item><c>AgentChatLog.ChangeChannelName</c> (optional): the game renaming its chat input's channel; checked at once
 /// rather than at the next frame, and logged.</item>
 /// <item><c>AgentChatLog.InsertTextCommandParam</c> (optional): the game putting a link placeholder (&lt;item&gt;) in its
@@ -92,6 +108,10 @@ internal sealed unsafe class ChatInterop : IDisposable {
     private int _linesRunning;
     // Lines a plugin is submitting through ProcessChatBoxEntry now (game thread only).
     private int _pluginLines;
+    // What ChatTwo's main input said about the line being submitted through ProcessChatBoxEntry, and how many lines were
+    // running when it was submitted: only the line run at that depth is the submitted one (game thread only).
+    private ChatTwoLine? _pluginLine;
+    private int _pluginLineDepth = -1;
     // The commands of the lines let through that are running now, outermost first (null: not a command, or not talking
     // in a channel when it started). Game thread only.
     private readonly List<string?> _running = [];
@@ -184,8 +204,8 @@ internal sealed unsafe class ChatInterop : IDisposable {
     private void CommandDetour(ShellCommandModule* module, Utf8String* message, UIModule* uiModule) {
         // The decision lives in Core (ChatBoxGate), where it is tested: while talking in a channel, a line whose fate
         // couldn't be decided is kept from the game.
-        var address = (nint) message;
-        var source = this._pluginLines > 0 ? LineSource.Plugin : LineSource.Game;
+        var source = this._chatBoxHook == null ? LineSource.Unknown : this._pluginLines > 0 ? LineSource.Plugin : LineSource.Game;
+        var chatTwo = source == LineSource.Plugin && this._running.Count == this._pluginLineDepth ? this._pluginLine : null;
         var active = this._listener.Active;
         var bytes = active && message != null ? message->AsSpan().ToArray() : null;
 
@@ -201,7 +221,7 @@ internal sealed unsafe class ChatInterop : IDisposable {
         }
 
         if (!passNested && message != null && ChatBoxGate.KeepFromGame(active,
-                () => this._listener.KeepFromGame(bytes!, source), this._listener.Failed)) {
+                () => this._listener.KeepFromGame(bytes!, source, chatTwo), this._listener.Failed)) {
             return;
         }
 
@@ -225,14 +245,88 @@ internal sealed unsafe class ChatInterop : IDisposable {
         }
     }
 
-    /// <summary>A plugin (ChatTwo) submitting a line: only noted; the line is decided in <see cref="CommandDetour"/>.</summary>
+    /// <summary>
+    /// A plugin (ChatTwo) submitting a line: noted, with what ChatTwo's main input says about it while talking in a channel;
+    /// the line is decided in <see cref="CommandDetour"/>.
+    /// </summary>
     private void ChatBoxDetour(UIModule* module, Utf8String* message, nint a4, bool saveToHistory) {
+        var (outerLine, outerDepth) = (this._pluginLine, this._pluginLineDepth);
         this._pluginLines++;
         try {
+            this._pluginLine = null;
+            this._pluginLineDepth = this._running.Count;
+            if (message != null && this._listener.Active) {
+                try {
+                    this._pluginLine = this._listener.PluginLine(message->AsSpan().ToArray());
+                } catch (Exception ex) {
+                    // Unknown: every short command counts as text for this line (fail safe).
+                    Services.Log.Error(ex, "Error reading ChatTwo's input for a line");
+                }
+            }
+
             this._chatBoxHook!.Original(module, message, a4, saveToHistory);
         } finally {
             this._pluginLines--;
+            (this._pluginLine, this._pluginLineDepth) = (outerLine, outerDepth);
         }
+    }
+
+    /// <summary>
+    /// The name of what a link placeholder in the chat input stands for now (see <see cref="LinkText"/>): "&lt;item&gt;"
+    /// the item the chat log agent holds as linked, "&lt;flag&gt;" the map flag, "&lt;status&gt;" the status; null if
+    /// there is none, or it can't be read. Where the game keeps them is as ChatTwo 1.40.9 reads them for its input
+    /// preview (<c>Message.DecodeTextParam</c>). Game thread only.
+    /// </summary>
+    public static string? LinkName(string placeholder) {
+        switch (placeholder) {
+            case "<item>": {
+                var agent = AgentChatLog.Instance();
+                if (agent == null) {
+                    return null;
+                }
+
+                // The field, not a call into the game: a symbolic item (a link to another) holds no id there. Its
+                // high-quality (+1,000,000) and collectable (+500,000) forms, if present, are the same item.
+                var id = agent->LinkedItem.IsSymbolic ? 0 : agent->LinkedItem.ItemId;
+                if (id is > 0 and < 2_000_000) {
+                    id %= 500_000;
+                }
+
+                var name = id == 0 ? null
+                    : id >= 2_000_000 ? Services.Data.GetExcelSheet<EventItem>().GetRowOrDefault(id)?.Name.ExtractText()
+                    : Services.Data.GetExcelSheet<Item>().GetRowOrDefault(id)?.Name.ExtractText();
+                return string.IsNullOrWhiteSpace(name) ? TextOf(agent->LinkedItemName) : name;
+            }
+            case "<status>": {
+                var agent = AgentChatLog.Instance();
+                if (agent == null) {
+                    return null;
+                }
+
+                var id = agent->ContextStatusId;
+                var name = id == 0 ? null : Services.Data.GetExcelSheet<Status>().GetRowOrDefault(id)?.Name.ExtractText();
+                return string.IsNullOrWhiteSpace(name) ? TextOf(agent->ContextStatusName) : name;
+            }
+            case "<flag>": {
+                var map = AgentMap.Instance();
+                if (map == null || map->FlagMarkerCount == 0) {
+                    return null;
+                }
+
+                var flag = map->FlagMapMarkers[0];
+                var link = new MapLinkPayload(flag.TerritoryId, flag.MapId,
+                    (int) (MathF.Round(flag.XFloat, 3, MidpointRounding.AwayFromZero) * 1000),
+                    (int) (MathF.Round(flag.YFloat, 3, MidpointRounding.AwayFromZero) * 1000));
+                return $"{link.PlaceName} {link.CoordinateString}";
+            }
+            default:
+                return null;
+        }
+    }
+
+    private static string? TextOf(Utf8String text) {
+        var span = text.AsSpan();
+        return span.IsEmpty ? null : SeString.Parse(span).TextValue;
     }
 
     private bool ChangeChannelDetour(RaptureShellModule* shell, int channel, uint linkshellIndex, Utf8String* tellTarget, bool setChatType) {

@@ -394,11 +394,11 @@ public sealed class SessionManager : IDisposable {
         }
 
         // In the words of the mode set now: switching modes changes the words of what comes next, never whether it is shown.
-        this._chat.Notice(notice.Level, notice.TextFor(this.AdvancedMode));
+        this._chat.Notice(notice.Level, notice.TextFor(this.AdvancedMode), notice.Kind);
     }
 
     /// <summary>Prints something to chat in the words of the mode set now.</summary>
-    private void Tell(NoticeLevel level, Wording wording) => this._chat.Notice(level, wording.For(this.AdvancedMode));
+    private void Tell(NoticeLevel level, Wording wording) => this._chat.Notice(level, wording.For(this.AdvancedMode), wording.Kind);
 
     private void SyncCommands(SessionSnapshot snapshot) {
         this.Unread.Retain(snapshot);

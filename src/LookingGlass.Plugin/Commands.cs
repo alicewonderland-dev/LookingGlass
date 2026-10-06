@@ -68,7 +68,7 @@ public sealed class Commands : IDisposable {
     private void Run(ChannelCommand command) {
         switch (command) {
             case ChannelCommand.Usage usage:
-                this._chat.Notice(NoticeLevel.Info, usage.Text);
+                this._chat.Notice(NoticeTone.Info, usage.Text);
                 return;
             case ChannelCommand.TalkIn talk:
                 // Checks the connection and the membership itself, and says why not.
@@ -78,13 +78,13 @@ public sealed class Commands : IDisposable {
 
         var session = this._sessions.Session;
         if (session == null || session.Snapshot.State != ConnectionState.Ready) {
-            this._chat.Notice(NoticeLevel.Warning, "Not connected to LookingGlass. Open /lookingglass to check.");
+            this._chat.Notice(NoticeTone.Info, "Not connected to LookingGlass. Open /lookingglass to check.");
             return;
         }
 
         switch (command) {
             case ChannelCommand.NotFound notFound:
-                this._chat.Notice(NoticeLevel.Warning, notFound.Text);
+                this._chat.Notice(NoticeTone.Info, notFound.Text);
                 break;
             case ChannelCommand.Send send:
                 this._sender.Send(send.ChannelId, send.Text);
