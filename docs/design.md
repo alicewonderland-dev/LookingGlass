@@ -2220,7 +2220,9 @@ one transaction for every multi-step change.
 | Invites from one person to another | 3 at once, then 1 every 10 minutes; checked first | One inviter (blocked or not) can't use up someone's invites |
 | Registration attempts | 5 per hour per IP; verify once per 10 seconds, 10 per challenge | Protects the Lodestone and the challenge flow |
 | Lodestone requests (server-wide) | 1 every 2 seconds, cached | Avoids being blocked by the Lodestone |
-| Connections per IP | 20; unauthenticated connections close after 20 minutes | Bounds idle and unauthenticated load |
+| Connections per IP | 20 open, 60 new a minute; unauthenticated connections close after 20 minutes; no answer to a ping within 60 seconds closes one | Bounds idle, unauthenticated and churning load |
+| Requests per connection | 200 at once, then 20 a second; faster ones are slowed, not refused | Bounds the work one connection makes |
+| Connections in all | 2,000 (Kestrel) | A small server's capacity |
 | Outbound queue per connection | 256 events | A slow client is disconnected, not waited on |
 | Devices per user | 20 most recently used | Bounds stored logins |
 
@@ -2235,13 +2237,29 @@ are under [Key login](#key-login). Operators can change some of these (see
 
 ## Operations
 
-- The server runs on Linux and Windows (.NET 10).
+- The server runs on Linux (x64 and ARM64) and Windows (.NET 10). A release
+  is a self-contained package, so the machine needs no .NET.
 - It listens on localhost by default, behind a TLS reverse proxy, and trusts
   `X-Forwarded-For` only from proxies on the same machine or configured ones.
+- Outside Development it refuses to start without `PublicUrls`, or with debug
+  accounts or the echo bot on (unless told it is meant), and warns about any
+  listed address that isn't `wss://` with a fully qualified name. One line at
+  startup says how it is set up.
+- `/health` says only that it is up, and its version.
+- The database is one SQLite file in WAL mode. The server only checkpoints
+  PASSIVE, so Litestream can replicate it; `LookingGlass.Server --backup`
+  makes an online backup for hosts without it.
+- On SIGTERM it closes every connection (clients reconnect later), lets
+  requests finish and checkpoints the database. Every change is one
+  transaction, so a crash leaves the database whole.
+- It never logs messages, channel names, tokens, keys or registration codes;
+  client addresses only where abuse handling needs them.
 - The first tester server runs as a systemd service on a Linux machine behind
-  Tailscale Funnel. A cloud host comes later.
+  Tailscale Funnel. The public one is an ARM64 cloud machine, also behind
+  Funnel, with its database replicated by Litestream.
 
-How to build, configure and deploy a server is in [server.md](server.md).
+How to build, configure, deploy, back up and restore a server is in
+[server.md](server.md).
 
 ## Testing and debug tooling
 

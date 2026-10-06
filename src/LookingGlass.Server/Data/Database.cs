@@ -134,6 +134,67 @@ public sealed class Database {
         SqliteConnection.ClearPool(connection);
     }
 
+    /// <summary>The database file.</summary>
+    public string FilePath => this._path;
+
+    /// <summary>
+    /// Folds what it can of the write-ahead log into the database, without waiting for or blocking anyone (a PASSIVE
+    /// checkpoint: Litestream, if it replicates the database, must read the log first, and holds a reader to make sure).
+    /// </summary>
+    /// <returns>Frames in the log, and how many of them are now in the database.</returns>
+    public (long LogFrames, long Checkpointed) Checkpoint() {
+        using var connection = this.Open();
+        using var command = Command(connection, null, "PRAGMA wal_checkpoint(PASSIVE);");
+        using var reader = command.ExecuteReader();
+        return reader.Read() ? (reader.GetInt64(1), reader.GetInt64(2)) : (0, 0);
+    }
+
+    /// <summary>
+    /// Copies the database to <paramref name="target"/> with SQLite's online backup, while the server goes on using it (see
+    /// <see cref="BackupFile"/>).
+    /// </summary>
+    public string Backup(string target) => BackupFile(this._path, target);
+
+    /// <summary>
+    /// Copies the database at <paramref name="source"/> to <paramref name="target"/> with SQLite's online backup: a consistent
+    /// snapshot, safe while a server writes to it (in WAL mode a reader holds up no writer). The copy is one self-contained
+    /// file (rollback journal, not WAL), checked, and only then put in place, replacing any file there; a server can open it
+    /// as its database to restore it. Never creates or changes the source.
+    /// </summary>
+    /// <returns>The target's full path.</returns>
+    /// <exception cref="FileNotFoundException">There is no database at <paramref name="source"/>.</exception>
+    public static string BackupFile(string source, string target) {
+        if (!File.Exists(source)) {
+            throw new FileNotFoundException($"There is no database at {Path.GetFullPath(source)}.", source);
+        }
+
+        target = Path.GetFullPath(target);
+        var partial = $"{target}.partial-{Guid.NewGuid():N}";
+        try {
+            using (var from = new SqliteConnection(new SqliteConnectionStringBuilder {
+                       DataSource = source, Mode = SqliteOpenMode.ReadWrite, Pooling = false, DefaultTimeout = 30,
+                   }.ToString()))
+            using (var to = new SqliteConnection(new SqliteConnectionStringBuilder {
+                       DataSource = partial, Mode = SqliteOpenMode.ReadWriteCreate, Pooling = false,
+                   }.ToString())) {
+                from.Open();
+                to.Open();
+                from.BackupDatabase(to);
+                Execute(to, null, "PRAGMA journal_mode = DELETE;");
+                var check = Convert.ToString(Scalar(to, null, "PRAGMA quick_check;"));
+                if (check != "ok") {
+                    throw new InvalidOperationException($"The backup failed its check ({check}); nothing was written to {target}.");
+                }
+            }
+
+            File.Move(partial, target, overwrite: true);
+            return target;
+        } finally {
+            File.Delete(partial);
+            File.Delete(partial + "-journal");
+        }
+    }
+
     private SqliteConnection Open() {
         var connection = new SqliteConnection(this._connectionString);
         connection.Open();

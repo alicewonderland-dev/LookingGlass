@@ -32,6 +32,9 @@ public sealed class EchoBot : IAsyncDisposable {
 
     public ClientSession Session => this._session;
 
+    /// <summary>Whether its log shows the messages it receives (a server hosting the bot never logs message text).</summary>
+    public bool LogMessages { get; init; } = true;
+
     public void Start() => this._session.Start();
 
     /// <summary>Completes once the bot is registered and logged in.</summary>
@@ -87,7 +90,7 @@ public sealed class EchoBot : IAsyncDisposable {
             return;
         }
 
-        this._log($"<{message.Sender.Name}> {message.Text}");
+        this._log(this.LogMessages ? $"<{message.Sender.Name}> {message.Text}" : $"Message from {message.Sender.Name} ({message.Text.Length} characters)");
         var text = message.Text.Trim();
 
         this.Run("replying", async ct => {

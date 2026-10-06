@@ -38,6 +38,9 @@ if command -v restorecon >/dev/null 2>&1; then
 fi
 
 cp "$here/lookingglass.service" /etc/systemd/system/lookingglass.service
+# The daily backup: installed (and kept up to date if enabled), but only enabled by the operator, as a host that
+# replicates the database with Litestream doesn't need it: sudo systemctl enable --now lookingglass-backup.timer
+cp "$here/lookingglass-backup.service" "$here/lookingglass-backup.timer" /etc/systemd/system/
 # The addresses go in a drop-in, so the unit file itself can be replaced on every update.
 mkdir -p /etc/systemd/system/lookingglass.service.d
 {
@@ -56,3 +59,4 @@ sleep 2
 systemctl --no-pager status lookingglass || true
 echo
 echo "Logs: journalctl -u lookingglass -f"
+echo "The database: /var/lib/lookingglass/lookingglass.db. Daily backups (without Litestream): sudo systemctl enable --now lookingglass-backup.timer"

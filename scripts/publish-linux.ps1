@@ -11,7 +11,7 @@ $staging = Join-Path ([IO.Path]::GetTempPath()) ("lookingglass-publish-" + [guid
 try {
     dotnet publish src/LookingGlass.Server -c Release -r linux-x64 --self-contained -o (Join-Path $staging 'server')
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed." }
-    Copy-Item deploy/lookingglass.service, deploy/install-linux.sh $staging
+    Copy-Item deploy/lookingglass.service, deploy/lookingglass-backup.service, deploy/lookingglass-backup.timer, deploy/install-linux.sh $staging
     tar -czf $Output -C $staging .
     if ($LASTEXITCODE -ne 0) { throw "tar failed." }
     Write-Host "Wrote $Output"

@@ -24,6 +24,7 @@ public sealed class ServerOptions {
     public LodestoneOptions Lodestone { get; set; } = new();
     public DevOptions Dev { get; set; } = new();
     public LimitOptions Limits { get; set; } = new();
+    public DatabaseOptions Database { get; set; } = new();
 }
 
 public sealed class LodestoneOptions {
@@ -57,6 +58,12 @@ public sealed class DevOptions {
 
     /// <summary>WebSocket URL the hosted echo bot connects to. Empty: derived from the server's own address.</summary>
     public string EchoBotServerUrl { get; set; } = "";
+
+    /// <summary>
+    /// Lets <see cref="AllowDebugAccounts"/> and <see cref="HostEchoBot"/> be on outside Development (a test server run in
+    /// Production, say). Without it the server refuses to start with either there.
+    /// </summary>
+    public bool AllowOutsideDevelopment { get; set; }
 }
 
 public sealed class LimitOptions {
@@ -78,4 +85,25 @@ public sealed class LimitOptions {
     public int ConnectionsPerIp { get; set; } = 20;
     public int MaxIdentitiesPerRequest { get; set; } = 500;
     public int SendQueueLength { get; set; } = 256;
+
+    /// <summary>New WebSocket connections allowed from one IP address per minute (reconnect storms, connection churn).</summary>
+    public int ConnectionsPerMinutePerIp { get; set; } = 60;
+
+    /// <summary>
+    /// Requests one connection may make per second, on average. Past <see cref="RequestBurstPerConnection"/> at once, the
+    /// server reads the connection's next request only when it is due: a busy client is slowed, never refused.
+    /// </summary>
+    public double RequestsPerSecondPerConnection { get; set; } = 20;
+
+    /// <summary>Requests one connection may make at once before <see cref="RequestsPerSecondPerConnection"/> applies (a client connecting with 50 channels asks about 100).</summary>
+    public int RequestBurstPerConnection { get; set; } = 200;
+}
+
+public sealed class DatabaseOptions {
+    /// <summary>
+    /// Minutes between explicit PASSIVE checkpoints of the write-ahead log; 0 (the default) for none, leaving it to SQLite's
+    /// own automatic checkpoints (PASSIVE, every 1000 pages) and to Litestream if it replicates the database. The server never
+    /// makes a checkpoint that blocks (RESTART or TRUNCATE): Litestream must be able to read the log before it is folded in.
+    /// </summary>
+    public int CheckpointMinutes { get; set; }
 }

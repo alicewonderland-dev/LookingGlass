@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.WebSockets;
 using System.Threading.Channels;
 using Google.Protobuf;
@@ -47,12 +48,22 @@ public sealed class ClientConnection {
     private long _eventSeq;
     private string? _abortReason;
     private WebSocketCloseStatus _abortStatus = WebSocketCloseStatus.NormalClosure;
+    // Requests this connection may make now (see WaitForRequestBudgetAsync); only the receive loop uses them.
+    private readonly double _requestsPerSecond;
+    private readonly double _requestBurst;
+    private double _requestTokens;
+    private long _requestTokensAt = Stopwatch.GetTimestamp();
 
-    public ClientConnection(WebSocket socket, string remoteAddress, int maxFrameBytes, int queueLength, ILogger logger) {
+    /// <param name="requestsPerSecond">Requests handled per second on average, past <paramref name="requestBurst"/> at once; 0 for no limit.</param>
+    public ClientConnection(WebSocket socket, string remoteAddress, int maxFrameBytes, int queueLength, ILogger logger,
+        double requestsPerSecond = 0, int requestBurst = 0) {
         this._socket = socket;
         this.RemoteAddress = remoteAddress;
         this._maxFrameBytes = maxFrameBytes;
         this._logger = logger;
+        this._requestsPerSecond = requestsPerSecond;
+        this._requestBurst = Math.Max(1, requestBurst);
+        this._requestTokens = this._requestBurst;
         this._outbound = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(queueLength) {
             SingleReader = true,
             FullMode = BoundedChannelFullMode.Wait,
@@ -126,6 +137,7 @@ public sealed class ClientConnection {
                     frame.SetLength(0);
                 }
 
+                await this.WaitForRequestBudgetAsync(this._cts.Token);
                 var response = await handle(this, request, this._cts.Token);
                 response.RequestId = request.RequestId;
                 if (respond != null) {
@@ -144,6 +156,28 @@ public sealed class ClientConnection {
         }
     }
 
+
+    /// <summary>
+    /// Takes one request from this connection's budget, waiting until one is due if it has none: a client sending requests
+    /// faster than the limit is slowed down (its next request isn't read until then), never refused, so no plugin, however
+    /// old, sees an error for it.
+    /// </summary>
+    private async ValueTask WaitForRequestBudgetAsync(CancellationToken ct) {
+        if (this._requestsPerSecond <= 0) {
+            return;
+        }
+
+        var now = Stopwatch.GetTimestamp();
+        this._requestTokens = Math.Min(this._requestBurst, this._requestTokens + Stopwatch.GetElapsedTime(this._requestTokensAt, now).TotalSeconds * this._requestsPerSecond);
+        this._requestTokensAt = now;
+        if (this._requestTokens < 1) {
+            await Task.Delay(TimeSpan.FromSeconds((1 - this._requestTokens) / this._requestsPerSecond), ct);
+            this._requestTokens = 1;
+            this._requestTokensAt = Stopwatch.GetTimestamp();
+        }
+
+        this._requestTokens -= 1;
+    }
     /// <summary>Queues a response.</summary>
     public void SendResponse(Response response) {
         this.Enqueue(new ServerFrame { Response = response });

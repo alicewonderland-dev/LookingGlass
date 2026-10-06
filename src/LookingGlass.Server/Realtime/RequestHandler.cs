@@ -33,7 +33,8 @@ public sealed class RequestHandler(
     IGroupKeyProvider groupKeys,
     IHostEnvironment? environment = null,
     TimeProvider? time = null) {
-    private static readonly string ServerVersion = typeof(RequestHandler).Assembly.GetName().Version?.ToString(3) ?? "0.1.0";
+    /// <summary>This server's version, as Welcome and /health give it.</summary>
+    public static readonly string ServerVersion = typeof(RequestHandler).Assembly.GetName().Version?.ToString(3) ?? "0.1.0";
 
     private static readonly TimeSpan VerifyCooldown = TimeSpan.FromSeconds(10);
     private const int MaxVerifyAttempts = 10;

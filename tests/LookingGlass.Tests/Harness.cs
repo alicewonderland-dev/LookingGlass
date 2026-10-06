@@ -48,6 +48,8 @@ public sealed class Harness : IAsyncDisposable {
             builder.UseSetting("LookingGlass:DataDirectory", this.DataDirectory);
             builder.UseSetting("LookingGlass:Dev:AllowDebugAccounts", allowDebugAccounts ? "true" : "false");
             builder.UseSetting("LookingGlass:Dev:HostEchoBot", "false");
+            // Tests of other environments use debug accounts too, which a real server there refuses without this.
+            builder.UseSetting("LookingGlass:Dev:AllowOutsideDevelopment", allowDebugAccounts && environment != "Development" ? "true" : "false");
             foreach (var (key, value) in settings) {
                 builder.UseSetting(key, value);
             }
