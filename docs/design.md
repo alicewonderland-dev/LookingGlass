@@ -1131,17 +1131,23 @@ game with
   overlapping, and be of a known kind with ids and coordinates in range. Then,
   against the recipient's own game data: an item must be an `Item` row with a
   name (high quality only if it can be, a collectable only if it is one) or an
-  `EventItem` row; a map flag's map must exist and belong to its territory,
-  and the position must be on that map (inside its square at its size factor
-  and offset, give or take a little); a status must be a `Status` row with a
-  name.
+  `EventItem` row; a map flag's territory and map must exist, and the map be
+  the territory's default map (`TerritoryType.Map`) or belong to the territory
+  (`Map.TerritoryType`): nearly half the territories (duties, trials, raids,
+  instanced copies of open-world zones, the Diadem, seasonal zones) use
+  another territory's map, so either is enough; the position must be on that
+  map (inside its square at its size factor and offset, give or take a
+  little), and the territory have a place name; a status must be a `Status`
+  row with a name.
 - **Rebuilt, never copied.** A link that passes is built afresh from its ids
   with Dalamud's own link builders (`SeString.CreateItemLink`,
   `CreateMapLink`; a status as `StatusPayload`, the link arrow, its name and
   the link terminator), so it looks as the game's links do (an item in its
   rarity's colour, with the high-quality mark). The name shown is the
   recipient's own game's, in their language, never the sender's text. No byte
-  from the network reaches the chat log except as sanitised text.
+  from the network reaches the chat log except as sanitised text, and a
+  message with links is held to the same 1,000-character limit as one
+  without, across all its pieces (a link counting as its "[name]").
 - **Sending.** A link goes as a link only if the sender's own game data shows
   it (the same checks); up to five per message, any more go as their names.
   How a typed line's links are found is under
@@ -1566,15 +1572,27 @@ Sticky:
   left, "Not sent to [sky] or game chat: the link couldn't be read." A message
   is never both sent and an error. In a short command line going to the game
   (the player's one-off `/p look <item>`), links are left to the game, as
-  before.
+  before. A map flag the player's own game data can't show as a link
+  still goes, as its place name or "[flag]". A name is cut to fit what a
+  link may stand over (65 characters, 67 with its brackets), between
+  characters, never inside a surrogate pair.
 - *Links in `/lgcN` and `/lgc <nickname>`.* Dalamud gives a command handler
   its arguments as a string, in which a link's bytes would be garbled. So the
   gate (`ExecuteCommandInner`, below) reads every line starting with `/lgc`
   as above, placeholders resolved right then, and keeps it while the game runs
   the line; the handler, which Dalamud runs inside that call, takes its
-  message from it. A `/lgc` command not run through the gate (another plugin
-  calling it, or the gate's hooks missing) is sent from Dalamud's string,
-  with any link bytes taken out and placeholders resolved when it is sent.
+  message from it, so a `/lgc` message is now the gate's copy of the line:
+  what the game's chat box or ChatTwo handed the game, before the game runs
+  it. Two consequences to check in game (the checklist has them): the game's
+  own text commands (`<t>`, `<me>`) may be expanded only while the line runs,
+  in which case they are sent as typed; and a plugin that rewrites lines in
+  the same hook after LookingGlass (GagSpeak) would not have its rewrite
+  sent, where one that runs first would. The command ends at any space,
+  a full-width one too. A `/lgc` command not run through the gate (another
+  plugin calling it, or the gate's hooks missing) is sent from Dalamud's
+  string: each payload in it is skipped by its own length (replacement
+  characters counted as the byte they stand for), or to the next byte 3 if
+  its length can't be read, and placeholders are resolved when it is sent.
 
 **Fail closed.** While sticky, a line never reaches game chat unless it is a
 command:

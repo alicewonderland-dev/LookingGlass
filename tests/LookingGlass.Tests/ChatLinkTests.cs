@@ -117,6 +117,18 @@ public sealed class ChatLinkTests {
     }
 
     [Fact]
+    public void ALongNameIsCutOnACharacterSoTheLinkCanAlwaysBeSent() {
+        // 63 letters and an emoji (two UTF-16 units) and more: cut whole, with the brackets within the limit.
+        foreach (var name in new[] { new string('a', 63) + "\U0001F600" + new string('b', 10), new string('a', 64) + "\U0001F600", new string('c', 200),
+                     string.Concat(Enumerable.Repeat("\U0001F600", 40)) }) {
+            var (message, _) = LinkText.Resolve("<item>", _ => new TypedLink(PotionItem, name));
+            Assert.True(message.Text.Length <= ChatLinks.MaxTextLength, $"{message.Text.Length} characters");
+            Assert.True(System.Text.Encoding.UTF8.GetString(System.Text.Encoding.UTF8.GetBytes(message.Text)) == message.Text, "a surrogate pair was split");
+            Assert.Single(MessageContent.ValidLinks(message.Text, MessageContent.Encode(message).Text.Links));
+        }
+    }
+
+    [Fact]
     public void NoMoreThanFiveLinksGoAsLinksTheRestAsTheirNames() {
         var links = Enumerable.Range(0, 7).Select(i => new TypedLink(new ChatLink.Item((uint) (100 + i)), $"Item {i}")).ToList();
         var line = new TypedLine(string.Join(" ", Enumerable.Range(0, 7).Select(M)), links);
@@ -163,12 +175,49 @@ public sealed class ChatLinkTests {
         Assert.Equal("look [Potion]", message.Text);
         AssertLinks(message, ("[Potion]", PotionItem));
 
+        // A Japanese IME's full-width space ends the command too, the same for the command and its arguments.
+        var fullWidth = new TypedLine($"/lgc1　look {M(0)}", [Potion]);
+        Assert.Equal("/lgc1", fullWidth.Command());
+        Assert.Equal($"look {M(0)}", fullWidth.Arguments().Text);
+        Assert.Equal("/lgc1", new TypedLine("/lgc1", []).Command());
+        Assert.Equal("", new TypedLine("/lgc1", []).Arguments().Text);
+
         // A link alone after /lgc3 is a message, not "talk in the channel".
         Assert.IsType<ChannelCommand.Send>(ChannelCommand.ForSlot(new Dictionary<string, int> { ["c1"] = 3 }, 3, new TypedLine($"/lgc3 {M(0)}", [Potion]).Arguments().Text));
 
         // Dalamud's text, for a line not read at the gate: a link's bytes are taken out, placeholders stay to be resolved.
-        Assert.Equal(TypedLine.Plain("look  at <item>"), TypedLine.FromArguments("look \u0002'\u0005Fxy\u0003 at <item>"));
+        Assert.Equal(TypedLine.Plain("look  at <item>"), TypedLine.FromArguments("look \u0002'\u0004Fxy\u0003 at <item>"));
         Assert.Equal(TypedLine.Plain("ab"), TypedLine.FromArguments($"a{M(3)}b"));
+    }
+
+    /// <summary>An item link as the game encodes it (colour, glow, the link with a byte 3 in its data, arrow and name, the ends).</summary>
+    private static readonly byte[] ItemLinkBytes = [
+        0x02, 0x48, 0x04, 0xF2, 0x02, 0x25, 0x03,
+        0x02, 0x49, 0x04, 0xF2, 0x02, 0x26, 0x03,
+        0x02, 0x27, 0x07, 0x03, 0xF2, 0x14, 0xD5, 0x02, 0x01, 0x03,
+        0xEE, 0x82, 0xBB, (byte) 'P', (byte) 'o', (byte) 't', (byte) 'i', (byte) 'o', (byte) 'n',
+        0x02, 0x49, 0x02, 0x01, 0x03,
+        0x02, 0x48, 0x02, 0x01, 0x03,
+        0x02, 0x27, 0x07, 0xCF, 0x01, 0x01, 0x01, 0xFF, 0x01, 0x03,
+    ];
+
+    [Fact]
+    public void DalamudsTextOfALinesBytesLosesThePayloadsWhole() {
+        // What Dalamud gives a handler: the line's bytes read as UTF-8 (Utf8String.ToString). Each payload is skipped by
+        // its length, even where its data holds a byte 3; the link's own text stays.
+        string Garbled(params byte[][] parts) => System.Text.Encoding.UTF8.GetString(parts.SelectMany(part => part).ToArray());
+        var look = System.Text.Encoding.UTF8.GetBytes("look ");
+        var now = System.Text.Encoding.UTF8.GetBytes(" now");
+        Assert.Equal(TypedLine.Plain("look Potion now"), TypedLine.FromArguments(Garbled(look, ItemLinkBytes, now)));
+
+        // A map link (packed ids, multi-byte integers) and an auto-translate phrase.
+        byte[] map = [0x02, 0x27, 0x11, 0x04, 0xF6, 0x01, 0x03, 0x02, 0xF6, 0x03, 0x03, 0x03, 0xFE, 0xFF, 0xFF, 0x03, 0x03, 0xFF, 0x01, 0x03];
+        Assert.Equal(TypedLine.Plain("a b"), TypedLine.FromArguments(Garbled("a"u8.ToArray(), map, " b"u8.ToArray())));
+        Assert.Equal(TypedLine.Plain("hi !"), TypedLine.FromArguments(Garbled("hi "u8.ToArray(), [0x02, 0x2E, 0x03, 0x01, 0x66, 0x03], "!"u8.ToArray())));
+
+        // A payload whose length can't be read, or which runs past the end: dropped to its end byte, or the line's end.
+        Assert.Equal(TypedLine.Plain("x y"), TypedLine.FromArguments("x \u0002'ÿ\u0001\u0003y"));
+        Assert.Equal(TypedLine.Plain("x "), TypedLine.FromArguments("x \u0002'\u0010ab"));
     }
 
     // ---------------------------------------------------------------- the message as sent
@@ -234,6 +283,11 @@ public sealed class ChatLinkTests {
         // In order, never overlapping: a link before the one already taken is dropped, the one after kept.
         Assert.Equal(new[] { 5 }, MessageContent.ValidLinks(text, [ItemAt(5, 8), ItemAt(5, 8)]).Select(link => link.Start));
         Assert.Equal(new[] { 18 }, MessageContent.ValidLinks(text, [ItemAt(18, 7), ItemAt(5, 8)]).Select(link => link.Start));
+
+        // At the very end, with no length (or past it): dropped, never an error.
+        Assert.Empty(MessageContent.ValidLinks(text, [ItemAt(text.Length, 0)]));
+        Assert.Empty(MessageContent.ValidLinks(text, [ItemAt(text.Length, 2)]));
+        Assert.Empty(MessageContent.ValidLinks("", [ItemAt(0, 0)]));
 
         // Too long a name for any link.
         var longName = $"[{new string('a', ChatLinks.MaxTextLength)}]";
@@ -305,10 +359,20 @@ public sealed class ChatLinkTests {
             11 => new LinkMapRow(129, 200, 0, 0),
             12 => new LinkMapRow(128, 200, 0, 0),
             13 => new LinkMapRow(130, 0, 0, 0),
+            6 => new LinkMapRow(153, 100, 0, 0),
             _ => null,
         };
 
-        public string? PlaceName(uint territoryId) => territoryId == 129 ? "Limsa Lominsa Lower Decks" : null;
+        // Territory 192 is an instanced copy of 153 (as a duty is): its default map, 6, is 153's.
+        public LinkTerritoryRow? Territory(uint id) => id switch {
+            129 => new LinkTerritoryRow("Limsa Lominsa Lower Decks", 11),
+            128 => new LinkTerritoryRow("Limsa Lominsa Upper Decks", 12),
+            130 => new LinkTerritoryRow("Ul'dah", 13),
+            153 => new LinkTerritoryRow("South Shroud", 6),
+            192 => new LinkTerritoryRow("South Shroud", 6),
+            193 => new LinkTerritoryRow("", 6),
+            _ => null,
+        };
 
         public string? StatusName(uint id) => id == 50 ? "Sprint" : null;
     }
@@ -343,6 +407,42 @@ public sealed class ChatLinkTests {
     }
 
     [Fact]
+    public void AMapFlagInADutyIsOnTheMapItsTerritoryUses() {
+        // Nearly half the game's territories (duties, instanced copies of open-world zones) use another territory's map:
+        // TerritoryType 192's map is 6, whose own territory is 153. A flag set there names 192 and map 6.
+        var sheets = new FakeSheets();
+        var inDuty = new ChatLink.MapFlag(192, 6, 100_000, -200_000);
+        Assert.Equal("South Shroud", ChatLinks.Check(inDuty, sheets));
+        Assert.Equal("South Shroud", ChatLinks.Check(inDuty with { TerritoryId = 153 }, sheets));
+        // Not its map, and not the map's territory: no.
+        Assert.Null(ChatLinks.Check(inDuty with { MapId = 11 }, sheets));
+        Assert.Null(ChatLinks.Check(inDuty with { TerritoryId = 999 }, sheets));
+        // Still on the map, and still with a place name.
+        Assert.Null(ChatLinks.Check(inDuty with { RawX = 1_200_000 }, sheets));
+        Assert.Null(ChatLinks.Check(inDuty with { TerritoryId = 193 }, sheets));
+    }
+
+    [Fact]
+    public void AFlagTheGameCantShowStillGoesAsItsPlace() {
+        // The plugin's fallback name for a flag whose link doesn't check out: its place, else "flag".
+        Assert.Equal("South Shroud", LinkText.FlagName(new FakeSheets(), 192));
+        Assert.Equal(LinkText.UnnamedFlag, LinkText.FlagName(new FakeSheets(), 193));
+        Assert.Equal(LinkText.UnnamedFlag, LinkText.FlagName(new FakeSheets(), 999));
+        var (message, leftOut) = LinkText.Resolve("meet <flag>", _ => LinkText.PlaceholderLink(null, null, LinkText.FlagName(new FakeSheets(), 999)));
+        Assert.False(leftOut);
+        Assert.Equal(LinkedText.Plain("meet [flag]"), message);
+    }
+
+    [Fact]
+    public void TerritoryAndMapIdsMustFitInSixteenBits() {
+        Assert.True(ChatLinks.IsWellFormed(new ChatLink.MapFlag(65_535, 65_535, 0, 0)));
+        Assert.False(ChatLinks.IsWellFormed(new ChatLink.MapFlag(65_536, 1, 0, 0)));
+        Assert.False(ChatLinks.IsWellFormed(new ChatLink.MapFlag(1, 65_536, 0, 0)));
+        Assert.True(ChatLinks.IsWellFormed(new ChatLink.Status(65_535)));
+        Assert.False(ChatLinks.IsWellFormed(new ChatLink.Status(65_536)));
+    }
+
+    [Fact]
     public void AStatusMustBeOneTheRecipientsGameKnows() {
         var sheets = new FakeSheets();
         Assert.Equal("Sprint", ChatLinks.Check(Sprint, sheets));
@@ -371,6 +471,30 @@ public sealed class ChatLinkTests {
         }, message.Parts());
         Assert.Equal(new MessagePart[] { new MessagePart.Text("plain") }, LinkedText.Plain("plain").Parts());
         Assert.Empty(LinkedText.Plain("").Parts());
+    }
+
+    [Fact]
+    public void AMessageWithLinksIsShownWithinOneLengthLimitAndSanitised() {
+        var text = new string('a', 900) + "[Potion]" + new string('b', 900) + "[Ether]" + "\u0002c";
+        var message = new LinkedText(text, [new MessageLink(900, 8, PotionItem), new MessageLink(1808, 7, new ChatLink.Item(5333))]);
+        var parts = message.ShownParts();
+        int Length(MessagePart part) => part switch {
+            MessagePart.Text t => t.Value.Length,
+            MessagePart.Link l => l.Shown.Length,
+            _ => 0,
+        };
+
+        // As one plain message is: at most 1,000 characters and the "…".
+        Assert.True(parts.Sum(Length) <= LookingGlass.Core.Util.TextSanitizer.MaxMessageLength + 1, $"{parts.Sum(Length)} characters");
+        Assert.Equal(new MessagePart.Link(PotionItem, "[Potion]"), parts[1]);
+        Assert.EndsWith("…", Assert.IsType<MessagePart.Text>(parts[^1]).Value);
+        Assert.DoesNotContain(parts, part => part is MessagePart.Link { Target: ChatLink.Item { RawId: 5333 } });
+
+        // A short one is whole, its text sanitised like any.
+        var (shortOne, _) = LinkText.Compose(new TypedLine($"look {M(0)} now", [Potion]));
+        Assert.Equal(new MessagePart[] { new MessagePart.Text("look "), new MessagePart.Link(PotionItem, "[Potion]"), new MessagePart.Text(" now") },
+            new LinkedText("look\u0002 [Potion] now", [new MessageLink(6, 8, PotionItem)]).ShownParts());
+        Assert.Equal(shortOne.Parts(), shortOne.ShownParts());
     }
 
     [Fact]

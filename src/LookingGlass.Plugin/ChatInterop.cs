@@ -157,8 +157,8 @@ internal sealed unsafe class ChatInterop : IDisposable {
             return null;
         }
 
-        var end = line.Text.IndexOfAny([' ', '\t']);
-        return string.Equals(end < 0 ? line.Text : line.Text[..end], command.Trim(), StringComparison.OrdinalIgnoreCase) ? line : null;
+        // Up to any space, as TypedLine.Arguments cuts it (a Japanese IME's full-width space too).
+        return string.Equals(line.Command(), command.Trim(), StringComparison.OrdinalIgnoreCase) ? line : null;
     }
 
     /// <summary>A /lgc line read for its handler (see <see cref="TypedCommandLine"/>), or null for any other line, or if reading it failed.</summary>
@@ -256,14 +256,23 @@ internal sealed unsafe class ChatInterop : IDisposable {
         }
 
         // A channel switch while this runs came from the line: a typed /s, /p. Its command is noted for lines run inside it.
-        this._linesRunning++;
-        this._running.Add(bytes == null ? null : NestedLines.CommandOf(new ChatBoxLine(bytes, "")));
-        this._typed.Add(message == null ? null : ReadCommandLine(message->AsSpan()));
+        // Everything that can throw is read first, and every push is undone in the finally, so the stacks stay in step
+        // with the lines running whatever happens.
+        var runningCommand = bytes == null ? null : NestedLines.CommandOf(new ChatBoxLine(bytes, ""));
+        var typed = message == null ? null : ReadCommandLine(message->AsSpan());
+        var pushed = false;
         try {
+            this._linesRunning++;
+            this._running.Add(runningCommand);
+            this._typed.Add(typed);
+            pushed = true;
             this._commandHook!.Original(module, message, uiModule);
         } finally {
-            this._running.RemoveAt(this._running.Count - 1);
-            this._typed.RemoveAt(this._typed.Count - 1);
+            if (pushed) {
+                this._running.RemoveAt(this._running.Count - 1);
+                this._typed.RemoveAt(this._typed.Count - 1);
+            }
+
             this._linesRunning--;
         }
 

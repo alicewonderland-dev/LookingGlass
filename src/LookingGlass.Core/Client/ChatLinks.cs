@@ -35,6 +35,9 @@ public readonly record struct LinkItemRow(string Name, bool CanBeHq, bool IsColl
 /// <summary>A Map sheet row, as a link needs it.</summary>
 public readonly record struct LinkMapRow(uint TerritoryId, ushort SizeFactor, short OffsetX, short OffsetY);
 
+/// <summary>A TerritoryType sheet row, as a link needs it: its place name, and its default map (its <c>Map</c>).</summary>
+public readonly record struct LinkTerritoryRow(string? PlaceName, uint MapId);
+
 /// <summary>The game's own data (its sheets, in the client's language), as checking a link needs it. Null: no such row.</summary>
 public interface ILinkSheets {
     LinkItemRow? Item(uint id);
@@ -44,8 +47,8 @@ public interface ILinkSheets {
 
     LinkMapRow? Map(uint id);
 
-    /// <summary>A TerritoryType row's place name.</summary>
-    string? PlaceName(uint territoryId);
+    /// <summary>A TerritoryType row: its place name and its default map.</summary>
+    LinkTerritoryRow? Territory(uint id);
 
     /// <summary>A Status row's name.</summary>
     string? StatusName(uint id);
@@ -132,8 +135,10 @@ public static class ChatLinks {
 
     /// <summary>
     /// The link's name in the recipient's own game data if it is one the game can show, or null: an item must be an Item
-    /// row (high quality only if it can be, a collectable only if it is one) or an EventItem row, a map flag's map must be
-    /// of its territory and the position on it, a status must be a Status row; each with a name.
+    /// row (high quality only if it can be, a collectable only if it is one) or an EventItem row; a map flag's territory
+    /// and map must exist, the map be the territory's own (its default map) or the map's territory be the flag's (nearly
+    /// half the game's territories, its duties and instanced copies of zones, use another's map), and the position be on
+    /// it; a status must be a Status row; each with a name.
     /// </summary>
     public static string? Check(ChatLink link, ILinkSheets sheets) {
         if (!IsWellFormed(link)) {
@@ -142,15 +147,19 @@ public static class ChatLinks {
 
         var name = link switch {
             ChatLink.Item item => ItemName(item.RawId, sheets),
-            ChatLink.MapFlag map => sheets.Map(map.MapId) is { } row && row.TerritoryId == map.TerritoryId && OnMap(map.RawX, map.RawY, row)
-                ? sheets.PlaceName(map.TerritoryId)
-                : null,
+            ChatLink.MapFlag map => MapName(map, sheets),
             ChatLink.Status status => sheets.StatusName(status.StatusId),
             _ => null,
         };
 
         return string.IsNullOrWhiteSpace(name) ? null : name;
     }
+
+    private static string? MapName(ChatLink.MapFlag map, ILinkSheets sheets) =>
+        sheets.Map(map.MapId) is { } row && sheets.Territory(map.TerritoryId) is { } territory
+        && (row.TerritoryId == map.TerritoryId || territory.MapId == map.MapId) && OnMap(map.RawX, map.RawY, row)
+            ? territory.PlaceName
+            : null;
 
     private static string? ItemName(uint rawId, ILinkSheets sheets) {
         if (ItemParts(rawId) is not var (id, kind)) {
@@ -199,6 +208,42 @@ public sealed record LinkedText(string Text, IReadOnlyList<MessageLink> Links) {
         }
 
         return parts;
+    }
+
+    /// <summary>
+    /// <see cref="Parts"/> as shown: each piece of text sanitised like all remote text, and the whole within one length
+    /// limit, as a message without links is (<see cref="TextSanitizer.MaxMessageLength"/>, a link counting as its
+    /// "[name]"). What doesn't fit is cut, with "…".
+    /// </summary>
+    public IReadOnlyList<MessagePart> ShownParts(int budget = TextSanitizer.MaxMessageLength) {
+        var shown = new List<MessagePart>();
+        var left = budget;
+        foreach (var part in this.Parts()) {
+            if (part is MessagePart.Link link) {
+                if (link.Shown.Length > left) {
+                    shown.Add(new MessagePart.Text("…"));
+                    break;
+                }
+
+                shown.Add(link);
+                left -= link.Shown.Length;
+                continue;
+            }
+
+            var text = TextSanitizer.Clean(((MessagePart.Text) part).Value, Math.Max(left, 0));
+            if (text.Length > 0) {
+                shown.Add(new MessagePart.Text(text));
+            }
+
+            // Cut: Clean ends it with "…" once it is past what is left.
+            if (text.Length > left) {
+                break;
+            }
+
+            left -= text.Length;
+        }
+
+        return shown;
     }
 
     public bool Equals(LinkedText? other) =>

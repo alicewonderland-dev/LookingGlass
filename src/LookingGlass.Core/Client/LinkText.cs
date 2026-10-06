@@ -23,35 +23,71 @@ public sealed record TypedLine(string Text, IReadOnlyList<TypedLink> Links) {
     /// <summary>The same links, with other text (a part of this line's).</summary>
     public TypedLine WithText(string text) => this with { Text = text };
 
+    /// <summary>The line's first word ("/lgc1" in "/lgc1 look [x]"): up to the first space of any kind (a full-width one too).</summary>
+    public string Command() => this.Text[..this.CommandEnd()];
+
     /// <summary>The line after its command ("/lgc1 look [x]" without "/lgc1"): what a command handler gets as its arguments.</summary>
-    public TypedLine Arguments() {
+    public TypedLine Arguments() => this.WithText(this.Text[this.CommandEnd()..].TrimStart());
+
+    private int CommandEnd() {
         var end = 0;
         while (end < this.Text.Length && !char.IsWhiteSpace(this.Text[end])) {
             end++;
         }
 
-        return this.WithText(this.Text[end..].TrimStart());
+        return end;
     }
 
     /// <summary>
     /// A command's arguments as Dalamud gives them, for a line that wasn't read at the gate: plain text. A link's bytes,
-    /// if any reached it, are taken out (each runs from a byte 2 to the next byte 3), and so is anything that reads as a
-    /// marker; placeholders stay, to be resolved.
+    /// if any reached it, are taken out, and so is anything that reads as a marker; placeholders stay, to be resolved.
+    /// <para>
+    /// Dalamud reads the line's bytes as UTF-8, so a payload (a byte 2, its kind, its length, that many bytes of data, a
+    /// byte 3) arrives with its data partly as replacement characters, and its data may hold a byte 3 of its own. Each
+    /// is skipped by its length: a replacement character counts as the one byte it stands for, any other character as its
+    /// UTF-8 bytes. If its length can't be read (one byte of 128 or more: not kept as it was) or it doesn't end where its
+    /// length says, it is skipped to the next byte 3 from there (or the end of the line).
+    /// </para>
     /// </summary>
     public static TypedLine FromArguments(string arguments) {
         var text = new StringBuilder(arguments.Length);
-        var inPayload = false;
-        foreach (var c in arguments) {
-            if (c == '\u0002') {
-                inPayload = true;
-            } else if (inPayload) {
-                inPayload = c != '\u0003';
-            } else {
-                text.Append(c);
+        var at = 0;
+        while (at < arguments.Length) {
+            if (arguments[at] != '\u0002') {
+                text.Append(arguments[at++]);
+                continue;
             }
+
+            at = PastPayload(arguments, at);
         }
 
         return Plain(text.ToString());
+    }
+
+    /// <summary>Where the payload starting at <paramref name="start"/> (a byte 2) ends: just past its byte 3.</summary>
+    private static int PastPayload(string text, int start) {
+        // The byte 2, its kind, then its length: a single byte under 0xD0 is the length plus one.
+        var at = start + 2;
+        if (at < text.Length && text[at] is >= '\u0001' and < '\u0080') {
+            var length = text[at] - 1;
+            at++;
+            for (var bytes = 0; bytes < length && at < text.Length;) {
+                if (char.IsHighSurrogate(text[at]) && at + 1 < text.Length && char.IsLowSurrogate(text[at + 1])) {
+                    bytes += 4;
+                    at += 2;
+                } else {
+                    bytes += text[at] == '�' ? 1 : Encoding.UTF8.GetByteCount(text.AsSpan(at, 1));
+                    at++;
+                }
+            }
+
+            if (at < text.Length && text[at] == '\u0003') {
+                return at + 1;
+            }
+        }
+
+        var end = at < text.Length ? text.IndexOf('\u0003', at) : -1;
+        return end < 0 ? text.Length : end + 1;
     }
 
     public bool Equals(TypedLine? other) => other != null && this.Text == other.Text && this.Links.SequenceEqual(other.Links);
@@ -247,6 +283,26 @@ public static partial class LinkText {
         name = new string(name.Where(c => char.GetUnicodeCategory(c) != System.Globalization.UnicodeCategory.PrivateUse).ToArray());
         name = name.Replace('<', '(').Replace('>', ')').Replace('[', '(').Replace(']', ')').Trim();
         name = Spaces().Replace(name, " ");
+
+        // Within what a link may stand over, in brackets (a received link longer than that is dropped), and cut between
+        // characters: never inside a surrogate pair.
+        const int longest = ChatLinks.MaxTextLength - 2;
+        if (name.Length > longest) {
+            var cut = longest - 1;
+            if (char.IsHighSurrogate(name[cut - 1])) {
+                cut--;
+            }
+
+            name = name[..cut].TrimEnd() + "…";
+        }
+
         return name.Length == 0 ? null : name;
     }
+
+    /// <summary>A map flag's name when its link can't be sent as one: its place, else <see cref="UnnamedFlag"/>.</summary>
+    public static string FlagName(ILinkSheets sheets, uint territoryId) =>
+        Clean(sheets.Territory(territoryId)?.PlaceName) ?? UnnamedFlag;
+
+    /// <summary>What a map flag is called when nothing better is known: sent as "[flag]".</summary>
+    public const string UnnamedFlag = "flag";
 }

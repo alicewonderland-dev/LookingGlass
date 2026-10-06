@@ -109,7 +109,8 @@ internal static unsafe class GameLinks {
                 var link = new ChatLink.MapFlag(flag.TerritoryId, flag.MapId,
                     (int) (MathF.Round(flag.XFloat, 3, MidpointRounding.AwayFromZero) * 1000),
                     (int) (MathF.Round(flag.YFloat, 3, MidpointRounding.AwayFromZero) * 1000));
-                return Checked(link, null);
+                // A flag the game can't show as a link (it shouldn't happen) still goes, as its place.
+                return Checked(link, LinkText.FlagName(Sheets, flag.TerritoryId));
             }
             default:
                 return null;
@@ -245,8 +246,10 @@ internal static unsafe class GameLinks {
                 ? new LinkMapRow(row.TerritoryType.RowId, row.SizeFactor, row.OffsetX, row.OffsetY)
                 : null;
 
-        public string? PlaceName(uint territoryId) =>
-            Services.Data.GetExcelSheet<TerritoryType>().GetRowOrDefault(territoryId) is { } row ? row.PlaceName.ValueNullable?.Name.ExtractText() : null;
+        public LinkTerritoryRow? Territory(uint id) =>
+            Services.Data.GetExcelSheet<TerritoryType>().GetRowOrDefault(id) is { } row
+                ? new LinkTerritoryRow(row.PlaceName.ValueNullable?.Name.ExtractText(), row.Map.RowId)
+                : null;
 
         public string? StatusName(uint id) => Services.Data.GetExcelSheet<Status>().GetRowOrDefault(id)?.Name.ExtractText();
     }

@@ -45,6 +45,16 @@ it shows as odd characters. Nothing appears in Say, Party or any linkshell.
       not in [sky]).
 - [ ] 11. A sees its own message in [sky] with the same links, and can click
       them too.
+- [ ] 11b. **(new: /lgc messages now come from the chat line itself)** Target
+      someone, then type `/lgc1 hi <t>` and press Enter. Write down what B
+      sees: `hi <t>` as typed, or `hi` and the target's name. Do the same with
+      `/lgc1 I am <me>`. (Either is fine; we need to know which.)
+- [ ] 11c. In a duty or an instanced area (a trial, a dungeon, the Diadem,
+      a private house or chamber), set a flag and send `/lgc1 here <flag>`. B
+      sees a map link that opens the right map, or at least
+      `here [place name]` (or `here [flag]`) as text, never nothing.
+- [ ] 11d. (Only if GagSpeak is installed.) With your gag on, send
+      `/lgc1 hello`. Write down what B sees: the gagged text or `hello`.
 
 ## ChatTwo on
 

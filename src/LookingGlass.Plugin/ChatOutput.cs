@@ -54,10 +54,11 @@ public sealed class ChatOutput(Configuration config) {
     /// came over the network reaches the chat log as anything but text.
     /// </summary>
     private static void AddLinked(SeStringBuilder builder, LinkedText message) {
-        foreach (var part in message.Parts()) {
+        // Sanitised, and within one length limit across all its pieces, as a message without links is.
+        foreach (var part in message.ShownParts()) {
             switch (part) {
                 case MessagePart.Text text:
-                    builder.AddText(TextSanitizer.Clean(text.Value));
+                    builder.AddText(text.Value);
                     break;
                 case MessagePart.Link link when !GameLinks.TryAppend(builder, link.Target):
                     builder.AddText(link.Fallback);
