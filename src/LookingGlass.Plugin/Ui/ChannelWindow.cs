@@ -68,6 +68,9 @@ public sealed class ChannelWindow : Window {
             // Reopened at login: it doesn't take the focus from the game.
             this.Flags |= ImGuiWindowFlags.NoFocusOnAppearing;
         }
+
+        // A Dalamud window starts closed: one exists here only to be shown (opened, or reopened at login).
+        this.IsOpen = true;
     }
 
     public ChannelWindowLayout Layout { get; }
