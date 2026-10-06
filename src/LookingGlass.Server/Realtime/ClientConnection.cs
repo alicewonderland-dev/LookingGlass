@@ -129,8 +129,8 @@ public sealed class ClientConnection {
                     this.SendResponse(response);
                 }
             }
-        } catch (Exception ex) when (ex is OperationCanceledException or WebSocketException) {
-            // Client went away or we aborted.
+        } catch (Exception ex) when (ex is OperationCanceledException or WebSocketException or IOException) {
+            // Client went away (a socket torn down mid-receive can say so with an IOException) or we aborted.
         } finally {
             await loginDeadline.DisposeAsync();
             this._outbound.Writer.TryComplete();
@@ -159,7 +159,15 @@ public sealed class ClientConnection {
         this._logger.LogDebug("Closing connection from {Address}: {Reason}", this.RemoteAddress, reason);
         this._abortStatus = status;
         this._outbound.Writer.TryComplete();
-        this._cts.Cancel();
+        try {
+            // Runs this connection's cancellation callbacks (its socket's, its send loop's) on the caller's thread: often
+            // another connection's request (a newer login replacing this one, a registration dropping the account's
+            // sessions). Whatever they throw is this connection's problem, not that request's, which has already done
+            // its work and must still be answered. Every callback runs regardless (throwOnFirstException is false).
+            this._cts.Cancel();
+        } catch (Exception ex) {
+            this._logger.LogWarning(ex, "Closing connection from {Address} ({Reason}): a cancellation callback failed", this.RemoteAddress, reason);
+        }
     }
 
     private void Enqueue(ServerFrame frame) {
@@ -173,7 +181,7 @@ public sealed class ClientConnection {
             await foreach (var data in this._outbound.Reader.ReadAllAsync(this._cts.Token)) {
                 await this._socket.SendAsync(data, WebSocketMessageType.Binary, true, this._cts.Token);
             }
-        } catch (Exception ex) when (ex is OperationCanceledException or WebSocketException or ObjectDisposedException) {
+        } catch (Exception ex) when (ex is OperationCanceledException or WebSocketException or ObjectDisposedException or IOException) {
             this.Abort("Send failed");
         }
     }

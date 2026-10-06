@@ -589,6 +589,97 @@ public sealed class ServerHardeningTests {
         Assert.False(connection.IsAlive);
     }
 
+    /// <summary>
+    /// Aborting a connection (a newer login replacing it, a registration or retirement dropping the account's sessions) is
+    /// done by whoever's request caused it. A cancellation callback of the aborted connection that throws (its socket's,
+    /// say) must not fail that request: it used to come back to the caller, which answered "Internal server error" to a
+    /// login or registration that had in fact gone through.
+    /// </summary>
+    [Fact]
+    public async Task AbortingAConnectionNeverThrowsAtTheCaller() {
+        var socket = new ThrowOnCancelWebSocket();
+        var connection = new ClientConnection(socket, "203.0.113.1", 1024, 4, Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
+        var running = connection.RunAsync((_, _, _) => Task.FromResult(new Response()));
+        await socket.Receiving.WaitAsync(Harness.Timeout, Ct);
+
+        connection.Abort("Logged in from another connection");
+
+        Assert.True(connection.Aborted.IsCancellationRequested);
+        await running.WaitAsync(Harness.Timeout, Ct);
+        // Only once: a second abort changes nothing.
+        connection.Abort("again");
+    }
+
+    /// <summary>
+    /// A client that goes away mid-frame can surface as an IOException from the socket (TestHost's does, and a stream under
+    /// Kestrel can): the connection ends quietly, as for any other closed socket, rather than as an unhandled error logged
+    /// for every such client.
+    /// </summary>
+    [Fact]
+    public async Task AConnectionLostMidReceiveEndsQuietly() {
+        var connection = new ClientConnection(new ThrowingWebSocket(new IOException("The remote end closed the connection.")), "203.0.113.1", 1024, 4,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
+        await connection.RunAsync((_, _, _) => Task.FromResult(new Response())).WaitAsync(Harness.Timeout, Ct);
+    }
+
+    /// <summary>An open socket whose pending receive fails its cancellation callback, as a socket torn down meanwhile might.</summary>
+    private sealed class ThrowOnCancelWebSocket : WebSocket {
+        private readonly TaskCompletionSource _receiving = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task Receiving => this._receiving.Task;
+        public override WebSocketCloseStatus? CloseStatus => null;
+        public override string? CloseStatusDescription => null;
+        public override WebSocketState State => WebSocketState.Open;
+        public override string? SubProtocol => null;
+
+        public override void Abort() {
+        }
+
+        public override Task CloseAsync(WebSocketCloseStatus closeStatus, string? statusDescription, CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public override Task CloseOutputAsync(WebSocketCloseStatus closeStatus, string? statusDescription, CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public override void Dispose() {
+        }
+
+        public override async Task<WebSocketReceiveResult> ReceiveAsync(ArraySegment<byte> buffer, CancellationToken cancellationToken) {
+            var cancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            await using (cancellationToken.Register(() => {
+                cancelled.TrySetResult();
+                throw new ObjectDisposedException("socket");
+            })) {
+                this._receiving.TrySetResult();
+                await cancelled.Task;
+            }
+
+            throw new OperationCanceledException(cancellationToken);
+        }
+
+        public override Task SendAsync(ArraySegment<byte> buffer, WebSocketMessageType messageType, bool endOfMessage, CancellationToken cancellationToken) => Task.CompletedTask;
+    }
+
+    /// <summary>A socket whose receive fails with the given exception.</summary>
+    private sealed class ThrowingWebSocket(Exception failure) : WebSocket {
+        public override WebSocketCloseStatus? CloseStatus => null;
+        public override string? CloseStatusDescription => null;
+        public override WebSocketState State => WebSocketState.Open;
+        public override string? SubProtocol => null;
+
+        public override void Abort() {
+        }
+
+        public override Task CloseAsync(WebSocketCloseStatus closeStatus, string? statusDescription, CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public override Task CloseOutputAsync(WebSocketCloseStatus closeStatus, string? statusDescription, CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public override void Dispose() {
+        }
+
+        public override Task<WebSocketReceiveResult> ReceiveAsync(ArraySegment<byte> buffer, CancellationToken cancellationToken) => Task.FromException<WebSocketReceiveResult>(failure);
+
+        public override Task SendAsync(ArraySegment<byte> buffer, WebSocketMessageType messageType, bool endOfMessage, CancellationToken cancellationToken) => Task.CompletedTask;
+    }
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static WeakReference RunConnectionToCompletion() {
         var connection = new ClientConnection(new ClosedWebSocket(), "203.0.113.1", 1024, 4, Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);

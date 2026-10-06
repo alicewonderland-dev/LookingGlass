@@ -23,6 +23,10 @@ public sealed class Harness : IAsyncDisposable {
     private readonly List<IAsyncDisposable> _disposables = [];
     private readonly List<TestClient> _clients = [];
 
+    // Everything the server logs, whatever the test asked for: a request that failed with an unexpected exception (which
+    // the client only sees as "Internal server error") fails the test, with the exception, when the server is disposed.
+    private readonly CapturingLoggerProvider _serverLogs = new();
+
     /// <param name="serverTime">The server's clock, for tests that move it forward (key login challenges expire by it).</param>
     /// <param name="environment">
     /// The server's hosting environment. In Development (the default here, as on the test server) key login may go by
@@ -36,6 +40,7 @@ public sealed class Harness : IAsyncDisposable {
         this.DataDirectory = dataDirectory ?? Path.Combine(Path.GetTempPath(), "lgt-" + Guid.NewGuid().ToString("N"));
         this.Factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder => {
             builder.UseEnvironment(environment);
+            builder.ConfigureLogging(logging => logging.AddProvider(this._serverLogs));
             if (logs != null) {
                 builder.ConfigureLogging(logging => logging.AddProvider(logs));
             }
@@ -306,6 +311,9 @@ public sealed class Harness : IAsyncDisposable {
         }
 
         await this.Factory.DisposeAsync();
+        var errors = this._serverLogs.Entries.Where(entry => entry.Level == Microsoft.Extensions.Logging.LogLevel.Error).ToList();
+        Assert.True(errors.Count == 0, "The server logged errors:\n" + string.Join("\n\n", errors.Select(error => $"[{error.Category}] {error.Message}")));
+
         var names = this._clients.Select(client => client.Name)
             .Concat(snapshots.SelectMany(snapshot => snapshot.Channels).Select(channel => channel.Name ?? ""))
             .Concat(snapshots.SelectMany(snapshot => snapshot.Invites).Select(invite => invite.ChannelName ?? ""))
@@ -625,7 +633,9 @@ public sealed class CapturingLoggerProvider : Microsoft.Extensions.Logging.ILogg
 
         public void Log<TState>(Microsoft.Extensions.Logging.LogLevel logLevel, Microsoft.Extensions.Logging.EventId eventId, TState state, Exception? exception,
             Func<TState, Exception?, string> formatter) {
-            provider._entries.Enqueue((logLevel, category, formatter(state, exception)));
+            // With the exception, if any, so a test reporting what was logged shows where it came from.
+            var message = formatter(state, exception);
+            provider._entries.Enqueue((logLevel, category, exception == null ? message : $"{message}\n{exception}"));
         }
     }
 }
