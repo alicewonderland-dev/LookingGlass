@@ -325,6 +325,31 @@ public sealed class EndToEndTests : IAsyncLifetime {
         Assert.Equal("Echo Test Bot", reply.Sender.Name);
     }
 
+    /// <summary>
+    /// A server hosting the echo bot logs what it does, but never what its channels say: not their messages, not their
+    /// names, and not its notices (which can quote either).
+    /// </summary>
+    [Fact]
+    public async Task AHostedEchoBotLogsNothingOfItsChannels() {
+        var alice = await this._server.RegisterAsync("Alice Quiet Echo");
+        var lines = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        var bot = new EchoBot(this._server.Options(), new InMemorySecretStore(), "Quiet Echo Bot", lines.Enqueue) { LogContent = false };
+        this._server.Track(bot);
+        bot.Start();
+        await bot.WaitUntilReadyAsync(Harness.Timeout);
+
+        var channelId = await alice.Session.CreateChannelAsync("Secret Bot Haunt", Ct);
+        await alice.Session.InviteAsync(channelId, "Quiet Echo Bot", ProtocolInfo.DebugWorldName, Ct);
+        await WaitFor(() => alice.Session.Snapshot.FindChannel(channelId) is { RekeyPending: false } c
+                            && c.Members.Any(m => m.User.Name == "Quiet Echo Bot" && m.Rank == Rank.Member) ? c : null);
+        await alice.Session.RenameAsync(channelId, "Renamed Secret Haunt", Ct);
+        await alice.Session.SendTextAsync(channelId, "whispered words", Ct);
+        await WaitFor(() => alice.Messages.FirstOrDefault(m => m.Text == "echo: whispered words"));
+
+        Assert.Contains(lines, line => line.StartsWith("Joined a channel"));
+        Assert.DoesNotContain(lines, line => line.Contains("Secret") || line.Contains("whispered"));
+    }
+
     [Fact]
     public async Task RestartedClientKeepsIdentityAndKeys() {
         var store = new InMemorySecretStore();
@@ -642,6 +667,128 @@ public sealed class EndToEndTests : IAsyncLifetime {
         reconnect.SetResult();
         await WaitFor(() => bob.Session.Snapshot.FindChannel(channelId) is { Name: "Second Name", HasKey: true } c && c.Epoch == epoch + 1 ? c : null);
         Assert.DoesNotContain(bob.Notices, n => n.Text.Contains("while rekeying"));
+    }
+
+    /// <summary>
+    /// The server asks for a rekey at epoch N+1 (someone left just after Alice's rekey to N+1 was applied) before it
+    /// answers that rekey, as it can when the leave lands between the two. Her rekey, for N+1, doesn't settle a request
+    /// made at N+1: the channel still needs a new key.
+    /// </summary>
+    [Fact]
+    public async Task OwnRekeyDoesNotSettleALaterRequestForANewKey() {
+        var bob = await this._server.RegisterAsync("Bob Later Request");
+        long aliceId = 0;
+        var armed = 0;
+        var pushed = 0;
+        var alice = await this._server.RegisterAsync("Alice Later Request", options: this._server.Options(
+            wrap: socket => new RewritingWebSocket(socket, frame => frame, sent: frame => {
+                // On its way to the server: queued for her before the server's answer. Nobody is asked to make it.
+                if (frame.SubmitRekey is { } rekey && Volatile.Read(ref armed) == 1 && Interlocked.Exchange(ref pushed, 1) == 0) {
+                    this._server.Registry.Send(aliceId, new Event { RekeyNeeded = new RekeyNeeded { ChannelId = rekey.ChannelId, CurrentEpoch = rekey.NewEpoch } });
+                }
+            })));
+        aliceId = alice.UserId;
+        var channelId = await alice.Session.CreateChannelAsync("Later Request", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        var epoch = alice.Session.Snapshot.FindChannel(channelId)!.Epoch;
+
+        Volatile.Write(ref armed, 1);
+        await alice.Session.RekeyAsync(channelId, Ct, force: true);
+
+        Assert.Equal(1, pushed);
+        var channel = alice.Session.Snapshot.FindChannel(channelId)!;
+        Assert.Equal(epoch + 1, channel.Epoch);
+        Assert.True(channel.RekeyPending);
+    }
+
+    /// <summary>
+    /// Likewise for a key someone else made: the server asked for a rekey at epoch N+1, so a key for N+1 (Bob's, sent
+    /// before the request but arriving after it) doesn't settle it. Only a key for a later epoch does.
+    /// </summary>
+    [Fact]
+    public async Task AKeyFromBeforeARequestForANewKeyDoesNotSettleIt() {
+        var alice = await this._server.RegisterAsync("Alice Earlier Key");
+        var bob = await this._server.RegisterAsync("Bob Earlier Key");
+        var channelId = await alice.Session.CreateChannelAsync("Earlier Key", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        var epoch = alice.Session.Snapshot.FindChannel(channelId)!.Epoch;
+
+        using var bobKeys = bob.LoadIdentity();
+        var position = PositionOf(alice, channelId);
+        var next = ChannelCrypto.NewEpochKey();
+        var sealedKey = ChannelCrypto.SealEpochKey(next, channelId, epoch + 1, position, bobKeys, bob.UserId, alice.UserId, alice.LoadIdentity().AgreementPublicKey);
+        await this._server.SendAndSettleAsync(alice,
+            new Event { RekeyNeeded = new RekeyNeeded { ChannelId = channelId, CurrentEpoch = epoch + 1 } },
+            new Event { EpochAdvanced = new EpochAdvanced { ChannelId = channelId, Epoch = epoch + 1, AuthorId = bob.UserId, MyKey = sealedKey } });
+
+        var channel = alice.Session.Snapshot.FindChannel(channelId)!;
+        Assert.Equal(epoch + 1, channel.Epoch);
+        Assert.True(channel.RekeyPending);
+
+        // A key for the epoch after the one the request was made at settles it.
+        var later = ChannelCrypto.SealEpochKey(ChannelCrypto.NewEpochKey(), channelId, epoch + 2, position, bobKeys, bob.UserId, alice.UserId, alice.LoadIdentity().AgreementPublicKey);
+        await this._server.SendAndSettleAsync(alice, new Event { EpochAdvanced = new EpochAdvanced { ChannelId = channelId, Epoch = epoch + 2, AuthorId = bob.UserId, MyKey = later } });
+        Assert.False(alice.Session.Snapshot.FindChannel(channelId)!.RekeyPending);
+    }
+
+    /// <summary>
+    /// A channel list answered before Alice's own rekey (saying a rekey is pending at the epoch before it) arrives after
+    /// she holds the new key: that key, made later, settles it.
+    /// </summary>
+    [Fact]
+    public async Task AChannelListFromBeforeAKeyAlreadyHeldDoesNotMakeItPendingAgain() {
+        var bob = await this._server.RegisterAsync("Bob Old List");
+        var stale = 0;
+        string? channelId = null;
+        var alice = await this._server.RegisterAsync("Alice Old List", options: this._server.Options(
+            wrap: socket => new RewritingWebSocket(socket, frame => {
+                if (Volatile.Read(ref stale) == 1 && frame.Response?.ChannelList is { } list) {
+                    foreach (var info in list.Channels.Where(info => info.ChannelId == channelId)) {
+                        info.Epoch -= 1;
+                        info.RekeyPending = true;
+                    }
+                }
+
+                return frame;
+            })));
+        channelId = await alice.Session.CreateChannelAsync("Old List", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        var epoch = alice.Session.Snapshot.FindChannel(channelId)!.Epoch;
+
+        Volatile.Write(ref stale, 1);
+        await alice.Session.RefreshAsync(Ct);
+
+        var channel = alice.Session.Snapshot.FindChannel(channelId)!;
+        Assert.Equal(epoch, channel.Epoch);
+        Assert.False(channel.RekeyPending);
+    }
+
+    /// <summary>
+    /// A request for a new key at epoch N, then the new key's EpochAdvanced missed (lost on the way): the client fetches the
+    /// key when a message under it arrives, and that key, for a later epoch, settles the request.
+    /// </summary>
+    [Fact]
+    public async Task AKeyFetchedLaterSettlesARequestForANewKey() {
+        var bob = await this._server.RegisterAsync("Bob Missed Key");
+        var drop = 0;
+        var alice = await this._server.RegisterAsync("Alice Missed Key", options: this._server.Options(
+            wrap: socket => new RewritingWebSocket(socket, frame => Volatile.Read(ref drop) == 1 && frame.Event?.EpochAdvanced != null
+                ? new ServerFrame { Event = new Event { Seq = frame.Event.Seq, Announcement = new Announcement { Text = "Something was lost on the way." } } }
+                : frame)));
+        var channelId = await alice.Session.CreateChannelAsync("Missed Key", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        var epoch = alice.Session.Snapshot.FindChannel(channelId)!.Epoch;
+
+        Volatile.Write(ref drop, 1);
+        await this._server.SendAndSettleAsync(alice, new Event { RekeyNeeded = new RekeyNeeded { ChannelId = channelId, CurrentEpoch = epoch } });
+        Assert.True(alice.Session.Snapshot.FindChannel(channelId)!.RekeyPending);
+        await bob.Session.RekeyAsync(channelId, Ct, force: true);
+        await bob.Session.SendTextAsync(channelId, "under the new key", Ct);
+
+        await WaitFor(() => alice.Messages.FirstOrDefault(m => m.Text == "under the new key"));
+        var channel = alice.Session.Snapshot.FindChannel(channelId)!;
+        Assert.Equal(epoch + 1, channel.Epoch);
+        Assert.False(channel.RekeyPending);
     }
 
     /// <summary>Alice (admin), Bob and Carol in one channel, all holding its current key.</summary>

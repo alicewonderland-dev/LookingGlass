@@ -24,9 +24,11 @@ public enum ProfileCheck {
 /// with a minimum gap between them, and search results are cached, so the
 /// server never floods the Lodestone.
 /// </summary>
-public sealed partial class LodestoneClient(HttpClient http, IOptions<ServerOptions> options, ILogger<LodestoneClient> logger) {
+/// <param name="time">The clock cached results expire by (tests move it).</param>
+public sealed partial class LodestoneClient(HttpClient http, IOptions<ServerOptions> options, ILogger<LodestoneClient> logger, TimeProvider? time = null) {
     private static readonly TimeSpan SearchCacheTime = TimeSpan.FromHours(1);
     private static readonly TimeSpan MissCacheTime = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan SweepEvery = TimeSpan.FromMinutes(10);
     private const int MaxSearchPages = 10;
 
     /// <summary>
@@ -36,9 +38,21 @@ public sealed partial class LodestoneClient(HttpClient http, IOptions<ServerOpti
     public const int MaxWaitingRequests = 20;
 
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly TimeProvider _time = time ?? TimeProvider.System;
     private readonly ConcurrentDictionary<string, (LodestoneCharacter? Result, DateTimeOffset Expires)> _searchCache = new();
+    private readonly Lock _sweeping = new();
+    private DateTimeOffset _lastSweep = DateTimeOffset.MinValue;
     private DateTimeOffset _lastRequest = DateTimeOffset.MinValue;
     private int _waiting;
+
+    /// <summary>
+    /// Most searches kept cached. Every registration attempt names a character (any name: at most 5 per address an hour, but
+    /// addresses are many), so expired results are dropped every 10 minutes, and past this the soonest to expire go.
+    /// </summary>
+    internal int MaxCachedSearches { get; init; } = 10_000;
+
+    /// <summary>How many searches are cached now, for tests.</summary>
+    internal int CachedSearches => this._searchCache.Count;
 
     private LodestoneOptions Options => options.Value.Lodestone;
 
@@ -47,7 +61,7 @@ public sealed partial class LodestoneClient(HttpClient http, IOptions<ServerOpti
     /// <exception cref="LodestoneBusyException">Too many requests are already waiting.</exception>
     public async Task<LodestoneCharacter?> FindCharacterAsync(string name, string worldName, CancellationToken ct) {
         var cacheKey = $"{name.ToLowerInvariant()}@{worldName.ToLowerInvariant()}";
-        if (this._searchCache.TryGetValue(cacheKey, out var cached) && cached.Expires > DateTimeOffset.UtcNow) {
+        if (this._searchCache.TryGetValue(cacheKey, out var cached) && cached.Expires > this._time.GetUtcNow()) {
             return cached.Result;
         }
 
@@ -74,8 +88,36 @@ public sealed partial class LodestoneClient(HttpClient http, IOptions<ServerOpti
         }
 
         // Misses are cached briefly, so a newly created character can register soon.
-        this._searchCache[cacheKey] = (found, DateTimeOffset.UtcNow + (found != null ? SearchCacheTime : MissCacheTime));
+        var now = this._time.GetUtcNow();
+        this._searchCache[cacheKey] = (found, now + (found != null ? SearchCacheTime : MissCacheTime));
+        this.TrimSearchCache(now);
         return found;
+    }
+
+    /// <summary>Drops expired searches every 10 minutes, and keeps at most <see cref="MaxCachedSearches"/>, the soonest to expire going first.</summary>
+    private void TrimSearchCache(DateTimeOffset now) {
+        var due = now - this._lastSweep >= SweepEvery;
+        if ((!due && this._searchCache.Count <= this.MaxCachedSearches) || !this._sweeping.TryEnter()) {
+            return;
+        }
+
+        try {
+            this._lastSweep = now;
+            foreach (var (key, value) in this._searchCache) {
+                if (value.Expires <= now) {
+                    this._searchCache.TryRemove(new KeyValuePair<string, (LodestoneCharacter?, DateTimeOffset)>(key, value));
+                }
+            }
+
+            var excess = this._searchCache.Count - this.MaxCachedSearches * 9 / 10;
+            if (this._searchCache.Count > this.MaxCachedSearches && excess > 0) {
+                foreach (var (key, value) in this._searchCache.OrderBy(pair => pair.Value.Expires).Take(excess).ToList()) {
+                    this._searchCache.TryRemove(new KeyValuePair<string, (LodestoneCharacter?, DateTimeOffset)>(key, value));
+                }
+            }
+        } finally {
+            this._sweeping.Exit();
+        }
     }
 
     /// <summary>

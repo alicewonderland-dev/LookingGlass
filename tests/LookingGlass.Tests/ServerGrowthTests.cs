@@ -112,6 +112,75 @@ public sealed class ServerGrowthTests : IDisposable {
         Assert.True(counter.TryAdd("203.0.113.9"));
     }
 
+    /// <summary>
+    /// Within one window, a stream of new addresses (an attacker with many IPv6 networks, say) would still be kept until
+    /// the window passed. Past a cap, the counter sweeps at once, and if that isn't enough, forgets the addresses seen
+    /// least recently: their limits start afresh, but memory stays bounded.
+    /// </summary>
+    [Fact]
+    public void WindowCountersStayWithinTheirCapWithinOneWindow() {
+        var clock = new ManualClock();
+        var counter = new WindowCounter(3, TimeSpan.FromHours(1), clock) { MaxKeys = 100 };
+        Assert.True(counter.TryAdd("203.0.113.1"));
+        Assert.True(counter.TryAdd("203.0.113.1"));
+        for (var i = 0; i < 1000; i++) {
+            clock.Offset += TimeSpan.FromMilliseconds(10);
+            Assert.True(counter.TryAdd($"2001:db8:{i:x}::/64"));
+            // Kept busy: the address in use stays, and keeps what it counted.
+            if (i % 50 == 0) {
+                counter.TryAdd("203.0.113.1");
+            }
+        }
+
+        Assert.InRange(counter.TrackedKeys, 1, 100);
+        Assert.True(counter.IsFull("203.0.113.1"));
+    }
+
+    /// <summary>Per-user (and per inviter and invitee) buckets unused for an hour are dropped, so they don't pile up either.</summary>
+    [Fact]
+    public void RateLimitsForgetKeysUnusedForAnHour() {
+        var clock = new ManualClock();
+        var limits = new KeyedRateLimits<(long, long)>(perSecond: 1.0 / 600, burst: 3, clock);
+        for (var i = 0; i < 300; i++) {
+            Assert.True(limits.TryTake((1, i)));
+        }
+
+        Assert.Equal(300, limits.TrackedKeys);
+        clock.Offset += TimeSpan.FromHours(2);
+        Assert.True(limits.TryTake((2, 2)));
+        Assert.Equal(1, limits.TrackedKeys);
+    }
+
+    /// <summary>
+    /// The Lodestone client caches every character it looks up (an hour if found, ten minutes if not). Every registration
+    /// attempt names one, so expired results are dropped, and the cache has a cap.
+    /// </summary>
+    [Fact]
+    public async Task LodestoneSearchesAreForgottenAndCapped() {
+        var clock = new ManualClock();
+        var options = Microsoft.Extensions.Options.Options.Create(new LookingGlass.Server.ServerOptions { Lodestone = { BaseUrl = FakeLodestone.BaseUrl, MinDelaySeconds = 0 } });
+        var lodestone = new LodestoneClient(new HttpClient(new FakeLodestone { Name = "Nobody Matches" }), options,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<LodestoneClient>.Instance, clock) { MaxCachedSearches = 50 };
+
+        for (var i = 0; i < 40; i++) {
+            Assert.Null(await lodestone.FindCharacterAsync($"Seeker {i}", "Gilgamesh", Ct));
+        }
+
+        Assert.Equal(40, lodestone.CachedSearches);
+
+        // Long after: they have all expired, and the next search sweeps them out.
+        clock.Offset += TimeSpan.FromHours(2);
+        Assert.Null(await lodestone.FindCharacterAsync("Later Seeker", "Gilgamesh", Ct));
+        Assert.Equal(1, lodestone.CachedSearches);
+
+        // However many names are searched at once, no more than the cap are kept.
+        for (var i = 0; i < 200; i++) {
+            await lodestone.FindCharacterAsync($"Flood {i}", "Gilgamesh", Ct);
+        }
+
+        Assert.InRange(lodestone.CachedSearches, 1, 50);
+    }
+
     private void SetLastUsed(byte[] token, DateTimeOffset when) {
         this._db.SetDeviceLastUsedForTests(token, when);
     }

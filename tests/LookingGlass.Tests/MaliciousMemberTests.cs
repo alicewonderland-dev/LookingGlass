@@ -146,6 +146,26 @@ public sealed class MaliciousMemberTests : IAsyncLifetime {
         await WaitFor(() => bob.Session.Snapshot.FindChannel(channelId)?.Name == "Still Mine" ? new object() : null);
     }
 
+    /// <summary>
+    /// A rekey that names the channel anew, carrying no name over (as a member back with new keys does under "Restored
+    /// channel" when told nobody holds the key), replaces the name for everyone: those who knew it are told who changed it.
+    /// </summary>
+    [Fact]
+    public async Task ANewNameFromARekeyCarryingNoneOverIsAnnounced() {
+        var alice = await this._server.RegisterAsync("Alice Knew The Name");
+        var bob = await this._server.RegisterAsync("Bob Renames Anew");
+        var channelId = await alice.Session.CreateChannelAsync("Known Name", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        var epoch = this._server.Database.GetChannel(channelId)!.Epoch;
+
+        using var bobKeys = bob.LoadIdentity();
+        await bob.Session.SendRawAsync(new ClientFrame { SubmitRekey = this.Rekey(channelId, epoch + 1, bob, bobKeys, alice, PlainMessages.RestoredChannelName, 0) }, Ct);
+
+        var notice = await WaitFor(() => alice.Notices.FirstOrDefault(n => n.Kind == NoticeKind.NameChangedWhileRekeying));
+        Assert.Equal($"Bob Renames Anew@Debug changed the channel name from \"Known Name\" to \"{PlainMessages.RestoredChannelName}\" while rekeying.", notice.Text);
+        Assert.Equal(PlainMessages.RestoredChannelName, alice.Session.Snapshot.FindChannel(channelId)!.Name);
+    }
+
     [Fact]
     public async Task RenameThroughARekeyIsAnnounced() {
         var alice = await this._server.RegisterAsync("Alice Announce");

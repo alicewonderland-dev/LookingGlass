@@ -23,6 +23,10 @@ public sealed class Harness : IAsyncDisposable {
     private readonly List<IAsyncDisposable> _disposables = [];
     private readonly List<TestClient> _clients = [];
 
+    // Everything the server logs, whatever the test asked for: a request that failed with an unexpected exception (which
+    // the client only sees as "Internal server error") fails the test, with the exception, when the server is disposed.
+    private readonly CapturingLoggerProvider _serverLogs = new();
+
     /// <param name="serverTime">The server's clock, for tests that move it forward (key login challenges expire by it).</param>
     /// <param name="environment">
     /// The server's hosting environment. In Development (the default here, as on the test server) key login may go by
@@ -33,9 +37,13 @@ public sealed class Harness : IAsyncDisposable {
     /// <param name="settings">Extra server configuration, for example <c>("LookingGlass:Limits:MaxIdentitiesPerRequest", "2")</c>.</param>
     public Harness(string? dataDirectory = null, bool allowDebugAccounts = true, TimeProvider? serverTime = null, string environment = "Development",
         CapturingLoggerProvider? logs = null, FakeLodestone? lodestone = null, params (string Key, string Value)[] settings) {
+        this._ownsDataDirectory = dataDirectory == null;
         this.DataDirectory = dataDirectory ?? Path.Combine(Path.GetTempPath(), "lgt-" + Guid.NewGuid().ToString("N"));
+        Live[Path.GetFullPath(this.DataDirectory)] = this;
         this.Factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder => {
             builder.UseEnvironment(environment);
+            // Only to these: not to the console, nor (on Windows) to the machine's Event Log, which the server's defaults include.
+            builder.ConfigureLogging(logging => logging.ClearProviders().AddProvider(this._serverLogs));
             if (logs != null) {
                 builder.ConfigureLogging(logging => logging.AddProvider(logs));
             }
@@ -43,6 +51,13 @@ public sealed class Harness : IAsyncDisposable {
             builder.UseSetting("LookingGlass:DataDirectory", this.DataDirectory);
             builder.UseSetting("LookingGlass:Dev:AllowDebugAccounts", allowDebugAccounts ? "true" : "false");
             builder.UseSetting("LookingGlass:Dev:HostEchoBot", "false");
+            // Tests of other environments use debug accounts too, which a real server there refuses without this.
+            builder.UseSetting("LookingGlass:Dev:AllowOutsideDevelopment", allowDebugAccounts && environment != "Development" ? "true" : "false");
+            // Every test client connects from the same (unknown) address, so the per-address connection limits would apply to
+            // a test's clients together; tests of those limits set them, and give their connections addresses.
+            builder.UseSetting("LookingGlass:Limits:ConnectionsPerIp", "1000");
+            builder.UseSetting("LookingGlass:Limits:NotLoggedInConnectionsPerIp", "1000");
+            builder.UseSetting("LookingGlass:Limits:ConnectionsPerMinutePerIp", "100000");
             foreach (var (key, value) in settings) {
                 builder.UseSetting(key, value);
             }
@@ -58,7 +73,13 @@ public sealed class Harness : IAsyncDisposable {
                     .ConfigurePrimaryHttpMessageHandler(() => lodestone));
             }
         });
-        _ = this.Factory.Server;
+        try {
+            _ = this.Factory.Server;
+        } catch {
+            // Never started (it refused to): nothing will dispose it.
+            Live.TryRemove(new KeyValuePair<string, Harness>(Path.GetFullPath(this.DataDirectory), this));
+            throw;
+        }
     }
 
     /// <summary>The address clients connect to, as <see cref="Options"/> gives it (what they sign for key login).</summary>
@@ -99,7 +120,19 @@ public sealed class Harness : IAsyncDisposable {
         return raw;
     }
 
+    /// <summary>
+    /// The server's data folder. One the harness made (none was given) is deleted when it is disposed; one a test gave is the
+    /// test's to keep or delete (to start another server on it, say).
+    /// </summary>
     public string DataDirectory { get; }
+
+    private readonly bool _ownsDataDirectory;
+
+    // Asked to delete its folder (by DeleteDirectory) while it still ran: done when it is disposed.
+    private volatile bool _deleteOnDispose;
+
+    // The servers running now, by their data folder.
+    private static readonly ConcurrentDictionary<string, Harness> Live = new(StringComparer.OrdinalIgnoreCase);
     public WebApplicationFactory<Program> Factory { get; }
 
     /// <summary>The server's connection registry: lets a test act as a malicious server and push arbitrary events.</summary>
@@ -306,6 +339,17 @@ public sealed class Harness : IAsyncDisposable {
         }
 
         await this.Factory.DisposeAsync();
+        // What the server logged while it ran. The test server can leave a request it abandoned running after it is disposed,
+        // into a folder deleted below: that is no failure of the server's.
+        var errors = this._serverLogs.Entries.Where(entry => entry.Level == Microsoft.Extensions.Logging.LogLevel.Error).ToList();
+        Live.TryRemove(new KeyValuePair<string, Harness>(Path.GetFullPath(this.DataDirectory), this));
+        if (this._ownsDataDirectory || this._deleteOnDispose) {
+            // Each run of the suite would otherwise leave hundreds of these behind (TestFolders clears old ones too).
+            DeleteDirectory(this.DataDirectory);
+        }
+
+        Assert.True(errors.Count == 0, "The server logged errors:\n" + string.Join("\n\n", errors.Select(error => $"[{error.Category}] {error.Message}")));
+
         var names = this._clients.Select(client => client.Name)
             .Concat(snapshots.SelectMany(snapshot => snapshot.Channels).Select(channel => channel.Name ?? ""))
             .Concat(snapshots.SelectMany(snapshot => snapshot.Invites).Select(invite => invite.ChannelName ?? ""))
@@ -319,11 +363,35 @@ public sealed class Harness : IAsyncDisposable {
         }
     }
 
+    /// <summary>
+    /// Deletes a test's folder: first closing the pooled SQLite connections to each database in it (only those: see
+    /// <see cref="Database.ReleasePooledConnections"/>), then trying for a moment, as a server still closing may hold a file
+    /// briefly. Never fails a test: what is left, TestFolders clears in a later run.
+    /// </summary>
     public static void DeleteDirectory(string path) {
-        try {
-            Directory.Delete(path, true);
-        } catch {
-            // SQLite may still hold the file briefly.
+        // A server still running on it (a test's finally runs before its `await using` server is disposed) would go on with an
+        // empty database in its place: it is deleted when that server is disposed instead.
+        if (Live.TryGetValue(Path.GetFullPath(path), out var running)) {
+            running._deleteOnDispose = true;
+            if (Live.ContainsKey(Path.GetFullPath(path))) {
+                return;
+            }
+        }
+
+        for (var attempt = 0; attempt < 20 && Directory.Exists(path); attempt++) {
+            if (attempt > 0) {
+                Thread.Sleep(50);
+            }
+
+            try {
+                foreach (var database in Directory.EnumerateFiles(path, "*.db", SearchOption.AllDirectories)) {
+                    Database.ReleasePooledConnections(database);
+                }
+
+                Directory.Delete(path, true);
+            } catch {
+                // Held for a moment more; or gone already.
+            }
         }
     }
 }
@@ -625,7 +693,9 @@ public sealed class CapturingLoggerProvider : Microsoft.Extensions.Logging.ILogg
 
         public void Log<TState>(Microsoft.Extensions.Logging.LogLevel logLevel, Microsoft.Extensions.Logging.EventId eventId, TState state, Exception? exception,
             Func<TState, Exception?, string> formatter) {
-            provider._entries.Enqueue((logLevel, category, formatter(state, exception)));
+            // With the exception, if any, so a test reporting what was logged shows where it came from.
+            var message = formatter(state, exception);
+            provider._entries.Enqueue((logLevel, category, exception == null ? message : $"{message}\n{exception}"));
         }
     }
 }

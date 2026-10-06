@@ -352,17 +352,27 @@ timing doesn't reveal which accounts exist.
 **Limits.** Key logins are limited:
 
 - per connection: 3 challenges;
-- per IP address: challenges, and failures (a challenge counts as a failure
-  until it is answered correctly, so an address that only asks for challenges
-  is stopped too);
-- per account from each address: failed answers only, half the address's
-  allowance, rounded up.
+- per IP address: challenges (60 an hour), and failures (10 an hour; a
+  challenge counts as a failure until it is answered correctly, so an address
+  that only asks for challenges is stopped too);
+- per account from each address: challenges (60 an hour), and failed answers,
+  half the address's allowance, rounded up (5 an hour).
+
+An account asking again, or failing again, from an address within the hour
+doesn't count against the address again: its own allowance there limits it.
+A plugin whose login the server no longer knows (after a reset, say) tries
+key login on every connection, and the server closes connections that don't
+log in after 3 minutes, so it asks about 20 times an hour. Without this, a
+few of them behind one address (a household, a shared NAT) used up its
+allowance, and nobody there could sign in with their key. Now it takes 10
+different failing accounts (or 60 asking).
 
 Nothing is limited per account alone. A signature can't be guessed, so the
 limits only stop spam, and failures from other addresses must never lock an
 account out of key login from its own. An address shared with an attacker
-(one NAT, say) still shares its per-address limits. The numbers are in
-[server.md](server.md#limits-worth-knowing).
+(one NAT, say) still shares its per-address limits: they can keep its key
+logins refused, an hour at a time (see [Known limitations](#known-limitations)).
+The settings are in [server.md](server.md#limits-worth-knowing).
 
 **What the user sees.** "Login not recognised" appears only when the server
 refuses both the token and the key. That happens when:
@@ -679,8 +689,12 @@ waits while someone who holds the key may still come back.
   sees.
 - Once a placeholder rekey has happened, the channel's real name is gone for
   good. Later keys carry the placeholder over. A member who still knew the
-  real name, if one came back, would see it replaced. The admin can rename the
-  channel.
+  real name, if one came back, would see it replaced, and is told who replaced
+  it (as for any rekey that changes a name it knew; a rekey naming the channel
+  anew carries no name over). The admin can rename the channel.
+- Only a member holding no key for the channel names it anew. One holding a
+  key whose name it can't show (a server can garble it, and claim nobody
+  holds the key) refuses, and waits for the name.
 - A member who holds the key but never comes back keeps the channel waiting.
   An admin who is back with a new key can remove them. The new key then comes
   from whoever is left, under the placeholder if nobody left holds it.
@@ -1057,7 +1071,10 @@ knows it by, and a disband would end the channel for everyone.
 first to come online. It never asks a forgotten place, a place under old keys,
 or a member waiting for a key, unless nobody holds the key (see
 [When nobody holds the key](#when-nobody-holds-the-key)). A remover's client
-rekeys straight away.
+rekeys straight away. A client remembers the epoch the channel was at when a
+rekey was asked for, and only a key for a later epoch settles it: one made
+before the request (its own rekey whose answer arrives after the request, or
+someone else's key arriving late) doesn't.
 
 **What clients accept.** A client accepts a new epoch key only:
 
@@ -1225,6 +1242,12 @@ them when a fellow member connects (their first connection) or disconnects
 channel with aren't told, and you aren't shown to them. This is the server's
 word, and it could lie.
 
+The server decides each change, and fills in the online flags of a channel
+list, under one lock, so a client never sees someone online (or offline)
+twice in a row. Whom to tell is looked up before taking it, so a slow lookup
+holds up nobody else's login; a change that a join may have overtaken looks
+again.
+
 ### Blocking and invites
 
 - A user can block others. Their invites are declined unseen, and their
@@ -1278,6 +1301,18 @@ word, and it could lie.
   to a channel (or invited to it) replays it from the start.
 - **Metadata and availability.** The server sees who is in which channel, when
   messages are sent and who is online, and can drop or delay anything.
+- **Shared addresses share limits.** Per-address limits (registrations, key
+  login, connections) can't tell apart the people behind one address (a
+  shared NAT, a mobile carrier's CGNAT, one IPv6 /64). Someone there can use
+  them up for everyone else, an hour at a time. Logins with a device token,
+  the usual way in, aren't limited like this.
+- **Connections can be crowded out, not shut out.** Someone with many
+  addresses (many IPv6 /56s, many IPv4 addresses) can open connections that
+  never log in, 4 per address, each for 3 minutes. At the server's cap they
+  are the ones closed to make room, so plugins that log in still get in, but
+  someone registering (whose connection must stay open while they edit their
+  Lodestone profile) can have theirs closed and must start again. Only
+  10,000 logged-in connections fill the server for good.
 - **Replays of your own messages** within 10 minutes of a restart, and up to 5
   minutes of replay timestamps lost in a crash (see
   [Replay protection](#replay-protection)).
@@ -2167,6 +2202,12 @@ one transaction for every multi-step change.
 - **Storage.** SQLite in WAL mode. Conditional updates (on epoch and rank)
   guard against races. The schema is upgraded in place at startup; the
   current schema version is 8.
+- **Memory.** Nothing kept per address, user or name grows without bound.
+  Per-address counters drop addresses whose window has passed, and keep at
+  most 100,000 (past that, the least recently seen are forgotten and start
+  afresh). Per-user and per-pair rate limits drop keys unused for an hour.
+  Lodestone searches are cached for an hour (ten minutes if not found),
+  swept every ten minutes, and at most 10,000 are kept.
 - **Errors.** Typed errors map to protocol error codes.
 - **Addresses.** The server refuses to start outside Development without
   `PublicUrls`, and with a `ChallengeMinutes` outside 1 to 60.
@@ -2182,27 +2223,52 @@ one transaction for every multi-step change.
 | Members per channel | 500, counting pending invites | Keeps rekey bundles small |
 | Channels per user | 50 | Bounds login and list cost |
 | Pending invites per channel | 50 | Stops invite spam |
-| Pending invites per user | 20 | Stops one person being flooded |
+| Pending invites per user | 20, at most 5 of them from any one inviter | Stops one person being flooded, or one inviter filling them all |
+| Invites sent per user | 20 at once, then 1 every 15 seconds | Stops one person spamming many |
+| Invites received per user | 10 at once, then 1 every 30 seconds | Stops many inviters together flooding one person |
+| Invites from one person to another | 3 at once, then 1 every 10 minutes; checked first | One inviter (blocked or not) can't use up someone's invites |
 | Registration attempts | 5 per hour per IP; verify once per 10 seconds, 10 per challenge | Protects the Lodestone and the challenge flow |
 | Lodestone requests (server-wide) | 1 every 2 seconds, cached | Avoids being blocked by the Lodestone |
-| Connections per IP | 20; unauthenticated connections close after 20 minutes | Bounds idle and unauthenticated load |
+| Connections per IP (IPv6 per /56) | 20 open, 60 new a minute, 4 not logged in; one not logged in closes after 3 minutes (registering: when its code expires); no answer to a ping within 60 seconds closes one | Bounds idle, unauthenticated and churning load |
+| Requests per connection | 200 at once, then 20 a second; faster ones are slowed, not refused | Bounds the work one connection makes |
+| Connections in all | 10,000; at the cap the oldest not logged in is closed for a new one, and only when all have logged in is one refused (503) | Connections that never log in can't keep plugins out; about 2 GB at most |
 | Outbound queue per connection | 256 events | A slow client is disconnected, not waited on |
 | Devices per user | 20 most recently used | Bounds stored logins |
 
-Invites sent and received, channel creation, renames, disbands, identity
-lookups and heavy reads have their own per-user rate limits. Key login limits
+Channel creation, renames, disbands, identity lookups and heavy reads have
+their own per-user rate limits. The server doesn't know whom a user blocked
+(their client declines those invites unseen), so the limits between one
+inviter and one invitee are what stop a blocked inviter using up the
+invitee's allowance. Several inviters together still can, up to the
+per-user limits. Key login limits
 are under [Key login](#key-login). Operators can change some of these (see
 [server.md](server.md#settings)).
 
 ## Operations
 
-- The server runs on Linux and Windows (.NET 10).
+- The server runs on Linux (x64 and ARM64) and Windows (.NET 10). A release
+  is a self-contained package, so the machine needs no .NET.
 - It listens on localhost by default, behind a TLS reverse proxy, and trusts
   `X-Forwarded-For` only from proxies on the same machine or configured ones.
+- Outside Development it refuses to start without `PublicUrls`, or with debug
+  accounts or the echo bot on (unless told it is meant), and warns about any
+  listed address that isn't `wss://` with a fully qualified name. One line at
+  startup says how it is set up.
+- `/health` says only that it is up, and its version.
+- The database is one SQLite file in WAL mode. The server only checkpoints
+  PASSIVE, so Litestream can replicate it; `LookingGlass.Server --backup`
+  makes an online backup for hosts without it.
+- On SIGTERM it closes every connection (clients reconnect later), lets
+  requests finish and checkpoints the database. Every change is one
+  transaction, so a crash leaves the database whole.
+- It never logs messages, channel names, tokens, keys or registration codes;
+  client addresses only where abuse handling needs them.
 - The first tester server runs as a systemd service on a Linux machine behind
-  Tailscale Funnel. A cloud host comes later.
+  Tailscale Funnel. The public one is an ARM64 cloud machine, also behind
+  Funnel, with its database replicated by Litestream.
 
-How to build, configure and deploy a server is in [server.md](server.md).
+How to build, configure, deploy, back up and restore a server is in
+[server.md](server.md).
 
 ## Testing and debug tooling
 

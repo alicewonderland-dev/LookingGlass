@@ -41,6 +41,7 @@ The server behaves differently depending on its ASP.NET Core environment
 | Echo bot inside the server | On | Off |
 | Announcement | "LookingGlass test server. Debug accounts are enabled." | None |
 | `PublicUrls` missing | Starts, with a warning, and trusts each connection's `Host` header | Refuses to start |
+| Debug accounts or echo bot turned on | Fine | Refuses to start, unless `Dev:AllowOutsideDevelopment` is also on (then warns) |
 
 Either way the server listens on `127.0.0.1:5180` unless `--urls` (or the
 `Urls` setting) says otherwise. The development scripts listen on all
@@ -120,8 +121,8 @@ It registers a throwaway debug user, creates a channel, invites the echo bot,
 sends a message and waits for the reply. Exit code 0 means the server works.
 It needs debug accounts and an echo bot on the server.
 
-The server also answers `GET /health` with its status and the number of users
-online.
+The server also answers `GET /health` with `{"status":"ok","version":"…"}`, and
+nothing else (not who, or how many, are online).
 
 ## Testing alone
 
@@ -175,11 +176,19 @@ All of these are under `LookingGlass`.
 | `Dev:HostEchoBot` | false | Runs the echo bot inside the server. Needs `AllowDebugAccounts` |
 | `Dev:EchoBotName` | `Echo Bot` | The hosted echo bot's name |
 | `Dev:EchoBotServerUrl` | empty | Where the hosted echo bot connects. Empty: worked out from the server's own address |
+| `Dev:AllowOutsideDevelopment` | false | Lets `AllowDebugAccounts` and `HostEchoBot` be on outside Development. Without it the server refuses to start with either there |
+| `Database:CheckpointMinutes` | 0 | Minutes between explicit (PASSIVE) checkpoints of the write-ahead log; 0 leaves them to SQLite and Litestream: see [Litestream](#replicating-with-litestream) |
 | `Limits:RegistrationsPerHourPerIp` | 5 | Registrations started per IP address per hour |
 | `Limits:RefusedRegistrationsPerHourPerIp` | 10 | Registrations refused for naming an address this server doesn't list, logged per IP per hour; refused silently past that |
-| `Limits:KeyLoginsPerHourPerIp` | 30 | Key login challenges per IP address per hour |
+| `Limits:KeyLoginsPerHourPerIp` | 60 | Key login challenges per IP address per hour |
 | `Limits:KeyLoginFailuresPerHourPerIp` | 10 | Failed key logins after which an IP address gets no more challenges for the hour |
-| `Limits:ConnectionsPerIp` | 20 | Concurrent connections per IP address |
+| `Limits:ConnectionsPerIp` | 20 | Concurrent connections per IP address (IPv6: per /56) |
+| `Limits:NotLoggedInConnectionsPerIp` | 4 | Connections per IP address that haven't logged in yet, at once |
+| `Limits:NotLoggedInSeconds` | 180 | How long a connection may stay without logging in, unless it is registering |
+| `Limits:MaxConnections` | 10000 | Connections in all; at the cap the oldest not logged in makes room, and only if all have logged in is a new one refused |
+| `Limits:ConnectionsPerMinutePerIp` | 60 | New connections per IP address per minute |
+| `Limits:RequestsPerSecondPerConnection` | 20 | Requests one connection may make per second, on average; faster ones are slowed down, not refused |
+| `Limits:RequestBurstPerConnection` | 200 | Requests one connection may make at once before that applies |
 | `Limits:MaxIdentitiesPerRequest` | 500 | Users one identity lookup may ask for |
 | `Limits:SendQueueLength` | 256 | Events queued for one connection before it is dropped as too slow |
 
@@ -270,15 +279,52 @@ IPv6 clients are counted per /64.
 
 - **Key logins** are limited per connection (3 challenges), per IP address
   (`KeyLoginsPerHourPerIp` challenges and `KeyLoginFailuresPerHourPerIp`
-  failures), and per account from each address (failures only: half the
-  per-address allowance, rounded up, so 5 an hour with the default of 10). A
-  challenge counts as a failure until it is answered correctly. Nothing is
-  limited per account alone, so failures from other addresses never stop a
-  user signing in from theirs. Users who share an address with an attacker
-  (one NAT, say) share its per-address limits.
+  failures), and per account from each address (as many challenges as per
+  address, and half its failures, rounded up: 5 an hour with the default of
+  10). A challenge counts as a failure until it is answered correctly. An
+  account asking or failing again from an address that hour doesn't count
+  against the address again, so plugins retrying a login the server lost
+  (about 20 times an hour each, as connections that don't log in close after
+  3 minutes) don't lock their neighbours out. Nothing is limited per account
+  alone, so failures from other addresses never stop a user signing in from
+  theirs. Users who share an address with an attacker (one NAT, say) share
+  its per-address limits. Behind a large shared NAT, raise
+  `KeyLoginsPerHourPerIp` and `KeyLoginFailuresPerHourPerIp` together.
 - **Devices.** Each user keeps their 20 most recently used devices; older ones
   are dropped as new ones sign in.
-- **Unauthenticated connections** close after 20 minutes.
+- **Connections.** Per IP address (an IPv6 client per /56, the least most
+  ISPs give a customer): 20 open at once, 60 new ones a minute, and 4 at once
+  that haven't logged in (`ConnectionsPerIp`, `ConnectionsPerMinutePerIp`,
+  `NotLoggedInConnectionsPerIp`); past any, the WebSocket upgrade gets HTTP
+  429. A connection that hasn't logged in is closed after 3 minutes
+  (`NotLoggedInSeconds`; a plugin with a saved login logs in within
+  milliseconds, and one without reconnects), unless it is registering: then
+  when its registration code expires. A client that doesn't answer the
+  server's ping (every 30 seconds) within 60 seconds is dropped.
+- **Connections in all.** At most 10,000 (`MaxConnections`). At that cap a new
+  connection still gets in: the oldest connection that hasn't logged in (one
+  that isn't registering, if there is one) is closed to make room. Only when
+  every connection has logged in is a new one refused, with HTTP 503 (and a
+  warning in the log, once a minute at most). So connections that never log
+  in can't keep out plugins reconnecting. Each connection takes roughly 50 to
+  200 KiB of memory, so 10,000 is at most 2 GB: fine on an Oracle Ampere
+  machine, but lower it on a small one. The unit allows 65,536 open files.
+- **Requests.** Each connection may make 200 requests at once, then 20 a
+  second (`RequestBurstPerConnection`, `RequestsPerSecondPerConnection`). A
+  faster client is slowed down (its next request is read only when due), never
+  refused. Every request type also has its own per-user limits, and a frame
+  is at most 128 KiB.
+- **The web server** (Kestrel, under `Kestrel:Limits` in `appsettings.json`)
+  takes at most 12,000 connections, 12,000 of them WebSockets
+  (`MaxConcurrentConnections`, `MaxConcurrentUpgradedConnections`: above
+  `MaxConnections`, so the server's own rule decides, and these only back it
+  up), plain HTTP request bodies of at most 64 KiB (the server takes none:
+  WebSocket frames have their own limit), headers of at most 32 KiB, sent
+  within 15 seconds, and closes idle keep-alive connections after a minute.
+  An upgrade past its limit is answered 503 too. Behind a reverse proxy these
+  count the proxy's connections.
+- **Memory.** Per-address counters keep at most 100,000 addresses, and the
+  Lodestone cache 10,000 searches (see [design.md](design.md#server-design)).
 - The full list of protocol limits is in
   [design.md](design.md#abuse-limits).
 
@@ -291,19 +337,23 @@ The first tester server runs this way, behind Tailscale Funnel.
 On a machine with the .NET SDK (any OS with PowerShell):
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\publish-linux.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\publish-linux.ps1                         # x64
+powershell -ExecutionPolicy Bypass -File .\scripts\publish-linux.ps1 -Runtime linux-arm64    # ARM64
 ```
 
-It builds a self-contained Linux x64 server and packs it with the systemd unit
-and the installer into `lookingglass-server-linux-x64.tar.gz` (`-Output` to
-choose another path).
+It builds a self-contained Linux server for that processor (`linux-x64` by
+default, or `linux-arm64`, for example an Oracle Cloud Ampere A1 machine;
+`uname -m` on the machine says `x86_64` or `aarch64`), and packs it with the
+systemd units and the installer into `lookingglass-server-<runtime>.tar.gz`
+(`-Output` to choose another path). The machine needs no .NET: the runtime,
+SQLite and everything else come in the package.
 
 ### Installing and updating
 
 Copy the archive to the Linux machine, then:
 
 ```sh
-mkdir lookingglass && tar -xzf lookingglass-server-linux-x64.tar.gz -C lookingglass
+mkdir lookingglass && tar -xzf lookingglass-server-linux-arm64.tar.gz -C lookingglass
 cd lookingglass
 sudo sh ./install-linux.sh wss://<machine>.<tailnet>.ts.net/ws [more addresses...]
 ```
@@ -311,11 +361,14 @@ sudo sh ./install-linux.sh wss://<machine>.<tailnet>.ts.net/ws [more addresses..
 Give it every address clients connect to. The installer:
 
 - creates the `lookingglass` system user if needed;
-- installs the server to `/opt/lookingglass`, keeping the previous install as
-  `/opt/lookingglass.old`;
+- stops the service (see [Stopping and restarting](#stopping-and-restarting)),
+  and installs the server to `/opt/lookingglass`, keeping the previous install
+  as `/opt/lookingglass.old`;
 - installs the unit, and writes the addresses to a drop-in
   (`/etc/systemd/system/lookingglass.service.d/public-urls.conf`), so the unit
   itself can be replaced on every update;
+- installs the backup units, without enabling them (see
+  [Backups and restoring](#backups-and-restoring));
 - fixes SELinux labels where `restorecon` exists (Fedora and relatives);
 - enables and restarts the service, and shows its status.
 
@@ -328,14 +381,18 @@ is kept. Follow the logs with `journalctl -u lookingglass -f`.
 
 - runs `/opt/lookingglass/LookingGlass.Server` as the `lookingglass` user,
   listening on `127.0.0.1:5180` only;
-- keeps the database in `/var/lib/lookingglass` (systemd's `StateDirectory`),
-  readable only by the service user, with files private to it (`UMask=0077`);
-- restarts on failure, and runs with `NoNewPrivileges`, `ProtectSystem=strict`,
-  `ProtectHome` and `PrivateTmp`.
+- keeps the database in `/var/lib/lookingglass/lookingglass.db` (systemd's
+  `StateDirectory`, mode 0700), readable only by the service user, with files
+  private to it (`UMask=0077`). Root can still read it, so a backup or
+  replication tool running as root (Litestream, say) needs nothing more;
+- restarts on failure, gives the server 30 seconds to stop, and runs with
+  `NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome` and `PrivateTmp`.
 
 For a private Tailscale test server with debug accounts and the echo bot,
 change `--urls` to `http://0.0.0.0:5180` and enable the commented-out
-`ASPNETCORE_ENVIRONMENT=Development` line.
+`ASPNETCORE_ENVIRONMENT=Development` line. (In Production the server refuses
+to start with debug accounts or the echo bot on, unless
+`LookingGlass__Dev__AllowOutsideDevelopment=true` says you mean it.)
 
 To install the unit by hand instead of with the installer, see the comments
 at the top of the unit file.
@@ -346,9 +403,170 @@ The server listens on localhost only. Put a TLS reverse proxy in front and
 give clients a `wss://` address:
 
 - **Tailscale Funnel:** `tailscale funnel --bg 5180` makes the server reachable
-  as `wss://<machine>.<tailnet>.ts.net/ws`.
+  as `wss://<machine>.<tailnet>.ts.net/ws`. Funnel can also use port 8443 or
+  10000, when another service has 443:
+  `tailscale funnel --bg --https=8443 http://127.0.0.1:5180`, and the address
+  is `wss://<machine>.<tailnet>.ts.net:8443/ws`. List it in `PublicUrls`
+  exactly so, port included: the port is part of the address registrations
+  and key logins are signed for.
 - **A reverse proxy** such as Caddy, for a public domain like
-  `wss://chat.example.com/ws`.
+  `wss://chat.example.com/ws`:
+
+  ```
+  chat.example.com {
+      reverse_proxy 127.0.0.1:5180
+  }
+  ```
+
+Either connects from this machine, so the server believes the client address
+it passes in `X-Forwarded-For` (see [Behind a reverse proxy](#behind-a-reverse-proxy)).
+To check that the proxy sends it, look at a line in the log that names a
+client's address (a refused registration or key login, or, with
+`Logging__LogLevel__LookingGlass=Debug` for a while, "Closing connection
+from ..."). If every client shows as `127.0.0.1`, the proxy doesn't send the
+header, and per-address limits apply to all clients together: raise
+`Limits:ConnectionsPerIp`, `Limits:ConnectionsPerMinutePerIp` and the
+per-address registration and key login limits to suit.
+
+### A public host
+
+Before giving the address to people you don't know:
+
+- Run in **Production** (the default; the unit doesn't set
+  `ASPNETCORE_ENVIRONMENT`). One of the first lines the server logs says how
+  it is set up, for example `LookingGlass server 0.2.0 in Production: debug
+  accounts off, echo bot off; every address is wss:// with a fully qualified
+  name (1); database /var/lib/lookingglass/lookingglass.db`. Check it after
+  every update.
+- **Debug accounts and the echo bot off.** The server refuses to start with
+  either outside Development (see above).
+- **Only `wss://` addresses with fully qualified names** in `PublicUrls`. The
+  server warns about any other at startup, and the summary line says so.
+- **Back the database up**, off the machine: with Litestream, or with the
+  backup timer and a copy elsewhere.
+- **Keep the machine and the server updated.** Whoever controls the server can
+  swap any member's keys (see [design.md](design.md#the-trust-this-needs)).
+
+### Logs
+
+The server logs to the journal (`journalctl -u lookingglass`). It never logs
+messages or channel names (it can't read them), device tokens, keys,
+registration codes or key login signatures. User IDs (Lodestone character
+IDs) appear in lines about registrations, key logins and channel changes.
+Client addresses appear only in lines about registrations and key logins
+(refused ones, and key logins that add a device) and about closed connections
+(at Debug level only), for dealing with abuse.
+
+### Stopping and restarting
+
+`systemctl stop` (or `restart`, or the installer) sends SIGTERM. The server
+closes every connection at once, telling clients it is going away (they
+reconnect by themselves, waiting longer each time), lets requests in progress
+finish, and checkpoints the database. Every change is one SQLite transaction,
+so even a server killed outright leaves the database whole; it loses at most
+the request it was in the middle of.
+
+### Backups and restoring
+
+The database is one file, `/var/lib/lookingglass/lookingglass.db`, with
+`lookingglass.db-wal` and `lookingglass.db-shm` beside it while the server
+runs. Don't copy those files while it runs: use one of these.
+
+**Without Litestream**, enable the daily backup:
+
+```sh
+sudo systemctl enable --now lookingglass-backup.timer
+```
+
+It runs `LookingGlass.Server --backup /var/lib/lookingglass/backups/ --keep 14`
+as the service user: SQLite's online backup, safe while the server runs, into
+`lookingglass-<UTC time>.db`, keeping the newest 14. Copy that folder off the
+machine as well. To make one now:
+
+```sh
+sudo systemctl start lookingglass-backup.service
+# or by hand, as a user who can read the database:
+sudo -u lookingglass env LookingGlass__DataDirectory=/var/lib/lookingglass \
+    /opt/lookingglass/LookingGlass.Server --backup /var/lib/lookingglass/backups/manual.db
+```
+
+`--backup` takes a file, or a folder (one that exists, or a path ending in
+`/`) to write a dated file into; `--keep N` deletes all but the newest N dated
+files in that folder, and nothing else. It reads the same settings as the
+server (so `LookingGlass__DataDirectory` must name the data folder), starts no
+server, and exits with 0 once the copy is written and checked. The copy is a
+single file (no `-wal`).
+
+**To restore** a backup:
+
+```sh
+sudo systemctl stop lookingglass
+sudo systemctl stop litestream    # only if Litestream replicates this database
+cd /var/lib/lookingglass
+sudo cp backups/lookingglass-20261006-031500-123.db lookingglass.db.restoring
+sudo rm -f lookingglass.db-wal lookingglass.db-shm
+sudo mv lookingglass.db.restoring lookingglass.db
+sudo chown lookingglass:lookingglass lookingglass.db && sudo chmod 600 lookingglass.db
+sudo systemctl start litestream   # likewise
+sudo systemctl start lookingglass
+```
+
+Remove the `-wal` and `-shm` files: they belong to the database being
+replaced. If Litestream replicates the database, stop it first and start it
+again only once the restored file is in place: otherwise it goes on reading
+the old database's log while the file changes under it. (Stopping it pauses
+replication of any other database it handles too, for those few seconds.)
+With Litestream, restoring from its replica (below) is usually the better
+choice anyway: it is newer.
+
+Logins made since the backup no longer work, but plugins sign back in with
+their identity keys by themselves (see [design.md](design.md#key-login)).
+Anything else since (registrations, channels, invites, new keys) is gone, and
+users may need to register again.
+
+### Replicating with Litestream
+
+[Litestream](https://litestream.io) copies the database's write-ahead log to
+object storage as it is written, so losing the machine loses seconds, not a
+day. The server suits it: the database is in WAL mode, and the server only
+ever checkpoints PASSIVE (never waiting for or blocking Litestream's reader),
+by default leaving checkpoints to SQLite and to Litestream
+(`LookingGlass:Database:CheckpointMinutes` is 0; leave it so). Add to
+`/etc/litestream.yml`:
+
+```yaml
+dbs:
+  - path: /var/lib/lookingglass/lookingglass.db
+    replicas:
+      - url: s3://<bucket>/lookingglass
+        # endpoint, region and credentials as for your other databases
+```
+
+and restart Litestream. It runs as root, so the 0700 data folder is no
+obstacle. The backup timer isn't needed as well (it does no harm).
+
+To restore from the replica:
+
+```sh
+sudo systemctl stop lookingglass
+sudo systemctl stop litestream
+cd /var/lib/lookingglass
+sudo litestream restore -config /etc/litestream.yml -o lookingglass.db.restoring /var/lib/lookingglass/lookingglass.db
+sudo rm -f lookingglass.db-wal lookingglass.db-shm
+sudo mv lookingglass.db.restoring lookingglass.db
+sudo chown lookingglass:lookingglass lookingglass.db && sudo chmod 600 lookingglass.db
+sudo systemctl start litestream
+sudo systemctl start lookingglass
+```
+
+Stop Litestream before putting the restored file in place, and start it again
+afterwards (before the server): a running Litestream would go on following the
+replaced database's log, and could replicate the wrong file. Stopping it
+pauses replication of any other database it handles, for those few seconds.
+`litestream restore` itself only reads the replica, and won't write over an
+existing file, hence the temporary name. Restoring onto a new machine works
+the same, before the server's first start. See Litestream's own
+documentation for restoring to a point in time.
 
 ## Docker
 

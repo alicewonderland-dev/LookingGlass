@@ -76,6 +76,124 @@ public sealed class PresenceTests : IAsyncLifetime {
         Assert.Equal(2, observer.Presence.Count);
     }
 
+    /// <summary>
+    /// Who to tell that someone came online is a database query. It used to run under the one lock every login and
+    /// disconnect takes, so a slow one held up everyone else's: here Alice's is held, and Bob still logs in meanwhile.
+    /// </summary>
+    [Fact]
+    public async Task ASlowLookupOfWhomToTellDoesNotHoldUpOtherLogins() {
+        var alice = await this._server.RegisterAsync("Alice Slow Lookup");
+        var bob = await this._server.RegisterAsync("Bob Not Held Up");
+        var (aliceId, bobId) = (alice.UserId, bob.UserId);
+        await alice.Session.DisposeAsync();
+        await bob.Session.DisposeAsync();
+        await WaitFor(() => !this._server.Registry.IsOnline(aliceId) && !this._server.Registry.IsOnline(bobId) ? new object() : null);
+
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        this._server.Registry.AfterCoMemberQueryForTests = userId => {
+            if (userId == aliceId && !entered.IsSet) {
+                entered.Set();
+                release.Wait(Harness.Timeout);
+            }
+        };
+
+        try {
+            var aliceLogin = Task.Run(() => RawClient.ConnectAsync(this._server, alice.Store), Ct);
+            Assert.True(entered.Wait(Harness.Timeout, Ct));
+
+            await using var bobRaw = await RawClient.ConnectAsync(this._server, bob.Store).WaitAsync(TimeSpan.FromSeconds(5), Ct);
+            Assert.True(this._server.Registry.IsOnline(bobId));
+
+            release.Set();
+            await using var aliceRaw = await aliceLogin.WaitAsync(Harness.Timeout, Ct);
+            Assert.True(this._server.Registry.IsOnline(aliceId));
+        } finally {
+            release.Set();
+            this._server.Registry.AfterCoMemberQueryForTests = null;
+        }
+    }
+
+    /// <summary>
+    /// The lookup of whom to tell now runs outside that lock, so it can be out of date by the time Bob is online: Carol
+    /// joins the channel meanwhile, after her channel list said he was offline. She is told anyway.
+    /// </summary>
+    [Fact]
+    public async Task SomeoneWhoJoinsWhileAMemberComesOnlineIsToldTheyAreOnline() {
+        var alice = await this._server.RegisterAsync("Alice Joins Race");
+        var bob = await this._server.RegisterAsync("Bob Joins Race");
+        var carol = await this._server.RegisterAsync("Carol Joins Race");
+        var bobId = bob.UserId;
+        var channelId = await alice.Session.CreateChannelAsync("Join Race", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        await alice.Session.InviteAsync(channelId, carol.Name, ProtocolInfo.DebugWorldName, Ct);
+        await WaitFor(() => carol.Session.Snapshot.Invites.FirstOrDefault(i => i.ChannelId == channelId && i.Verified));
+        await bob.Session.DisposeAsync();
+        await WaitFor(() => this._server.Registry.IsOnline(bobId) ? null : new object());
+
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        this._server.Registry.AfterCoMemberQueryForTests = userId => {
+            if (userId == bobId && !entered.IsSet) {
+                entered.Set();
+                release.Wait(Harness.Timeout);
+            }
+        };
+
+        try {
+            // Bob's lookup is made (without Carol) and held; Carol joins, and is shown him offline.
+            var bobLogin = Task.Run(() => RawClient.ConnectAsync(this._server, bob.Store), Ct);
+            Assert.True(entered.Wait(Harness.Timeout, Ct));
+            await carol.Session.RespondToInviteAsync(channelId, true, Ct).WaitAsync(TimeSpan.FromSeconds(5), Ct);
+            Assert.False(MemberOf(carol, channelId, bobId)!.Online);
+
+            release.Set();
+            await using var bobRaw = await bobLogin.WaitAsync(Harness.Timeout, Ct);
+            await WaitFor(() => MemberOf(carol, channelId, bobId) is { Online: true } m ? m : null);
+        } finally {
+            release.Set();
+            this._server.Registry.AfterCoMemberQueryForTests = null;
+        }
+    }
+
+    /// <summary>
+    /// The same going offline: Bob's lookup of whom to tell is made (without Carol) and held while he is still online; Carol
+    /// joins, and is shown him online. When he goes, she is told.
+    /// </summary>
+    [Fact]
+    public async Task SomeoneWhoJoinsWhileAMemberGoesOfflineIsToldTheyWent() {
+        var alice = await this._server.RegisterAsync("Alice Leaves Race");
+        var bob = await this._server.RegisterAsync("Bob Leaves Race");
+        var carol = await this._server.RegisterAsync("Carol Leaves Race");
+        var bobId = bob.UserId;
+        var channelId = await alice.Session.CreateChannelAsync("Leave Race", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        await alice.Session.InviteAsync(channelId, carol.Name, ProtocolInfo.DebugWorldName, Ct);
+        await WaitFor(() => carol.Session.Snapshot.Invites.FirstOrDefault(i => i.ChannelId == channelId && i.Verified));
+
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        this._server.Registry.AfterCoMemberQueryForTests = userId => {
+            if (userId == bobId && !entered.IsSet) {
+                entered.Set();
+                release.Wait(Harness.Timeout);
+            }
+        };
+
+        try {
+            await bob.Session.DisposeAsync();
+            Assert.True(entered.Wait(Harness.Timeout, Ct));
+            await carol.Session.RespondToInviteAsync(channelId, true, Ct).WaitAsync(TimeSpan.FromSeconds(5), Ct);
+            Assert.True(MemberOf(carol, channelId, bobId)!.Online);
+
+            release.Set();
+            await WaitFor(() => MemberOf(carol, channelId, bobId) is { Online: false } m ? m : null);
+        } finally {
+            release.Set();
+            this._server.Registry.AfterCoMemberQueryForTests = null;
+        }
+    }
+
     [Fact]
     public async Task ConnectionsOpeningAndClosingAtOnceStillAlternate() {
         var alice = await this._server.RegisterAsync("Alice Race");

@@ -1,0 +1,11 @@
+# Runs lookingglass-backup.service once a day (and at the next boot if a run was missed).
+[Unit]
+Description=Daily LookingGlass database backup
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.WebSockets;
 using System.Threading.Channels;
 using Google.Protobuf;
@@ -26,7 +27,12 @@ public sealed record PendingRegistration(
     ServerOrigin? Origin);
 
 /// <summary>A key login challenge issued on this connection; only this connection can answer it, once.</summary>
-public sealed record PendingKeyLogin(long UserId, byte[] Challenge, DateTimeOffset Expires);
+/// <param name="CountedForAddress">
+/// Counted as a failure for its address until answered correctly. Not when the account already failed from that address
+/// within the hour: an account failing again (a plugin trying a login the server no longer knows on every connection)
+/// counts once against the address, and its own per-address allowance limits the rest.
+/// </param>
+public sealed record PendingKeyLogin(long UserId, byte[] Challenge, DateTimeOffset Expires, bool CountedForAddress = true);
 
 /// <summary>
 /// One client's WebSocket. Requests are handled one at a time, in order.
@@ -42,20 +48,39 @@ public sealed class ClientConnection {
     private long _eventSeq;
     private string? _abortReason;
     private WebSocketCloseStatus _abortStatus = WebSocketCloseStatus.NormalClosure;
+    // Requests this connection may make now (see WaitForRequestBudgetAsync); only the receive loop uses them.
+    private readonly double _requestsPerSecond;
+    private readonly double _requestBurst;
+    private double _requestTokens;
+    private long _requestTokensAt = Stopwatch.GetTimestamp();
 
-    public ClientConnection(WebSocket socket, string remoteAddress, int maxFrameBytes, int queueLength, ILogger logger) {
+    /// <param name="requestsPerSecond">Requests handled per second on average, past <paramref name="requestBurst"/> at once; 0 for no limit.</param>
+    /// <param name="notLoggedInLifetime">How long it may stay without logging in (by default <see cref="DefaultNotLoggedInLifetime"/>).</param>
+    public ClientConnection(WebSocket socket, string remoteAddress, int maxFrameBytes, int queueLength, ILogger logger,
+        double requestsPerSecond = 0, int requestBurst = 0, TimeSpan? notLoggedInLifetime = null) {
+        this._notLoggedInLifetime = notLoggedInLifetime ?? DefaultNotLoggedInLifetime;
         this._socket = socket;
         this.RemoteAddress = remoteAddress;
         this._maxFrameBytes = maxFrameBytes;
         this._logger = logger;
+        this._requestsPerSecond = requestsPerSecond;
+        this._requestBurst = Math.Max(1, requestBurst);
+        this._requestTokens = this._requestBurst;
         this._outbound = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(queueLength) {
             SingleReader = true,
             FullMode = BoundedChannelFullMode.Wait,
         });
     }
 
-    /// <summary>How long a connection may stay without logging in (registration included).</summary>
-    public static readonly TimeSpan UnauthenticatedLifetime = TimeSpan.FromMinutes(20);
+    /// <summary>
+    /// How long a connection may stay without logging in, unless it is registering: then until its registration challenge
+    /// expires. A plugin with a saved login logs in within milliseconds; one without (not registered yet, or a login the
+    /// server doesn't know) is closed after this and reconnects, which is cheap; and connections that never log in can't
+    /// pile up.
+    /// </summary>
+    public static readonly TimeSpan DefaultNotLoggedInLifetime = TimeSpan.FromMinutes(3);
+
+    private readonly TimeSpan _notLoggedInLifetime;
 
     public string RemoteAddress { get; }
     public bool HelloDone { get; set; }
@@ -86,11 +111,26 @@ public sealed class ClientConnection {
         Action<ClientConnection, Response>? respond = null) {
         var sendLoop = Task.Run(this.SendLoop);
         // Disposed when the connection ends, so a closed connection isn't kept alive for the full lifetime.
-        var loginDeadline = new Timer(_ => {
-            if (this.User == null) {
-                this.Abort("Not logged in");
+        Timer? loginDeadline = null;
+        loginDeadline = new Timer(_ => {
+            if (this.User != null) {
+                return;
             }
-        }, null, UnauthenticatedLifetime, Timeout.InfiniteTimeSpan);
+
+            // Registering takes the user a while (putting the code in their Lodestone profile): until the challenge expires.
+            var left = this.PendingRegistration is { } pending ? pending.Expires - DateTimeOffset.UtcNow : TimeSpan.Zero;
+            if (left > TimeSpan.Zero) {
+                try {
+                    loginDeadline?.Change(left + TimeSpan.FromSeconds(1), Timeout.InfiniteTimeSpan);
+                } catch (ObjectDisposedException) {
+                    // The connection ended meanwhile.
+                }
+
+                return;
+            }
+
+            this.Abort("Not logged in");
+        }, null, this._notLoggedInLifetime, Timeout.InfiniteTimeSpan);
         var buffer = new byte[16 * 1024];
         using var frame = new MemoryStream();
 
@@ -121,6 +161,7 @@ public sealed class ClientConnection {
                     frame.SetLength(0);
                 }
 
+                await this.WaitForRequestBudgetAsync(this._cts.Token);
                 var response = await handle(this, request, this._cts.Token);
                 response.RequestId = request.RequestId;
                 if (respond != null) {
@@ -129,8 +170,8 @@ public sealed class ClientConnection {
                     this.SendResponse(response);
                 }
             }
-        } catch (Exception ex) when (ex is OperationCanceledException or WebSocketException) {
-            // Client went away or we aborted.
+        } catch (Exception ex) when (ex is OperationCanceledException or WebSocketException or IOException) {
+            // Client went away (a socket torn down mid-receive can say so with an IOException) or we aborted.
         } finally {
             await loginDeadline.DisposeAsync();
             this._outbound.Writer.TryComplete();
@@ -139,6 +180,28 @@ public sealed class ClientConnection {
         }
     }
 
+
+    /// <summary>
+    /// Takes one request from this connection's budget, waiting until one is due if it has none: a client sending requests
+    /// faster than the limit is slowed down (its next request isn't read until then), never refused, so no plugin, however
+    /// old, sees an error for it.
+    /// </summary>
+    private async ValueTask WaitForRequestBudgetAsync(CancellationToken ct) {
+        if (this._requestsPerSecond <= 0) {
+            return;
+        }
+
+        var now = Stopwatch.GetTimestamp();
+        this._requestTokens = Math.Min(this._requestBurst, this._requestTokens + Stopwatch.GetElapsedTime(this._requestTokensAt, now).TotalSeconds * this._requestsPerSecond);
+        this._requestTokensAt = now;
+        if (this._requestTokens < 1) {
+            await Task.Delay(TimeSpan.FromSeconds((1 - this._requestTokens) / this._requestsPerSecond), ct);
+            this._requestTokens = 1;
+            this._requestTokensAt = Stopwatch.GetTimestamp();
+        }
+
+        this._requestTokens -= 1;
+    }
     /// <summary>Queues a response.</summary>
     public void SendResponse(Response response) {
         this.Enqueue(new ServerFrame { Response = response });
@@ -159,7 +222,15 @@ public sealed class ClientConnection {
         this._logger.LogDebug("Closing connection from {Address}: {Reason}", this.RemoteAddress, reason);
         this._abortStatus = status;
         this._outbound.Writer.TryComplete();
-        this._cts.Cancel();
+        try {
+            // Runs this connection's cancellation callbacks (its socket's, its send loop's) on the caller's thread: often
+            // another connection's request (a newer login replacing this one, a registration dropping the account's
+            // sessions). Whatever they throw is this connection's problem, not that request's, which has already done
+            // its work and must still be answered. Every callback runs regardless (throwOnFirstException is false).
+            this._cts.Cancel();
+        } catch (Exception ex) {
+            this._logger.LogWarning(ex, "Closing connection from {Address} ({Reason}): a cancellation callback failed", this.RemoteAddress, reason);
+        }
     }
 
     private void Enqueue(ServerFrame frame) {
@@ -173,7 +244,7 @@ public sealed class ClientConnection {
             await foreach (var data in this._outbound.Reader.ReadAllAsync(this._cts.Token)) {
                 await this._socket.SendAsync(data, WebSocketMessageType.Binary, true, this._cts.Token);
             }
-        } catch (Exception ex) when (ex is OperationCanceledException or WebSocketException or ObjectDisposedException) {
+        } catch (Exception ex) when (ex is OperationCanceledException or WebSocketException or ObjectDisposedException or IOException) {
             this.Abort("Send failed");
         }
     }

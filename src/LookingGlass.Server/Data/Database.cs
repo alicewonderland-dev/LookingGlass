@@ -112,15 +112,87 @@ public sealed class Database {
     public Database(string path, ILogger? logger = null) {
         this._path = path;
         this._logger = logger;
-        this._connectionString = new SqliteConnectionStringBuilder {
-            DataSource = path,
-            Mode = SqliteOpenMode.ReadWriteCreate,
-            Cache = SqliteCacheMode.Private,
-            Pooling = true,
-            DefaultTimeout = 30,
-        }.ToString();
-
+        this._connectionString = ConnectionStringFor(path);
         this.Migrate();
+    }
+
+    private static string ConnectionStringFor(string path) => new SqliteConnectionStringBuilder {
+        DataSource = path,
+        Mode = SqliteOpenMode.ReadWriteCreate,
+        Cache = SqliteCacheMode.Private,
+        Pooling = true,
+        DefaultTimeout = 30,
+    }.ToString();
+
+    /// <summary>
+    /// Closes the idle pooled connections to the database at <paramref name="path"/>, so the file can be moved, replaced or
+    /// deleted. Only that file's: <see cref="SqliteConnection.ClearAllPools"/> would also dispose connections other databases
+    /// in the process are using at that moment, failing whatever they were doing.
+    /// </summary>
+    internal static void ReleasePooledConnections(string path) {
+        using var connection = new SqliteConnection(ConnectionStringFor(path));
+        SqliteConnection.ClearPool(connection);
+    }
+
+    /// <summary>The database file.</summary>
+    public string FilePath => this._path;
+
+    /// <summary>
+    /// Folds what it can of the write-ahead log into the database, without waiting for or blocking anyone (a PASSIVE
+    /// checkpoint: Litestream, if it replicates the database, must read the log first, and holds a reader to make sure).
+    /// </summary>
+    /// <returns>Whether it was blocked (never, for a PASSIVE one), frames in the log, and how many of them are now in the database.</returns>
+    public (bool Blocked, long LogFrames, long Checkpointed) Checkpoint() {
+        using var connection = this.Open();
+        using var command = Command(connection, null, "PRAGMA wal_checkpoint(PASSIVE);");
+        using var reader = command.ExecuteReader();
+        return reader.Read() ? (reader.GetInt64(0) != 0, reader.GetInt64(1), reader.GetInt64(2)) : (false, 0, 0);
+    }
+
+    /// <summary>
+    /// Copies the database to <paramref name="target"/> with SQLite's online backup, while the server goes on using it (see
+    /// <see cref="BackupFile"/>).
+    /// </summary>
+    public string Backup(string target) => BackupFile(this._path, target);
+
+    /// <summary>
+    /// Copies the database at <paramref name="source"/> to <paramref name="target"/> with SQLite's online backup: a consistent
+    /// snapshot, safe while a server writes to it (in WAL mode a reader holds up no writer). The copy is one self-contained
+    /// file (rollback journal, not WAL), checked, and only then put in place, replacing any file there; a server can open it
+    /// as its database to restore it. Never creates or changes the source.
+    /// </summary>
+    /// <returns>The target's full path.</returns>
+    /// <exception cref="FileNotFoundException">There is no database at <paramref name="source"/>.</exception>
+    public static string BackupFile(string source, string target) {
+        if (!File.Exists(source)) {
+            throw new FileNotFoundException($"There is no database at {Path.GetFullPath(source)}.", source);
+        }
+
+        target = Path.GetFullPath(target);
+        var partial = $"{target}.partial-{Guid.NewGuid():N}";
+        try {
+            using (var from = new SqliteConnection(new SqliteConnectionStringBuilder {
+                       DataSource = source, Mode = SqliteOpenMode.ReadWrite, Pooling = false, DefaultTimeout = 30,
+                   }.ToString()))
+            using (var to = new SqliteConnection(new SqliteConnectionStringBuilder {
+                       DataSource = partial, Mode = SqliteOpenMode.ReadWriteCreate, Pooling = false,
+                   }.ToString())) {
+                from.Open();
+                to.Open();
+                from.BackupDatabase(to);
+                Execute(to, null, "PRAGMA journal_mode = DELETE;");
+                var check = Convert.ToString(Scalar(to, null, "PRAGMA quick_check;"));
+                if (check != "ok") {
+                    throw new InvalidOperationException($"The backup failed its check ({check}); nothing was written to {target}.");
+                }
+            }
+
+            File.Move(partial, target, overwrite: true);
+            return target;
+        } finally {
+            File.Delete(partial);
+            File.Delete(partial + "-journal");
+        }
     }
 
     private SqliteConnection Open() {
@@ -1118,9 +1190,13 @@ public sealed class Database {
         return this.QueryInvites(connection, "WHERE i.user_id = $user AND i.forgotten = 0 ORDER BY i.created_at DESC, i.channel_id LIMIT $limit", ("$user", userId), ("$limit", limit));
     }
 
-    public int CountInvitesForUser(long userId) {
+    /// <summary>The user's pending invites (not removed from their list), or only those from <paramref name="from"/>.</summary>
+    public int CountInvitesForUser(long userId, long? from = null) {
         using var connection = this.Open();
-        return Convert.ToInt32(Scalar(connection, null, "SELECT COUNT(*) FROM invites WHERE user_id = $user AND forgotten = 0;", ("$user", userId)));
+        return from == null
+            ? Convert.ToInt32(Scalar(connection, null, "SELECT COUNT(*) FROM invites WHERE user_id = $user AND forgotten = 0;", ("$user", userId)))
+            : Convert.ToInt32(Scalar(connection, null, "SELECT COUNT(*) FROM invites WHERE user_id = $user AND inviter_id = $inviter AND forgotten = 0;",
+                ("$user", userId), ("$inviter", from.Value)));
     }
 
     /// <summary>Users whose identities a user may fetch: themselves, people in their channels, and their inviters.</summary>

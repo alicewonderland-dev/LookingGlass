@@ -126,7 +126,7 @@ public sealed class ServerHardeningTests {
                 DELETE FROM schema_version WHERE version >= 3;
                 SELECT 0;
                 """);
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReleaseConnections(directory);
 
             var migrated = new Database(path);
             Assert.Equal(8L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
@@ -135,7 +135,7 @@ public sealed class ServerHardeningTests {
             Assert.Null(migrated.GetChannel(channelId)!.Name!.CarriedFrom);
             Assert.Single(migrated.GetLogEntries(channelId, 0, 10));
         } finally {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReleaseConnections(directory);
             DeleteDirectory(directory);
         }
     }
@@ -151,7 +151,7 @@ public sealed class ServerHardeningTests {
             var path = Path.Combine(directory, "test.db");
             var (channelId, admin, keys) = CreateChannel(db);
             QueryLong(path, "DROP TABLE retired_keys; DROP INDEX users_by_signing_key; DELETE FROM schema_version WHERE version >= 5; SELECT 0;");
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReleaseConnections(directory);
 
             var migrated = new Database(path);
             Assert.Equal(8L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
@@ -163,7 +163,7 @@ public sealed class ServerHardeningTests {
             Assert.True(migrated.IsKeyRetired(admin, keys.SigningPublicKey));
             Assert.Throws<KeyRetiredException>(() => migrated.RegisterUser(admin, "Channel Admin", 0, ProtocolInfo.DebugWorldName, keys.ToBundle(), true));
         } finally {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReleaseConnections(directory);
             DeleteDirectory(directory);
         }
     }
@@ -179,7 +179,7 @@ public sealed class ServerHardeningTests {
             var path = Path.Combine(directory, "test.db");
             var (channelId, admin, _) = CreateChannel(db);
             QueryLong(path, "ALTER TABLE members DROP COLUMN forgotten; ALTER TABLE invites DROP COLUMN forgotten; DELETE FROM schema_version WHERE version >= 7; SELECT 0;");
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReleaseConnections(directory);
 
             var migrated = new Database(path);
             Assert.Equal(8L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
@@ -193,7 +193,7 @@ public sealed class ServerHardeningTests {
             Assert.Empty(migrated.GetChannelsForUser(admin));
             Assert.Equal(ForgetResult.NotListed, migrated.ForgetStaleMembership(channelId, admin));
         } finally {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReleaseConnections(directory);
             DeleteDirectory(directory);
         }
     }
@@ -215,7 +215,7 @@ public sealed class ServerHardeningTests {
             using var between = IdentityKeys.Generate();
             db.RegisterUser(member, "Recovered Member", 0, ProtocolInfo.DebugWorldName, between.ToBundle(), true);
             QueryLong(path, "ALTER TABLE members DROP COLUMN awaiting_key; ALTER TABLE invites DROP COLUMN awaiting_key; DELETE FROM schema_version WHERE version >= 8; SELECT 0;");
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReleaseConnections(directory);
 
             var migrated = new Database(path);
             Assert.Equal(8L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
@@ -233,7 +233,7 @@ public sealed class ServerHardeningTests {
             Assert.True(migrated.GetChannel(channelId)!.RekeyPending);
             Assert.Equal(MemberKeys.Of(newest), Membership.Restore(migrated.GetMembershipCheckpoint(channelId)!).FindMember(member)!.Keys);
         } finally {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReleaseConnections(directory);
             DeleteDirectory(directory);
         }
     }
@@ -251,7 +251,7 @@ public sealed class ServerHardeningTests {
             var (alice, aliceKeys) = RegisterUser(db, "Schema Five Alice");
             var (mallory, _) = RegisterUser(db, "Schema Five Mallory");
             using var replaced = IdentityKeys.Generate();
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReleaseConnections(directory);
             using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={path};Pooling=False")) {
                 connection.Open();
                 using var command = connection.CreateCommand();
@@ -286,7 +286,7 @@ public sealed class ServerHardeningTests {
             Assert.True(migrated.RetireIdentity(alice, user.SigningKey, user.KeyVersion));
             Assert.Equal(2L, QueryLong(path, "SELECT COUNT(*) FROM retired_keys WHERE signing_key = x'" + Convert.ToHexString(aliceKeys.SigningPublicKey) + "';"));
         } finally {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReleaseConnections(directory);
             DeleteDirectory(directory);
         }
     }
@@ -307,7 +307,7 @@ public sealed class ServerHardeningTests {
             var (alice, aliceKeys) = RegisterUser(db, "Shared Key Alice");
             var (mallory, _) = RegisterUser(db, "Shared Key Mallory");
             var (bob, bobKeys) = RegisterUser(db, "Shared Key Bob");
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReleaseConnections(directory);
             using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={path};Pooling=False")) {
                 connection.Open();
                 using var command = connection.CreateCommand();
@@ -364,16 +364,16 @@ public sealed class ServerHardeningTests {
                 var cleanPath = Path.Combine(cleanDirectory, "test.db");
                 RegisterUser(clean, "Clean Alice");
                 QueryLong(cleanPath, "DROP TABLE retired_keys; DROP INDEX users_by_signing_key; DELETE FROM schema_version WHERE version >= 5; SELECT 0;");
-                Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+                ReleaseConnections(cleanDirectory);
                 using var quiet = new CapturingLoggerProvider();
                 _ = new Database(cleanPath, quiet.CreateLogger("Database"));
                 Assert.Empty(quiet.AtLeast(Microsoft.Extensions.Logging.LogLevel.Warning));
             } finally {
-                Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+                ReleaseConnections(cleanDirectory);
                 DeleteDirectory(cleanDirectory);
             }
         } finally {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReleaseConnections(directory);
             DeleteDirectory(directory);
         }
     }
@@ -396,7 +396,7 @@ public sealed class ServerHardeningTests {
             Assert.Equal(1L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
             Assert.Equal(1L, QueryLong(path, "SELECT COUNT(*) FROM channels WHERE channel_id = '" + channelId + "';"));
         } finally {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReleaseConnections(directory);
             DeleteDirectory(directory);
         }
     }
@@ -419,7 +419,7 @@ public sealed class ServerHardeningTests {
             Assert.Equal(3L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
             Assert.Equal(1L, QueryLong(path, "SELECT COUNT(*) FROM channels WHERE channel_id = '" + channelId + "';"));
         } finally {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            ReleaseConnections(directory);
             DeleteDirectory(directory);
         }
     }
@@ -589,6 +589,97 @@ public sealed class ServerHardeningTests {
         Assert.False(connection.IsAlive);
     }
 
+    /// <summary>
+    /// Aborting a connection (a newer login replacing it, a registration or retirement dropping the account's sessions) is
+    /// done by whoever's request caused it. A cancellation callback of the aborted connection that throws (its socket's,
+    /// say) must not fail that request: it used to come back to the caller, which answered "Internal server error" to a
+    /// login or registration that had in fact gone through.
+    /// </summary>
+    [Fact]
+    public async Task AbortingAConnectionNeverThrowsAtTheCaller() {
+        var socket = new ThrowOnCancelWebSocket();
+        var connection = new ClientConnection(socket, "203.0.113.1", 1024, 4, Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
+        var running = connection.RunAsync((_, _, _) => Task.FromResult(new Response()));
+        await socket.Receiving.WaitAsync(Harness.Timeout, Ct);
+
+        connection.Abort("Logged in from another connection");
+
+        Assert.True(connection.Aborted.IsCancellationRequested);
+        await running.WaitAsync(Harness.Timeout, Ct);
+        // Only once: a second abort changes nothing.
+        connection.Abort("again");
+    }
+
+    /// <summary>
+    /// A client that goes away mid-frame can surface as an IOException from the socket (TestHost's does, and a stream under
+    /// Kestrel can): the connection ends quietly, as for any other closed socket, rather than as an unhandled error logged
+    /// for every such client.
+    /// </summary>
+    [Fact]
+    public async Task AConnectionLostMidReceiveEndsQuietly() {
+        var connection = new ClientConnection(new ThrowingWebSocket(new IOException("The remote end closed the connection.")), "203.0.113.1", 1024, 4,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
+        await connection.RunAsync((_, _, _) => Task.FromResult(new Response())).WaitAsync(Harness.Timeout, Ct);
+    }
+
+    /// <summary>An open socket whose pending receive fails its cancellation callback, as a socket torn down meanwhile might.</summary>
+    private sealed class ThrowOnCancelWebSocket : WebSocket {
+        private readonly TaskCompletionSource _receiving = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task Receiving => this._receiving.Task;
+        public override WebSocketCloseStatus? CloseStatus => null;
+        public override string? CloseStatusDescription => null;
+        public override WebSocketState State => WebSocketState.Open;
+        public override string? SubProtocol => null;
+
+        public override void Abort() {
+        }
+
+        public override Task CloseAsync(WebSocketCloseStatus closeStatus, string? statusDescription, CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public override Task CloseOutputAsync(WebSocketCloseStatus closeStatus, string? statusDescription, CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public override void Dispose() {
+        }
+
+        public override async Task<WebSocketReceiveResult> ReceiveAsync(ArraySegment<byte> buffer, CancellationToken cancellationToken) {
+            var cancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            await using (cancellationToken.Register(() => {
+                cancelled.TrySetResult();
+                throw new ObjectDisposedException("socket");
+            })) {
+                this._receiving.TrySetResult();
+                await cancelled.Task;
+            }
+
+            throw new OperationCanceledException(cancellationToken);
+        }
+
+        public override Task SendAsync(ArraySegment<byte> buffer, WebSocketMessageType messageType, bool endOfMessage, CancellationToken cancellationToken) => Task.CompletedTask;
+    }
+
+    /// <summary>A socket whose receive fails with the given exception.</summary>
+    private sealed class ThrowingWebSocket(Exception failure) : WebSocket {
+        public override WebSocketCloseStatus? CloseStatus => null;
+        public override string? CloseStatusDescription => null;
+        public override WebSocketState State => WebSocketState.Open;
+        public override string? SubProtocol => null;
+
+        public override void Abort() {
+        }
+
+        public override Task CloseAsync(WebSocketCloseStatus closeStatus, string? statusDescription, CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public override Task CloseOutputAsync(WebSocketCloseStatus closeStatus, string? statusDescription, CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public override void Dispose() {
+        }
+
+        public override Task<WebSocketReceiveResult> ReceiveAsync(ArraySegment<byte> buffer, CancellationToken cancellationToken) => Task.FromException<WebSocketReceiveResult>(failure);
+
+        public override Task SendAsync(ArraySegment<byte> buffer, WebSocketMessageType messageType, bool endOfMessage, CancellationToken cancellationToken) => Task.CompletedTask;
+    }
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static WeakReference RunConnectionToCompletion() {
         var connection = new ClientConnection(new ClosedWebSocket(), "203.0.113.1", 1024, 4, Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
@@ -607,6 +698,47 @@ public sealed class ServerHardeningTests {
     }
 
     private static readonly IMembershipProvider Membership = SignedLogMembershipProvider.Instance;
+
+    /// <summary>
+    /// Closes the idle pooled connections to a <see cref="NewDatabase"/> file, and only those. These tests used to clear every
+    /// SQLite pool in the process, which disposed connections the servers of tests running alongside were using: their
+    /// requests failed, and their clients saw "Internal server error" (the occasional failure in RegisterAsync and the like).
+    /// </summary>
+    private static void ReleaseConnections(string directory) => Database.ReleasePooledConnections(Path.Combine(directory, "test.db"));
+
+    /// <summary>Releasing one database's pooled connections leaves another's, in use meanwhile, alone.</summary>
+    [Fact]
+    public async Task ReleasingOneDatabasesConnectionsLeavesOthersAlone() {
+        var (db, directory) = NewDatabase();
+        var (_, other) = NewDatabase();
+        try {
+            var (user, _) = RegisterUser(db, "Pool User");
+            using var stop = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+            stop.CancelAfter(TimeSpan.FromSeconds(2));
+            Exception? failure = null;
+            var releasing = Task.Run(() => {
+                while (!stop.IsCancellationRequested) {
+                    ReleaseConnections(other);
+                }
+            }, Ct);
+            var readers = Enumerable.Range(0, 4).Select(_ => Task.Run(() => {
+                try {
+                    while (!stop.IsCancellationRequested) {
+                        Assert.NotNull(db.GetUser(user));
+                    }
+                } catch (Exception ex) {
+                    failure ??= ex;
+                }
+            }, Ct)).ToList();
+            await Task.WhenAll(readers.Append(releasing));
+            Assert.Null(failure);
+        } finally {
+            ReleaseConnections(directory);
+            ReleaseConnections(other);
+            DeleteDirectory(directory);
+            DeleteDirectory(other);
+        }
+    }
 
     private static (Database Db, string Directory) NewDatabase() {
         var directory = Path.Combine(Path.GetTempPath(), "lgt-db-" + Guid.NewGuid().ToString("N"));

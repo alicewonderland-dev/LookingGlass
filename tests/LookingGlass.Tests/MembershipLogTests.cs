@@ -375,7 +375,10 @@ public sealed class MembershipLogTests : IAsyncLifetime {
         var channelId = await alice.Session.CreateChannelAsync("Raced", Ct);
         await AddMemberAsync(alice, channelId, bob);
         await AddMemberAsync(alice, channelId, carol);
-        var epoch = bob.Session.Snapshot.FindChannel(channelId)!.Epoch;
+        // Bob too has the key Carol's joining made (AddMemberAsync only waits for her and Alice): on a busy machine his
+        // EpochAdvanced can still be on its way, and would arrive in the middle of what follows.
+        var epoch = this._server.Database.GetChannel(channelId)!.Epoch;
+        await WaitFor(() => bob.Session.Snapshot.FindChannel(channelId) is { Epoch: var held, HasKey: true, RekeyPending: false } c && held == epoch ? c : null);
         var withCarol = PositionOf(bob, channelId);
         // From now on Alice doesn't rekey in the background when the server asks.
         await alice.Session.DisposeAsync();

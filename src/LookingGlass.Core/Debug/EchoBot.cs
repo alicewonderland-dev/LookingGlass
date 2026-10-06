@@ -27,10 +27,16 @@ public sealed class EchoBot : IAsyncDisposable {
         this._session.SnapshotChanged += this.OnSnapshot;
         this._session.InviteReceived += this.OnInvite;
         this._session.MessageReceived += this.OnMessage;
-        this._session.Notice += notice => this._log($"[{notice.Level}] {notice.Text}");
+        this._session.Notice += notice => this._log(this.LogContent ? $"[{notice.Level}] {notice.Text}" : $"[{notice.Level}] {notice.Kind} notice");
     }
 
     public ClientSession Session => this._session;
+
+    /// <summary>
+    /// Whether its log shows what its channels say: the messages it receives, channel names, and its notices (which can quote
+    /// either). Off where a server hosts the bot, as a server never logs any of that; then it logs only what it does.
+    /// </summary>
+    public bool LogContent { get; init; } = true;
 
     public void Start() => this._session.Start();
 
@@ -76,9 +82,9 @@ public sealed class EchoBot : IAsyncDisposable {
     }
 
     private void OnInvite(InviteView invite) {
-        this.Run($"accepting invite to {invite.ChannelName}", async ct => {
+        this.Run(this.LogContent ? $"accepting invite to {invite.ChannelName}" : "accepting an invite", async ct => {
             await this._session.RespondToInviteAsync(invite.ChannelId, true, ct);
-            this._log($"Joined \"{invite.ChannelName}\" (invited by {invite.Inviter.Name})");
+            this._log(this.LogContent ? $"Joined \"{invite.ChannelName}\" (invited by {invite.Inviter.Name})" : $"Joined a channel (invited by {invite.Inviter.Name})");
         });
     }
 
@@ -87,7 +93,7 @@ public sealed class EchoBot : IAsyncDisposable {
             return;
         }
 
-        this._log($"<{message.Sender.Name}> {message.Text}");
+        this._log(this.LogContent ? $"<{message.Sender.Name}> {message.Text}" : $"Message from {message.Sender.Name} ({message.Text.Length} characters)");
         var text = message.Text.Trim();
 
         this.Run("replying", async ct => {
@@ -116,7 +122,7 @@ public sealed class EchoBot : IAsyncDisposable {
             try {
                 await work(this._cts.Token);
             } catch (Exception ex) when (!this._cts.IsCancellationRequested) {
-                this._log($"Failed {what}: {ex.Message}");
+                this._log(this.LogContent ? $"Failed {what}: {ex.Message}" : $"Failed {what} ({ex.GetType().Name})");
             }
         });
     }

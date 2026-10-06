@@ -50,4 +50,27 @@ public static class ClientAddresses {
         Array.Clear(bytes, 8, 8);
         return $"{new IPAddress(bytes)}/64";
     }
+
+    /// <summary>
+    /// The key connection limits count against: like <see cref="LimitKey"/>, but a whole IPv6 /56, the least an ISP commonly
+    /// gives one customer (many give a /48), so holding connections open takes many customers' worth of addresses, not
+    /// just many /64s of one.
+    /// </summary>
+    public static string ConnectionLimitKey(IPAddress? address) {
+        if (address == null) {
+            return "unknown";
+        }
+
+        if (address.IsIPv4MappedToIPv6) {
+            address = address.MapToIPv4();
+        }
+
+        if (address.AddressFamily != AddressFamily.InterNetworkV6) {
+            return address.ToString();
+        }
+
+        var bytes = address.GetAddressBytes();
+        Array.Clear(bytes, 7, 9);
+        return $"{new IPAddress(bytes)}/56";
+    }
 }

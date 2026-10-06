@@ -922,9 +922,10 @@ public sealed class ClientSession : IAsyncDisposable {
                     return;
                 }
 
-                if (name == null && this.Read(() => this.NamesNewKeyItself(channelId))) {
+                if (name == null && this.Read(() => this.KeyEpochOf(channelId) == null && this.NamesNewKeyItself(channelId))) {
                     // Back with new keys where nobody else holds the key (or nobody else is in the channel): nobody can share
-                    // it, or tell its name, so it gets a name of its own, which can be changed.
+                    // it, or tell its name, so it gets a name of its own, which can be changed. Never while holding a key:
+                    // then the name exists, and only couldn't be shown (a server can garble it, and say nobody holds the key).
                     name = PlainMessages.RestoredChannelName;
                 } else if (name == null) {
                     throw PlainMessages.Failure(PlainMessages.NoKeyToRekey);
@@ -973,7 +974,9 @@ public sealed class ClientSession : IAsyncDisposable {
                     this.StoreEpochKey(channelId, newEpoch, key, position);
                     if (this._channels.TryGetValue(channelId, out var channel)) {
                         channel.ServerEpoch = Math.Max(channel.ServerEpoch, newEpoch);
-                        channel.RekeyPending = false;
+                        // Not a request made since at this epoch (a leave just after this rekey was applied, say), which
+                        // can arrive before the server's answer to it.
+                        channel.SettleRekey(newEpoch);
                         channel.NoKeyHolder = false;
                         if (this.KeyEpochOf(channelId) == newEpoch) {
                             channel.EncryptedName = request.Name;
@@ -1127,7 +1130,7 @@ public sealed class ClientSession : IAsyncDisposable {
             } catch (ServerErrorException ex) when (ex.Code == ErrorCode.RekeyRequired) {
                 lock (this._lock) {
                     if (this._channels.TryGetValue(channelId, out var channel)) {
-                        channel.RekeyPending = true;
+                        channel.MarkRekeyPending(channel.ServerEpoch);
                     }
                 }
 
@@ -2275,7 +2278,7 @@ public sealed class ClientSession : IAsyncDisposable {
             }
 
             channel.ServerEpoch = Math.Max(channel.ServerEpoch, rekey.CurrentEpoch);
-            channel.RekeyPending = true;
+            channel.MarkRekeyPending(rekey.CurrentEpoch);
             channel.NoKeyHolder = rekey.NoKeyHolder;
             designated = rekey.DesignatedUserId == this._me?.UserId && this.IsMember(rekey.ChannelId);
         }
@@ -2341,7 +2344,7 @@ public sealed class ClientSession : IAsyncDisposable {
                 }
 
                 channel.ServerEpoch = Math.Max(channel.ServerEpoch, advanced.Epoch);
-                channel.RekeyPending = false;
+                channel.SettleRekey(advanced.Epoch);
                 // Someone held (or made) a key: the server says again if nobody does next time.
                 channel.NoKeyHolder = false;
                 if (advanced.Name != null) {
@@ -2437,7 +2440,7 @@ public sealed class ClientSession : IAsyncDisposable {
         }
 
         channel.ServerEpoch = Math.Max(channel.ServerEpoch, epoch);
-        channel.RekeyPending = true;
+        channel.MarkRekeyPending(epoch);
         // One automatic rekey per epoch, so two clients can't keep rekeying each other.
         var rekey = channel.BadKeyRekeyEpoch != epoch;
         channel.BadKeyRekeyEpoch = epoch;
@@ -2686,12 +2689,15 @@ public sealed class ClientSession : IAsyncDisposable {
             }
 
             // A key newer than the epoch the server last reported means a rekey happened since,
-            // and it settled any membership change the server had flagged. (Its EpochAdvanced
+            // and it settled any membership change the server had flagged before it. (Its EpochAdvanced
             // can be missed, for example when it arrives while an invite is being accepted.)
             if (this.KeyEpochOf(channelId) is { } newest && newest > channel.ServerEpoch) {
                 channel.ServerEpoch = newest;
-                channel.RekeyPending = false;
                 channel.NoKeyHolder = false;
+            }
+
+            if (this.KeyEpochOf(channelId) is { } newestHeld) {
+                channel.SettleRekey(newestHeld);
             }
 
             this.TryDecryptName(channelId);
@@ -2699,7 +2705,7 @@ public sealed class ClientSession : IAsyncDisposable {
             // The server is ahead and has no newer key for us (never sent, or sealed so we
             // can't open it): rekey to the server's epoch + 1 rather than stay stuck.
             if (this.KeyEpochOf(channelId) is { } held && held < channel.ServerEpoch) {
-                channel.RekeyPending = true;
+                channel.MarkRekeyPending(channel.ServerEpoch);
             }
         }
 
@@ -2965,7 +2971,12 @@ public sealed class ClientSession : IAsyncDisposable {
 
         // Only hints: they decide when to fetch keys, logs or rekey, never which key is used or who is a member.
         channel.ServerEpoch = info.Epoch;
-        channel.RekeyPending = info.RekeyPending;
+        channel.SetRekeyPendingFromServer(info.RekeyPending, info.Epoch);
+        // Answered before a key this client already holds was made (its own rekey, say): that key settled it.
+        if (this.KeyEpochOf(info.ChannelId) is { } held) {
+            channel.SettleRekey(held);
+        }
+
         channel.NoKeyHolder = info.RekeyPending && info.NoKeyHolder;
         if (info.LogHead != null) {
             channel.LogHead = info.LogHead;
@@ -3201,8 +3212,10 @@ public sealed class ClientSession : IAsyncDisposable {
         // only the admin renames, as later revisions. But any member can rekey, so if this client
         // knows that version (or a newer one) under another name, say who changed it. If it missed
         // renames since, it can't tell, and the name is taken as the admin's.
-        if (offered is { Revision: 0, CarriedFrom: { } source } && channel.NameVersion is { } known && channel.Name is { } previous && previous != name
-            && new NameVersion(source.Epoch, source.Revision).CompareTo(known) <= 0) {
+        // A rekey that carries no name over names the channel anew (a member back with new keys, told nobody holds the key,
+        // makes one under a placeholder name): if this client knew the name, that replaced it, so it says who did too.
+        if (offered.Revision == 0 && channel.NameVersion is { } known && channel.Name is { } previous && previous != name
+            && (offered.CarriedFrom is { } source ? new NameVersion(source.Epoch, source.Revision).CompareTo(known) <= 0 : offered.Epoch > known.Epoch)) {
             var who = this.UserOf(offered.AuthorId);
             this._pendingNotices.Add(SessionNotice.Of(NoticeLevel.Warning,
                 PlainMessages.NameChangedWhileRekeying($"{who.Name}@{who.WorldName}", previous, name), channelId));
@@ -3660,7 +3673,35 @@ public sealed class ClientSession : IAsyncDisposable {
 
         /// <summary>The epoch the server last reported. A hint for fetching keys and rekeying; the key epoch is <see cref="KeyEpochOf"/>.</summary>
         public ulong ServerEpoch { get; set; }
-        public bool RekeyPending { get; set; }
+
+        /// <summary>The channel needs a new key: see <see cref="MarkRekeyPending"/> and <see cref="SettleRekey"/>.</summary>
+        public bool RekeyPending { get; private set; }
+
+        /// <summary>
+        /// The epoch the channel was at when the pending rekey was asked for (the newest such request, if several). The server
+        /// only takes a rekey from its current epoch to the next, made at its log's head, so a key for a later epoch was made
+        /// after the change that asked for it; one for this epoch or before was not, however late it arrives.
+        /// </summary>
+        public ulong RekeyPendingEpoch { get; private set; }
+
+        /// <summary>The channel needs a key newer than <paramref name="epoch"/> (the epoch it was at when that was found).</summary>
+        public void MarkRekeyPending(ulong epoch) {
+            this.RekeyPendingEpoch = this.RekeyPending ? Math.Max(this.RekeyPendingEpoch, epoch) : epoch;
+            this.RekeyPending = true;
+        }
+
+        /// <summary>A key for <paramref name="keyEpoch"/> is held now: it settles a pending rekey asked for at an earlier epoch only.</summary>
+        public void SettleRekey(ulong keyEpoch) {
+            if (this.RekeyPending && keyEpoch > this.RekeyPendingEpoch) {
+                this.RekeyPending = false;
+            }
+        }
+
+        /// <summary>What the server's channel info says, as of <paramref name="epoch"/>.</summary>
+        public void SetRekeyPendingFromServer(bool pending, ulong epoch) {
+            this.RekeyPending = pending;
+            this.RekeyPendingEpoch = epoch;
+        }
 
         /// <summary>
         /// The server last said nobody who could make the channel's next key holds its key (see <see cref="RekeyNeeded.NoKeyHolder"/>):
