@@ -346,14 +346,10 @@ public sealed class ChannelWindow : Window {
     private void DrawLines(string channelId, TabState state, bool advanced) {
         var lines = this.Sessions.History.LinesOf(channelId);
         var width = ImGui.GetContentRegionAvail().X;
-        if (Math.Abs(width - state.Width) > 0.5f || state.Advanced != advanced) {
-            // Lines wrap differently now, or say other words.
-            state.Heights.Clear();
-            state.Width = width;
-        }
-
         if (state.Advanced != advanced) {
+            // Notices say other words now.
             state.Shown.Clear();
+            state.Heights.Clear();
             state.Advanced = advanced;
         }
 
@@ -365,7 +361,8 @@ public sealed class ChannelWindow : Window {
 
         var colour = this.ColourOf(channelId);
         foreach (var line in lines) {
-            // A line out of view whose height is known takes its room without being laid out.
+            // A line out of view whose height is known takes its room without being laid out. Lines in view are laid out,
+            // and measured again, every frame: after a resize, the others catch up as they come into view.
             if (state.Heights.TryGetValue(line.Seq, out var height) && !ImGui.IsRectVisible(new Vector2(width, height))) {
                 ImGui.Dummy(new Vector2(1, height));
                 continue;
@@ -706,7 +703,6 @@ public sealed class ChannelWindow : Window {
         public volatile string? PutBack;
 
         public string? MenuText;
-        public float Width;
         public bool Advanced;
         public readonly Dictionary<long, float> Heights = new();
         public readonly Dictionary<long, ShownLine> Shown = new();
