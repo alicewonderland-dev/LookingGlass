@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface;
@@ -33,6 +34,8 @@ public sealed class ChannelWindow : Window {
     private bool _placeAtMouse;
     private string _tabsSeen = "";
     private int _tabsSteadyFrames;
+    // A message that wasn't sent, to put into the input box's own text this frame (see OnInput).
+    private string? _reload;
 
     /// <param name="opened">Opened by the player just now (else reopened at login): it appears by the mouse, and may take the focus.</param>
     public ChannelWindow(ChannelWindows windows, ChannelWindowLayout layout, bool opened) : base("LookingGlass" + IdPrefix + layout.Id) {
@@ -45,6 +48,8 @@ public sealed class ChannelWindow : Window {
         this.RespectCloseHotkey = false;
         // The messages scroll, the window doesn't.
         this.Flags |= ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse;
+        // Where it is and how big is kept by the plugin, per character and server (ChannelWindowLayout.Place), not in ImGui's file.
+        this.Flags |= ImGuiWindowFlags.NoSavedSettings;
         this.SizeConstraints = new WindowSizeConstraints {
             MinimumSize = new Vector2(260, 180),
             MaximumSize = new Vector2(float.MaxValue, float.MaxValue),
@@ -255,7 +260,8 @@ public sealed class ChannelWindow : Window {
 
         ImGui.TextColored(Widgets.Muted, "Add a channel to this window");
         ImGuiHelpers.ScaledDummy(2);
-        var addable = ChannelWindowLayouts.Addable(this.Layout, Ordered(snapshot, this.Sessions).Select(channel => channel.Id)).ToList();
+        var addable = ChannelWindowLayouts.Addable(this.Layout, Ordered(snapshot, this.Sessions)
+            .Where(channel => !channel.OldKeyMembership).Select(channel => channel.Id)).ToList();
         if (addable.Count == 0) {
             ImGui.TextUnformatted("All your channels are in this window.");
         }
@@ -423,12 +429,15 @@ public sealed class ChannelWindow : Window {
     }
 
     private void DrawInput(string channelId, TabState state) {
+        // Not sent: what was typed comes back, to send again, once the box is empty (not over a line being typed). While
+        // the box is active ImGui edits its own copy of the text, so it is put there too (in OnInput).
+        this._reload = null;
         if (state.PutBack is { } putBack && state.Draft.Length == 0) {
-            // Not sent: what was typed comes back, to send again.
             state.Draft = putBack;
+            state.PutBack = null;
+            this._reload = putBack;
         }
 
-        state.PutBack = null;
         var scale = Widgets.Scale;
         var style = ImGui.GetStyle();
         var counter = state.Draft.Length >= CounterFrom ? $"{state.Draft.Length}/{MaxLength}" : null;
@@ -438,8 +447,11 @@ public sealed class ChannelWindow : Window {
         ImGui.SetNextItemWidth(Math.Max(40 * scale, ImGui.GetContentRegionAvail().X - send - counterWidth - style.ItemSpacing.X));
         var before = state.Draft;
         var hint = $"Message {Visible(this.ShortName(channelId))}";
-        // Room for the longest line in any script (UTF-8); the limit itself is in characters, as the game's.
-        var enter = ImGui.InputTextWithHint("##input", hint, ref state.Draft, MaxLength * 4 + 1, ImGuiInputTextFlags.EnterReturnsTrue);
+        // Room for the longest line in any script (UTF-8); the limit itself is in characters, as the game's, and kept by
+        // OnInput as the text is edited, so the box never holds more than is sent.
+        var enter = ImGui.InputTextWithHint("##input", hint, ref state.Draft, MaxLength * 4 + 1,
+            ImGuiInputTextFlags.EnterReturnsTrue | ImGuiInputTextFlags.CallbackAlways | ImGuiInputTextFlags.CallbackEdit, this.OnInput);
+        this._reload = null;
         if (enter && state.Draft.Trim().Length > 0) {
             // Ready for the next line, as game chat is (right after the input: it means the item before). Enter on an
             // empty line gives the keyboard back instead.
@@ -449,10 +461,6 @@ public sealed class ChannelWindow : Window {
         if (ImGui.IsItemDeactivated() && ImGui.IsKeyPressed(ImGuiKey.Escape)) {
             // Escape gives the keyboard back to the game. ImGui would also undo the typing: keep it.
             state.Draft = before;
-        }
-
-        if (state.Draft.Length > MaxLength) {
-            state.Draft = Cut(state.Draft, MaxLength);
         }
 
         if (counter != null) {
@@ -469,6 +477,29 @@ public sealed class ChannelWindow : Window {
         }
     }
 
+    /// <summary>
+    /// The input box's own text, while it is active: puts a message that wasn't sent back into it (<see cref="_reload"/>),
+    /// and keeps it to <see cref="MaxLength"/> characters as it is edited (typing or pasting past it stops there, in view).
+    /// </summary>
+    private unsafe int OnInput(ImGuiInputTextCallbackDataPtr data) {
+        if (this._reload is { } reload && data.EventFlag == ImGuiInputTextFlags.CallbackAlways) {
+            this._reload = null;
+            data.DeleteChars(0, data.BufTextLen);
+            data.InsertChars(0, reload);
+            return 0;
+        }
+
+        if (data.EventFlag == ImGuiInputTextFlags.CallbackEdit) {
+            var text = Encoding.UTF8.GetString(data.Buf, data.BufTextLen);
+            if (text.Length > MaxLength) {
+                var keep = Encoding.UTF8.GetByteCount(Cut(text, MaxLength));
+                data.DeleteChars(keep, data.BufTextLen - keep);
+            }
+        }
+
+        return 0;
+    }
+
     /// <summary>Sends what was typed to this tab's channel, as /lgc would. A failure shows in the tab, in blue.</summary>
     private void Send(string channelId, TabState state) {
         var text = state.Draft.Trim();
@@ -479,14 +510,16 @@ public sealed class ChannelWindow : Window {
         state.Draft = "";
         state.ScrollToBottom = true;
         var history = this.Sessions.History;
+        // A "Not sent" that comes after a relog belongs to the session it was typed in, and is dropped.
+        var generation = history.Generation;
         var sender = this._windows.Sender;
         _ = Services.Framework.RunOnFrameworkThread(() => {
             try {
-                sender.Send(channelId, TypedLine.Plain(text), tell: (tone, said) => history.AddFeedback(channelId, tone, said),
+                sender.Send(channelId, TypedLine.Plain(text), tell: (tone, said) => history.AddFeedback(channelId, tone, said, generation),
                     notSent: () => state.PutBack = text);
             } catch (Exception ex) {
                 Services.Log.Error(ex, "Couldn't send from a channel window");
-                history.AddFeedback(channelId, NoticeTone.Warning, $"Not sent: {StickyMessages.SomethingWentWrongReason}");
+                history.AddFeedback(channelId, NoticeTone.Warning, $"Not sent: {StickyMessages.SomethingWentWrongReason}", generation);
                 state.PutBack = text;
             }
         });
@@ -646,8 +679,9 @@ public sealed class ChannelWindow : Window {
 
     private TabState Tab(string channelId) {
         if (!this._tabs.TryGetValue(channelId, out var state)) {
-            // A tab opened now starts with what is there read.
-            state = new TabState { SeenSeq = this.Sessions.History.LastSeq(channelId) };
+            // Nothing in it has been seen in this window yet: a tab not selected (one reopened at login behind another) counts
+            // what is already there from others; a tab selected reads it at once.
+            state = new TabState();
             this._tabs[channelId] = state;
         }
 

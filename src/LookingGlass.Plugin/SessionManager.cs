@@ -256,6 +256,9 @@ public sealed class SessionManager : IDisposable {
     /// </summary>
     public bool ShowsInGameChat(string channelId) => GameChatChannels.Shows(this._gameChatOff, channelId);
 
+    /// <summary>The channels turned off game chat, for the current character. Safe from any thread.</summary>
+    public IReadOnlySet<string> GameChatOff => this._gameChatOff;
+
     /// <summary>Turns "Also show in game chat" on or off for a channel. Call on the framework (or draw) thread.</summary>
     public void SetShowInGameChat(string channelId, bool show) {
         if (this._sessionPlayer is { } player && GameChatChannels.Set(this._config.ForCharacter(player.ContentId).GameChatOff, channelId, show)) {
@@ -331,9 +334,16 @@ public sealed class SessionManager : IDisposable {
     /// </summary>
     /// <param name="generation">The history's generation the session was started with (see <see cref="ChannelHistory.Generation"/>).</param>
     private void Deliver(IncomingMessage message, int? generation = null) {
+        // Where it goes is read before checking it is still this session's: Stop starts the history's next generation
+        // before it empties this list, so a message caught in a logout is dropped, never printed as if no channel were off.
+        var off = this._gameChatOff;
+        if (generation != null && generation != this.History.Generation) {
+            return;
+        }
+
         this.History.Add(message, generation);
         this.Unread.Add(message);
-        if (this.ShowsInGameChat(message.ChannelId)) {
+        if (GameChatChannels.Shows(off, message.ChannelId)) {
             this._chat.Message(message, this.SlotOf(message.ChannelId), this.NicknameOf(message.ChannelId), this.ColourOf(message.ChannelId));
         }
     }
@@ -433,8 +443,14 @@ public sealed class SessionManager : IDisposable {
         }
 
         // One about a channel shows in its windows too; in game chat unless the channel is turned off there (a warning always).
+        // The list is read before the session is checked, as in Deliver.
+        var off = this._gameChatOff;
+        if (history != this.History.Generation) {
+            return;
+        }
+
         this.History.AddNotice(notice, history);
-        if (!GameChatChannels.NoticeToGameChat(this._gameChatOff, notice)) {
+        if (!GameChatChannels.NoticeToGameChat(off, notice)) {
             return;
         }
 
@@ -470,10 +486,11 @@ public sealed class SessionManager : IDisposable {
     private void Stop() {
         this._generation++;
         var session = Interlocked.Exchange(ref this._session, null);
+        // The history's next generation first, then the channel settings: see Deliver.
+        this.History.Clear();
         this._sessionPlayer = null;
         this.RefreshCommandCache();
         this.Unread.Reset();
-        this.History.Clear();
         if (session == null) {
             return;
         }

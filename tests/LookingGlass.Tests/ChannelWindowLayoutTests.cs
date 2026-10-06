@@ -134,6 +134,22 @@ public sealed class ChannelWindowLayoutTests {
     }
 
     [Fact]
+    public void AHandEditedFileWithNothingWhereWindowsOrTabsShouldBeIsTidiedNotThrown() {
+        var windows = new List<ChannelWindowLayout> {
+            null!,
+            new() { Id = "one", Tabs = null!, Selected = "aaa" },
+            new() { Id = "two", Tabs = ["aaa"], Selected = null },
+        };
+
+        Assert.True(ChannelWindowLayouts.Sync(windows, Snapshot(ConnectionState.Ready, true, "aaa")));
+        var window = Assert.Single(windows);
+        Assert.Equal("two", window.Id);
+        Assert.Equal("aaa", window.Selected);
+        Assert.Empty(GameChatChannels.ShownNowhere(new HashSet<string> { "aaa" }, [null, new ChannelWindowLayout { Tabs = null! }, window],
+            Snapshot(ConnectionState.Ready, true, "aaa")));
+    }
+
+    [Fact]
     public void LayoutsSaveAndLoadAsTheyWere() {
         var windows = new List<ChannelWindowLayout>();
         var window = ChannelWindowLayouts.Open(windows, "aaa");
@@ -189,6 +205,36 @@ public sealed class ChannelWindowLayoutTests {
         Assert.True(GameChatChannels.NoticeToGameChat(new HashSet<string>(), joined));
         // A critical one at Info level (none is raised so today): only the level decides, so it goes to the history only.
         Assert.False(GameChatChannels.NoticeToGameChat(off, critical));
+    }
+
+    [Fact]
+    public void AChannelOffGameChatThatNoWindowShowsGoesBack() {
+        var off = new HashSet<string> { "aaa", "bbb", "gone" };
+        var windows = new List<ChannelWindowLayout>();
+        var window = ChannelWindowLayouts.Open(windows, "aaa");
+        ChannelWindowLayouts.AddTab(window, "bbb");
+        var complete = Snapshot(ConnectionState.Ready, true, "aaa", "bbb", "ccc");
+
+        // Both are in a window: nothing to do. Nor before the list is in (nothing is known to be shown nowhere yet).
+        Assert.Empty(GameChatChannels.ShownNowhere(off, windows, complete));
+        windows.Clear();
+        Assert.Empty(GameChatChannels.ShownNowhere(off, windows, Snapshot(ConnectionState.Ready, false, "aaa", "bbb")));
+        Assert.Empty(GameChatChannels.ShownNowhere(off, windows, Snapshot(ConnectionState.Reconnecting, true, "aaa", "bbb")));
+
+        // The last tab of "bbb" closed (or no window came back at login): it, and only channels you're in, go back.
+        window = ChannelWindowLayouts.Open(windows, "aaa");
+        Assert.Equal(["bbb"], GameChatChannels.ShownNowhere(off, windows, complete));
+        ChannelWindowLayouts.CloseTab(window, "aaa");
+        windows.Clear();
+        Assert.Equal(["aaa", "bbb"], GameChatChannels.ShownNowhere(off, windows, complete));
+        Assert.Empty(GameChatChannels.ShownNowhere(new HashSet<string>(), windows, complete));
+    }
+
+    [Fact]
+    public void TheLineSaidThenIsPlain() {
+        var line = GameChatChannels.BackInGameChat("[sky]");
+        Assert.Equal("[sky] shows in game chat again, since no window shows it.", line);
+        PlainLanguage.AssertPlain(line);
     }
 
     [Fact]

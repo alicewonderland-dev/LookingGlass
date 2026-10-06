@@ -174,12 +174,19 @@ public sealed class ChannelHistory {
     }
 
     /// <summary>Feedback on something done in a channel's window, such as a message that wasn't sent.</summary>
-    public void AddFeedback(string channelId, NoticeTone tone, string text) {
+    /// <param name="generation">The <see cref="Generation"/> it was typed in; null for the current one.</param>
+    /// <returns>False if it was dropped: about a message typed before the session changed.</returns>
+    public bool AddFeedback(string channelId, NoticeTone tone, string text, int? generation = null) {
         lock (this._lock) {
+            if (!this.IsCurrent(generation)) {
+                return false;
+            }
+
             this.Append(new HistoryLine(++this._seq, channelId, HistoryLineKind.Feedback, this._time.GetUtcNow()) {
                 FeedbackText = text,
                 Tone = tone,
             });
+            return true;
         }
     }
 

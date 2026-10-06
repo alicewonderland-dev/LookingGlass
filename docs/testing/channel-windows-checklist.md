@@ -87,13 +87,16 @@ any linkshell, for A or B.
       game's chat box: clear it there), then type `<item>` in the window: B gets
       that item as a link. Say whether the game's link went anywhere you didn't
       want.
-- [ ] 27. Paste or type a very long line: it stops at 500 characters, and a
-      counter shows from 400.
+- [ ] 27. Paste or type a very long line: the box itself stops at 500
+      characters (what it shows is all that is sent; also in Japanese text), and
+      a counter shows from 400.
 - [ ] 28. "Not sent": `/lg`, Settings, disconnect (or stop the server), then
       send from the window. The tab says "Not sent: ..." in LookingGlass blue,
       nothing in game chat, and the text is back in the box.
 - [ ] 29. Send many lines fast until the server's rate limit refuses one: the
-      "Not sent" line is in the tab, in blue.
+      "Not sent" line is in the tab, in blue. Keep the box active (don't click
+      away): the refused line shows in the box itself once it is empty, and
+      typing goes on from it; Enter sends exactly what the box shows.
 - [ ] 30. In a channel whose key is being changed (or waiting for a member),
       the tab shows the same note at the top as the channel pane.
 
@@ -105,9 +108,14 @@ any linkshell, for A or B.
 - [ ] 32. Close every window with `sky`, then turn **Also show in game chat**
       off for `fc` from its ⋮ menu while no window has `fc`: a window with `fc`
       opens.
-- [ ] 33. With `sky` still off game chat, close every window that has it, and
-      have B send in `sky`: the channel list counts it as unread, and opening
-      `sky` in a window shows the message.
+- [ ] 33. With `sky` still off game chat, close every window (or tab) that has
+      it. Game chat says, once, in blue with `[sky]` in its colour, "[sky] shows
+      in game chat again, since no window shows it.", and the ⋮ menu has **Also
+      show in game chat** ticked again. B sends in `sky`: it shows in game
+      chat, and the channel list counts it as unread.
+- [ ] 33b. Turn `sky` off game chat again (a window opens) and relog: the
+      window comes back and `sky` stays off, with no "shows in game chat again"
+      line.
 - [ ] 34. Turn it back on (⋮ menu, or a tab's right-click menu): `sky`'s
       messages are in game chat again.
 - [ ] 35. A warning about `sky` (if you can make one, for example a message

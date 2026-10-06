@@ -17,7 +17,7 @@ namespace LookingGlass.Plugin.Ui;
 /// the windows follow at the next <see cref="Update"/>.
 /// </para>
 /// </summary>
-public sealed class ChannelWindows(WindowSystem system, Configuration config, SessionManager sessions, ChannelSender sender) : IDisposable {
+public sealed class ChannelWindows(WindowSystem system, Configuration config, SessionManager sessions, ChannelSender sender, ChatOutput chat) : IDisposable {
     private readonly List<ChannelWindow> _open = new();
     // Layouts the player opened this session (not reopened at login): their windows appear where the mouse is.
     private readonly HashSet<string> _opened = new();
@@ -34,12 +34,32 @@ public sealed class ChannelWindows(WindowSystem system, Configuration config, Se
 
     internal Configuration Config => config;
 
-    /// <summary>The current character's windows on the current server, or null when there is no session.</summary>
+    /// <summary>
+    /// The current character's windows on the current server: null when there is no session, empty (and not added to the
+    /// settings) when there are none.
+    /// </summary>
     private List<ChannelWindowLayout>? Layouts =>
-        sessions.Session != null && sessions.SessionPlayer is { } player ? config.ForCharacter(player.ContentId).WindowsOn(sessions.ServerUrl) : null;
+        sessions.Session != null && sessions.SessionPlayer is { } player ? config.ForCharacter(player.ContentId).WindowsIfAny(sessions.ServerUrl) ?? [] : null;
 
-    /// <summary>Opens and closes windows to match the session and the layouts. Call every frame, before the window system draws.</summary>
+    /// <summary>
+    /// Opens and closes windows to match the session and the layouts. Call every frame, before the window system draws.
+    /// Never throws: a fault (a settings file edited by hand into something unexpected) is logged once, and the rest of
+    /// the UI goes on.
+    /// </summary>
     public void Update() {
+        try {
+            this.UpdateWindows();
+        } catch (Exception ex) {
+            if (!this._faultLogged) {
+                this._faultLogged = true;
+                Services.Log.Error(ex, "Couldn't update the channel windows");
+            }
+        }
+    }
+
+    private bool _faultLogged;
+
+    private void UpdateWindows() {
         var session = sessions.Session;
         if (session != this._session) {
             // Logged out, another character or server, or disconnected: the windows go, their layouts stay.
@@ -59,6 +79,7 @@ public sealed class ChannelWindows(WindowSystem system, Configuration config, Se
             this._synced = snapshot;
             // Channels left (or disbanded, or removed from) lose their tabs; a window without tabs closes.
             if (ChannelWindowLayouts.Sync(layouts, snapshot)) {
+                this.DropEmptyLists();
                 config.Save();
             }
 
@@ -79,15 +100,23 @@ public sealed class ChannelWindows(WindowSystem system, Configuration config, Se
             system.AddWindow(window);
             this._open.Add(window);
         }
+
+        // A channel off game chat that no window shows any more (its last tab or window closed, or none came back at
+        // login) would show nowhere: it goes back to game chat, and says so there.
+        foreach (var channelId in GameChatChannels.ShownNowhere(sessions.GameChatOff, layouts, snapshot)) {
+            sessions.SetShowInGameChat(channelId, true);
+            var tag = ChannelTag.For(sessions.SlotOf(channelId), sessions.NicknameOf(channelId), config.NicknameTags);
+            chat.ChannelNotice(GameChatChannels.BackInGameChat(tag), tag, sessions.ColourOf(channelId));
+        }
     }
 
     /// <summary>A new window with the channel as its only tab.</summary>
     public void OpenNew(string channelId) {
-        if (this.Layouts is not { } layouts) {
+        if (this.Layouts == null || sessions.SessionPlayer is not { } player) {
             return;
         }
 
-        var layout = ChannelWindowLayouts.Open(layouts, channelId);
+        var layout = ChannelWindowLayouts.Open(config.ForCharacter(player.ContentId).WindowsOn(sessions.ServerUrl), channelId);
         this._opened.Add(layout.Id);
         // Opened by the player, so it doesn't wait for the channel list (it is in: the channel was picked from it).
         this._restored = true;
@@ -143,7 +172,15 @@ public sealed class ChannelWindows(WindowSystem system, Configuration config, Se
     /// <summary>The player closed a window, or its last tab: it is forgotten.</summary>
     internal void Forget(ChannelWindow window) {
         if (this.Layouts is { } layouts && layouts.Remove(window.Layout)) {
+            this.DropEmptyLists();
             config.Save();
+        }
+    }
+
+    /// <summary>No empty list of windows is kept in the settings for a server address.</summary>
+    private void DropEmptyLists() {
+        if (sessions.SessionPlayer is { } player) {
+            config.ForCharacter(player.ContentId).DropEmptyWindowLists();
         }
     }
 

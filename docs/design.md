@@ -2049,9 +2049,13 @@ the plugin's `ChannelWindows` opens and remembers the windows and
   rate limits, rekey waits and errors. Enter sends and keeps the keyboard in
   the box; Enter on an empty box, or Escape, gives the keyboard back to the
   game (Escape keeps what was typed, which ImGui would otherwise undo). Up to
-  500 characters, as in the game's chat box, with a counter from 400. "Not
-  sent: …" shows as a line in the tab, in LookingGlass blue, never in game
-  chat, and what was typed goes back into the box to send again.
+  500 characters, as in the game's chat box: the box itself stops there as
+  text is typed or pasted (an input callback), with a counter from 400, so
+  nothing is cut unseen. "Not sent: …" shows as a line in the tab, in
+  LookingGlass blue, never in game chat (and not at all if the session it was
+  typed in has ended), and what was typed goes back into the box to send
+  again, once the box is empty, into the box's own text if it is being typed
+  in (the same callback), so what it shows is what Enter sends.
 - **Links typed in the box.** `<item>`, `<flag>` and `<status>` resolve as
   they do in chat, from what the game holds now (the item last linked, the
   map flag, the status). The game's own ways of linking (an item's **Link**,
@@ -2080,8 +2084,14 @@ the plugin's `ChannelWindows` opens and remembers the windows and
   messages and its notices go only to its history and windows
   (`GameChatChannels`), except warnings, which go to game chat too, so a
   warning is never kept from it. Turning it off while no window has the
-  channel opens one. Unread counts don't change: a channel off game chat that
-  no window shows still counts in the channel list.
+  channel opens one, and a channel off game chat is never left shown nowhere:
+  once no window has it (its last tab or window was closed, or none came back
+  at login), it goes back to game chat, with one blue line there ("[sky] shows
+  in game chat again, since no window shows it.", `GameChatChannels.ShownNowhere`).
+  Unread counts don't change. Where a message goes is read before the session
+  is checked, and a session that stops starts the history's next generation
+  before its channel settings are let go, so a message caught in a logout is
+  dropped rather than printed in game chat as if its channel weren't off.
 - **Unread.** A tab selected in the window that has the focus reads its
   channel for the channel list too: `UnreadCounter` takes a viewer per window
   (the main window, and each channel window while it has the focus), and a
@@ -2091,7 +2101,10 @@ the plugin's `ChannelWindows` opens and remembers the windows and
   (`CharacterSettings.ChannelWindows`; the rules in `ChannelWindowLayouts`):
   each window's tabs, their order (read off where ImGui shows the tabs once the
   mouse is let go after a drag), the selected tab, and its position and size
-  in pixels (saved once a move or resize is over). They open again at login
+  in pixels (saved once a move or resize is over; not in ImGui's own settings
+  file). What a hand-edited settings file holds where a window or its tabs
+  should be counts as nothing, and a fault there is logged once without taking
+  the UI down; no empty list is kept for a server. They open again at login
   once the channel list is in, without the channels the user is no longer in
   (a window left with none isn't opened), where they were, and without taking
   the focus from the game. They close without being forgotten at logout, when

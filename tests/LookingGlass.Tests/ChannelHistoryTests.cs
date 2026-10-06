@@ -198,6 +198,19 @@ public sealed class ChannelHistoryTests {
     }
 
     [Fact]
+    public void FeedbackAboutAMessageTypedBeforeTheSessionChangedIsDropped() {
+        var history = new ChannelHistory();
+        var typedIn = history.Clear();
+        Assert.True(history.AddFeedback("aaa", NoticeTone.Info, "Not sent: too fast.", typedIn));
+
+        // The send failed after a relog: its "Not sent" belongs to the old session.
+        history.Clear();
+        Assert.False(history.AddFeedback("aaa", NoticeTone.Info, "Not sent: disconnected.", typedIn));
+        Assert.Empty(history.LinesOf("aaa"));
+        Assert.True(history.AddFeedback("aaa", NoticeTone.Info, "Not sent: not connected to LookingGlass."));
+    }
+
+    [Fact]
     public void AMessageTheLastSessionHadIsShownAgainInTheNext() {
         var history = new ChannelHistory();
         var message = From(Bob, "aaa");

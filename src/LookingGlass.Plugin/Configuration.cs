@@ -44,7 +44,7 @@ public sealed class Configuration : IPluginConfiguration {
     public Dictionary<ulong, CharacterSettings> Characters { get; set; } = new();
 
     public CharacterSettings ForCharacter(ulong contentId) {
-        if (!this.Characters.TryGetValue(contentId, out var settings)) {
+        if (!this.Characters.TryGetValue(contentId, out var settings) || settings == null) {
             settings = new CharacterSettings();
             this.Characters[contentId] = settings;
         }
@@ -70,19 +70,41 @@ public sealed class CharacterSettings {
     /// Channels whose messages don't also go to the game's chat log ("Also show in game chat" turned off): they show only in
     /// their channel windows. Every other channel's do. Never sent to the server.
     /// </summary>
-    public HashSet<string> GameChatOff { get; set; } = new();
+    public HashSet<string> GameChatOff {
+        // Never null, even from a hand-edited file.
+        get => this._gameChatOff ??= new HashSet<string>();
+        set => this._gameChatOff = value;
+    }
+
+    private HashSet<string>? _gameChatOff;
 
     /// <summary>Server address → the channel windows open there, to open again at the next login. See <see cref="ChannelWindowLayouts"/>.</summary>
-    public Dictionary<string, List<ChannelWindowLayout>> ChannelWindows { get; set; } = new();
+    public Dictionary<string, List<ChannelWindowLayout>> ChannelWindows {
+        get => this._channelWindows ??= new Dictionary<string, List<ChannelWindowLayout>>();
+        set => this._channelWindows = value;
+    }
 
-    /// <summary>The channel windows on a server address (an empty list, kept, if there are none yet).</summary>
+    private Dictionary<string, List<ChannelWindowLayout>>? _channelWindows;
+
+    /// <summary>The channel windows on a server address, or null if there are none (nothing is added to the settings for asking).</summary>
+    public List<ChannelWindowLayout>? WindowsIfAny(string serverUrl) =>
+        this.ChannelWindows.GetValueOrDefault(serverUrl);
+
+    /// <summary>The channel windows on a server address, to add one to: a list is kept for it from now on.</summary>
     public List<ChannelWindowLayout> WindowsOn(string serverUrl) {
-        if (!this.ChannelWindows.TryGetValue(serverUrl, out var windows)) {
+        if (this.ChannelWindows.GetValueOrDefault(serverUrl) is not { } windows) {
             windows = new List<ChannelWindowLayout>();
             this.ChannelWindows[serverUrl] = windows;
         }
 
         return windows;
+    }
+
+    /// <summary>Forgets a server address's list once it has no windows, so the settings hold no empty ones.</summary>
+    public void DropEmptyWindowLists() {
+        foreach (var (serverUrl, _) in this.ChannelWindows.Where(entry => entry.Value is not { Count: > 0 }).ToList()) {
+            this.ChannelWindows.Remove(serverUrl);
+        }
     }
 
     public int? SlotOf(string channelId) => this.ChannelSlots.TryGetValue(channelId, out var slot) ? slot : null;

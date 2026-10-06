@@ -96,17 +96,18 @@ public static class ChannelWindowLayouts {
     /// <summary>
     /// Tidies what was saved, and follows the channel list: drops tabs of channels the character is no longer in (only
     /// against the complete list, as with command slots), a tab twice, and windows left without tabs or an ID; a window's
-    /// selected tab is one of its tabs.
+    /// selected tab is one of its tabs. What a hand-edited settings file may hold (no window, no tabs) counts as nothing.
     /// </summary>
     /// <returns>True if anything changed.</returns>
     public static bool Sync(List<ChannelWindowLayout> windows, SessionSnapshot snapshot) {
         var complete = snapshot is { State: ConnectionState.Ready, ChannelsLoaded: true };
         var listed = complete ? snapshot.Channels.Select(channel => channel.Id).ToHashSet() : null;
-        var changed = false;
+        var changed = windows.RemoveAll(window => window == null) > 0;
         var ids = new HashSet<string>();
         foreach (var window in windows.ToList()) {
-            var tabs = window.Tabs.Where(id => !string.IsNullOrEmpty(id) && (listed == null || listed.Contains(id))).Distinct().ToList();
-            if (!tabs.SequenceEqual(window.Tabs)) {
+            var saved = window.Tabs ?? [];
+            var tabs = saved.Where(id => !string.IsNullOrEmpty(id) && (listed == null || listed.Contains(id))).Distinct().ToList();
+            if (window.Tabs == null || !tabs.SequenceEqual(saved)) {
                 window.Tabs = tabs;
                 changed = true;
             }
@@ -155,6 +156,23 @@ public static class GameChatChannels {
     /// </summary>
     public static bool NoticeToGameChat(IReadOnlySet<string> off, SessionNotice notice) =>
         notice.ChannelId is not { } channelId || notice.Level >= NoticeLevel.Warning || Shows(off, channelId);
+
+    /// <summary>
+    /// The channels turned off game chat that no window has (its last tab or window was closed, or none was opened again at
+    /// login): only the complete channel list's, as they show nowhere now. They go back to game chat, with
+    /// <see cref="BackInGameChat"/> said, so a channel never ends up shown nowhere but in the unread counts.
+    /// </summary>
+    public static IReadOnlyList<string> ShownNowhere(IReadOnlySet<string> off, IEnumerable<ChannelWindowLayout?> windows, SessionSnapshot snapshot) {
+        if (off.Count == 0 || snapshot.State != ConnectionState.Ready || !snapshot.ChannelsLoaded) {
+            return [];
+        }
+
+        var shown = windows.SelectMany(window => window?.Tabs ?? []).ToHashSet();
+        return snapshot.Channels.Select(channel => channel.Id).Where(id => off.Contains(id) && !shown.Contains(id)).ToList();
+    }
+
+    /// <summary>Said (in game chat) when a channel goes back to game chat because no window shows it; the same in both modes.</summary>
+    public static string BackInGameChat(string tag) => $"{tag} shows in game chat again, since no window shows it.";
 
     /// <summary>Forgets channels you're no longer in, only against the complete channel list.</summary>
     /// <returns>True if anything changed.</returns>
