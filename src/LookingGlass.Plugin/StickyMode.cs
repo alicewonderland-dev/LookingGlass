@@ -51,6 +51,9 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
     private bool _labelHeldBack;
     // The game's chat input still shows a tag that must be replaced by the game's own channel name.
     private bool _labelOwed;
+    // ExtraChat's warning has been given since talking in the channel started; when it was last looked for.
+    private bool _extraChatWarned;
+    private long _extraChatLookedAt;
     private bool _disposed;
 
     internal StickyMode(Configuration config, PlayerTracker player, SessionManager sessions, ChatOutput chat, ChannelSender sender) {
@@ -101,11 +104,24 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
             this._config.Save();
         }
 
-        if (ExtraChatLoaded()) {
-            this._chat.Notice(NoticeLevel.Warning, StickyMessages.ExtraChatLoaded);
+        this._extraChatWarned = false;
+        this.WarnIfExtraChatLoaded();
+        this.SyncIndicators();
+    }
+
+    /// <summary>
+    /// Gives ExtraChat's warning once while talking in a channel: at the start, or as soon as ExtraChat is turned on later.
+    /// </summary>
+    private void WarnIfExtraChatLoaded() {
+        if (this._extraChatWarned || this._state.ChannelId == null) {
+            return;
         }
 
-        this.SyncIndicators();
+        this._extraChatLookedAt = Environment.TickCount64;
+        if (ExtraChatLoaded()) {
+            this._extraChatWarned = true;
+            this._chat.Notice(NoticeLevel.Warning, StickyMessages.ExtraChatLoaded);
+        }
     }
 
     /// <inheritdoc/>
@@ -303,6 +319,11 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
 
         // Whatever happened, the labels say what is so: the tag while talking in a channel, never once it has stopped.
         this.SyncIndicators();
+
+        // Listing the plugins isn't free: every few seconds is soon enough.
+        if (Environment.TickCount64 - this._extraChatLookedAt >= 3000) {
+            this.WarnIfExtraChatLoaded();
+        }
     }
 
     private void OnChatLogPreDraw(AddonEvent type, AddonArgs args) {

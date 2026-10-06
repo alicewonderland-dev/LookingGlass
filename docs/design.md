@@ -1326,7 +1326,10 @@ game's chat channel can't be read). With ChatTwo it is also refused while
 ChatTwo's main input is on a /tell (see below). `/lgcM` while talking in
 another channel moves to that one. If ExtraChat (or a fork of it) is loaded
 too, one more line warns that it watches the same chat box and ChatTwo label,
-and to turn it off while doing this.
+and to turn it off while doing this. The same warning comes (once) if ExtraChat
+is turned on while already talking in a channel: the loaded plugins are looked
+at every few seconds (the owner's third retest turned ExtraChat on after
+`/lgc1`, and saw no warning).
 
 **What it says.** Short lines, in LookingGlass blue with the tag in the
 channel's colour (see LookingGlass's own lines, above), in the chat channel
