@@ -81,6 +81,12 @@ public sealed class RequestHandler(
     /// <summary>Pending invites one user can have at once, across all channels.</summary>
     public const int MaxPendingInvitesPerUser = 20;
 
+    /// <summary>
+    /// Pending invites one user can have from any one inviter, so a single inviter (with many channels) can't take all of
+    /// <see cref="MaxPendingInvitesPerUser"/>, whether or not the invitee blocked them.
+    /// </summary>
+    public const int MaxPendingInvitesFromOneInviter = 5;
+
     // Channel names are at most 64 UTF-8 bytes; sealing adds a 16-byte tag. The cap keeps
     // invites (which strangers can send) from bloating the invitee's channel list.
     private const int MaxSealedNameBytes = 128;
@@ -114,8 +120,12 @@ public sealed class RequestHandler(
     private readonly UserRateLimits _messages = new(ProtocolInfo.DefaultLimits().MessagesPerSecond, ProtocolInfo.DefaultLimits().MessageBurst);
     // Invites are limited on both ends: an inviter can't spam many people, and many
     // inviters (or invite, cancel, invite loops) can't flood one person.
-    private readonly UserRateLimits _invitesSent = new(perSecond: 1.0 / 15, burst: 20);
-    private readonly UserRateLimits _invitesReceived = new(perSecond: 1.0 / 30, burst: 10);
+    private readonly UserRateLimits _invitesSent = new(perSecond: 1.0 / 15, burst: 20, time);
+    private readonly UserRateLimits _invitesReceived = new(perSecond: 1.0 / 30, burst: 10, time);
+    // And between each inviter and invitee, checked first, so one person can't use up someone's invites alone: not their
+    // budget above (an inviter they blocked would otherwise keep it spent, as the server doesn't know whom they block, and
+    // their client declines such invites unseen), nor their pending invites (see MaxPendingInvitesFromOneInviter).
+    private readonly KeyedRateLimits<(long Inviter, long Invitee)> _invitesBetween = new(perSecond: 1.0 / 600, burst: 3, time);
     private readonly UserRateLimits _creates = new(perSecond: 1.0 / 60, burst: 10);
     private readonly UserRateLimits _renames = new(perSecond: 0.1, burst: 10);
     private readonly UserRateLimits _disbands = new(perSecond: 1.0 / 60, burst: 5);
@@ -1043,6 +1053,16 @@ public sealed class RequestHandler(
 
         if (db.CountInvitesForUser(invitee.UserId) >= MaxPendingInvitesPerUser) {
             throw new RequestException(ErrorCode.LimitReached, $"{invitee.Name} has too many pending invites.");
+        }
+
+        if (db.CountInvitesForUser(invitee.UserId, from: me.UserId) >= MaxPendingInvitesFromOneInviter) {
+            throw new RequestException(ErrorCode.LimitReached,
+                $"{invitee.Name} already has {MaxPendingInvitesFromOneInviter} invites from you waiting; wait until they answer some.");
+        }
+
+        // Before the invitee's own budget, so invites past this pair's allowance don't spend it.
+        if (!this._invitesBetween.TryTake((me.UserId, invitee.UserId))) {
+            throw new RequestException(ErrorCode.RateLimited, $"You've invited {invitee.Name} too often recently; try again later.");
         }
 
         if (!this._invitesReceived.TryTake(invitee.UserId)) {

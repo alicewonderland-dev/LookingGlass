@@ -3,11 +3,12 @@ using System.Collections.Concurrent;
 namespace LookingGlass.Server.Services;
 
 /// <summary>A token bucket: <c>burst</c> tokens, refilled at <c>perSecond</c>.</summary>
-public sealed class TokenBucket(double perSecond, double burst) {
+public sealed class TokenBucket(double perSecond, double burst, TimeProvider? time = null) {
     private readonly Lock _lock = new();
+    private readonly TimeProvider _time = time ?? TimeProvider.System;
     private readonly double _burst = burst;
     private double _tokens = burst;
-    private DateTimeOffset _updated = DateTimeOffset.UtcNow;
+    private DateTimeOffset _updated = (time ?? TimeProvider.System).GetUtcNow();
 
     public bool TryTake() {
         lock (this._lock) {
@@ -22,31 +23,39 @@ public sealed class TokenBucket(double perSecond, double burst) {
     }
 
     private void Refill() {
-        var now = DateTimeOffset.UtcNow;
-        this._tokens = Math.Min(this._burst, this._tokens + (now - this._updated).TotalSeconds * perSecond);
+        var now = this._time.GetUtcNow();
+        this._tokens = Math.Min(this._burst, this._tokens + Math.Max(0, (now - this._updated).TotalSeconds) * perSecond);
         this._updated = now;
     }
 }
 
 /// <summary>
-/// Per-user limits. Keyed by user, not connection, so reconnecting doesn't
-/// reset them. Entries for users who have gone quiet are dropped periodically.
+/// A token bucket per key (a user, or an inviter and invitee). Keyed by account, not connection, so reconnecting doesn't
+/// reset them. Keys unused for an hour (by then every bucket here is full again) are dropped every 10 minutes.
 /// </summary>
-public sealed class UserRateLimits(double perSecond, double burst) {
-    private readonly ConcurrentDictionary<long, (TokenBucket Bucket, DateTimeOffset LastUsed)> _buckets = new();
-    private DateTimeOffset _lastSweep = DateTimeOffset.UtcNow;
+public class KeyedRateLimits<TKey>(double perSecond, double burst, TimeProvider? time = null) where TKey : notnull {
+    private static readonly TimeSpan SweepEvery = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan IdleFor = TimeSpan.FromHours(1);
 
-    public bool TryTake(long userId) {
-        var now = DateTimeOffset.UtcNow;
-        var entry = this._buckets.AddOrUpdate(userId,
-            _ => (new TokenBucket(perSecond, burst), now),
+    private readonly TimeProvider _time = time ?? TimeProvider.System;
+    private readonly ConcurrentDictionary<TKey, (TokenBucket Bucket, DateTimeOffset LastUsed)> _buckets = new();
+    private long _lastSweepTicks = (time ?? TimeProvider.System).GetUtcNow().UtcTicks;
+
+    /// <summary>How many keys are tracked now, for tests.</summary>
+    internal int TrackedKeys => this._buckets.Count;
+
+    public bool TryTake(TKey key) {
+        var now = this._time.GetUtcNow();
+        var entry = this._buckets.AddOrUpdate(key,
+            _ => (new TokenBucket(perSecond, burst, this._time), now),
             (_, existing) => (existing.Bucket, now));
 
-        if (now - this._lastSweep > TimeSpan.FromMinutes(10)) {
-            this._lastSweep = now;
+        var last = Interlocked.Read(ref this._lastSweepTicks);
+        if (now.UtcTicks - last > SweepEvery.Ticks && Interlocked.CompareExchange(ref this._lastSweepTicks, now.UtcTicks, last) == last) {
             foreach (var (id, value) in this._buckets) {
-                if (now - value.LastUsed > TimeSpan.FromHours(1)) {
-                    this._buckets.TryRemove(id, out _);
+                if (now - value.LastUsed > IdleFor) {
+                    // Only if unused since: one used meanwhile keeps its bucket (and what it has spent).
+                    this._buckets.TryRemove(new KeyValuePair<TKey, (TokenBucket, DateTimeOffset)>(id, value));
                 }
             }
         }
@@ -54,6 +63,9 @@ public sealed class UserRateLimits(double perSecond, double burst) {
         return entry.Bucket.TryTake();
     }
 }
+
+/// <summary>Per-user limits (see <see cref="KeyedRateLimits{TKey}"/>).</summary>
+public sealed class UserRateLimits(double perSecond, double burst, TimeProvider? time = null) : KeyedRateLimits<long>(perSecond, burst, time);
 
 /// <summary>
 /// Counts events per key in a sliding window. Keys whose events have all expired are dropped now and then (when the

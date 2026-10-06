@@ -137,15 +137,80 @@ public sealed class ServerLimitTests : IAsyncLifetime {
         Assert.Equal(RequestHandler.MaxPendingInvitesPerUser, bob.Session.Snapshot.Invites.Length);
     }
 
+    /// <summary>Many inviters together can't flood one person: 10 invites at once, then one every 30 seconds.</summary>
     [Fact]
     public async Task InvitesToOnePersonAreRateLimited() {
-        var alice = await this._server.RegisterAsync("Alice Invite Rate");
         var bob = await this._server.RegisterAsync("Bob Invite Rate");
-        var channels = this.SeedChannels(alice, 12);
         var invitee = new Invitee(bob.UserId, bob.Keys());
+        var sent = 0;
+        foreach (var name in new[] { "Alice Invite Rate", "Carol Invite Rate", "Dave Invite Rate", "Erin Invite Rate" }) {
+            var inviter = await this._server.RegisterAsync(name);
+            var channels = this.SeedChannels(inviter, 3);
+            var accepted = await this.InviteUntilLimitedAsync(inviter, channels.Select(channelId => (channelId, invitee)).ToList());
+            sent += accepted;
+            if (accepted < channels.Count) {
+                break;
+            }
+        }
 
-        var limited = await this.InviteUntilLimitedAsync(alice, channels.Select(channelId => (channelId, invitee)).ToList());
-        Assert.Equal(10, limited);
+        Assert.Equal(10, sent);
+    }
+
+    /// <summary>
+    /// One inviter can't use up someone's invites, whether or not that person blocked them (the server doesn't know: a
+    /// blocked inviter's invites are declined unseen by the invitee's client). An invite, cancel, invite loop is stopped
+    /// after 3 invites to the same person (then one every 10 minutes), and spends nothing of what others can send them.
+    /// </summary>
+    [Fact]
+    public async Task OnePersonCantUseUpAnothersInvites() {
+        var mallory = await this._server.RegisterAsync("Mallory Invite Hog");
+        var bob = await this._server.RegisterAsync("Bob Invite Hog");
+        var alice = await this._server.RegisterAsync("Alice Invite Hog");
+        var channelId = await mallory.Session.CreateChannelAsync("Hogging", Ct);
+        using var malloryKeys = mallory.LoadIdentity();
+        var bobAgreement = bob.LoadIdentity().AgreementPublicKey;
+
+        var sent = 0;
+        ServerErrorException? limited = null;
+        for (var i = 0; i < 15 && limited == null; i++) {
+            try {
+                await mallory.Session.SendRawAsync(this.Invite(channelId, mallory, bob.UserId, bob.Keys(),
+                    at => ChannelCrypto.SealInvite("Hogging", channelId, at, bob.UserId, bobAgreement, malloryKeys, mallory.UserId)), Ct);
+                sent++;
+                await mallory.Session.KickAsync(channelId, bob.UserId, Ct);
+            } catch (ServerErrorException ex) {
+                limited = ex;
+            }
+        }
+
+        Assert.Equal(3, sent);
+        Assert.Equal(ErrorCode.RateLimited, limited?.Code);
+        Assert.Contains("You've invited Bob Invite Hog too often recently", limited!.Message);
+
+        // Alice can still invite him: he has his whole budget for everyone else.
+        var aliceChannels = this.SeedChannels(alice, 4);
+        var invitee = new Invitee(bob.UserId, bob.Keys());
+        Assert.Equal(3, await this.InviteUntilLimitedAsync(alice, aliceChannels.Select(id => (id, invitee)).ToList()));
+    }
+
+    /// <summary>One inviter (with many channels) can't fill someone's pending invites: at most 5 from any one inviter wait at once.</summary>
+    [Fact]
+    public async Task PendingInvitesFromOnePersonAreCapped() {
+        var mallory = await this._server.RegisterAsync("Mallory Invite Pile");
+        var bob = await this._server.RegisterAsync("Bob Invite Pile");
+        var alice = await this._server.RegisterAsync("Alice Invite Pile");
+        foreach (var seeded in this.SeedChannels(mallory, RequestHandler.MaxPendingInvitesFromOneInviter)) {
+            this.SeedInvite(mallory, seeded, bob);
+        }
+
+        var more = await mallory.Session.CreateChannelAsync("One More Pile", Ct);
+        var error = await Assert.ThrowsAsync<ServerErrorException>(() => mallory.Session.InviteAsync(more, bob.Name, ProtocolInfo.DebugWorldName, Ct));
+        Assert.Equal(ErrorCode.LimitReached, error.Code);
+        Assert.Equal(RequestHandler.MaxPendingInvitesFromOneInviter, this._server.Database.CountInvitesForUser(bob.UserId));
+
+        var aliceChannel = await alice.Session.CreateChannelAsync("Still Room", Ct);
+        await alice.Session.InviteAsync(aliceChannel, bob.Name, ProtocolInfo.DebugWorldName, Ct);
+        Assert.Equal(RequestHandler.MaxPendingInvitesFromOneInviter + 1, this._server.Database.CountInvitesForUser(bob.UserId));
     }
 
     [Fact]

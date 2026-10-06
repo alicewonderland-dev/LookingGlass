@@ -1118,9 +1118,13 @@ public sealed class Database {
         return this.QueryInvites(connection, "WHERE i.user_id = $user AND i.forgotten = 0 ORDER BY i.created_at DESC, i.channel_id LIMIT $limit", ("$user", userId), ("$limit", limit));
     }
 
-    public int CountInvitesForUser(long userId) {
+    /// <summary>The user's pending invites (not removed from their list), or only those from <paramref name="from"/>.</summary>
+    public int CountInvitesForUser(long userId, long? from = null) {
         using var connection = this.Open();
-        return Convert.ToInt32(Scalar(connection, null, "SELECT COUNT(*) FROM invites WHERE user_id = $user AND forgotten = 0;", ("$user", userId)));
+        return from == null
+            ? Convert.ToInt32(Scalar(connection, null, "SELECT COUNT(*) FROM invites WHERE user_id = $user AND forgotten = 0;", ("$user", userId)))
+            : Convert.ToInt32(Scalar(connection, null, "SELECT COUNT(*) FROM invites WHERE user_id = $user AND inviter_id = $inviter AND forgotten = 0;",
+                ("$user", userId), ("$inviter", from.Value)));
     }
 
     /// <summary>Users whose identities a user may fetch: themselves, people in their channels, and their inviters.</summary>

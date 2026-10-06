@@ -2182,15 +2182,22 @@ one transaction for every multi-step change.
 | Members per channel | 500, counting pending invites | Keeps rekey bundles small |
 | Channels per user | 50 | Bounds login and list cost |
 | Pending invites per channel | 50 | Stops invite spam |
-| Pending invites per user | 20 | Stops one person being flooded |
+| Pending invites per user | 20, at most 5 of them from any one inviter | Stops one person being flooded, or one inviter filling them all |
+| Invites sent per user | 20 at once, then 1 every 15 seconds | Stops one person spamming many |
+| Invites received per user | 10 at once, then 1 every 30 seconds | Stops many inviters together flooding one person |
+| Invites from one person to another | 3 at once, then 1 every 10 minutes; checked first | One inviter (blocked or not) can't use up someone's invites |
 | Registration attempts | 5 per hour per IP; verify once per 10 seconds, 10 per challenge | Protects the Lodestone and the challenge flow |
 | Lodestone requests (server-wide) | 1 every 2 seconds, cached | Avoids being blocked by the Lodestone |
 | Connections per IP | 20; unauthenticated connections close after 20 minutes | Bounds idle and unauthenticated load |
 | Outbound queue per connection | 256 events | A slow client is disconnected, not waited on |
 | Devices per user | 20 most recently used | Bounds stored logins |
 
-Invites sent and received, channel creation, renames, disbands, identity
-lookups and heavy reads have their own per-user rate limits. Key login limits
+Channel creation, renames, disbands, identity lookups and heavy reads have
+their own per-user rate limits. The server doesn't know whom a user blocked
+(their client declines those invites unseen), so the limits between one
+inviter and one invitee are what stop a blocked inviter using up the
+invitee's allowance. Several inviters together still can, up to the
+per-user limits. Key login limits
 are under [Key login](#key-login). Operators can change some of these (see
 [server.md](server.md#settings)).
 
