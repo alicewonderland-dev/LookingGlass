@@ -325,6 +325,31 @@ public sealed class EndToEndTests : IAsyncLifetime {
         Assert.Equal("Echo Test Bot", reply.Sender.Name);
     }
 
+    /// <summary>
+    /// A server hosting the echo bot logs what it does, but never what its channels say: not their messages, not their
+    /// names, and not its notices (which can quote either).
+    /// </summary>
+    [Fact]
+    public async Task AHostedEchoBotLogsNothingOfItsChannels() {
+        var alice = await this._server.RegisterAsync("Alice Quiet Echo");
+        var lines = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        var bot = new EchoBot(this._server.Options(), new InMemorySecretStore(), "Quiet Echo Bot", lines.Enqueue) { LogContent = false };
+        this._server.Track(bot);
+        bot.Start();
+        await bot.WaitUntilReadyAsync(Harness.Timeout);
+
+        var channelId = await alice.Session.CreateChannelAsync("Secret Bot Haunt", Ct);
+        await alice.Session.InviteAsync(channelId, "Quiet Echo Bot", ProtocolInfo.DebugWorldName, Ct);
+        await WaitFor(() => alice.Session.Snapshot.FindChannel(channelId) is { RekeyPending: false } c
+                            && c.Members.Any(m => m.User.Name == "Quiet Echo Bot" && m.Rank == Rank.Member) ? c : null);
+        await alice.Session.RenameAsync(channelId, "Renamed Secret Haunt", Ct);
+        await alice.Session.SendTextAsync(channelId, "whispered words", Ct);
+        await WaitFor(() => alice.Messages.FirstOrDefault(m => m.Text == "echo: whispered words"));
+
+        Assert.Contains(lines, line => line.StartsWith("Joined a channel"));
+        Assert.DoesNotContain(lines, line => line.Contains("Secret") || line.Contains("whispered"));
+    }
+
     [Fact]
     public async Task RestartedClientKeepsIdentityAndKeys() {
         var store = new InMemorySecretStore();

@@ -33,7 +33,7 @@ public sealed class EchoBotHost(
                 var store = new FileSecretStore(Path.Combine(options.Value.DataDirectory, "echo-bot-secrets.json"),
                     message => logger.LogWarning("[echo bot] {Message}", message));
                 this._bot = new EchoBot(new ClientSessionOptions { ServerUri = uri, ClientVersion = "echo-bot" }, store, dev.EchoBotName,
-                    line => logger.LogInformation("[echo bot] {Line}", line)) { LogMessages = false };
+                    line => logger.LogInformation("[echo bot] {Line}", line)) { LogContent = false };
                 this._bot.Start();
                 logger.LogInformation("Echo bot connecting to {Uri}. Invite it as \"{Name}\" on world \"{World}\".", uri, dev.EchoBotName, ProtocolInfo.DebugWorldName);
             } catch (Exception ex) {
