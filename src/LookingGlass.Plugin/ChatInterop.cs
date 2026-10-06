@@ -285,7 +285,13 @@ internal sealed unsafe class ChatInterop : IDisposable {
                     return null;
                 }
 
-                var id = agent->LinkedItem.GetBaseItemId();
+                // The field, not a call into the game: a symbolic item (a link to another) holds no id there. Its
+                // high-quality (+1,000,000) and collectable (+500,000) forms, if present, are the same item.
+                var id = agent->LinkedItem.IsSymbolic ? 0 : agent->LinkedItem.ItemId;
+                if (id is > 0 and < 2_000_000) {
+                    id %= 500_000;
+                }
+
                 var name = id == 0 ? null
                     : id >= 2_000_000 ? Services.Data.GetExcelSheet<EventItem>().GetRowOrDefault(id)?.Name.ExtractText()
                     : Services.Data.GetExcelSheet<Item>().GetRowOrDefault(id)?.Name.ExtractText();

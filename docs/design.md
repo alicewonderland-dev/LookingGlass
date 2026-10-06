@@ -1479,8 +1479,10 @@ Sticky:
   [Potion]". The plugin reads the name where the game keeps what the
   placeholder stands for, as ChatTwo's input preview does (`Message.cs`,
   `DecodeTextParam`, 1.40.9): `<item>` the item the chat log agent holds as
-  linked (`AgentChatLog.LinkedItem`, its base item id, named from the `Item`
-  sheet, `EventItem` for ids from 2,000,000; `LinkedItemName` if that fails),
+  linked (`AgentChatLog.LinkedItem`: its `ItemId` field, read rather than
+  calling the game, unless it is a symbolic item; the high-quality and
+  collectable offsets taken off; named from the `Item` sheet, `EventItem` for
+  ids from 2,000,000; `LinkedItemName` if that fails),
   `<status>` its `ContextStatusId` (the `Status` sheet; `ContextStatusName`),
   `<flag>` the map flag (`AgentMap`, the first flag marker: the place name and
   coordinates, as a map link shows them). A name is plain text (no game
