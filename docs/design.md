@@ -2363,11 +2363,18 @@ Two different losses, which may need different answers:
   channel limits, and whether a member removed in the meantime may still fetch
   messages from before the removal (they could read them then).
 - **Messages you saw, but want to read again later** (after a crash, a
-  relog, or the next day): a log on the player's own computer. To decide:
-  opt-in or on by default, per channel or for all, how long it is kept and how
-  big it may grow, encrypted like the secrets file, shown in channel windows
-  (they show only messages since login today) and/or exported, and deleting it
-  (per channel, and when leaving a channel or resetting the identity).
+  relog, or the next day): a log on the player's own computer. Decided (owner,
+  2026-10-06): **opt-in**, one setting that logs **every channel** (no
+  per-channel choice, for simplicity), and kept to a **size limit** rather
+  than an age: when the log reaches it, the oldest messages go first. Still
+  to decide: the default size and its range, encrypting it like the secrets
+  file, showing it in channel windows (they show only messages since login
+  today) and/or exporting it, and deleting it (all at once, and what happens
+  on leaving a channel or resetting the identity).
+
+Both are wanted (owner, 2026-10-06). For the first, the owner is asking a
+heavy ExtraChat user among the testers how long the server should keep
+messages.
 
 Either way the same privacy rules hold: nothing readable leaves the player's
 computer, and a log is never shared or uploaded.
