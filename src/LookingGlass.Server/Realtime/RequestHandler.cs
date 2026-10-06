@@ -597,18 +597,23 @@ public sealed class RequestHandler(
         }
 
         // Checked, not counted: only a failed answer uses up this address's allowance for the account.
-        if (this._keyLoginFailuresPerAccountAndIp.IsFull(AccountAndAddress(request.UserId, address))) {
+        var accountFailures = this._keyLoginFailuresPerAccountAndIp.Count(AccountAndAddress(request.UserId, address));
+        if (accountFailures >= this._keyLoginFailuresPerAccountAndIp.Limit) {
             logger.LogDebug("Key login for {User} from {Address} refused: too many failures for this account from this address", request.UserId, address);
             throw new RequestException(ErrorCode.RateLimited, "Too many failed key logins for this account from your address; try again later.");
         }
 
         // The challenge, and (until it is answered correctly) a failure. Both checked above, but a request on another
-        // connection from the same address may have counted meanwhile.
+        // connection from the same address may have counted meanwhile. Not a failure if this account already failed from
+        // here within the hour: that one is counted, and the account's own allowance for the address limits the rest. So a
+        // plugin that keeps trying a login the server no longer knows (it tries on every connection) counts once against
+        // its address, rather than leaving nobody behind that address (a household, a shared NAT) able to sign in.
         if (!this._keyLoginsPerIp.TryAdd(address)) {
             throw new RequestException(ErrorCode.RateLimited, "Too many key login attempts; try again later.");
         }
 
-        if (!this._keyLoginFailuresPerIp.TryAdd(address)) {
+        var countedForAddress = accountFailures == 0;
+        if (countedForAddress && !this._keyLoginFailuresPerIp.TryAdd(address)) {
             this._keyLoginsPerIp.Refund(address);
             throw new RequestException(ErrorCode.RateLimited, "Too many key login attempts; try again later.");
         }
@@ -618,7 +623,7 @@ public sealed class RequestHandler(
         var challenge = RandomNumberGenerator.GetBytes(KeyLoginProof.ChallengeSize);
         var expires = this._time.GetUtcNow() + KeyLoginChallengeLifetime;
         // Replaces any earlier one on this connection, which can't be answered any more.
-        connection.PendingKeyLogin = new PendingKeyLogin(request.UserId, challenge, expires);
+        connection.PendingKeyLogin = new PendingKeyLogin(request.UserId, challenge, expires, countedForAddress);
         return new Response {
             KeyLoginChallenge = new KeyLoginChallenge { Challenge = ByteString.CopyFrom(challenge), ExpiresUnix = expires.ToUnixTimeSeconds() },
         };
@@ -670,7 +675,10 @@ public sealed class RequestHandler(
         }
 
         // Answered correctly: the failure counted for the address when the challenge was issued didn't happen.
-        this._keyLoginFailuresPerIp.Refund(connection.RemoteAddress);
+        if (pending!.CountedForAddress) {
+            this._keyLoginFailuresPerIp.Refund(connection.RemoteAddress);
+        }
+
         logger.LogInformation("Key login for {User} from {Address}: new device", user!.UserId, connection.RemoteAddress);
         return new Response { KeyLoginComplete = new KeyLoginComplete { DeviceToken = token, User = user.ToProto() } };
     }

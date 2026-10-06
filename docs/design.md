@@ -352,17 +352,25 @@ timing doesn't reveal which accounts exist.
 **Limits.** Key logins are limited:
 
 - per connection: 3 challenges;
-- per IP address: challenges, and failures (a challenge counts as a failure
-  until it is answered correctly, so an address that only asks for challenges
-  is stopped too);
+- per IP address: challenges (60 an hour), and failures (10 an hour; a
+  challenge counts as a failure until it is answered correctly, so an address
+  that only asks for challenges is stopped too);
 - per account from each address: failed answers only, half the address's
-  allowance, rounded up.
+  allowance, rounded up (5 an hour).
+
+An account that already failed from an address within the hour doesn't count
+against the address again: its own allowance limits it. A plugin whose login
+the server no longer knows (after a reset, say) tries key login on every
+connection, about three times an hour. Without this, four of them behind one
+address (a household, a shared NAT) used up its failures, and nobody there
+could sign in with their key. Now it takes ten different failing accounts.
 
 Nothing is limited per account alone. A signature can't be guessed, so the
 limits only stop spam, and failures from other addresses must never lock an
 account out of key login from its own. An address shared with an attacker
-(one NAT, say) still shares its per-address limits. The numbers are in
-[server.md](server.md#limits-worth-knowing).
+(one NAT, say) still shares its per-address limits: they can keep its key
+logins refused, an hour at a time (see [Known limitations](#known-limitations)).
+The settings are in [server.md](server.md#limits-worth-knowing).
 
 **What the user sees.** "Login not recognised" appears only when the server
 refuses both the token and the key. That happens when:
@@ -1287,6 +1295,11 @@ again.
   to a channel (or invited to it) replays it from the start.
 - **Metadata and availability.** The server sees who is in which channel, when
   messages are sent and who is online, and can drop or delay anything.
+- **Shared addresses share limits.** Per-address limits (registrations, key
+  login, connections) can't tell apart the people behind one address (a
+  shared NAT, a mobile carrier's CGNAT, one IPv6 /64). Someone there can use
+  them up for everyone else, an hour at a time. Logins with a device token,
+  the usual way in, aren't limited like this.
 - **Replays of your own messages** within 10 minutes of a restart, and up to 5
   minutes of replay timestamps lost in a crash (see
   [Replay protection](#replay-protection)).

@@ -83,6 +83,9 @@ public sealed class WindowCounter(int limit, TimeSpan window, TimeProvider? time
     private readonly Lock _trimming = new();
     private long _lastSweepTicks = (time ?? TimeProvider.System).GetUtcNow().UtcTicks;
 
+    /// <summary>Events allowed per key within the window.</summary>
+    public int Limit => limit;
+
     /// <summary>Most keys kept at once (see the class summary).</summary>
     public int MaxKeys { get; init; } = DefaultMaxKeys;
 
@@ -130,18 +133,21 @@ public sealed class WindowCounter(int limit, TimeSpan window, TimeProvider? time
     }
 
     /// <summary>Whether the key has reached the limit within the window, without counting anything.</summary>
-    public bool IsFull(string key) {
+    public bool IsFull(string key) => this.Count(key) >= limit;
+
+    /// <summary>How many events are counted for the key within the window, without counting anything.</summary>
+    public int Count(string key) {
         if (!this._entries.TryGetValue(key, out var entry)) {
-            return limit <= 0;
+            return 0;
         }
 
         lock (entry) {
             if (entry.Removed) {
-                return limit <= 0;
+                return 0;
             }
 
             this.Expire(entry.Events, this._time.GetUtcNow());
-            return entry.Events.Count >= limit;
+            return entry.Events.Count;
         }
     }
 

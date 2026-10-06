@@ -69,7 +69,7 @@ public sealed class LimitOptions {
     public int RefusedRegistrationsPerHourPerIp { get; set; } = 10;
 
     /// <summary>Key login challenges one IP address may ask for in an hour.</summary>
-    public int KeyLoginsPerHourPerIp { get; set; } = 30;
+    public int KeyLoginsPerHourPerIp { get; set; } = 60;
 
     /// <summary>Failed key logins after which an IP address gets no more challenges, for an hour.</summary>
     public int KeyLoginFailuresPerHourPerIp { get; set; } = 10;

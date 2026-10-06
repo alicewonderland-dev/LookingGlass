@@ -26,7 +26,12 @@ public sealed record PendingRegistration(
     ServerOrigin? Origin);
 
 /// <summary>A key login challenge issued on this connection; only this connection can answer it, once.</summary>
-public sealed record PendingKeyLogin(long UserId, byte[] Challenge, DateTimeOffset Expires);
+/// <param name="CountedForAddress">
+/// Counted as a failure for its address until answered correctly. Not when the account already failed from that address
+/// within the hour: an account failing again (a plugin trying a login the server no longer knows on every connection)
+/// counts once against the address, and its own per-address allowance limits the rest.
+/// </param>
+public sealed record PendingKeyLogin(long UserId, byte[] Challenge, DateTimeOffset Expires, bool CountedForAddress = true);
 
 /// <summary>
 /// One client's WebSocket. Requests are handled one at a time, in order.

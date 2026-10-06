@@ -177,7 +177,7 @@ All of these are under `LookingGlass`.
 | `Dev:EchoBotServerUrl` | empty | Where the hosted echo bot connects. Empty: worked out from the server's own address |
 | `Limits:RegistrationsPerHourPerIp` | 5 | Registrations started per IP address per hour |
 | `Limits:RefusedRegistrationsPerHourPerIp` | 10 | Registrations refused for naming an address this server doesn't list, logged per IP per hour; refused silently past that |
-| `Limits:KeyLoginsPerHourPerIp` | 30 | Key login challenges per IP address per hour |
+| `Limits:KeyLoginsPerHourPerIp` | 60 | Key login challenges per IP address per hour |
 | `Limits:KeyLoginFailuresPerHourPerIp` | 10 | Failed key logins after which an IP address gets no more challenges for the hour |
 | `Limits:ConnectionsPerIp` | 20 | Concurrent connections per IP address |
 | `Limits:MaxIdentitiesPerRequest` | 500 | Users one identity lookup may ask for |
@@ -272,10 +272,14 @@ IPv6 clients are counted per /64.
   (`KeyLoginsPerHourPerIp` challenges and `KeyLoginFailuresPerHourPerIp`
   failures), and per account from each address (failures only: half the
   per-address allowance, rounded up, so 5 an hour with the default of 10). A
-  challenge counts as a failure until it is answered correctly. Nothing is
-  limited per account alone, so failures from other addresses never stop a
-  user signing in from theirs. Users who share an address with an attacker
-  (one NAT, say) share its per-address limits.
+  challenge counts as a failure until it is answered correctly, and an account
+  that already failed from an address that hour doesn't count against it
+  again, so plugins retrying a login the server lost (about three times an
+  hour each) don't lock their neighbours out. Nothing is limited per account
+  alone, so failures from other addresses never stop a user signing in from
+  theirs. Users who share an address with an attacker (one NAT, say) share
+  its per-address limits. Behind a large shared NAT, raise
+  `KeyLoginsPerHourPerIp` and `KeyLoginFailuresPerHourPerIp` together.
 - **Devices.** Each user keeps their 20 most recently used devices; older ones
   are dropped as new ones sign in.
 - **Unauthenticated connections** close after 20 minutes.
