@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Net.WebSockets;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Extensions.Options;
@@ -181,8 +180,10 @@ app.UseWebSockets(new WebSocketOptions {
     KeepAliveTimeout = TimeSpan.FromSeconds(60),
 });
 
-var connectionsPerAddress = new ConcurrentDictionary<string, int>();
-var newConnectionsPerAddress = new WindowCounter(options.Limits.ConnectionsPerMinutePerIp, TimeSpan.FromMinutes(1));
+// Which connections the server takes, per address and in all (see ConnectionGate), and a quiet 503 when it is full.
+var gate = new ConnectionGate(options.Limits.MaxConnections, options.Limits.ConnectionsPerIp, options.Limits.NotLoggedInConnectionsPerIp,
+    options.Limits.ConnectionsPerMinutePerIp);
+var acceptor = new WebSocketAcceptor(app.Services.GetRequiredService<ILoggerFactory>().CreateLogger<WebSocketAcceptor>());
 
 // Whether the server is up, and its version: nothing about who uses it.
 app.MapGet("/health", () => Results.Ok(new { status = "ok", version = RequestHandler.ServerVersion }));
@@ -194,39 +195,46 @@ app.Map(ProtocolInfo.WebSocketPath, async (HttpContext context, RequestHandler h
         return;
     }
 
-    var address = ClientAddresses.LimitKey(context.Connection.RemoteIpAddress);
-    if (!newConnectionsPerAddress.TryAdd(address)) {
-        context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+    var (ticket, refusal) = gate.TryAdmit(ClientAddresses.ConnectionLimitKey(context.Connection.RemoteIpAddress));
+    if (ticket == null) {
+        if (refusal == ConnectionRefusal.ServerFull) {
+            acceptor.RefuseFull(context);
+        } else {
+            context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+        }
+
         return;
     }
 
-    if (connectionsPerAddress.AddOrUpdate(address, 1, (_, count) => count + 1) > options.Limits.ConnectionsPerIp) {
-        connectionsPerAddress.AddOrUpdate(address, 0, (_, count) => count - 1);
-        context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
-        return;
-    }
+    using (ticket) {
+        using var socket = await acceptor.AcceptAsync(context);
+        if (socket == null) {
+            return;
+        }
 
-    try {
-        using var socket = await context.WebSockets.AcceptWebSocketAsync();
-        var connection = new ClientConnection(socket, address, (int) handler.Limits.MaxFrameBytes, options.Limits.SendQueueLength,
-            loggers.CreateLogger<ClientConnection>(), options.Limits.RequestsPerSecondPerConnection, options.Limits.RequestBurstPerConnection) {
+        // Per-address request limits (registration, key login) count IPv6 per /64.
+        var connection = new ClientConnection(socket, ClientAddresses.LimitKey(context.Connection.RemoteIpAddress), (int) handler.Limits.MaxFrameBytes,
+            options.Limits.SendQueueLength, loggers.CreateLogger<ClientConnection>(), options.Limits.RequestsPerSecondPerConnection,
+            options.Limits.RequestBurstPerConnection, TimeSpan.FromSeconds(Math.Max(1, options.Limits.NotLoggedInSeconds))) {
             // As the client addressed it: the Host header, and the scheme (https behind a trusted TLS proxy, from X-Forwarded-Proto).
             RequestOrigin = ServerOrigin.FromRequest(context.Request.Scheme, context.Request.Host.Value),
         };
+        // At the cap, the oldest connection that hasn't logged in (and isn't registering, if any isn't) makes room for a new one.
+        ticket.Attach(() => connection.PendingRegistration != null, () => connection.Abort("Server busy", WebSocketCloseStatus.EndpointUnavailable));
 
         // Stopping (systemd sends SIGTERM) closes every connection at once, saying the server is going away, so clients
         // reconnect later and the server stops without waiting out its shutdown timeout.
         using var stopping = app.Lifetime.ApplicationStopping.Register(() => connection.Abort("Server shutting down", WebSocketCloseStatus.EndpointUnavailable));
         try {
-            await connection.RunAsync(handler.HandleAsync, registry.Respond);
+            await connection.RunAsync(handler.HandleAsync, (c, response) => {
+                // Logged in (or out again) by the request just answered.
+                ticket.SetLoggedIn(c.User != null);
+                registry.Respond(c, response);
+            });
         } finally {
             if (connection.User != null) {
                 registry.SetOffline(connection.User.UserId, connection);
             }
-        }
-    } finally {
-        if (connectionsPerAddress.AddOrUpdate(address, 0, (_, count) => count - 1) <= 0) {
-            connectionsPerAddress.TryRemove(new KeyValuePair<string, int>(address, 0));
         }
     }
 });

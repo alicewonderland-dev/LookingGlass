@@ -50,6 +50,11 @@ public sealed class Harness : IAsyncDisposable {
             builder.UseSetting("LookingGlass:Dev:HostEchoBot", "false");
             // Tests of other environments use debug accounts too, which a real server there refuses without this.
             builder.UseSetting("LookingGlass:Dev:AllowOutsideDevelopment", allowDebugAccounts && environment != "Development" ? "true" : "false");
+            // Every test client connects from the same (unknown) address, so the per-address connection limits would apply to
+            // a test's clients together; tests of those limits set them, and give their connections addresses.
+            builder.UseSetting("LookingGlass:Limits:ConnectionsPerIp", "1000");
+            builder.UseSetting("LookingGlass:Limits:NotLoggedInConnectionsPerIp", "1000");
+            builder.UseSetting("LookingGlass:Limits:ConnectionsPerMinutePerIp", "100000");
             foreach (var (key, value) in settings) {
                 builder.UseSetting(key, value);
             }

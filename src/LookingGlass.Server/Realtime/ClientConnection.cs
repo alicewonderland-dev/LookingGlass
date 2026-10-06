@@ -55,8 +55,10 @@ public sealed class ClientConnection {
     private long _requestTokensAt = Stopwatch.GetTimestamp();
 
     /// <param name="requestsPerSecond">Requests handled per second on average, past <paramref name="requestBurst"/> at once; 0 for no limit.</param>
+    /// <param name="notLoggedInLifetime">How long it may stay without logging in (by default <see cref="DefaultNotLoggedInLifetime"/>).</param>
     public ClientConnection(WebSocket socket, string remoteAddress, int maxFrameBytes, int queueLength, ILogger logger,
-        double requestsPerSecond = 0, int requestBurst = 0) {
+        double requestsPerSecond = 0, int requestBurst = 0, TimeSpan? notLoggedInLifetime = null) {
+        this._notLoggedInLifetime = notLoggedInLifetime ?? DefaultNotLoggedInLifetime;
         this._socket = socket;
         this.RemoteAddress = remoteAddress;
         this._maxFrameBytes = maxFrameBytes;
@@ -70,8 +72,15 @@ public sealed class ClientConnection {
         });
     }
 
-    /// <summary>How long a connection may stay without logging in (registration included).</summary>
-    public static readonly TimeSpan UnauthenticatedLifetime = TimeSpan.FromMinutes(20);
+    /// <summary>
+    /// How long a connection may stay without logging in, unless it is registering: then until its registration challenge
+    /// expires. A plugin with a saved login logs in within milliseconds; one without (not registered yet, or a login the
+    /// server doesn't know) is closed after this and reconnects, which is cheap; and connections that never log in can't
+    /// pile up.
+    /// </summary>
+    public static readonly TimeSpan DefaultNotLoggedInLifetime = TimeSpan.FromMinutes(3);
+
+    private readonly TimeSpan _notLoggedInLifetime;
 
     public string RemoteAddress { get; }
     public bool HelloDone { get; set; }
@@ -102,11 +111,26 @@ public sealed class ClientConnection {
         Action<ClientConnection, Response>? respond = null) {
         var sendLoop = Task.Run(this.SendLoop);
         // Disposed when the connection ends, so a closed connection isn't kept alive for the full lifetime.
-        var loginDeadline = new Timer(_ => {
-            if (this.User == null) {
-                this.Abort("Not logged in");
+        Timer? loginDeadline = null;
+        loginDeadline = new Timer(_ => {
+            if (this.User != null) {
+                return;
             }
-        }, null, UnauthenticatedLifetime, Timeout.InfiniteTimeSpan);
+
+            // Registering takes the user a while (putting the code in their Lodestone profile): until the challenge expires.
+            var left = this.PendingRegistration is { } pending ? pending.Expires - DateTimeOffset.UtcNow : TimeSpan.Zero;
+            if (left > TimeSpan.Zero) {
+                try {
+                    loginDeadline?.Change(left + TimeSpan.FromSeconds(1), Timeout.InfiniteTimeSpan);
+                } catch (ObjectDisposedException) {
+                    // The connection ended meanwhile.
+                }
+
+                return;
+            }
+
+            this.Abort("Not logged in");
+        }, null, this._notLoggedInLifetime, Timeout.InfiniteTimeSpan);
         var buffer = new byte[16 * 1024];
         using var frame = new MemoryStream();
 

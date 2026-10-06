@@ -703,6 +703,52 @@ public sealed class KeyLoginTests : IAsyncLifetime {
     }
 
     /// <summary>
+    /// Connections that don't log in are closed after a few minutes, and a plugin with a login the server doesn't know
+    /// reconnects and asks for a challenge each time. One account asking again from the same address counts once against
+    /// the address's challenges (up to the same number for that account), so such plugins don't use up their address.
+    /// </summary>
+    [Fact]
+    public async Task OneAccountAskingAgainCountsOnceAgainstTheAddressesChallenges() {
+        await using var server = new Harness(settings: ("LookingGlass:Limits:KeyLoginsPerHourPerIp", "3"));
+        try {
+            var users = new List<(TestClient Client, IdentityKeys Keys)>();
+            foreach (var name in new[] { "Alice Asks Again", "Bob Asks Again", "Carol Asks Again", "Dave Asks Again" }) {
+                var client = await server.RegisterAsync(name);
+                users.Add((client, client.LoadIdentity()));
+            }
+
+            var url = server.ServerUri.AbsoluteUri;
+            // Alice and Bob three times each: six challenges, two accounts.
+            foreach (var (client, keys) in users.Take(2)) {
+                for (var i = 0; i < 3; i++) {
+                    await using var raw = await server.ConnectRawAsync(remoteAddress: "203.0.113.90");
+                    var challenge = await this.ChallengeAsync(raw, client.UserId);
+                    Assert.NotNull((await this.CompleteAsync(raw, challenge, url, KeyLoginProof.Sign(keys, challenge, client.UserId, url))).KeyLoginComplete);
+                }
+            }
+
+            // Alice once more is past her own three.
+            await using (var again = await server.ConnectRawAsync(remoteAddress: "203.0.113.90")) {
+                Assert.Equal(ErrorCode.RateLimited, (await again.SendAsync(new ClientFrame { StartKeyLogin = new StartKeyLogin { UserId = users[0].Client.UserId } })).Error?.Code);
+            }
+
+            // A third account is the address's third; a fourth is one too many.
+            await using (var third = await server.ConnectRawAsync(remoteAddress: "203.0.113.90")) {
+                var challenge = await this.ChallengeAsync(third, users[2].Client.UserId);
+                Assert.NotNull((await this.CompleteAsync(third, challenge, url, KeyLoginProof.Sign(users[2].Keys, challenge, users[2].Client.UserId, url))).KeyLoginComplete);
+            }
+
+            await using var fourth = await server.ConnectRawAsync(remoteAddress: "203.0.113.90");
+            Assert.Equal(ErrorCode.RateLimited, (await fourth.SendAsync(new ClientFrame { StartKeyLogin = new StartKeyLogin { UserId = users[3].Client.UserId } })).Error?.Code);
+            foreach (var (_, keys) in users) {
+                keys.Dispose();
+            }
+        } finally {
+            DeleteDirectory(server.DataDirectory);
+        }
+    }
+
+    /// <summary>
     /// An address that asks for challenges for someone else's account and never answers them can't use up that
     /// account's key logins: only failed answers count against an account.
     /// </summary>

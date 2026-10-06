@@ -355,15 +355,17 @@ timing doesn't reveal which accounts exist.
 - per IP address: challenges (60 an hour), and failures (10 an hour; a
   challenge counts as a failure until it is answered correctly, so an address
   that only asks for challenges is stopped too);
-- per account from each address: failed answers only, half the address's
-  allowance, rounded up (5 an hour).
+- per account from each address: challenges (60 an hour), and failed answers,
+  half the address's allowance, rounded up (5 an hour).
 
-An account that already failed from an address within the hour doesn't count
-against the address again: its own allowance limits it. A plugin whose login
-the server no longer knows (after a reset, say) tries key login on every
-connection, about three times an hour. Without this, four of them behind one
-address (a household, a shared NAT) used up its failures, and nobody there
-could sign in with their key. Now it takes ten different failing accounts.
+An account asking again, or failing again, from an address within the hour
+doesn't count against the address again: its own allowance there limits it.
+A plugin whose login the server no longer knows (after a reset, say) tries
+key login on every connection, and the server closes connections that don't
+log in after 3 minutes, so it asks about 20 times an hour. Without this, a
+few of them behind one address (a household, a shared NAT) used up its
+allowance, and nobody there could sign in with their key. Now it takes 10
+different failing accounts (or 60 asking).
 
 Nothing is limited per account alone. A signature can't be guessed, so the
 limits only stop spam, and failures from other addresses must never lock an
@@ -1304,6 +1306,13 @@ again.
   shared NAT, a mobile carrier's CGNAT, one IPv6 /64). Someone there can use
   them up for everyone else, an hour at a time. Logins with a device token,
   the usual way in, aren't limited like this.
+- **Connections can be crowded out, not shut out.** Someone with many
+  addresses (many IPv6 /56s, many IPv4 addresses) can open connections that
+  never log in, 4 per address, each for 3 minutes. At the server's cap they
+  are the ones closed to make room, so plugins that log in still get in, but
+  someone registering (whose connection must stay open while they edit their
+  Lodestone profile) can have theirs closed and must start again. Only
+  10,000 logged-in connections fill the server for good.
 - **Replays of your own messages** within 10 minutes of a restart, and up to 5
   minutes of replay timestamps lost in a crash (see
   [Replay protection](#replay-protection)).
@@ -2220,9 +2229,9 @@ one transaction for every multi-step change.
 | Invites from one person to another | 3 at once, then 1 every 10 minutes; checked first | One inviter (blocked or not) can't use up someone's invites |
 | Registration attempts | 5 per hour per IP; verify once per 10 seconds, 10 per challenge | Protects the Lodestone and the challenge flow |
 | Lodestone requests (server-wide) | 1 every 2 seconds, cached | Avoids being blocked by the Lodestone |
-| Connections per IP | 20 open, 60 new a minute; unauthenticated connections close after 20 minutes; no answer to a ping within 60 seconds closes one | Bounds idle, unauthenticated and churning load |
+| Connections per IP (IPv6 per /56) | 20 open, 60 new a minute, 4 not logged in; one not logged in closes after 3 minutes (registering: when its code expires); no answer to a ping within 60 seconds closes one | Bounds idle, unauthenticated and churning load |
 | Requests per connection | 200 at once, then 20 a second; faster ones are slowed, not refused | Bounds the work one connection makes |
-| Connections in all | 2,000 (Kestrel) | A small server's capacity |
+| Connections in all | 10,000; at the cap the oldest not logged in is closed for a new one, and only when all have logged in is one refused (503) | Connections that never log in can't keep plugins out; about 2 GB at most |
 | Outbound queue per connection | 256 events | A slow client is disconnected, not waited on |
 | Devices per user | 20 most recently used | Bounds stored logins |
 

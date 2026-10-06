@@ -109,6 +109,10 @@ public sealed class RequestHandler(
     // spend all of its failures on one account. Both counters drop keys whose events have expired, so memory stays
     // bounded by the addresses (and accounts per address) seen within the hour.
     private readonly WindowCounter _keyLoginsPerIp = new(options.Value.Limits.KeyLoginsPerHourPerIp, TimeSpan.FromHours(1));
+    // Challenges per account and address: one account asking again from an address (a plugin whose login the server doesn't
+    // know asks on every connection, and connections that don't log in are closed after minutes) counts once against the
+    // address's challenges, and up to as many again against itself there.
+    private readonly WindowCounter _keyLoginsPerAccountAndIp = new(options.Value.Limits.KeyLoginsPerHourPerIp, TimeSpan.FromHours(1));
     private readonly WindowCounter _keyLoginFailuresPerIp = new(options.Value.Limits.KeyLoginFailuresPerHourPerIp, TimeSpan.FromHours(1));
     private readonly WindowCounter _keyLoginFailuresPerAccountAndIp = new(
         Math.Max(1, (options.Value.Limits.KeyLoginFailuresPerHourPerIp + 1) / 2), TimeSpan.FromHours(1));
@@ -609,13 +613,25 @@ public sealed class RequestHandler(
         // here within the hour: that one is counted, and the account's own allowance for the address limits the rest. So a
         // plugin that keeps trying a login the server no longer knows (it tries on every connection) counts once against
         // its address, rather than leaving nobody behind that address (a household, a shared NAT) able to sign in.
-        if (!this._keyLoginsPerIp.TryAdd(address)) {
+        var accountKey = AccountAndAddress(request.UserId, address);
+        var askedBefore = this._keyLoginsPerAccountAndIp.Count(accountKey) > 0;
+        if (!this._keyLoginsPerAccountAndIp.TryAdd(accountKey)) {
+            logger.LogDebug("Key login for {User} from {Address} refused: too many challenges for this account from this address", request.UserId, address);
+            throw new RequestException(ErrorCode.RateLimited, "Too many key login attempts for this account from your address; try again later.");
+        }
+
+        if (!askedBefore && !this._keyLoginsPerIp.TryAdd(address)) {
+            this._keyLoginsPerAccountAndIp.Refund(accountKey);
             throw new RequestException(ErrorCode.RateLimited, "Too many key login attempts; try again later.");
         }
 
         var countedForAddress = accountFailures == 0;
         if (countedForAddress && !this._keyLoginFailuresPerIp.TryAdd(address)) {
-            this._keyLoginsPerIp.Refund(address);
+            this._keyLoginsPerAccountAndIp.Refund(accountKey);
+            if (!askedBefore) {
+                this._keyLoginsPerIp.Refund(address);
+            }
+
             throw new RequestException(ErrorCode.RateLimited, "Too many key login attempts; try again later.");
         }
 

@@ -83,6 +83,21 @@ public sealed class LimitOptions {
 
     /// <summary>Concurrent WebSocket connections allowed from one IP address.</summary>
     public int ConnectionsPerIp { get; set; } = 20;
+
+    /// <summary>
+    /// Connections from one IP address (IPv6: one /56) that haven't logged in yet, at once. Plugins with a saved login log in
+    /// within milliseconds; this bounds connections that sit there without logging in.
+    /// </summary>
+    public int NotLoggedInConnectionsPerIp { get; set; } = 4;
+
+    /// <summary>Seconds a connection may stay without logging in, unless it is registering (then until its challenge expires).</summary>
+    public int NotLoggedInSeconds { get; set; } = 180;
+
+    /// <summary>
+    /// WebSocket connections the server takes in all. At the cap, the oldest that hasn't logged in is closed to make room
+    /// for a new one; only when all have logged in is a new one refused (503). See "Limits worth knowing" in docs/server.md.
+    /// </summary>
+    public int MaxConnections { get; set; } = 10_000;
     public int MaxIdentitiesPerRequest { get; set; } = 500;
     public int SendQueueLength { get; set; } = 256;
 

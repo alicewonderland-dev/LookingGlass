@@ -182,7 +182,10 @@ All of these are under `LookingGlass`.
 | `Limits:RefusedRegistrationsPerHourPerIp` | 10 | Registrations refused for naming an address this server doesn't list, logged per IP per hour; refused silently past that |
 | `Limits:KeyLoginsPerHourPerIp` | 60 | Key login challenges per IP address per hour |
 | `Limits:KeyLoginFailuresPerHourPerIp` | 10 | Failed key logins after which an IP address gets no more challenges for the hour |
-| `Limits:ConnectionsPerIp` | 20 | Concurrent connections per IP address |
+| `Limits:ConnectionsPerIp` | 20 | Concurrent connections per IP address (IPv6: per /56) |
+| `Limits:NotLoggedInConnectionsPerIp` | 4 | Connections per IP address that haven't logged in yet, at once |
+| `Limits:NotLoggedInSeconds` | 180 | How long a connection may stay without logging in, unless it is registering |
+| `Limits:MaxConnections` | 10000 | Connections in all; at the cap the oldest not logged in makes room, and only if all have logged in is a new one refused |
 | `Limits:ConnectionsPerMinutePerIp` | 60 | New connections per IP address per minute |
 | `Limits:RequestsPerSecondPerConnection` | 20 | Requests one connection may make per second, on average; faster ones are slowed down, not refused |
 | `Limits:RequestBurstPerConnection` | 200 | Requests one connection may make at once before that applies |
@@ -276,35 +279,50 @@ IPv6 clients are counted per /64.
 
 - **Key logins** are limited per connection (3 challenges), per IP address
   (`KeyLoginsPerHourPerIp` challenges and `KeyLoginFailuresPerHourPerIp`
-  failures), and per account from each address (failures only: half the
-  per-address allowance, rounded up, so 5 an hour with the default of 10). A
-  challenge counts as a failure until it is answered correctly, and an account
-  that already failed from an address that hour doesn't count against it
-  again, so plugins retrying a login the server lost (about three times an
-  hour each) don't lock their neighbours out. Nothing is limited per account
+  failures), and per account from each address (as many challenges as per
+  address, and half its failures, rounded up: 5 an hour with the default of
+  10). A challenge counts as a failure until it is answered correctly. An
+  account asking or failing again from an address that hour doesn't count
+  against the address again, so plugins retrying a login the server lost
+  (about 20 times an hour each, as connections that don't log in close after
+  3 minutes) don't lock their neighbours out. Nothing is limited per account
   alone, so failures from other addresses never stop a user signing in from
   theirs. Users who share an address with an attacker (one NAT, say) share
   its per-address limits. Behind a large shared NAT, raise
   `KeyLoginsPerHourPerIp` and `KeyLoginFailuresPerHourPerIp` together.
 - **Devices.** Each user keeps their 20 most recently used devices; older ones
   are dropped as new ones sign in.
-- **Connections.** 20 open at once and 60 new ones a minute per IP address
-  (`ConnectionsPerIp`, `ConnectionsPerMinutePerIp`); past either, the
-  WebSocket upgrade gets HTTP 429. Unauthenticated connections close after 20
-  minutes, and a client that doesn't answer the server's ping (every 30
-  seconds) within 60 seconds is dropped.
+- **Connections.** Per IP address (an IPv6 client per /56, the least most
+  ISPs give a customer): 20 open at once, 60 new ones a minute, and 4 at once
+  that haven't logged in (`ConnectionsPerIp`, `ConnectionsPerMinutePerIp`,
+  `NotLoggedInConnectionsPerIp`); past any, the WebSocket upgrade gets HTTP
+  429. A connection that hasn't logged in is closed after 3 minutes
+  (`NotLoggedInSeconds`; a plugin with a saved login logs in within
+  milliseconds, and one without reconnects), unless it is registering: then
+  when its registration code expires. A client that doesn't answer the
+  server's ping (every 30 seconds) within 60 seconds is dropped.
+- **Connections in all.** At most 10,000 (`MaxConnections`). At that cap a new
+  connection still gets in: the oldest connection that hasn't logged in (one
+  that isn't registering, if there is one) is closed to make room. Only when
+  every connection has logged in is a new one refused, with HTTP 503 (and a
+  warning in the log, once a minute at most). So connections that never log
+  in can't keep out plugins reconnecting. Each connection takes roughly 50 to
+  200 KiB of memory, so 10,000 is at most 2 GB: fine on an Oracle Ampere
+  machine, but lower it on a small one. The unit allows 65,536 open files.
 - **Requests.** Each connection may make 200 requests at once, then 20 a
   second (`RequestBurstPerConnection`, `RequestsPerSecondPerConnection`). A
   faster client is slowed down (its next request is read only when due), never
   refused. Every request type also has its own per-user limits, and a frame
   is at most 128 KiB.
 - **The web server** (Kestrel, under `Kestrel:Limits` in `appsettings.json`)
-  takes at most 2,000 connections, 2,000 of them WebSockets
-  (`MaxConcurrentConnections`, `MaxConcurrentUpgradedConnections`), plain HTTP
-  request bodies of at most 64 KiB (the server takes none: WebSocket frames
-  have their own limit), headers of at most 32 KiB, sent within 15 seconds,
-  and closes idle keep-alive connections after a minute. Behind a reverse
-  proxy these count the proxy's connections; a small server needs no more.
+  takes at most 12,000 connections, 12,000 of them WebSockets
+  (`MaxConcurrentConnections`, `MaxConcurrentUpgradedConnections`: above
+  `MaxConnections`, so the server's own rule decides, and these only back it
+  up), plain HTTP request bodies of at most 64 KiB (the server takes none:
+  WebSocket frames have their own limit), headers of at most 32 KiB, sent
+  within 15 seconds, and closes idle keep-alive connections after a minute.
+  An upgrade past its limit is answered 503 too. Behind a reverse proxy these
+  count the proxy's connections.
 - **Memory.** Per-address counters keep at most 100,000 addresses, and the
   Lodestone cache 10,000 searches (see [design.md](design.md#server-design)).
 - The full list of protocol limits is in

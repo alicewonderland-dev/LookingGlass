@@ -39,6 +39,8 @@ RestartSec=5
 # Stopping sends SIGTERM: the server closes every connection (clients reconnect later), lets
 # requests finish, and checkpoints the database. It is done well within this.
 TimeoutStopSec=30
+# Room for LookingGlass:Limits:MaxConnections (10,000) and then some: each connection is a file descriptor.
+LimitNOFILE=65536
 # Private test server only (debug accounts + echo bot):
 # Environment=ASPNETCORE_ENVIRONMENT=Development
 NoNewPrivileges=true
