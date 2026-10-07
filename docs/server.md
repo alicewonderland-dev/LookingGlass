@@ -305,7 +305,8 @@ IPv6 clients are counted per /64.
   server's ping (every 30 seconds) within 60 seconds is dropped.
 - **Connections in all.** At most 10,000 (`MaxConnections`). At that cap a new
   connection still gets in: the oldest connection that hasn't logged in (one
-  that isn't registering, if there is one) is closed to make room. Only when
+  that isn't registering, if there is one; if all are registering, one from
+  the address that would hold the most of them) is closed to make room. Only when
   every connection has logged in is a new one refused, with HTTP 503 (and a
   warning in the log, once a minute at most). So connections that never log
   in can't keep out plugins reconnecting. Each connection takes roughly 50 to

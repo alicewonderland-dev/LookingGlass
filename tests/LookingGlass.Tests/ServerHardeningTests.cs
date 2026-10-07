@@ -758,12 +758,14 @@ public sealed class ServerHardeningTests {
             using var stop = CancellationTokenSource.CreateLinkedTokenSource(Ct);
             stop.CancelAfter(TimeSpan.FromSeconds(2));
             Exception? failure = null;
-            var releasing = Task.Run(() => {
+            // Busy for 2 seconds: on threads of their own, so as not to take the thread pool from tests running alongside.
+            static Task Busy(Action loop) => Task.Factory.StartNew(loop, Ct, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+            var releasing = Busy(() => {
                 while (!stop.IsCancellationRequested) {
                     ReleaseConnections(other);
                 }
-            }, Ct);
-            var readers = Enumerable.Range(0, 4).Select(_ => Task.Run(() => {
+            });
+            var readers = Enumerable.Range(0, 4).Select(_ => Busy(() => {
                 try {
                     while (!stop.IsCancellationRequested) {
                         Assert.NotNull(db.GetUser(user));
@@ -771,7 +773,7 @@ public sealed class ServerHardeningTests {
                 } catch (Exception ex) {
                     failure ??= ex;
                 }
-            }, Ct)).ToList();
+            })).ToList();
             await Task.WhenAll(readers.Append(releasing));
             Assert.Null(failure);
         } finally {
@@ -830,8 +832,27 @@ public sealed class SecretFileTests {
             var path = Path.Combine(directory, "secrets.json");
             // Two stores for the same file, as when a closing session and a new one overlap.
             var stores = new[] { new FileSecretStore(path), new FileSecretStore(path) };
-            Parallel.For(0, 400, i => stores[i % 2].Save(new ClientSecrets { UserId = i }));
+            // 400 saves from 8 threads at once, half of them through each store. Threads of their own, not the pool's: a
+            // Parallel.For held every pool thread it could get, each waiting its turn for the file (each save is flushed to
+            // disk), for the whole test, many seconds under load. The servers of tests running alongside, starved of
+            // threads, then missed their 10-second waits.
+            const int threadCount = 8;
+            var failures = new System.Collections.Concurrent.ConcurrentQueue<Exception>();
+            using var start = new Barrier(threadCount);
+            var threads = Enumerable.Range(0, threadCount).Select(first => new Thread(() => {
+                start.SignalAndWait();
+                try {
+                    for (var i = first; i < 400; i += threadCount) {
+                        stores[i % 2].Save(new ClientSecrets { UserId = i });
+                    }
+                } catch (Exception ex) {
+                    failures.Enqueue(ex);
+                }
+            })).ToList();
+            threads.ForEach(thread => thread.Start());
+            threads.ForEach(thread => thread.Join());
 
+            Assert.Empty(failures);
             Assert.NotNull(stores[0].Load().UserId);
             Assert.Equal(["secrets.json", "secrets.json.bak"], Directory.GetFiles(directory).Select(Path.GetFileName).Order());
         } finally {

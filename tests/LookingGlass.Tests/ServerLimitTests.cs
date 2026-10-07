@@ -19,7 +19,6 @@ public sealed class ServerLimitTests : IAsyncLifetime {
 
     public async ValueTask DisposeAsync() {
         await this._server.DisposeAsync();
-        DeleteDirectory(this._server.DataDirectory);
     }
 
     [Fact]

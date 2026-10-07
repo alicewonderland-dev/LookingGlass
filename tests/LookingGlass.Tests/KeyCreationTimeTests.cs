@@ -24,7 +24,6 @@ public sealed class KeyCreationTimeTests : IAsyncLifetime {
 
     public async ValueTask DisposeAsync() {
         await this._server.DisposeAsync();
-        DeleteDirectory(this._server.DataDirectory);
     }
 
     /// <summary>A field as the signed payloads write it: its length (4 bytes, big-endian), then its bytes.</summary>

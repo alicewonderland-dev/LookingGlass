@@ -24,8 +24,8 @@ public enum ConnectionRefusal {
 /// new ones a minute, so many open, and only a few that haven't logged in yet (a plugin with a saved login logs in
 /// within milliseconds; registering takes longer, but one at a time). In all, at most <c>max</c>; at that cap a new
 /// connection is still taken, and the oldest that hasn't logged in is closed to make room (one that isn't registering,
-/// if there is one), so connections that never log in can't fill the server and keep out plugins reconnecting. Only
-/// when every connection has logged in is a new one refused.
+/// if there is one; see <see cref="ChooseToMakeRoomLocked"/> for which registering one), so connections that never log in
+/// can't fill the server and keep out plugins reconnecting. Only when every connection has logged in is a new one refused.
 /// </summary>
 public sealed class ConnectionGate(int max, int perAddress, int notLoggedInPerAddress, int newPerMinute, TimeProvider? time = null) {
     private readonly Lock _lock = new();
@@ -73,7 +73,7 @@ public sealed class ConnectionGate(int max, int perAddress, int notLoggedInPerAd
             }
 
             if (this._open >= max) {
-                evicted = this._notLoggedIn.FirstOrDefault(candidate => !candidate.IsRegistering) ?? this._notLoggedIn.First?.Value;
+                evicted = this.ChooseToMakeRoomLocked(address);
                 if (evicted == null) {
                     return (null, ConnectionRefusal.ServerFull);
                 }
@@ -90,6 +90,45 @@ public sealed class ConnectionGate(int max, int perAddress, int notLoggedInPerAd
 
         evicted?.Evict();
         return (ticket, ConnectionRefusal.None);
+    }
+
+    /// <summary>
+    /// Which connection closes to make room for a new one from <paramref name="newcomer"/>: the oldest that hasn't logged in
+    /// and isn't registering. Failing that, one registering, from the address that would hold the most of them counting the
+    /// new connection (its oldest; between addresses holding as many, the oldest of all). Someone registering keeps one
+    /// connection open, so an address holding several (4 at most) is likelier to be crowding the server; and a new one from
+    /// an address already registering makes room from its own. None that the server already takes as logged in, though the
+    /// gate hasn't been told yet. Under the lock.
+    /// </summary>
+    private Ticket? ChooseToMakeRoomLocked(string newcomer) {
+        List<Ticket>? registering = null;
+        foreach (var candidate in this._notLoggedIn) {
+            if (candidate.IsLoggedIn) {
+                continue;
+            }
+
+            if (!candidate.IsRegistering) {
+                return candidate;
+            }
+
+            (registering ??= []).Add(candidate);
+        }
+
+        if (registering == null) {
+            return null;
+        }
+
+        var perAddress = new Dictionary<string, int>();
+        foreach (var candidate in registering) {
+            perAddress[candidate.Address] = perAddress.GetValueOrDefault(candidate.Address) + 1;
+        }
+
+        if (perAddress.TryGetValue(newcomer, out var own)) {
+            perAddress[newcomer] = own + 1;
+        }
+
+        var most = perAddress.Values.Max();
+        return registering.First(candidate => perAddress[candidate.Address] == most);
     }
 
     private void SetLoggedIn(Ticket ticket, bool loggedIn) {
@@ -144,6 +183,7 @@ public sealed class ConnectionGate(int max, int perAddress, int notLoggedInPerAd
     public sealed class Ticket : IDisposable {
         private readonly ConnectionGate _gate;
         private Func<bool>? _isRegistering;
+        private Func<bool>? _isLoggedIn;
         private Action? _evict;
         private int _evicted;
 
@@ -161,14 +201,21 @@ public sealed class ConnectionGate(int max, int perAddress, int notLoggedInPerAd
 
         internal bool IsRegistering => this._isRegistering?.Invoke() == true;
 
+        internal bool IsLoggedIn => this._isLoggedIn?.Invoke() == true;
+
         /// <summary>
         /// Says how to tell whether the connection is registering (it keeps its place before others), and how to close it to
         /// make room. If it was already chosen to make room, it is closed now.
         /// </summary>
-        public void Attach(Func<bool> isRegistering, Action evict) {
+        /// <param name="isLoggedIn">
+        /// Whether the server already takes the connection as logged in, before <see cref="SetLoggedIn"/> (called when the
+        /// answer to its login goes out): it isn't closed to make room then.
+        /// </param>
+        public void Attach(Func<bool> isRegistering, Action evict, Func<bool>? isLoggedIn = null) {
             bool evicted;
             lock (this) {
                 this._isRegistering = isRegistering;
+                this._isLoggedIn = isLoggedIn;
                 this._evict = evict;
                 evicted = this._evicted == 1;
             }

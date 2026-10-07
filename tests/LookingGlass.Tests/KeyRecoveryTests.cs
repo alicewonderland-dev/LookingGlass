@@ -26,7 +26,6 @@ public sealed class KeyRecoveryTests : IAsyncLifetime {
 
     public async ValueTask DisposeAsync() {
         await this._server.DisposeAsync();
-        DeleteDirectory(this._server.DataDirectory);
     }
 
     /// <summary>
@@ -849,7 +848,6 @@ public sealed class ConfirmedWithoutComparingTests : IAsyncLifetime {
 
     public async ValueTask DisposeAsync() {
         await this._server.DisposeAsync();
-        DeleteDirectory(this._server.DataDirectory);
     }
 
     [Fact]

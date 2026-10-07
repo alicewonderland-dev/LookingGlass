@@ -39,7 +39,7 @@ public sealed class Harness : IAsyncDisposable {
         CapturingLoggerProvider? logs = null, FakeLodestone? lodestone = null, params (string Key, string Value)[] settings) {
         this._ownsDataDirectory = dataDirectory == null;
         this.DataDirectory = dataDirectory ?? Path.Combine(Path.GetTempPath(), "lgt-" + Guid.NewGuid().ToString("N"));
-        Live[Path.GetFullPath(this.DataDirectory)] = this;
+        Live[LiveKey(this.DataDirectory)] = this;
         this.Factory = new WebApplicationFactory<Program>().WithWebHostBuilder(builder => {
             builder.UseEnvironment(environment);
             // Only to these: not to the console, nor (on Windows) to the machine's Event Log, which the server's defaults include.
@@ -77,7 +77,7 @@ public sealed class Harness : IAsyncDisposable {
             _ = this.Factory.Server;
         } catch {
             // Never started (it refused to): nothing will dispose it.
-            Live.TryRemove(new KeyValuePair<string, Harness>(Path.GetFullPath(this.DataDirectory), this));
+            Live.TryRemove(new KeyValuePair<string, Harness>(LiveKey(this.DataDirectory), this));
             throw;
         }
     }
@@ -131,8 +131,10 @@ public sealed class Harness : IAsyncDisposable {
     // Asked to delete its folder (by DeleteDirectory) while it still ran: done when it is disposed.
     private volatile bool _deleteOnDispose;
 
-    // The servers running now, by their data folder.
+    // The servers running now, by their data folder (as LiveKey gives it).
     private static readonly ConcurrentDictionary<string, Harness> Live = new(StringComparer.OrdinalIgnoreCase);
+
+    private static string LiveKey(string directory) => Path.TrimEndingDirectorySeparator(Path.GetFullPath(directory));
     public WebApplicationFactory<Program> Factory { get; }
 
     /// <summary>The server's connection registry: lets a test act as a malicious server and push arbitrary events.</summary>
@@ -352,7 +354,7 @@ public sealed class Harness : IAsyncDisposable {
         // What the server logged while it ran. The test server can leave a request it abandoned running after it is disposed,
         // into a folder deleted below: that is no failure of the server's.
         var errors = this._serverLogs.Entries.Where(entry => entry.Level == Microsoft.Extensions.Logging.LogLevel.Error).ToList();
-        Live.TryRemove(new KeyValuePair<string, Harness>(Path.GetFullPath(this.DataDirectory), this));
+        Live.TryRemove(new KeyValuePair<string, Harness>(LiveKey(this.DataDirectory), this));
         if (this._ownsDataDirectory || this._deleteOnDispose) {
             // Each run of the suite would otherwise leave hundreds of these behind (TestFolders clears old ones too).
             DeleteDirectory(this.DataDirectory);
@@ -376,14 +378,17 @@ public sealed class Harness : IAsyncDisposable {
     /// <summary>
     /// Deletes a test's folder: first closing the pooled SQLite connections to each database in it (only those: see
     /// <see cref="Database.ReleasePooledConnections"/>), then trying for a moment, as a server still closing may hold a file
-    /// briefly. Never fails a test: what is left, TestFolders clears in a later run.
+    /// briefly. Never fails a test over files held open: what is left, TestFolders clears in a later run. Refuses (throws)
+    /// anything but a test's folder: an "lgt-" folder directly in the temporary folder (see <see cref="TestFolders.CheckDeletable"/>).
     /// </summary>
     public static void DeleteDirectory(string path) {
+        path = TestFolders.CheckDeletable(path);
+
         // A server still running on it (a test's finally runs before its `await using` server is disposed) would go on with an
         // empty database in its place: it is deleted when that server is disposed instead.
-        if (Live.TryGetValue(Path.GetFullPath(path), out var running)) {
+        if (Live.TryGetValue(path, out var running)) {
             running._deleteOnDispose = true;
-            if (Live.ContainsKey(Path.GetFullPath(path))) {
+            if (Live.ContainsKey(path)) {
                 return;
             }
         }

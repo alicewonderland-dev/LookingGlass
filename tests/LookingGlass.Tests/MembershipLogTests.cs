@@ -21,7 +21,6 @@ public sealed class MembershipLogTests : IAsyncLifetime {
 
     public async ValueTask DisposeAsync() {
         await this._server.DisposeAsync();
-        DeleteDirectory(this._server.DataDirectory);
     }
 
     /// <summary>Acceptance test 1.</summary>

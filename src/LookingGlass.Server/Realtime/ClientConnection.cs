@@ -110,8 +110,10 @@ public sealed class ClientConnection {
     public async Task RunAsync(Func<ClientConnection, ClientFrame, CancellationToken, Task<Response>> handle,
         Action<ClientConnection, Response>? respond = null) {
         var sendLoop = Task.Run(this.SendLoop);
-        // Disposed when the connection ends, so a closed connection isn't kept alive for the full lifetime.
-        Timer? loginDeadline = null;
+        // Disposed when the connection ends, so a closed connection isn't kept alive for the full lifetime. Started only once
+        // assigned: a callback running before that (a thread held up past a short lifetime) couldn't put itself off for a
+        // registration, and the connection would never close.
+        Timer loginDeadline = null!;
         loginDeadline = new Timer(_ => {
             if (this.User != null) {
                 return;
@@ -121,7 +123,7 @@ public sealed class ClientConnection {
             var left = this.PendingRegistration is { } pending ? pending.Expires - DateTimeOffset.UtcNow : TimeSpan.Zero;
             if (left > TimeSpan.Zero) {
                 try {
-                    loginDeadline?.Change(left + TimeSpan.FromSeconds(1), Timeout.InfiniteTimeSpan);
+                    loginDeadline.Change(left + TimeSpan.FromSeconds(1), Timeout.InfiniteTimeSpan);
                 } catch (ObjectDisposedException) {
                     // The connection ended meanwhile.
                 }
@@ -130,7 +132,8 @@ public sealed class ClientConnection {
             }
 
             this.Abort("Not logged in");
-        }, null, this._notLoggedInLifetime, Timeout.InfiniteTimeSpan);
+        }, null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+        loginDeadline.Change(this._notLoggedInLifetime, Timeout.InfiniteTimeSpan);
         var buffer = new byte[16 * 1024];
         using var frame = new MemoryStream();
 

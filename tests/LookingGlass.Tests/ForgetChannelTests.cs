@@ -22,7 +22,6 @@ public sealed class ForgetChannelTests : IAsyncLifetime {
 
     public async ValueTask DisposeAsync() {
         await this._server.DisposeAsync();
-        DeleteDirectory(this._server.DataDirectory);
     }
 
     /// <summary>

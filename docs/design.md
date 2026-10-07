@@ -1571,8 +1571,14 @@ again.
   never log in, 4 per address, each for 3 minutes. At the server's cap they
   are the ones closed to make room, so plugins that log in still get in, but
   someone registering (whose connection must stay open while they edit their
-  Lodestone profile) can have theirs closed and must start again. Only
-  10,000 logged-in connections fill the server for good.
+  Lodestone profile) can have theirs closed and must start again. Connections
+  registering go last, and then first from the address that would hold the
+  most of them (counting the new connection), so someone registering from
+  several connections an address, or connecting again from one, pushes out
+  their own first. Only once every such address holds one does the oldest go:
+  that takes about as many addresses as the server's cap, 10,000, registering
+  at once (and registering is limited to 5 an hour per address). Only 10,000
+  logged-in connections fill the server for good.
 - **Replays of your own messages** within 10 minutes of a restart, and up to 30
   seconds of replay timestamps lost in a crash (see
   [Replay protection](#replay-protection)).
@@ -2528,7 +2534,7 @@ one transaction for every multi-step change.
 | Lodestone requests (server-wide) | 1 every 2 seconds, cached | Avoids being blocked by the Lodestone |
 | Connections per IP (IPv6 per /56) | 20 open, 60 new a minute, 4 not logged in; one not logged in closes after 3 minutes (registering: when its code expires); no answer to a ping within 60 seconds closes one | Bounds idle, unauthenticated and churning load |
 | Requests per connection | 200 at once, then 20 a second; faster ones are slowed, not refused | Bounds the work one connection makes |
-| Connections in all | 10,000; at the cap the oldest not logged in is closed for a new one, and only when all have logged in is one refused (503) | Connections that never log in can't keep plugins out; about 2 GB at most |
+| Connections in all | 10,000; at the cap the oldest not logged in is closed for a new one (one registering only if all are, then from the address that would hold the most), and only when all have logged in is one refused (503) | Connections that never log in can't keep plugins out, nor someone crowding the server push out others' registrations first; about 2 GB at most |
 | Outbound queue per connection | 256 events | A slow client is disconnected, not waited on |
 | Stored messages (catch-up) | 7 days, 5,000 per channel; the oldest go first | Bounds the disk a channel can take (about 22 MB at worst); operator settings |
 | Pages of stored messages | 200 messages or 96 KiB each; 100 pages per user at once, then 4 a second | A returning client asks once per channel; within the frame limit |
