@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Collections.Immutable;
 using System.Security.Cryptography;
 using System.Text;
 using LookingGlass.Core.Client;
@@ -655,6 +656,220 @@ public sealed class ChatLogTests : IDisposable {
         Assert.Contains("Windows DPAPI", ChatLogWords.Explanation("Windows DPAPI").Technical);
         Assert.Contains("12.3 MB", ChatLogWords.Uses(12_900_000).Plain);
         Assert.Equal("Earlier: Tuesday 6 October 2026", ChatLogWords.Earlier(Start, TimeZoneInfo.Utc).Plain);
+    }
+
+    // ================================================================ after review
+
+    [Fact]
+    public async Task ASegmentThatCantBeMadeLeavesNothingBehindAndLoggingGoesOn() {
+        // Something where the first segment's file would go: it can't be made there.
+        Directory.CreateDirectory(Path.Combine(this.Folder(), "0000000001.lgl"));
+        var log = this.Open();
+        for (var i = 1; i <= 3; i++) {
+            log.Record(Line("aaa", $"m{i}"));
+        }
+
+        await this.Close(log);
+        Assert.Equal(["m1", "m2", "m3"], Texts(await All(this.Open(), "aaa")));
+        Assert.True(File.Exists(Path.Combine(this.Folder(), "0000000002.lgl")));
+    }
+
+    [Fact]
+    public async Task ADeletionThatPartlyFailedDoesntStopLogging() {
+        if (!OperatingSystem.IsWindows()) {
+            // Only Windows refuses to delete a file someone has open.
+            return;
+        }
+
+        var log = this.Open();
+        log.Record(Line("aaa", "before"));
+        await log.FlushAsync();
+        var segment = Directory.GetFiles(this.Folder(), "*.lgl").Single();
+        using (new FileStream(segment, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)) {
+            await Assert.ThrowsAsync<IOException>(log.DeleteAsync);
+            log.Record(Line("aaa", "after"));
+            await log.FlushAsync();
+        }
+
+        await this.Close(log);
+        // The file left over is skipped, never written over: what came after is all there is (its key went).
+        Assert.True(File.Exists(segment));
+        Assert.Equal(["after"], Texts(await All(this.Open(), "aaa")));
+    }
+
+    [Fact]
+    public async Task AKeyFileThatCantBeReadJustNowIsTriedAgainNotGivenUpOn() {
+        var log = this.Open();
+        log.Record(Line("aaa", "before"));
+        await this.Close(log);
+        var keyPath = Path.Combine(this.Folder(), ChatLogStore.KeyFileName);
+        var key = File.ReadAllBytes(keyPath);
+
+        var again = this.Open();
+        using (new FileStream(keyPath, FileMode.Open, FileAccess.Read, FileShare.None)) {
+            await again.FlushAsync();
+            Assert.Equal(ChatLogState.Failed, again.State);
+            Assert.Null(again.Problem);
+            again.Record(Line("aaa", "while it's in use"));
+            await again.FlushAsync();
+        }
+
+        again.Record(Line("aaa", "after"));
+        await again.FlushAsync();
+        Assert.Equal(ChatLogState.Ready, again.State);
+        await this.Close(again);
+        Assert.Equal(key, File.ReadAllBytes(keyPath));
+        Assert.Equal(["before", "after"], Texts(await All(this.Open(), "aaa")));
+    }
+
+    [Fact]
+    public async Task ADamagedLengthKeepsTheRecordsAfterIt() {
+        var log = this.Open();
+        for (var i = 1; i <= 9; i++) {
+            log.Record(Line("aaa", $"m{i}"));
+        }
+
+        await this.Close(log);
+        var segment = Directory.GetFiles(this.Folder(), "*.lgl").Single();
+        var bytes = File.ReadAllBytes(segment);
+        var length = (bytes.Length - 8) / 9;
+        // The third record's length field: nothing after it can be found by its length.
+        BitConverter.GetBytes(int.MaxValue).CopyTo(bytes, 8 + 2 * length);
+        File.WriteAllBytes(segment, bytes);
+
+        var again = this.Open();
+        Assert.Equal(["m1", "m2", "m4", "m5", "m6", "m7", "m8", "m9"], Texts(await All(again, "aaa")));
+        again.Record(Line("aaa", "after"));
+        await this.Close(again);
+        Assert.Equal(["m1", "m2", "m4", "m5", "m6", "m7", "m8", "m9", "after"], Texts(await All(this.Open(), "aaa")));
+    }
+
+    [Fact]
+    public async Task ARecordMovedToAnotherSegmentIsntRead() {
+        var log = this.Open(maxBytes: 64 * 1024);
+        for (var i = 1; i <= 100; i++) {
+            log.Record(Line("aaa", $"n{i:D4}"));
+        }
+
+        await this.Close(log);
+        var segments = Directory.GetFiles(this.Folder(), "*.lgl").Order().ToList();
+        Assert.True(segments.Count >= 2);
+        var first = File.ReadAllBytes(segments[0]);
+        var second = File.ReadAllBytes(segments[1]);
+        var length = BitConverter.ToInt32(first, 8) + 4;
+        Assert.Equal(length, BitConverter.ToInt32(second, 8) + 4);
+        // The first segment's first record, at the same offset in the second: only the segment number differs.
+        first.AsSpan(8, length).CopyTo(second.AsSpan(8, length));
+        File.WriteAllBytes(segments[1], second);
+
+        var texts = Texts(await All(this.Open(maxBytes: 64 * 1024), "aaa")).ToList();
+        Assert.Equal(99, texts.Count);
+        Assert.Single(texts, text => text == "n0001");
+    }
+
+    [Fact]
+    public async Task EveryRecordHasANonceOfItsOwn() {
+        var log = this.Open();
+        for (var i = 0; i < 50; i++) {
+            log.Record(Line("aaa", "the same words"));
+        }
+
+        await this.Close(log);
+        var bytes = File.ReadAllBytes(Directory.GetFiles(this.Folder(), "*.lgl").Single());
+        var nonces = new List<string>();
+        for (var at = 8; at + 4 <= bytes.Length; at += 4 + BitConverter.ToInt32(bytes, at)) {
+            nonces.Add(Convert.ToHexString(bytes, at + 4, 24));
+        }
+
+        Assert.Equal(50, nonces.Count);
+        Assert.Equal(50, nonces.Distinct().Count());
+    }
+
+    [Fact]
+    public async Task ALastSegmentWithoutItsHeaderIsDeletedWhenOpened() {
+        var log = this.Open(maxBytes: 64 * 1024);
+        for (var i = 1; i <= 100; i++) {
+            log.Record(Line("aaa", $"n{i:D4}"));
+        }
+
+        await this.Close(log);
+        var segments = Directory.GetFiles(this.Folder(), "*.lgl").Order().ToList();
+        var bytes = File.ReadAllBytes(segments[^1]);
+        bytes.AsSpan(0, 8).Clear();
+        File.WriteAllBytes(segments[^1], bytes);
+
+        var again = this.Open(maxBytes: 64 * 1024);
+        await again.FlushAsync();
+        Assert.False(File.Exists(segments[^1]));
+        var texts = Texts(await All(again, "aaa")).ToList();
+        Assert.InRange(texts.Count, 1, 99);
+        Assert.Equal("n0001", texts[0]);
+    }
+
+    [Fact]
+    public async Task TurningItOffAndOnInOneSessionShowsNothingTwice() {
+        await using var keeper = new ChatLogKeeper(this._directory, new TestProtection());
+        var history = new ChannelHistory();
+        history.Clear(keeper.Open(Alice, Url, ChatLogLimits.Bytes(50)));
+        history.AddNotice(new SessionNotice(NoticeLevel.Info, "Bob Hatter@Lich joined.", "aaa"));
+        history.Add(From(Bob, "aaa", "hello"));
+
+        history.SetRecorder(null);
+        keeper.Close();
+        var log = keeper.Open(Alice, Url, ChatLogLimits.Bytes(50));
+        history.SetRecorder(log);
+        var earlier = log.Earlier("aaa");
+        await earlier.LoadMoreAsync();
+
+        // The first log of this session kept them, so the second reads them as older: shown once, as this session's.
+        Assert.Equal(2, earlier.Lines.Length);
+        Assert.Empty(earlier.ShownWith(history.LinesOf("aaa")));
+        // Words alike at another time are another line.
+        history.Clear();
+        Assert.Equal(2, earlier.ShownWith(history.LinesOf("aaa")).Length);
+    }
+
+    [Fact]
+    public async Task SomeoneBlockedSinceIsntShownFromTheLogEither() {
+        var carol = new User { UserId = 3, Name = "Carol Queen", WorldName = "Odin" };
+        var first = this.Open();
+        var history = new ChannelHistory();
+        history.Clear(first);
+        history.Add(From(Bob, "aaa", "from bob"));
+        history.Add(From(carol, "aaa", "from carol"));
+        await this.Close(first);
+
+        var earlier = this.Open().Earlier("aaa");
+        await earlier.LoadMoreAsync();
+        var session = ImmutableArray<HistoryLine>.Empty;
+        Assert.Equal(["from bob", "from carol"], Texts(earlier.ShownWith(session)));
+        Assert.Equal(["from carol"], Texts(earlier.ShownWith(session, [Bob])));
+        // Unblocked: shown again.
+        Assert.Equal(["from bob", "from carol"], Texts(earlier.ShownWith(session, [])));
+    }
+
+    [Fact]
+    public async Task ALogMovesWithItsIdentityToTheServersNewAddress() {
+        var log = this.Open(this.Folder(Alice, Url));
+        log.Record(Line("aaa", "said at the old address"));
+        await this.Close(log);
+
+        Assert.True(ChatLogFiles.MoveToAddress(this._directory, Alice, Url, OtherUrl));
+        Assert.False(Directory.Exists(this.Folder(Alice, Url)));
+        Assert.Equal(["said at the old address"], Texts(await All(this.Open(this.Folder(Alice, OtherUrl)), "aaa")));
+        foreach (var open in this._open.ToList()) {
+            await this.Close(open);
+        }
+
+        // Nothing to move, or a log there already (never merged, never written over): nothing happens.
+        Assert.False(ChatLogFiles.MoveToAddress(this._directory, Alice, Url, OtherUrl));
+        var other = this.Open(this.Folder(Alice, Url));
+        other.Record(Line("aaa", "a new one at the old address"));
+        await this.Close(other);
+        Assert.False(ChatLogFiles.MoveToAddress(this._directory, Alice, Url, OtherUrl));
+        Assert.Equal(["said at the old address"], Texts(await All(this.Open(this.Folder(Alice, OtherUrl)), "aaa")));
+        Assert.Equal(["a new one at the old address"], Texts(await All(this.Open(this.Folder(Alice, Url)), "aaa")));
+        Assert.False(ChatLogFiles.MoveToAddress(this._directory, Alice, Url, " WS://lookingglasschat:5180/ws "));
     }
 
     // ================================================================ helpers

@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.Threading.Channels;
+using LookingGlass.Protocol;
 
 namespace LookingGlass.Core.Client;
 
@@ -332,7 +333,7 @@ public sealed class EarlierLines {
     private ChatLogPosition? _cursor;
     private Task? _loading;
     private bool _more = true;
-    private (ImmutableArray<HistoryLine> Session, ImmutableArray<HistoryLine> Earlier, ImmutableArray<HistoryLine> Shown)? _shown;
+    private (ImmutableArray<HistoryLine> Session, ImmutableArray<HistoryLine> Earlier, ImmutableArray<User> Blocked, ImmutableArray<HistoryLine> Shown)? _shown;
 
     internal EarlierLines(ChatLog log, string channelId) {
         this._log = log;
@@ -401,24 +402,35 @@ public sealed class EarlierLines {
     }
 
     /// <summary>
-    /// The older lines to show above <paramref name="session"/> (the channel's lines since login): without the messages it
-    /// holds too. Worked out again only when either changes.
+    /// The older lines to show above <paramref name="session"/> (the channel's lines since login): without what it holds
+    /// too, a message (the same sender, signed time and text) or an information line (the same time and words: kept by an
+    /// earlier log of this session, when the log was turned off and on again), and without messages from anyone in
+    /// <paramref name="blocked"/>, as for live ones. Worked out again only when any of them changes.
     /// </summary>
-    public ImmutableArray<HistoryLine> ShownWith(ImmutableArray<HistoryLine> session) {
+    public ImmutableArray<HistoryLine> ShownWith(ImmutableArray<HistoryLine> session, ImmutableArray<User> blocked = default) {
         lock (this._lock) {
             var earlier = this._lines;
-            if (this._shown is { } cached && cached.Session == session && cached.Earlier == earlier) {
+            blocked = blocked.IsDefault ? ImmutableArray<User>.Empty : blocked;
+            if (this._shown is { } cached && cached.Session == session && cached.Earlier == earlier && cached.Blocked == blocked) {
                 return cached.Shown;
             }
 
             var held = session.Where(line => line.Kind == HistoryLineKind.Message).Select(ChannelHistory.MessageKey.Of).ToHashSet();
-            var shown = held.Count == 0 || earlier.IsEmpty
+            var said = session.Where(line => line.Kind == HistoryLineKind.Notice).Select(NoticeKey).ToHashSet();
+            var hidden = blocked.Select(user => user.UserId).ToHashSet();
+            var shown = (held.Count == 0 && said.Count == 0 && hidden.Count == 0) || earlier.IsEmpty
                 ? earlier
-                : earlier.Where(line => line.Kind != HistoryLineKind.Message || !held.Contains(ChannelHistory.MessageKey.Of(line))).ToImmutableArray();
-            this._shown = (session, earlier, shown);
+                : earlier.Where(line => line.Kind switch {
+                    HistoryLineKind.Message => !held.Contains(ChannelHistory.MessageKey.Of(line)) && !hidden.Contains(line.Sender?.UserId ?? 0),
+                    HistoryLineKind.Notice => !said.Contains(NoticeKey(line)),
+                    _ => true,
+                }).ToImmutableArray();
+            this._shown = (session, earlier, blocked, shown);
             return shown;
         }
     }
+
+    private static (string ChannelId, DateTimeOffset Time, string? Text) NoticeKey(HistoryLine line) => (line.ChannelId, line.Time, line.Notice?.Text);
 }
 
 /// <summary>

@@ -128,6 +128,34 @@ public static partial class ChatLogFiles {
         }
     }
 
+    /// <summary>
+    /// Carries a character's chat log to a server's new address, with its identity (see <see cref="ServerMove"/>): its
+    /// folder is renamed, so the log goes on there, and windows show its older lines at the new address. Only while no log
+    /// is open for either address. Nothing happens if there is none at the old address, or the new address has one of its
+    /// own already: two logs are never merged, and one is never written over.
+    /// </summary>
+    /// <returns>Whether it moved.</returns>
+    public static bool MoveToAddress(string configDirectory, ulong contentId, string oldUrl, string newUrl) {
+        var from = Path.GetFullPath(Folder(configDirectory, contentId, oldUrl));
+        var to = Path.GetFullPath(Folder(configDirectory, contentId, newUrl));
+        if (string.Equals(from, to, StringComparison.OrdinalIgnoreCase)) {
+            return false;
+        }
+
+        // Both folders' locks, always in the same order.
+        var (first, second) = string.CompareOrdinal(from, to) < 0 ? (from, to) : (to, from);
+        lock (AtomicFile.LockFor(first)) {
+            lock (AtomicFile.LockFor(second)) {
+                if (!Directory.Exists(from) || Directory.Exists(to) || File.Exists(to)) {
+                    return false;
+                }
+
+                Directory.Move(from, to);
+                return true;
+            }
+        }
+    }
+
     /// <summary>Deletes a chat log folder's files, then the folder. Only files directly in it: a chat log has no subfolders.</summary>
     /// <returns>False if anything was left.</returns>
     internal static bool DeleteFolder(string folder) {
@@ -429,24 +457,27 @@ internal sealed class ChatLogStore : IDisposable {
             this.DeleteOldest();
         }
 
-        if (newSegment) {
-            this.CloseActive();
-            var number = this._segments.Count > 0 ? this._segments[^1].Number + 1 : Math.Max(1, this.SessionStart.Segment + 1);
-            active = new Segment(number, 0);
-            this._segments.Add(active);
-            this._active = new FileStream(this.PathOf(number), FileMode.CreateNew, FileAccess.Write, FileShare.Read | FileShare.Delete);
-            this._active.Write([.. SegmentMagic, FormatVersion, 0, 0, 0]);
-            active.Size = HeaderSize;
+        if (!newSegment && this._active == null) {
+            try {
+                this._active = this.OpenActive(active!);
+            } catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException) {
+                // Gone from under it (deleted by hand, say): forget it, and start the next.
+                this._segments.Remove(active!);
+                newSegment = true;
+            }
         }
 
-        this._active ??= this.OpenActive(active!);
+        if (newSegment) {
+            active = this.StartSegment();
+        }
+
         var nonce = RandomNumberGenerator.GetBytes(Aead.NonceSize);
         var bytes = new byte[frame];
         BinaryPrimitives.WriteInt32LittleEndian(bytes, Aead.NonceSize + plaintext.Length + Aead.TagSize);
         nonce.CopyTo(bytes, LengthSize);
         Aead.Encrypt(this._key, nonce, AssociatedData(active!.Number, active.Size), plaintext, bytes.AsSpan(LengthSize + Aead.NonceSize));
         try {
-            this._active.Write(bytes);
+            this._active!.Write(bytes);
         } catch {
             // Whatever reached the file is cut off when it is next opened.
             this.CloseActive();
@@ -455,6 +486,43 @@ internal sealed class ChatLogStore : IDisposable {
 
         active.Size += frame;
         return true;
+    }
+
+    /// <summary>
+    /// Starts the next segment: its file first, and only once that holds its header is it one of the log's, so a file that
+    /// couldn't be made leaves nothing behind that later lines would go to. A number whose file (or anything else) is
+    /// already there, left by a deletion that failed, is skipped, never written over.
+    /// </summary>
+    private Segment StartSegment() {
+        this.CloseActive();
+        var number = this._segments.Count > 0 ? this._segments[^1].Number + 1 : Math.Max(1, this.SessionStart.Segment + 1);
+        while (File.Exists(this.PathOf(number)) || Directory.Exists(this.PathOf(number))) {
+            number++;
+        }
+
+        Directory.CreateDirectory(this._folder);
+        var path = this.PathOf(number);
+        var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.Read | FileShare.Delete);
+        try {
+            stream.Write([.. SegmentMagic, FormatVersion, 0, 0, 0]);
+        } catch {
+            stream.Dispose();
+            TryDelete(path);
+            throw;
+        }
+
+        this._active = stream;
+        var segment = new Segment(number, HeaderSize);
+        this._segments.Add(segment);
+        return segment;
+    }
+
+    private static void TryDelete(string path) {
+        try {
+            File.Delete(path);
+        } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) {
+            // Skipped by number next time.
+        }
     }
 
     /// <summary>Hands what was appended to the operating system, so a crash of the game loses none of it.</summary>
@@ -575,13 +643,15 @@ internal sealed class ChatLogStore : IDisposable {
                 var key = this._protection.Unprotect(data[KeyMagic.Length..]);
                 return key.Length == Aead.KeySize ? key : throw new InvalidDataException("The chat log's key file is damaged.");
             });
-        } catch (Exception ex) when (ex is not OutOfMemoryException) {
+        } catch (Exception ex) when (ex is InvalidDataException or CryptographicException or PlatformNotSupportedException) {
+            // It was read, and can't be unlocked here. Not so a file that couldn't be read just now (in use, access denied):
+            // that goes to whoever opened the log, to try again, never mistaken for a log to give up on, or a key to replace.
             if (this._segments.Count == 0) {
                 // Nothing it could unlock: a new key replaces it when something is written.
                 return null;
             }
 
-            this._unreadable = ex is InvalidDataException or CryptographicException ? ex.Message : ex.GetType().Name;
+            this._unreadable = ex.Message;
             throw new ChatLogUnreadableException(this._unreadable, ex);
         }
 
@@ -641,7 +711,10 @@ internal sealed class ChatLogStore : IDisposable {
         }
     }
 
-    /// <summary>Cuts a segment back to its last whole record, as a crash may have left it.</summary>
+    /// <summary>
+    /// Cuts a segment back to the end of its last record that opens, as a crash may have left it: only a tail that can't be
+    /// read goes. A damaged record before whole ones is left (it is skipped when read), and so are they.
+    /// </summary>
     private void Repair(Segment segment) {
         var bytes = this.ReadSegment(segment.Number, segment.Size);
         var end = ValidHeader(bytes) ? HeaderSize : 0;
@@ -712,29 +785,47 @@ internal sealed class ChatLogStore : IDisposable {
         bytes.Length >= HeaderSize && bytes.AsSpan(0, SegmentMagic.Length).SequenceEqual(SegmentMagic) && bytes[SegmentMagic.Length] == FormatVersion;
 
     /// <summary>
-    /// The records of a segment that decrypt: each one's offset, length (with its length field) and plaintext. One that
-    /// doesn't is skipped by its length; one whose length runs past the end (cut short) ends the segment.
+    /// The records of a segment that decrypt: each one's offset, length (with its length field) and plaintext. Where one
+    /// doesn't (damaged, its length field too, or cut short at the end), the next whole record after it is looked for, byte
+    /// by byte: a record only opens at its own offset (the associated data), so nothing in between can pass for one.
     /// </summary>
     private IEnumerable<(long Offset, int Length, byte[] Plaintext)> Frames(long segment, byte[] bytes) {
         var at = HeaderSize;
         while (at + LengthSize <= bytes.Length) {
-            var length = BinaryPrimitives.ReadInt32LittleEndian(bytes.AsSpan(at));
-            if (length < Aead.NonceSize + Aead.TagSize || length > MaxPlaintext + Aead.NonceSize + Aead.TagSize || at + LengthSize + length > bytes.Length) {
+            if (this.TryOpen(segment, bytes, at) is { } record) {
+                yield return (at, record.Length, record.Plaintext);
+                at += record.Length;
+                continue;
+            }
+
+            this.Skipped++;
+            var next = -1;
+            for (var candidate = at + 1; candidate + LengthSize <= bytes.Length; candidate++) {
+                if (this.TryOpen(segment, bytes, candidate) != null) {
+                    next = candidate;
+                    break;
+                }
+            }
+
+            if (next < 0) {
                 yield break;
             }
 
-            var nonce = bytes.AsSpan(at + LengthSize, Aead.NonceSize);
-            var ciphertext = bytes.AsSpan(at + LengthSize + Aead.NonceSize, length - Aead.NonceSize);
-            var plaintext = new byte[ciphertext.Length - Aead.TagSize];
-            var opened = Aead.Decrypt(this._key!, nonce, AssociatedData(segment, at), ciphertext, plaintext);
-            if (opened) {
-                yield return (at, LengthSize + length, plaintext);
-            } else {
-                this.Skipped++;
-            }
-
-            at += LengthSize + length;
+            at = next;
         }
+    }
+
+    /// <summary>The record at <paramref name="at"/>, if one opens there: its length (with its length field) and plaintext.</summary>
+    private (int Length, byte[] Plaintext)? TryOpen(long segment, byte[] bytes, int at) {
+        var length = BinaryPrimitives.ReadInt32LittleEndian(bytes.AsSpan(at));
+        if (length < Aead.NonceSize + Aead.TagSize || length > MaxPlaintext + Aead.NonceSize + Aead.TagSize || at + LengthSize + length > bytes.Length) {
+            return null;
+        }
+
+        var nonce = bytes.AsSpan(at + LengthSize, Aead.NonceSize);
+        var ciphertext = bytes.AsSpan(at + LengthSize + Aead.NonceSize, length - Aead.NonceSize);
+        var plaintext = new byte[ciphertext.Length - Aead.TagSize];
+        return Aead.Decrypt(this._key!, nonce, AssociatedData(segment, at), ciphertext, plaintext) ? (LengthSize + length, plaintext) : null;
     }
 
     private sealed class Segment(long number, long size) {
