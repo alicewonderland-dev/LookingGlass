@@ -499,7 +499,10 @@ public sealed class StickyChannel {
     }
 }
 
-/// <summary>What sticky mode tells the player. Plain words, short, shown in both modes.</summary>
+/// <summary>
+/// What sticky mode tells the player. Plain words, short, shown in both modes. "Now talking in", and "Stopped talking
+/// in" when the player chose it, only with verbose channel messages on (<see cref="SayEntered"/>, <see cref="SayEnded"/>).
+/// </summary>
 public static class StickyMessages {
     public const string Unavailable =
         "Talking in a channel without /lgc doesn't work in this game version yet. Use /lgc3 <message> instead.";
@@ -538,6 +541,31 @@ public static class StickyMessages {
         StickyEnd.Unloading => $"Stopped talking in {tag}: LookingGlass was turned off.",
         _ => $"Stopped talking in {tag}.",
     };
+
+    /// <summary>
+    /// Whether the player ended talking in the channel themselves: switched the game's chat channel (a channel command
+    /// typed on its own, Tab, ChatTwo's picker or a tab with another channel), made a one-off switch, or clicked the server
+    /// info bar entry. (Moving to another LookingGlass channel with /lgcM doesn't end it: it says "Now talking in".)
+    /// Everything else wasn't their choice, and so is any reason not listed here: it fails safe, as said.
+    /// </summary>
+    public static bool ChosenByThePlayer(StickyEnd why) => why switch {
+        StickyEnd.ChannelSwitched or StickyEnd.ChatBoxSwitched or StickyEnd.Stopped => true,
+        StickyEnd.LoggedOut or StickyEnd.Disconnected or StickyEnd.SessionEnded or StickyEnd.NotInChannel
+            or StickyEnd.ChannelUnknown or StickyEnd.Unloading => false,
+        _ => false,
+    };
+
+    /// <summary>
+    /// Whether to say "Now talking in": only with verbose channel messages on (a setting, off by default). The server info
+    /// bar and the chat box labels show it either way, kept in step every frame.
+    /// </summary>
+    public static bool SayEntered(bool verbose) => verbose;
+
+    /// <summary>
+    /// Whether to say "Stopped talking in": always with verbose channel messages on; otherwise only when the player didn't
+    /// choose it (<see cref="ChosenByThePlayer"/>), such as a disconnect or a logout, which they couldn't otherwise tell.
+    /// </summary>
+    public static bool SayEnded(StickyEnd why, bool verbose) => verbose || !ChosenByThePlayer(why);
 
     /// <summary>A message typed while talking in a channel that wasn't sent: it didn't reach game chat either.</summary>
     public static string NotSent(string tag, string reason) {

@@ -43,6 +43,13 @@ public sealed class Configuration : IPluginConfiguration {
     /// </summary>
     public bool ChatTwoOwnCommandNoteShown { get; set; }
 
+    /// <summary>
+    /// Verbose channel messages: say "Now talking in" and every "Stopped talking in". Off (the default, also for settings
+    /// saved before it existed), only stops the player didn't choose are said (see <see cref="StickyMessages.SayEnded"/>):
+    /// the server info bar and the chat box labels always show where typing goes.
+    /// </summary>
+    public bool VerboseChannelMessages { get; set; }
+
     /// <summary>Per character, keyed by content ID.</summary>
     public Dictionary<ulong, CharacterSettings> Characters { get; set; } = new();
 
