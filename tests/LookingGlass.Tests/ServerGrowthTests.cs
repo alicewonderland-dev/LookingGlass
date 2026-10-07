@@ -140,7 +140,7 @@ public sealed class ServerGrowthTests : IDisposable {
     [Fact]
     public void RateLimitsForgetKeysUnusedForAnHour() {
         var clock = new ManualClock();
-        var limits = new KeyedRateLimits<(long, long)>(perSecond: 1.0 / 600, burst: 3, clock);
+        var limits = new KeyedRateLimits<(long, long)>(perSecond: 1.0 / 60, burst: 20, clock);
         for (var i = 0; i < 300; i++) {
             Assert.True(limits.TryTake((1, i)));
         }
@@ -148,6 +148,34 @@ public sealed class ServerGrowthTests : IDisposable {
         Assert.Equal(300, limits.TrackedKeys);
         clock.Offset += TimeSpan.FromHours(2);
         Assert.True(limits.TryTake((2, 2)));
+        Assert.Equal(1, limits.TrackedKeys);
+    }
+
+    /// <summary>
+    /// A bucket that takes longer than an hour to fill (an operator's slow invite settings) is kept until it is full, so
+    /// dropping it never gives back more than waiting would; and a refusal says how long until the next token.
+    /// </summary>
+    [Fact]
+    public void SlowRateLimitsAreKeptUntilFullAndSayHowLongToWait() {
+        var clock = new ManualClock();
+        var limits = new UserRateLimits(perSecond: 1.0 / 3600, burst: 2, clock);
+        Assert.True(limits.TryTake(1, out var none));
+        Assert.Equal(TimeSpan.Zero, none);
+        Assert.True(limits.TryTake(1));
+        Assert.False(limits.TryTake(1, out var wait));
+        Assert.InRange(wait.TotalMinutes, 59, 60.01);
+
+        // An hour and a half on (sweeping others): half full, and still kept.
+        clock.Offset += TimeSpan.FromMinutes(90);
+        Assert.True(limits.TryTake(2));
+        Assert.Equal(2, limits.TrackedKeys);
+        Assert.True(limits.TryTake(1));
+        Assert.False(limits.TryTake(1, out wait));
+        Assert.InRange(wait.TotalMinutes, 29, 30.01);
+
+        // Long after it is full, it goes.
+        clock.Offset += TimeSpan.FromHours(3);
+        Assert.True(limits.TryTake(3));
         Assert.Equal(1, limits.TrackedKeys);
     }
 

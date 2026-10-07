@@ -419,6 +419,18 @@ public sealed class ManualClock : TimeProvider {
 }
 
 /// <summary>
+/// A clock that stands still (at the time it was made) until a test moves it on, for limits that refill with time: what a
+/// test counts doesn't then depend on how fast it runs.
+/// </summary>
+public sealed class StoppedClock : TimeProvider {
+    private long _ticks = DateTimeOffset.UtcNow.UtcTicks;
+
+    public void Advance(TimeSpan by) => Interlocked.Add(ref this._ticks, by.Ticks);
+
+    public override DateTimeOffset GetUtcNow() => new(Interlocked.Read(ref this._ticks), TimeSpan.Zero);
+}
+
+/// <summary>
 /// A client's WebSocket that can hold back its next request of one kind on the way to the server, until
 /// released: the client is then waiting for an answer, at a point the test knows, while everything else
 /// (events from the server included) carries on.

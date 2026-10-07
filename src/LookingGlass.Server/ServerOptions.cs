@@ -140,6 +140,101 @@ public sealed class LimitOptions {
 
     /// <summary>Requests one connection may make at once before <see cref="RequestsPerSecondPerConnection"/> applies (a client connecting with 50 channels asks about 100).</summary>
     public int RequestBurstPerConnection { get; set; } = 200;
+
+    // ---------------------------------------------------------------- invites (see "Abuse limits" in docs/design.md)
+
+    /// <summary>
+    /// Invites one user may send at once, to anyone; past it, one more every <see cref="InviteIntervalSecondsPerInviter"/>.
+    /// </summary>
+    public int InviteBurstPerInviter { get; set; } = 60;
+
+    /// <summary>Seconds between invites one user may send once <see cref="InviteBurstPerInviter"/> is spent.</summary>
+    public int InviteIntervalSecondsPerInviter { get; set; } = 5;
+
+    /// <summary>
+    /// Invites one user may be sent at once, by everyone together; past it, one more every <see cref="InviteIntervalSecondsPerInvitee"/>.
+    /// </summary>
+    public int InviteBurstPerInvitee { get; set; } = 30;
+
+    /// <summary>Seconds between invites one user may be sent once <see cref="InviteBurstPerInvitee"/> is spent.</summary>
+    public int InviteIntervalSecondsPerInvitee { get; set; } = 10;
+
+    /// <summary>
+    /// Invites one user may send one other user at once (checked first, so they spend nothing of the invitee's allowance
+    /// past it); past it, one more every <see cref="InviteIntervalSecondsPerPair"/>. Less than <see cref="InviteBurstPerInvitee"/>,
+    /// so one inviter (perhaps one the invitee blocked, which the server doesn't know) can't use up all of it.
+    /// </summary>
+    public int InviteBurstPerPair { get; set; } = 20;
+
+    /// <summary>
+    /// Seconds between invites one user may send one other user once <see cref="InviteBurstPerPair"/> is spent. More than
+    /// <see cref="InviteIntervalSecondsPerInvitee"/>, for the same reason.
+    /// </summary>
+    public int InviteIntervalSecondsPerPair { get; set; } = 60;
+
+    /// <summary>Pending invites one user can have at once, across all channels (as many as the channels they can be in).</summary>
+    public int MaxPendingInvitesPerUser { get; set; } = 50;
+
+    /// <summary>
+    /// Pending invites one user can have from any one inviter. Less than <see cref="MaxPendingInvitesPerUser"/>, so a single
+    /// inviter (with many channels) can't take all of them, whether or not the invitee blocked them.
+    /// </summary>
+    public int MaxPendingInvitesFromOneInviter { get; set; } = 25;
+
+    public const int MaxInviteBurst = 10_000;
+    public const int MaxInviteIntervalSeconds = 86_400;
+
+    /// <summary>
+    /// The most <see cref="MaxPendingInvitesPerUser"/> can be: every pending invite is in the invitee's channel list, which
+    /// must stay well within what a client accepts in one response (each invite is under 1 KB).
+    /// </summary>
+    public const int MaxMaxPendingInvitesPerUser = 200;
+
+    /// <summary>Why the invite limits are out of range (the server doesn't start then), or null if they aren't.</summary>
+    public string? InviteProblem() {
+        foreach (var (name, value, fallback) in new[] {
+                     (nameof(this.InviteBurstPerInviter), this.InviteBurstPerInviter, 60),
+                     (nameof(this.InviteBurstPerInvitee), this.InviteBurstPerInvitee, 30),
+                     (nameof(this.InviteBurstPerPair), this.InviteBurstPerPair, 20),
+                 }) {
+            if (value is < 1 or > MaxInviteBurst) {
+                return $"LookingGlass:Limits:{name} is {value}, so the server won't start: it must be 1 to {MaxInviteBurst} (invites at once; {fallback} by default).";
+            }
+        }
+
+        foreach (var (name, value, fallback) in new[] {
+                     (nameof(this.InviteIntervalSecondsPerInviter), this.InviteIntervalSecondsPerInviter, 5),
+                     (nameof(this.InviteIntervalSecondsPerInvitee), this.InviteIntervalSecondsPerInvitee, 10),
+                     (nameof(this.InviteIntervalSecondsPerPair), this.InviteIntervalSecondsPerPair, 60),
+                 }) {
+            if (value is < 1 or > MaxInviteIntervalSeconds) {
+                return $"LookingGlass:Limits:{name} is {value}, so the server won't start: it must be 1 to {MaxInviteIntervalSeconds} " +
+                       $"(seconds between invites once the burst is spent; {fallback} by default).";
+            }
+        }
+
+        if (this.InviteBurstPerPair >= this.InviteBurstPerInvitee) {
+            return $"LookingGlass:Limits:InviteBurstPerPair ({this.InviteBurstPerPair}) must be less than InviteBurstPerInvitee " +
+                   $"({this.InviteBurstPerInvitee}), so the server won't start: otherwise one inviter could use up everything others can send the invitee.";
+        }
+
+        if (this.InviteIntervalSecondsPerPair <= this.InviteIntervalSecondsPerInvitee) {
+            return $"LookingGlass:Limits:InviteIntervalSecondsPerPair ({this.InviteIntervalSecondsPerPair}) must be more than InviteIntervalSecondsPerInvitee " +
+                   $"({this.InviteIntervalSecondsPerInvitee}), so the server won't start: otherwise one inviter could use up everything others can send the invitee.";
+        }
+
+        if (this.MaxPendingInvitesPerUser is < 2 or > MaxMaxPendingInvitesPerUser) {
+            return $"LookingGlass:Limits:MaxPendingInvitesPerUser is {this.MaxPendingInvitesPerUser}, so the server won't start: it must be 2 to " +
+                   $"{MaxMaxPendingInvitesPerUser} (pending invites one user can have; 50 by default).";
+        }
+
+        if (this.MaxPendingInvitesFromOneInviter < 1 || this.MaxPendingInvitesFromOneInviter >= this.MaxPendingInvitesPerUser) {
+            return $"LookingGlass:Limits:MaxPendingInvitesFromOneInviter is {this.MaxPendingInvitesFromOneInviter}, so the server won't start: it must be " +
+                   $"1 to {this.MaxPendingInvitesPerUser - 1}, less than MaxPendingInvitesPerUser, so one inviter can't fill them all (25 by default).";
+        }
+
+        return null;
+    }
 }
 
 public sealed class DatabaseOptions {

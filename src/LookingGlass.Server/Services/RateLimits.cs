@@ -10,14 +10,19 @@ public sealed class TokenBucket(double perSecond, double burst, TimeProvider? ti
     private double _tokens = burst;
     private DateTimeOffset _updated = (time ?? TimeProvider.System).GetUtcNow();
 
-    public bool TryTake() {
+    public bool TryTake() => this.TryTake(out _);
+
+    /// <summary>Takes a token if there is one; if not, <paramref name="wait"/> is how long until there is one (else it is zero).</summary>
+    public bool TryTake(out TimeSpan wait) {
         lock (this._lock) {
             this.Refill();
             if (this._tokens < 1) {
+                wait = perSecond > 0 ? TimeSpan.FromSeconds((1 - this._tokens) / perSecond) : TimeSpan.MaxValue;
                 return false;
             }
 
             this._tokens -= 1;
+            wait = TimeSpan.Zero;
             return true;
         }
     }
@@ -38,12 +43,15 @@ public sealed class TokenBucket(double perSecond, double burst, TimeProvider? ti
 
 /// <summary>
 /// A token bucket per key (a user, or an inviter and invitee). Keyed by account, not connection, so reconnecting doesn't
-/// reset them. Keys unused for an hour (by then every bucket here is full again) are dropped every 10 minutes.
+/// reset them. Keys unused for an hour, or for as long as their bucket takes to fill if that is longer (so a dropped bucket
+/// was full again anyway), are dropped every 10 minutes.
 /// </summary>
 public class KeyedRateLimits<TKey>(double perSecond, double burst, TimeProvider? time = null) where TKey : notnull {
     private static readonly TimeSpan SweepEvery = TimeSpan.FromMinutes(10);
-    private static readonly TimeSpan IdleFor = TimeSpan.FromHours(1);
 
+    private readonly TimeSpan _idleFor = perSecond > 0 && burst / perSecond > TimeSpan.FromHours(1).TotalSeconds
+        ? TimeSpan.FromSeconds(Math.Ceiling(burst / perSecond))
+        : TimeSpan.FromHours(1);
     private readonly TimeProvider _time = time ?? TimeProvider.System;
     private readonly ConcurrentDictionary<TKey, (TokenBucket Bucket, DateTimeOffset LastUsed)> _buckets = new();
     private long _lastSweepTicks = (time ?? TimeProvider.System).GetUtcNow().UtcTicks;
@@ -51,7 +59,10 @@ public class KeyedRateLimits<TKey>(double perSecond, double burst, TimeProvider?
     /// <summary>How many keys are tracked now, for tests.</summary>
     internal int TrackedKeys => this._buckets.Count;
 
-    public bool TryTake(TKey key) {
+    public bool TryTake(TKey key) => this.TryTake(key, out _);
+
+    /// <summary>Takes a token for the key if it has one; if not, <paramref name="wait"/> is how long until it has (else it is zero).</summary>
+    public bool TryTake(TKey key, out TimeSpan wait) {
         var now = this._time.GetUtcNow();
         var entry = this._buckets.AddOrUpdate(key,
             _ => (new TokenBucket(perSecond, burst, this._time), now),
@@ -60,14 +71,14 @@ public class KeyedRateLimits<TKey>(double perSecond, double burst, TimeProvider?
         var last = Interlocked.Read(ref this._lastSweepTicks);
         if (now.UtcTicks - last > SweepEvery.Ticks && Interlocked.CompareExchange(ref this._lastSweepTicks, now.UtcTicks, last) == last) {
             foreach (var (id, value) in this._buckets) {
-                if (now - value.LastUsed > IdleFor) {
+                if (now - value.LastUsed > this._idleFor) {
                     // Only if unused since: one used meanwhile keeps its bucket (and what it has spent).
                     this._buckets.TryRemove(new KeyValuePair<TKey, (TokenBucket, DateTimeOffset)>(id, value));
                 }
             }
         }
 
-        return entry.Bucket.TryTake();
+        return entry.Bucket.TryTake(out wait);
     }
 
     /// <summary>Gives back a token taken for the key, for something that turned out not to happen.</summary>

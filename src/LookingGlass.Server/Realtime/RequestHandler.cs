@@ -79,15 +79,6 @@ public sealed class RequestHandler(
         "LookingGlass__PublicUrls__0=wss://chat.example.com/ws (LookingGlass__PublicUrls__1=... for the next one), or a \"PublicUrls\" list " +
         "under \"LookingGlass\" in appsettings.json. For a private test server, run in Development instead (ASPNETCORE_ENVIRONMENT=Development).";
 
-    /// <summary>Pending invites one user can have at once, across all channels.</summary>
-    public const int MaxPendingInvitesPerUser = 20;
-
-    /// <summary>
-    /// Pending invites one user can have from any one inviter, so a single inviter (with many channels) can't take all of
-    /// <see cref="MaxPendingInvitesPerUser"/>, whether or not the invitee blocked them.
-    /// </summary>
-    public const int MaxPendingInvitesFromOneInviter = 5;
-
     // Channel names are at most 64 UTF-8 bytes; sealing adds a 16-byte tag. The cap keeps
     // invites (which strangers can send) from bloating the invitee's channel list.
     private const int MaxSealedNameBytes = 128;
@@ -123,14 +114,20 @@ public sealed class RequestHandler(
     private readonly UserRateLimits _rekeys = new(perSecond: 0.5, burst: 5);
     private readonly UserRateLimits _lookups = new(perSecond: 0.5, burst: 10);
     private readonly UserRateLimits _messages = new(ProtocolInfo.DefaultLimits().MessagesPerSecond, ProtocolInfo.DefaultLimits().MessageBurst);
-    // Invites are limited on both ends: an inviter can't spam many people, and many
-    // inviters (or invite, cancel, invite loops) can't flood one person.
-    private readonly UserRateLimits _invitesSent = new(perSecond: 1.0 / 15, burst: 20, time);
-    private readonly UserRateLimits _invitesReceived = new(perSecond: 1.0 / 30, burst: 10, time);
+    // Invites are limited on both ends: an inviter can't spam many people, and many inviters (or invite, cancel, invite
+    // loops) can't flood one person. Operator settings (LookingGlass:Limits:Invite...), checked at startup.
+    private readonly UserRateLimits _invitesSent = new(
+        InvitesPerSecond(options.Value.Limits.InviteIntervalSecondsPerInviter), InviteBurst(options.Value.Limits.InviteBurstPerInviter), time);
+    private readonly UserRateLimits _invitesReceived = new(
+        InvitesPerSecond(options.Value.Limits.InviteIntervalSecondsPerInvitee), InviteBurst(options.Value.Limits.InviteBurstPerInvitee), time);
     // And between each inviter and invitee, checked first, so one person can't use up someone's invites alone: not their
     // budget above (an inviter they blocked would otherwise keep it spent, as the server doesn't know whom they block, and
-    // their client declines such invites unseen), nor their pending invites (see MaxPendingInvitesFromOneInviter).
-    private readonly KeyedRateLimits<(long Inviter, long Invitee)> _invitesBetween = new(perSecond: 1.0 / 600, burst: 3, time);
+    // their client declines such invites unseen), nor their pending invites (see MaxPendingInvitesFromOneInviter). Smaller
+    // and slower than the invitee's budget (the startup check sees to it), so others always have some of it left.
+    private readonly KeyedRateLimits<(long Inviter, long Invitee)> _invitesBetween = new(
+        InvitesPerSecond(options.Value.Limits.InviteIntervalSecondsPerPair), InviteBurst(options.Value.Limits.InviteBurstPerPair), time);
+    // Invites refused by a limit are logged (limit and user IDs only), at most one line a minute per inviter.
+    private readonly UserRateLimits _inviteRefusalLogs = new(perSecond: 1.0 / 60, burst: 1, time);
     private readonly UserRateLimits _creates = new(perSecond: 1.0 / 60, burst: 10);
     private readonly UserRateLimits _renames = new(perSecond: 0.1, burst: 10);
     private readonly UserRateLimits _disbands = new(perSecond: 1.0 / 60, burst: 5);
@@ -147,6 +144,16 @@ public sealed class RequestHandler(
     private readonly Lock[] _relayLocks = Enumerable.Range(0, 64).Select(_ => new Lock()).ToArray();
 
     public Limits Limits { get; } = BuildLimits(options.Value);
+
+    /// <summary>Pending invites one user can have at once, across all channels (LookingGlass:Limits:MaxPendingInvitesPerUser).</summary>
+    public int MaxPendingInvitesPerUser { get; } = PendingInvitesPerUser(options.Value.Limits);
+
+    /// <summary>
+    /// Pending invites one user can have from any one inviter, so a single inviter (with many channels) can't take all of
+    /// <see cref="MaxPendingInvitesPerUser"/>, whether or not the invitee blocked them (LookingGlass:Limits:MaxPendingInvitesFromOneInviter).
+    /// </summary>
+    public int MaxPendingInvitesFromOneInviter { get; } =
+        Math.Clamp(options.Value.Limits.MaxPendingInvitesFromOneInviter, 1, PendingInvitesPerUser(options.Value.Limits) - 1);
 
     /// <summary>
     /// Runs after a last member's leave has been checked and before their channel is deleted, so tests can
@@ -238,6 +245,41 @@ public sealed class RequestHandler(
         }
 
         return limits;
+    }
+
+    // The invite settings, kept in range even by a handler made without the startup check (see LimitOptions.InviteProblem).
+    private static double InviteBurst(int burst) => Math.Clamp(burst, 1, LimitOptions.MaxInviteBurst);
+
+    private static double InvitesPerSecond(int intervalSeconds) => 1.0 / Math.Clamp(intervalSeconds, 1, LimitOptions.MaxInviteIntervalSeconds);
+
+    private static int PendingInvitesPerUser(LimitOptions limits) => Math.Clamp(limits.MaxPendingInvitesPerUser, 2, LimitOptions.MaxMaxPendingInvitesPerUser);
+
+    /// <summary>
+    /// Roughly how long to wait, in words, for "try again in ...": "a few seconds", "about 10 seconds", "about a minute",
+    /// "about 3 minutes", "about an hour", "about 5 hours".
+    /// </summary>
+    internal static string AboutHowLong(TimeSpan wait) {
+        var seconds = Math.Max(1, Math.Ceiling(Math.Min(wait.TotalSeconds, TimeSpan.FromDays(365).TotalSeconds)));
+        return seconds switch {
+            <= 5 => "a few seconds",
+            < 50 => $"about {Math.Ceiling(seconds / 5) * 5:0} seconds",
+            < 90 => "about a minute",
+            < 50 * 60 => $"about {Math.Ceiling(seconds / 60):0} minutes",
+            < 90 * 60 => "about an hour",
+            _ => $"about {Math.Ceiling(seconds / 3600):0} hours",
+        };
+    }
+
+    /// <summary>
+    /// An invite refused by one of the invite limits (named as its setting): logged, with the user IDs only, so refusals can be
+    /// traced, though at most once a minute per inviter.
+    /// </summary>
+    private RequestException InviteRefused(ErrorCode code, string limit, long inviter, long invitee, string message) {
+        if (this._inviteRefusalLogs.TryTake(inviter)) {
+            logger.LogInformation("Invite from user {Inviter} to user {Invitee} refused by {Limit}", inviter, invitee, limit);
+        }
+
+        return new RequestException(code, message);
     }
 
     // ================================================================ handshake and identity
@@ -992,8 +1034,9 @@ public sealed class RequestHandler(
         }
 
         // Bounded, so nobody can make this response too big for a client to receive and lock
-        // them out: at most 50 channels of at most 500 members and 32 log entries, and 20 small
-        // invites (about 3 MB at worst, where clients accept 4 MB).
+        // them out: at most 50 channels of at most 500 members and 32 log entries, and at most
+        // MaxPendingInvitesPerUser small invites (50 by default, 200 at most, each under 1 KB):
+        // about 3 MB at worst, where clients accept 4 MB.
         var list = new ChannelList();
         list.Channels.AddRange(db.GetChannelsForUser(me.UserId, (int) this.Limits.MaxChannelsPerUser)
             .Select(channel => this.BuildChannelInfo(channel, me.UserId, known.TryGetValue(channel.ChannelId, out var next) ? next : 0)));
@@ -1057,8 +1100,10 @@ public sealed class RequestHandler(
         var me = RequireUser(connection);
         var channelId = RequireChannelId(request.ChannelId);
         this.RequireAllowed(channelId, me, ChannelAction.Invite);
-        if (!this._invitesSent.TryTake(me.UserId)) {
-            throw new RequestException(ErrorCode.RateLimited, "You're sending invites too quickly; try again later.");
+        if (!this._invitesSent.TryTake(me.UserId, out var sentWait)) {
+            // Checked before the entry is, so the invitee is only who the request names.
+            throw this.InviteRefused(ErrorCode.RateLimited, nameof(LimitOptions.InviteBurstPerInviter), me.UserId, request.Entry?.Subject?.UserId ?? 0,
+                $"You've sent a lot of invites recently; try again in {AboutHowLong(sentWait)}.");
         }
 
         var entry = RequireEntry(request.Entry, channelId, me, MembershipEntryKind.Invite);
@@ -1068,7 +1113,7 @@ public sealed class RequestHandler(
         }
 
         if (db.CountPendingInvites(channelId) >= this.Limits.MaxPendingInvitesPerChannel) {
-            throw new RequestException(ErrorCode.LimitReached, "Too many pending invites in this channel.");
+            throw this.InviteRefused(ErrorCode.LimitReached, "MaxPendingInvitesPerChannel", me.UserId, invitee.UserId, "Too many pending invites in this channel.");
         }
 
         if (db.CountMembers(channelId) + db.CountPendingInvites(channelId) >= this.Limits.MaxMembersPerChannel) {
@@ -1094,23 +1139,28 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.InvalidRequest, $"The invite isn't for {invitee.Name}'s current identity key.");
         }
 
-        if (db.CountInvitesForUser(invitee.UserId) >= MaxPendingInvitesPerUser) {
-            throw new RequestException(ErrorCode.LimitReached, $"{invitee.Name} has too many pending invites.");
+        // Who, as the plugin names players: "Bob Hatter@Lich".
+        var who = $"{invitee.Name}@{invitee.WorldName}";
+        if (db.CountInvitesForUser(invitee.UserId) >= this.MaxPendingInvitesPerUser) {
+            throw this.InviteRefused(ErrorCode.LimitReached, nameof(LimitOptions.MaxPendingInvitesPerUser), me.UserId, invitee.UserId,
+                $"{who} already has {this.MaxPendingInvitesPerUser} invites waiting, the most they can have; once they accept or decline some, they can be invited again.");
         }
 
-        if (db.CountInvitesForUser(invitee.UserId, from: me.UserId) >= MaxPendingInvitesFromOneInviter) {
-            throw new RequestException(ErrorCode.LimitReached,
-                $"{invitee.Name} already has {MaxPendingInvitesFromOneInviter} invites from you waiting; wait until they answer some.");
+        if (db.CountInvitesForUser(invitee.UserId, from: me.UserId) >= this.MaxPendingInvitesFromOneInviter) {
+            throw this.InviteRefused(ErrorCode.LimitReached, nameof(LimitOptions.MaxPendingInvitesFromOneInviter), me.UserId, invitee.UserId,
+                $"{who} already has {this.MaxPendingInvitesFromOneInviter} invites from you waiting; once they accept or decline some, you can invite them again.");
         }
 
         // Before the invitee's own budget, so invites past this pair's allowance don't spend it.
-        if (!this._invitesBetween.TryTake((me.UserId, invitee.UserId))) {
-            throw new RequestException(ErrorCode.RateLimited, $"You've invited {invitee.Name} too often recently; try again later.");
+        if (!this._invitesBetween.TryTake((me.UserId, invitee.UserId), out var pairWait)) {
+            throw this.InviteRefused(ErrorCode.RateLimited, nameof(LimitOptions.InviteBurstPerPair), me.UserId, invitee.UserId,
+                $"You've sent a lot of invites to {who} recently; try again in {AboutHowLong(pairWait)}.");
         }
 
-        if (!this._invitesReceived.TryTake(invitee.UserId)) {
+        if (!this._invitesReceived.TryTake(invitee.UserId, out var receivedWait)) {
             this._invitesBetween.Refund((me.UserId, invitee.UserId));
-            throw new RequestException(ErrorCode.RateLimited, $"{invitee.Name} has been sent too many invites recently; try again later.");
+            throw this.InviteRefused(ErrorCode.RateLimited, nameof(LimitOptions.InviteBurstPerInvitee), me.UserId, invitee.UserId,
+                $"{who} has been sent a lot of invites recently; try again in {AboutHowLong(receivedWait)}.");
         }
 
         try {
