@@ -408,8 +408,8 @@ public sealed class MessageStoreTests : IAsyncLifetime {
 
         Assert.NotNull(refused);
         Assert.Equal(ErrorCode.RateLimited, refused.Code);
-        // The burst (less what the client's own catch-up used when it connected).
-        Assert.InRange(allowed, 90, 100);
+        // The burst, give or take what the client's own catch-up used when it connected and what refilled meanwhile.
+        Assert.InRange(allowed, 90, 110);
 
         clock.Offset += TimeSpan.FromSeconds(1);
         await FetchAsync(bob, channelId);
