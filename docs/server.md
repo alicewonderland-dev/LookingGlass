@@ -180,7 +180,8 @@ All of these are under `LookingGlass`.
 | `Database:CheckpointMinutes` | 0 | Minutes between explicit (PASSIVE) checkpoints of the write-ahead log; 0 leaves them to SQLite and Litestream: see [Litestream](#replicating-with-litestream) |
 | `Messages:KeepDays` | 7 | Days the server keeps each message it relays (encrypted, as relayed), so members who were away get it when they're back: see [Stored messages](#stored-messages). 0 to 365; 0 keeps none |
 | `Messages:MaxPerChannel` | 5000 | Messages kept per channel at most; past it the oldest go first. 0 to 100,000; 0 keeps none |
-| `Limits:RegistrationsPerHourPerIp` | 5 | Registrations started per IP address per hour |
+| `Limits:RegistrationsPerHourPerIp` | 10 | Registrations started per IP address per hour. One whose character the Lodestone doesn't list (or can't be asked about) doesn't count |
+| `Limits:RegistrationLookupFailuresPerHourPerIp` | 20 | Registrations per IP address per hour whose character the Lodestone doesn't list (a typo, a new character, a private profile) or can't be asked about; past it, nothing more is looked up for that address until the hour is up. 1 to 10,000 |
 | `Limits:RefusedRegistrationsPerHourPerIp` | 10 | Registrations refused for naming an address this server doesn't list, logged per IP per hour; refused silently past that |
 | `Limits:KeyLoginsPerHourPerIp` | 60 | Key login challenges per IP address per hour |
 | `Limits:KeyLoginFailuresPerHourPerIp` | 10 | Failed key logins after which an IP address gets no more challenges for the hour |
@@ -204,7 +205,7 @@ All of these are under `LookingGlass`.
 | `Limits:LookupBurst` | 60 | Players one user may look up by name at once (each invite by name starts with one). 1 to 10,000 |
 | `Limits:LookupIntervalSeconds` | 1 | Seconds between their lookups once those are spent. 1 to 86,400 |
 
-The server won't start with an invite or lookup setting outside its range: see
+The server won't start with an invite, lookup or registration lookup setting outside its range: see
 [Limits worth knowing](#limits-worth-knowing).
 
 The address the server listens on is the top-level `Urls` setting
