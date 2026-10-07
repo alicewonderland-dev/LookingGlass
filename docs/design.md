@@ -2628,7 +2628,8 @@ button (`ClientSession.InviteAsync`), and LookingGlass says how it went in
 LookingGlass blue, with the tag in the channel's colour: "Invited Bob
 Hatter@Lich to [sky]." or "Couldn't invite Bob Hatter@Lich to [sky]: " and
 why, in the mode's words (`PlainMessages.MessageOf`, as the Invite button
-shows it; what a server said comes without its error code in simple mode).
+shows it: what a server said comes without its error code in simple mode,
+there as everywhere).
 The invite runs off the game thread; the line is printed on it. Nothing is
 logged about whom.
 
@@ -2733,7 +2734,8 @@ one transaction for every multi-step change.
 - **Memory.** Nothing kept per address, user or name grows without bound.
   Per-address counters drop addresses whose window has passed, and keep at
   most 100,000 (past that, the least recently seen are forgotten and start
-  afresh). Per-user and per-pair rate limits drop keys unused for an hour.
+  afresh). Per-user and per-pair rate limits drop keys unused for an hour
+  (or, for slower settings, for as long as their allowance takes to refill).
   Lodestone searches are cached for an hour (ten minutes if not found),
   swept every ten minutes, and at most 10,000 are kept.
 - **Errors.** Typed errors map to protocol error codes.
@@ -2751,10 +2753,10 @@ one transaction for every multi-step change.
 | Members per channel | 500, counting pending invites | Keeps rekey bundles small |
 | Channels per user | 50 | Bounds login and list cost |
 | Pending invites per channel | 50 | Stops invite spam |
-| Pending invites per user | 20, at most 5 of them from any one inviter | Stops one person being flooded, or one inviter filling them all |
-| Invites sent per user | 20 at once, then 1 every 15 seconds | Stops one person spamming many |
-| Invites received per user | 10 at once, then 1 every 30 seconds | Stops many inviters together flooding one person |
-| Invites from one person to another | 3 at once, then 1 every 10 minutes; checked first | One inviter (blocked or not) can't use up someone's invites |
+| Pending invites per user | 50 (as many as the channels they can be in), at most 25 of them from any one inviter | Stops one person being flooded, or one inviter filling them all; operator settings |
+| Invites sent per user | 60 at once, then 1 every 5 seconds | Stops one person spamming many; operator settings |
+| Invites received per user | 30 at once, then 1 every 10 seconds | Stops many inviters together flooding one person; operator settings |
+| Invites from one person to another | 20 at once, then 1 a minute; checked first | Someone can invite a friend to all their channels in one go, but one inviter (blocked or not) can't use up someone's invites; operator settings |
 | Registration attempts | 5 per hour per IP; verify once per 10 seconds, 10 per challenge | Protects the Lodestone and the challenge flow |
 | Lodestone requests (server-wide) | 1 every 2 seconds, cached | Avoids being blocked by the Lodestone |
 | Connections per IP (IPv6 per /56) | 20 open, 60 new a minute, 4 not logged in; one not logged in closes after 3 minutes (registering: when its code expires); no answer to a ping within 60 seconds closes one | Bounds idle, unauthenticated and churning load |
@@ -2769,8 +2771,22 @@ Channel creation, renames, disbands, identity lookups and heavy reads have
 their own per-user rate limits. The server doesn't know whom a user blocked
 (their client declines those invites unseen), so the limits between one
 inviter and one invitee are what stop a blocked inviter using up the
-invitee's allowance. Several inviters together still can, up to the
-per-user limits. Key login limits
+invitee's allowance. They are checked first, so an invite past them spends
+nothing of the invitee's, and they are smaller and slower than the
+invitee's (20 at once and 1 a minute, against 30 and 1 every 10 seconds;
+the server doesn't start with settings that aren't), so one inviter always
+leaves some for everyone else, as the 25 pending invites one inviter may
+have leave 25 of the 50. Bringing channels over from elsewhere, someone
+inviting the same friend to each of 20 channels in a row is never stopped
+by these; the 21st waits about a minute. Several inviters together can
+still use up someone's allowance, up to the per-user limits. An invite the server
+refuses for its log entry (made before someone else's change landed, which
+the client fetches and tries again after) gives back what it took from
+every one of these. A refused invite says how long to wait ("You've sent a
+lot of invites to Bob Hatter@Lich recently; try again in about a minute."),
+or, at a cap on pending invites, that the invitee must answer some first;
+and the server logs it, with the limit and the user IDs, at most once a
+minute per inviter. Key login limits
 are under [Key login](#key-login). Operators can change some of these (see
 [server.md](server.md#settings)).
 
