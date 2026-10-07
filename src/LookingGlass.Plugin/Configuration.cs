@@ -106,7 +106,7 @@ public sealed class CharacterSettings {
     private Dictionary<string, uint>? _customChannelColours;
 
     /// <summary>
-    /// Channels whose messages don't also go to the game's chat log ("Also show in game chat" turned off): they show only in
+    /// Channels whose messages don't also go to the game's chat log ("Show in game chat" turned off): they show only in
     /// their channel windows. Every other channel's do. Never sent to the server.
     /// </summary>
     public HashSet<string> GameChatOff {

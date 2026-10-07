@@ -208,7 +208,7 @@ internal static class Widgets {
     /// A popup menu row: an icon, a label, and the whole width of the menu to click. Closes the menu.
     /// When disabled it is greyed out, but still shows a tooltip given right after it.
     /// </summary>
-    public static bool MenuItem(FontAwesomeIcon icon, string label, bool enabled = true, Vector4? colour = null) {
+    public static bool MenuItem(FontAwesomeIcon icon, string label, bool enabled = true, Vector4? colour = null, Vector4? iconColour = null) {
         var style = ImGui.GetStyle();
         var height = ImGui.GetFrameHeight();
         var width = IconLabelWidth(icon, label) + style.FramePadding.X;
@@ -217,22 +217,29 @@ internal static class Widgets {
         ImGui.BeginDisabled(!enabled);
         // Its width counts towards the menu's, but it spans the whole menu.
         var clicked = ImGui.Selectable($"##{label}", false, (ImGuiSelectableFlags) ImGuiSelectableFlagsPrivate.SpanAvailWidth, new Vector2(width, height));
-        DrawIconLabel(pos, height, icon, label, ImGui.GetColorU32(colour ?? Text));
+        DrawIconLabel(pos, height, icon, label, ImGui.GetColorU32(colour ?? Text), iconColour is { } own ? ImGui.GetColorU32(own) : null);
         ImGui.EndDisabled();
         return clicked && enabled;
     }
+
+    /// <summary>
+    /// A popup menu row for something on or off: a green check while on, a red cross while off (the shapes differ too, for
+    /// anyone who can't tell the colours apart), then the label. Closes the menu.
+    /// </summary>
+    public static bool ToggleMenuItem(string label, bool on, bool enabled = true) =>
+        MenuItem(on ? FontAwesomeIcon.Check : FontAwesomeIcon.Times, label, enabled, iconColour: on ? Success : Error);
 
     private static float IconLabelWidth(FontAwesomeIcon icon, string label) {
         var style = ImGui.GetStyle();
         return style.FramePadding.X + FixedIconWidth(icon) + style.ItemInnerSpacing.X * 2 + ImGui.CalcTextSize(label).X;
     }
 
-    private static void DrawIconLabel(Vector2 min, float height, FontAwesomeIcon icon, string label, uint colour) {
+    private static void DrawIconLabel(Vector2 min, float height, FontAwesomeIcon icon, string label, uint colour, uint? iconColour = null) {
         var style = ImGui.GetStyle();
         var drawList = ImGui.GetWindowDrawList();
         var iconWidth = FixedIconWidth(icon);
         var x = min.X + style.FramePadding.X;
-        DrawIcon(drawList, icon, new Vector2(x + iconWidth / 2, min.Y + height / 2), colour);
+        DrawIcon(drawList, icon, new Vector2(x + iconWidth / 2, min.Y + height / 2), iconColour ?? colour);
         x += iconWidth + style.ItemInnerSpacing.X * 2;
         drawList.AddText(Snap(new Vector2(x, min.Y + (height - ImGui.GetTextLineHeight()) / 2)), colour, label);
     }

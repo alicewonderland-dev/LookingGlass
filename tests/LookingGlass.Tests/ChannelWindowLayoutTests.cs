@@ -7,7 +7,7 @@ namespace LookingGlass.Tests;
 
 /// <summary>
 /// Channel windows as they are remembered: their tabs, the one selected, and where they were; opening one, adding,
-/// closing and reordering tabs, and following the channel list. Then "Also show in game chat", and how windows read a
+/// closing and reordering tabs, and following the channel list. Then "Show in game chat", and how windows read a
 /// channel for the main window's unread counts.
 /// </summary>
 public sealed class ChannelWindowLayoutTests {
@@ -175,7 +175,7 @@ public sealed class ChannelWindowLayoutTests {
         Assert.False(place.Near(null));
     }
 
-    // ================================================================ also show in game chat
+    // ================================================================ show in game chat
 
     [Fact]
     public void EveryChannelShowsInGameChatUntilTurnedOff() {

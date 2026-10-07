@@ -139,7 +139,7 @@ public static class ChannelWindowLayouts {
 }
 
 /// <summary>
-/// Which channels also show in the game's chat log ("Also show in game chat", on for every channel unless turned off).
+/// Which channels also show in the game's chat log ("Show in game chat", on for every channel unless turned off).
 /// Kept per character like colours and nicknames, as the set of channels turned off, and dropped by the same rule.
 /// </summary>
 public static class GameChatChannels {
