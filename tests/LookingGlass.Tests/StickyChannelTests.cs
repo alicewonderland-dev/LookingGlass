@@ -720,6 +720,60 @@ public sealed class StickyChannelTests {
         });
     }
 
+    // ---------------------------------------------------------------- verbose channel messages (a setting, off by default)
+
+    /// <summary>
+    /// Every way talking in a channel ends, and whether the player chose it. A new <see cref="StickyEnd"/> fails
+    /// <see cref="EveryWayItEndsIsClassifiedOnPurpose"/> until it is added here, on purpose.
+    /// </summary>
+    private static readonly Dictionary<StickyEnd, bool> ChosenByThePlayer = new() {
+        // A typed channel command, Tab, ChatTwo's picker or a tab with another channel, another plugin.
+        { StickyEnd.ChannelSwitched, true },
+        // A one-off switch: a tell from a menu, a channel for one line.
+        { StickyEnd.ChatBoxSwitched, true },
+        // The server info bar entry clicked.
+        { StickyEnd.Stopped, true },
+        { StickyEnd.LoggedOut, false },
+        { StickyEnd.Disconnected, false },
+        { StickyEnd.SessionEnded, false },
+        { StickyEnd.NotInChannel, false },
+        { StickyEnd.ChannelUnknown, false },
+        { StickyEnd.Unloading, false },
+    };
+
+    [Fact]
+    public void EveryWayItEndsIsClassifiedOnPurpose() {
+        Assert.Equal(Enum.GetValues<StickyEnd>().Order(), ChosenByThePlayer.Keys.Order());
+        Assert.All(Enum.GetValues<StickyEnd>(), end =>
+            Assert.True(ChosenByThePlayer[end] == StickyMessages.ChosenByThePlayer(end), $"{end}"));
+    }
+
+    [Fact]
+    public void WithVerboseOffOnlyStopsThePlayerDidntChooseAreSaid() {
+        Assert.All(Enum.GetValues<StickyEnd>(), end =>
+            Assert.True(StickyMessages.SayEnded(end, verbose: false) == !ChosenByThePlayer[end], $"{end}"));
+        Assert.False(StickyMessages.SayEnded(StickyEnd.ChannelSwitched, verbose: false));
+        Assert.True(StickyMessages.SayEnded(StickyEnd.Disconnected, verbose: false));
+    }
+
+    [Fact]
+    public void WithVerboseOnEveryStopIsSaid() {
+        Assert.All(Enum.GetValues<StickyEnd>(), end => Assert.True(StickyMessages.SayEnded(end, verbose: true), $"{end}"));
+    }
+
+    [Fact]
+    public void NowTalkingInIsSaidOnlyWithVerboseOn() {
+        Assert.True(StickyMessages.SayEntered(verbose: true));
+        Assert.False(StickyMessages.SayEntered(verbose: false));
+    }
+
+    [Fact]
+    public void AnUnknownWayItEndsIsSaid() {
+        // Fails safe: a reason not classified (only a cast can make one) counts as not chosen, so it is said.
+        Assert.False(StickyMessages.ChosenByThePlayer((StickyEnd) 999));
+        Assert.True(StickyMessages.SayEnded((StickyEnd) 999, verbose: false));
+    }
+
     // ---------------------------------------------------------------- the labels follow the state
 
     [Fact]

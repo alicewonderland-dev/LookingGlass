@@ -1749,7 +1749,19 @@ chosen in Settings (the same one for every line, so a ChatTwo tab that shows
 "Now talking in" shows "Stopped" too): "Now talking in [sky]." and "Stopped
 talking in [sky]." with a few words of reason where they help (": you logged
 out.", ": disconnected.", ": you're no longer in it.", ": LookingGlass was
-turned off.", ": the connection started over."). The first time ever that it
+turned off.", ": the connection started over."). Most of these only with
+**Verbose channel messages** on (Settings, under Chat; `VerboseChannelMessages`,
+off by default, also for settings saved before it existed): off, "Now talking
+in" isn't said, nor "Stopped talking in" when the player chose the stop (see
+Leaving). A player who switches between LookingGlass and game channels often
+found these lines noise (the owner's request, October 2026). It is safe because
+the line was never the only sign: the server info bar entry and the chat box
+labels (the game's and ChatTwo's) show the tag exactly while typing goes to the
+channel, kept in step every frame and taken down the moment it ends (see The
+indicator), and the owner found them reliable. Everything else is always said:
+a stop the player didn't choose, refusals to start ("No channel is on /lgc3"),
+the ChatTwo note, every "Not sent", the ExtraChat warning and every other
+warning. The diagnostic log has every start and stop either way. The first time ever that it
 starts with ChatTwo loaded, one more sentence follows (a saved setting,
 `ChatTwoOwnCommandNoteShown`; a new name, so players who saw the last round's
 note see the new one once): ChatTwo's "(Warning: …)" names its own channel,
@@ -1959,7 +1971,7 @@ command:
   own keeps its session, which reconnects, so sticky mode stays on, and a
   reconnect doesn't drop the player into public chat. Pressing **Disconnect**
   stops the session: that ends sticky mode, with "Stopped talking in [sky]:
-  disconnected." (`StickyEnd.Disconnected`), as the player chose to stop.
+  disconnected." (`StickyEnd.Disconnected`), said whatever the verbose setting.
 - The send fails (no channel key yet, rate limited, refused, timed out): the
   same line with the reason, in the mode's words (`PlainMessages.MessageOf`).
 - Deciding throws: the line is kept, and the player is told it wasn't sent.
@@ -1974,19 +1986,29 @@ arrow brings back a message that wasn't sent: the game's own chat box adds the
 line to its history before running it, and ChatTwo keeps its own. (The first
 version added kept lines itself, which would now add the game's twice.)
 
-**Leaving.** It ends, with one line saying so, when:
+**Leaving.** It ends when any of these happens. With verbose channel messages
+on, one line says so every time. Off, the line is said only for a stop the
+player didn't choose (`StickyMessages.ChosenByThePlayer`, a unit test lists
+every `StickyEnd`, so a new one has to be put on one side on purpose, and one
+it doesn't know is said). The player's own, marked *(own)* below
+(`ChannelSwitched`, `ChatBoxSwitched`, `Stopped`), are quiet; the rest
+(`LoggedOut`, `Disconnected`, `SessionEnded`, `NotInChannel`, `ChannelUnknown`,
+`Unloading`) are always said, as the player can't otherwise tell why the tag
+went away. Pressing Disconnect counts as not chosen: the player chose to
+disconnect, not to stop talking in the channel. Moving to another LookingGlass
+channel with `/lgcM` doesn't end it at all (see below).
 
-- the game's chat channel changes: read once a frame
+- *(own)* the game's chat channel changes: read once a frame
   (`RaptureShellModule.ChatType`, which names the linkshell too), and after
   every `ChangeChatChannel` call, against the channel it started in
   (Tab-cycling, ChatTwo's picker, a ChatTwo tab with another channel, another
   plugin);
-- a channel command is typed on its own, even for the channel already on (`/s`
-  while in Say): decided from the line itself, before the game runs it (see
-  Where a line goes), and also any `ChangeChatChannel` call made while a line
-  from the chat box is being run (`StickyChannel.ChannelSwitchCalled`), such
-  as `/t Bob`;
-- the player clicks the server info bar entry;
+- *(own)* a channel command is typed on its own, even for the channel already
+  on (`/s` while in Say): decided from the line itself, before the game runs it
+  (see Where a line goes), and also any `ChangeChatChannel` call made while a
+  line from the chat box is being run (`StickyChannel.ChannelSwitchCalled`),
+  such as `/t Bob`;
+- *(own)* the player clicks the server info bar entry;
 - they log out or another character logs in;
 - the session is stopped: **Disconnect** pressed (or a server change waiting
   to connect), "disconnected";
@@ -1995,8 +2017,8 @@ version added kept lines itself, which would now add the game's twice.)
 - they're no longer in the channel (left, removed, disbanded, "Remove from my
   list", or now only a place under old keys), checked against the complete
   channel list only;
-- the game makes a one-off switch, saving the channel it is on to go back to
-  (`StickyEnd.ChatBoxSwitched`, below);
+- *(own)* the game makes a one-off switch, saving the channel it is on to go
+  back to (`StickyEnd.ChatBoxSwitched`, below);
 - the game's chat channel can't be read any more;
 - the plugin is turned off or updated.
 
@@ -2034,9 +2056,12 @@ at every tab switch, and when its input loses focus or Escape is pressed after
 a one-off channel. The cost: picking the current channel again in a picker
 doesn't end it either.
 
-The line is printed for a channel switch too, though the player usually made
-it: the line is what tells them their typing goes to game chat again. Moving
-to another LookingGlass channel says "Now talking in" instead.
+With verbose channel messages on, the line is printed for a channel switch
+too, though the player usually made it. Before the setting it always was, as
+the line told them their typing goes to game chat again; the owner's testing
+showed the labels already tell them that, so it is off by default. Moving to
+another LookingGlass channel says "Now talking in" instead (verbose on), or
+nothing (off): the labels change to the new tag in the same frame.
 
 **The indicator.** While sticky, the channel's tag (`[sky]` or `[LGC3]`)
 shows in three places:
@@ -2167,7 +2192,8 @@ about it:
   on one of those through its own channel picker, which offers them only while
   `/ecl1` to `/ecl8` are registered Dalamud commands. LookingGlass doesn't
   register ExtraChat's commands, so ChatTwo shows "LookingGlass [sky] (Warning:
-  Party)". The ChatTwo sentence after "Now talking in" (shown once) says what
+  Party)". The ChatTwo sentence said once at a start (after "Now talking in"
+  with verbose channel messages on, on its own with them off) says what
   it means: ChatTwo's own channel underneath; what is typed still goes to the
   LookingGlass channel (from any ChatTwo input not set to a tell), and so does
   that channel's short command, so `/party hi` is the way to talk in Party
@@ -2813,6 +2839,13 @@ The owner's decisions, and why.
   operator settings. It costs a wider reach for a stolen key and a week of kept
   metadata (see [Known limitations](#known-limitations)). See
   [Message catch-up](#message-catch-up).
+- **Quiet start and stop lines (2026-10-07).** "Now talking in" and the
+  "Stopped talking in" lines for stops the player chose are off by default
+  (Settings, **Verbose channel messages**): someone who moves between
+  LookingGlass and game channels often found them a bother, and the server
+  info bar and chat box labels have proven reliable. Stops the player didn't
+  choose are always said. See
+  [Talking in a channel without /lgc](#talking-in-a-channel-without-lgc).
 - **Friends-only local chat (2026-10-05).** No party or Free Company option,
   since those can include people a player doesn't trust.
 - **Key-change policy for re-verified keys.** Keys re-verified through the

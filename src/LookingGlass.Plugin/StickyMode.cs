@@ -97,7 +97,10 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
 
         this._loggedChatBox = world.ChatBox;
         Log(() => StickyDiagnostics.Started(tag, chatTwo, world.Channel, wasOn, world.ChatBox));
-        this._chat.ChannelNotice(start.Text, tag, this._sessions.ColourOf(channelId));
+        if (StickyMessages.SayEntered(this._config.VerboseChannelMessages)) {
+            this._chat.ChannelNotice(start.Text, tag, this._sessions.ColourOf(channelId));
+        }
+
         if (StickyMessages.ChatTwoNoteFor(tag, chatTwo, this._config.ChatTwoOwnCommandNoteShown) is { } note) {
             this._chat.Notice(NoticeTone.Info, note, tag, this._sessions.ColourOf(channelId));
             this._config.ChatTwoOwnCommandNoteShown = true;
@@ -148,7 +151,7 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
                 this._chat.Notice(NoticeTone.Info, notice);
                 break;
             case StickyRoute.LeaveThenGame:
-                // /s on its own: stop now, saying so and taking the labels down, then let the game switch. This doesn't
+                // /s on its own: stop now, taking the labels down (and saying so, with verbose channel messages on), then let the game switch. This doesn't
                 // depend on whether, or when, the game calls its channel switch for it (it may not, for the channel already on).
                 this.Leave(StickyEnd.ChannelSwitched);
                 break;
@@ -386,8 +389,9 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
     }
 
     /// <summary>
-    /// Talking in the channel has ended: take the labels down at once, then say so (in every case, see docs/design.md),
-    /// in the same chat channel as "Now talking in". Each step runs even if the other fails.
+    /// Talking in the channel has ended: take the labels down at once, then say so, in the same chat channel as "Now
+    /// talking in": always with verbose channel messages on, otherwise only if the player didn't choose it (see
+    /// docs/design.md). Each step runs even if the other fails. The diagnostic log has every end either way.
     /// </summary>
     private void Ended(string channelId, StickyEnd why) {
         // As last shown: after a logout or a disconnect, the channel's number and nickname are no longer at hand.
@@ -399,7 +403,9 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
             this.SyncIndicators();
         } finally {
             try {
-                this._chat.ChannelNotice(StickyMessages.Ended(tag, why), tag, colour);
+                if (StickyMessages.SayEnded(why, this._config.VerboseChannelMessages)) {
+                    this._chat.ChannelNotice(StickyMessages.Ended(tag, why), tag, colour);
+                }
             } catch (Exception ex) {
                 Services.Log.Error(ex, $"Couldn't say that talking in a channel stopped ({why})");
             }

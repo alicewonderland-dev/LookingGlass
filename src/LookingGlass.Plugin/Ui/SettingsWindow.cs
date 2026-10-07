@@ -301,6 +301,17 @@ public sealed class SettingsWindow : Window {
         }
 
         Widgets.Tooltip("On: a channel with a nickname is tagged [nickname] in chat, as in [sky]. Off: always by its number, as in [LGC1].");
+
+        var verbose = this._config.VerboseChannelMessages;
+        if (ImGui.Checkbox("Verbose channel messages", ref verbose)) {
+            this._config.VerboseChannelMessages = verbose;
+            this._config.Save();
+        }
+
+        ImGui.PushTextWrapPos();
+        ImGui.TextColored(Widgets.Muted, "Say in chat when you start or stop talking in a channel (the server info bar and the chat box label always show it). " +
+                                         "Stops you didn't choose, like a disconnect, are always said.");
+        ImGui.PopTextWrapPos();
     }
 
     private void DrawIdentity() {
