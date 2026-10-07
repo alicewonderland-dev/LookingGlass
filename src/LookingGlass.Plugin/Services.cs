@@ -19,4 +19,5 @@ internal sealed class Services {
     [PluginService] public static IGameGui GameGui { get; private set; } = null!;
     [PluginService] public static IDtrBar DtrBar { get; private set; } = null!;
     [PluginService] public static IContextMenu ContextMenu { get; private set; } = null!;
+    [PluginService] public static ICondition Condition { get; private set; } = null!;
 }

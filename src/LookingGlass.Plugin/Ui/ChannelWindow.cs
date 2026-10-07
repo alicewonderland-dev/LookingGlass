@@ -25,6 +25,9 @@ public sealed class ChannelWindow : Window {
     /// <summary>The game's own limit on a chat line, in characters.</summary>
     public const int MaxLength = 500;
 
+    /// <summary>A new window's size, before the global scale.</summary>
+    internal static readonly Vector2 DefaultSize = new(440, 340);
+
     /// <summary>From how many characters the input shows how many are left.</summary>
     private const int CounterFrom = 400;
 
@@ -65,7 +68,7 @@ public sealed class ChannelWindow : Window {
             this._restorePlace = place;
         } else {
             // Dalamud scales this by the global scale itself.
-            this.Size = new Vector2(440, 340);
+            this.Size = DefaultSize;
             this.SizeCondition = ImGuiCond.FirstUseEver;
             this._placeAtMouse = opened;
         }
@@ -135,6 +138,11 @@ public sealed class ChannelWindow : Window {
         var advanced = this.Sessions.AdvancedMode;
         var history = this.Sessions.History;
         var focused = ImGui.IsWindowFocused(ImGuiFocusedFlags.RootAndChildWindows);
+        if (focused) {
+            // The window a channel is added to while only windows show messages.
+            this._windows.Used(this);
+        }
+
         string? shown = null;
         var closing = new List<string>();
         var order = new List<(float X, string Id)>();
@@ -165,11 +173,14 @@ public sealed class ChannelWindow : Window {
                 this.TabTooltip(channelId, channel, unread, advanced);
                 if (ImGui.BeginPopupContextItem("##tab-menu")) {
                     var inGameChat = this.Sessions.ShowsInGameChat(channelId);
-                    if (Widgets.ToggleMenuItem("Show in game chat", inGameChat)) {
+                    // While only windows show messages, no channel shows in game chat: a red cross, greyed out, as it can't
+                    // change then (the channel's own choice is kept for when that is turned off).
+                    var windowsOnly = this.Sessions.MessagesOnlyInWindows;
+                    if (Widgets.ToggleMenuItem("Show in game chat", !windowsOnly && inGameChat, enabled: !windowsOnly)) {
                         this._windows.SetShowInGameChat(channelId, !inGameChat);
                     }
 
-                    Widgets.Tooltip(inGameChat
+                    Widgets.Tooltip(windowsOnly ? WindowsOnly.GameChatItemTooltip : inGameChat
                         ? "This channel's messages show in game chat and in its windows. Click to see them only in its windows."
                         : "This channel's messages show only in its windows (warnings still show in game chat). Click to see them in game chat too.");
                     if (Widgets.MenuItem(FontAwesomeIcon.WindowClose, "Close tab")) {
@@ -319,7 +330,9 @@ public sealed class ChannelWindow : Window {
             ImGui.TextUnformatted(unread == 1 ? "1 new message" : $"{unread} new messages");
         }
 
-        if (!this.Sessions.ShowsInGameChat(channelId)) {
+        if (this.Sessions.MessagesOnlyInWindows) {
+            ImGui.TextColored(Widgets.Muted, "Not shown in game chat: only windows show messages (change it in Settings).");
+        } else if (!this.Sessions.ShowsInGameChat(channelId)) {
             ImGui.TextColored(Widgets.Muted, "Not shown in game chat: right-click to change.");
         }
 

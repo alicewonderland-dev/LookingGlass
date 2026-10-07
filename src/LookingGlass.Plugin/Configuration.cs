@@ -51,6 +51,21 @@ public sealed class Configuration : IPluginConfiguration {
     public bool VerboseChannelMessages { get; set; }
 
     /// <summary>
+    /// "Show LookingGlass messages only in windows" (off by default, also for settings saved before it existed): no channel's
+    /// messages or information lines go to game chat, whatever each channel's own setting says, and a channel no window
+    /// shows opens in one. Warnings, and answers to what is typed in the chat box, still go there. See <see cref="WindowsOnly"/>.
+    /// Each channel's own choice is kept as it was, for when it is turned off.
+    /// </summary>
+    public bool MessagesOnlyInWindows { get; set; }
+
+    /// <summary>
+    /// While <see cref="MessagesOnlyInWindows"/> is on, how a window is found for a channel no window shows: as a tab in the
+    /// window used last (the default, also for settings saved before it existed), or a new window each time (channels caught
+    /// up at login share one).
+    /// </summary>
+    public WindowOpening WindowOpening { get; set; }
+
+    /// <summary>
     /// Keep a chat log on this computer (off by default): every channel's messages, encrypted, for channel windows to show
     /// again after the next login. One setting for every channel, character and server; each character's log for each
     /// server is kept apart. See <see cref="ChatLog"/>.

@@ -290,11 +290,14 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
             Widgets.Tooltip("Chat here in a window of its own. What you type there only ever goes to this channel.",
                 "Right-click a channel in the list to add it to a window that's open.");
             var inGameChat = sessions.ShowsInGameChat(channel.Id);
-            if (Widgets.ToggleMenuItem("Show in game chat", inGameChat)) {
+            // While only windows show messages, no channel shows in game chat: a red cross, greyed out, as it can't change
+            // then (the channel's own choice is kept for when that is turned off).
+            var windowsOnly = sessions.MessagesOnlyInWindows;
+            if (Widgets.ToggleMenuItem("Show in game chat", !windowsOnly && inGameChat, enabled: !windowsOnly)) {
                 windows.SetShowInGameChat(channel.Id, !inGameChat);
             }
 
-            Widgets.Tooltip(inGameChat
+            Widgets.Tooltip(windowsOnly ? WindowsOnly.GameChatItemTooltip : inGameChat
                 ? "This channel's messages show in game chat and in its windows. Turn it off to see them only in its windows."
                 : "This channel's messages show only in its windows (warnings still show in game chat). Turn it on to see them in game chat too.");
         }
