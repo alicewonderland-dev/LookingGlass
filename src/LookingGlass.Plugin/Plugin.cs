@@ -16,6 +16,8 @@ public sealed class Plugin : IDalamudPlugin {
     private readonly DebugWindow _debugWindow;
     private readonly ChannelWindows _channelWindows;
     private readonly UiFonts _fonts;
+    private readonly GameContextMenuInvites _gameMenuInvites;
+    private readonly ChatTwoContextMenuInvites _chatTwoMenuInvites;
 
     public Plugin(IDalamudPluginInterface pluginInterface) {
         pluginInterface.Create<Services>();
@@ -45,6 +47,11 @@ public sealed class Plugin : IDalamudPlugin {
 
         this._commands = new Commands(this._sessions, chat, sender, this._sticky, this._mainWindow.Toggle, this._debugWindow.Toggle);
 
+        // "Invite to LookingGlass" when right-clicking a player, in the game's menus and in ChatTwo's.
+        var inviter = new ContextInviter(this._config, this._sessions, chat);
+        this._gameMenuInvites = new GameContextMenuInvites(inviter);
+        this._chatTwoMenuInvites = new ChatTwoContextMenuInvites(inviter);
+
         pluginInterface.UiBuilder.Draw += this.Draw;
         pluginInterface.UiBuilder.OpenMainUi += this._mainWindow.Toggle;
         pluginInterface.UiBuilder.OpenConfigUi += this._settingsWindow.Toggle;
@@ -65,6 +72,8 @@ public sealed class Plugin : IDalamudPlugin {
         ui.OpenMainUi -= this._mainWindow.Toggle;
         ui.OpenConfigUi -= this._settingsWindow.Toggle;
 
+        this._chatTwoMenuInvites.Dispose();
+        this._gameMenuInvites.Dispose();
         this._commands.Dispose();
         // Taken away without being forgotten: they open again when the plugin next starts.
         this._channelWindows.Dispose();

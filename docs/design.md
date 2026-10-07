@@ -1674,10 +1674,16 @@ Dalamud dependency.
 - **ChatTwo.** ChatTwo's input sends through the same game function the chat
   box does, which sticky mode hooks, and LookingGlass names its channel in
   ChatTwo's input through `ExtraChat.OverrideChannelColour` (see below).
-  ExtraChat also exposed `ExtraChat.ChannelNames` and
-  `ExtraChat.ChannelCommandColours`, and added an invite item to ChatTwo's
-  context menu through `ChatTwo.Register` and `Invoke`. LookingGlass will keep
-  equivalent integration; the IPC names are an open question.
+  Right-clicking a name in ChatTwo offers **Invite to LookingGlass**, through
+  ChatTwo's context menu IPC (`ChatTwo.Register`, `ChatTwo.Invoke`,
+  `ChatTwo.Unregister`, `ChatTwo.Available`; see
+  [Context menu invites](#context-menu-invites)). ExtraChat also exposed
+  `ExtraChat.ChannelNames` and `ExtraChat.ChannelCommandColours`;
+  LookingGlass has no equivalent of those yet, and their names are an open
+  question.
+- **Context menus.** "Invite to LookingGlass" in the game's own right-click
+  menus on a player, through Dalamud's `IContextMenu` (see
+  [Context menu invites](#context-menu-invites)).
 
 ### Channel numbers, nicknames and colours
 
@@ -1712,7 +1718,7 @@ These are plugin settings, kept per character, and never sent to the server.
 
   | Tone | Colour | What |
   |------|--------|------|
-  | Information | LookingGlass blue (UIColor 37, 0x0099FF, the default `[LGC]` tag's) | Status and replies: "Now talking in", "Stopped talking in", every "Not sent", "A link in it couldn't be read", "Not connected", refusals to start, `/lgc` usage, "No channel has the nickname", the ChatTwo note, server announcements, "Joined", other notices at Info level |
+  | Information | LookingGlass blue (UIColor 37, 0x0099FF, the default `[LGC]` tag's) | Status and replies: "Now talking in", "Stopped talking in", every "Not sent", "A link in it couldn't be read", "Not connected", refusals to start, `/lgc` usage, "No channel has the nickname", the ChatTwo note, a right-click invite's "Invited" and "Couldn't invite", server announcements, "Joined", other notices at Info level |
   | Warning | light red (UIColor 508, 0xFF8080) | Every notice at Warning or Error level that isn't critical: a key changed, a name now another account, ExtraChat is on, the server not showing a membership (`MembershipHidden`), a stale key offered, a bad channel key, dropped messages, couldn't load keys, "something went wrong" (a line kept) |
   | Critical | dark red (UIColor 534, 0xAE0000) | By kind, whatever the level: a forked membership (`MembershipForked`), members shown different memberships (`MembersShownDifferently`), a removal not in effect, so a removed member may still read (`RemovalNotInEffect`), the server refusing a key and hiding a change (`ServerRefusesKey`), a relayed registration code (`RelayedRegistrationCode`) |
 
@@ -2610,6 +2616,69 @@ Windows show only the channels the player is in now.
 window's in-memory cap) shows the ones that fell out of memory only after the
 next login. There is no search, and no per-channel choice or deletion.
 
+### Context menu invites
+
+Right-clicking a player in the game's own menus (a name in the chat log, the
+party list, a target, the friend list, a linkshell's or Free Company's member
+list, the party finder) or a name in ChatTwo's chat shows **Invite to
+LookingGlass ▸**, a submenu of the channels the player can be invited to,
+each as its tag in the channel's colour and its name (`[sky] Tea party`).
+Picking one sends the invite, the same request as the channel's **Invite**
+button (`ClientSession.InviteAsync`), and LookingGlass says how it went in
+LookingGlass blue, with the tag in the channel's colour: "Invited Bob
+Hatter@Lich to [sky]." or "Couldn't invite Bob Hatter@Lich to [sky]: " and
+why, in the mode's words (`PlainMessages.MessageOf`, as the Invite button
+shows it; what a server said comes without its error code in simple mode).
+The invite runs off the game thread; the line is printed on it. Nothing is
+logged about whom.
+
+What is offered (`ContextInvites`, in the core, tested):
+
+- **Channels.** Those where the user is a moderator or the admin under their
+  current keys, by number, then by name, at most 24 (the game's menus hold 32
+  lines in all). An old key's place has no rank, and a forgotten one isn't
+  listed, so neither is offered.
+- **Greyed out, with why.** A channel the player is already in, or invited to
+  ("already a member", "already invited"), one whose name isn't known yet (an
+  invite carries it: "not ready yet"), and every channel if the user blocked
+  them ("you blocked them"). Showing these, rather than leaving them out,
+  says why a channel is missing, which a shorter list wouldn't. Who is in a
+  channel comes from its verified log, matched by name and world, ignoring
+  case.
+- **Nothing at all** (no menu item) while not connected and registered, for
+  the user themselves, when no channel can be invited to, and for anything
+  that isn't a player with a home world: a name that isn't a forename and a
+  surname (NPCs, minions, retainers), a game object right-clicked in the
+  world that isn't a player character (or isn't the one the menu names, by
+  name and home world), or a home world that is missing or
+  not a public world.
+- **Worlds.** The world's name comes from the game's World sheet, as the
+  server knows players by, so players from any world or data centre can be
+  invited, as anywhere else in LookingGlass.
+
+**The game's menus** come through Dalamud's `IContextMenu` (`OnMenuOpened`,
+`MenuTargetDefault`: `TargetName`, `TargetHomeWorld`, `TargetContentId`,
+`TargetObject`), with no hooks of LookingGlass's own. Only the default menu
+type, and only from windows whose menus are about a player (`ChatLog`,
+`_PartyList`, `PartyMemberList`, `FriendList`, `SocialList`, `ContactList`,
+`FreeCompany`, `LinkShell`, `CrossWorldLinkshell`, `ContentMemberList`,
+`BeginnerChatList`, `LookingForGroup`, the target bars, and the world itself),
+since a menu about something else can still hold the last player's name. The
+item has a boxed "L" in LookingGlass blue in front, as Dalamud asks of
+plugins' items, and opens a Dalamud submenu; the channels' items are greyed
+out with Dalamud's own `IsEnabled`.
+
+**ChatTwo's menu** comes through its context menu IPC (its `ipc.md` and
+`IpcManager.cs`, verified in its public source): `ChatTwo.Register` returns an
+ID, `ChatTwo.Unregister` drops it, `ChatTwo.Invoke` (the ID, the message's
+sender as a `PlayerPayload`, its content ID, the payload right-clicked, and the
+sender's and the message's text) asks each registered plugin to draw its items
+inside ChatTwo's **Integrations** submenu, and `ChatTwo.Available` says
+ChatTwo (re)loaded, which forgets every ID, so LookingGlass registers again
+(dropping any ID it still holds first, so the item never shows twice).
+The item shows only on a name (the payload right-clicked is a `PlayerPayload`),
+for that player, as an ImGui submenu with each channel in its colour.
+
 ### Simple and advanced mode
 
 Most players don't want to think about keys, so the plugin starts in **simple
@@ -2932,9 +3001,10 @@ without touching chat, UI or server routing.
 | M4 Hardening and beta | Hardening, beta testing | No open high-severity findings, then the 1.0 release |
 
 Version 0.2 covers M1 and M2 and the key-verification UI of M3. Of M3's
-ChatTwo integration, only sticky mode's (sending through ChatTwo's input, and
-naming the channel in it) is built. CI (from M0), the rest of the ChatTwo
-integration and the import wizard aren't built yet.
+ChatTwo integration, sticky mode's (sending through ChatTwo's input, and
+naming the channel in it) and the invite item in its right-click menu are
+built. CI (from M0), the rest of the ChatTwo integration (channel names and
+colours for ChatTwo's own use) and the import wizard aren't built yet.
 
 ## Decisions
 
@@ -3020,6 +3090,16 @@ The owner's decisions, and why.
   info bar and chat box labels have proven reliable. Stops the player didn't
   choose are always said. See
   [Talking in a channel without /lgc](#talking-in-a-channel-without-lgc).
+- **Context menu invites (2026-10-07).** Right-clicking a player in the
+  game's menus, or a name in ChatTwo, offers **Invite to LookingGlass ▸** with
+  the channels the user can invite to, each in its tag and colour; picking one
+  sends the invite and says how it went in chat. Hidden where it can't work
+  (not connected or registered, yourself, not a player, no home world, no
+  channel to invite to). A channel the player is already in or invited to is
+  shown greyed out with why, rather than left out, which was the clearer of
+  the two options. Through Dalamud's `IContextMenu` and ChatTwo's context menu
+  IPC, with no game hooks, no protocol change and no server change. See
+  [Context menu invites](#context-menu-invites).
 - **Friends-only local chat (2026-10-05).** No party or Free Company option,
   since those can include people a player doesn't trust.
 - **Key-change policy for re-verified keys.** Keys re-verified through the
