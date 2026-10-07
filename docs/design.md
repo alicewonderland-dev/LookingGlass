@@ -2649,7 +2649,8 @@ What is offered (`ContextInvites`, in the core, tested):
   the user themselves, when no channel can be invited to, and for anything
   that isn't a player with a home world: a name that isn't a forename and a
   surname (NPCs, minions, retainers), a game object right-clicked in the
-  world that isn't a player character, or a home world that is missing or
+  world that isn't a player character (or isn't the one the menu names, by
+  name and home world), or a home world that is missing or
   not a public world.
 - **Worlds.** The world's name comes from the game's World sheet, as the
   server knows players by, so players from any world or data centre can be
@@ -2673,7 +2674,8 @@ ID, `ChatTwo.Unregister` drops it, `ChatTwo.Invoke` (the ID, the message's
 sender as a `PlayerPayload`, its content ID, the payload right-clicked, and the
 sender's and the message's text) asks each registered plugin to draw its items
 inside ChatTwo's **Integrations** submenu, and `ChatTwo.Available` says
-ChatTwo (re)loaded, which forgets every ID, so LookingGlass registers again.
+ChatTwo (re)loaded, which forgets every ID, so LookingGlass registers again
+(dropping any ID it still holds first, so the item never shows twice).
 The item shows only on a name (the payload right-clicked is a `PlayerPayload`),
 for that player, as an ImGui submenu with each channel in its colour.
 

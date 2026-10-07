@@ -47,6 +47,9 @@ LookingGlass prints names anyone in `dalamud.log` (`/xllog`).
       support NPC in the party list: no item.
 - [ ] 9. Right-click an item in your inventory and an item link in chat: no
       item.
+- [ ] 9a. In ChatTwo, right-click a name in a Free Company member's login or
+      logout line: no item is expected there (ChatTwo gives those names no
+      public world). The same player's name in an ordinary chat line has it.
 - [ ] 10. `/lg`, Settings, disconnect (or set a server address that doesn't
       answer). Right-click B: no item. Connect again: it is back.
 - [ ] 11. On a character that is a member, but no moderator or admin, of every

@@ -85,6 +85,12 @@ internal sealed class GameContextMenuInvites : IDisposable {
                 return;
             }
 
+            // A character in the world must be the one the menu names, or the menu's name and world may be left over.
+            if (target.TargetObject is IPlayerCharacter character &&
+                (character.Name.TextValue != target.TargetName || character.HomeWorld.RowId != target.TargetHomeWorld.RowId)) {
+                return;
+            }
+
             if (target.TargetContentId != 0 && target.TargetContentId == Services.PlayerState.ContentId) {
                 return;
             }
@@ -149,6 +155,8 @@ internal sealed class ChatTwoContextMenuInvites : IDisposable {
     }
 
     private void Register() {
+        // An earlier ID first, so a reload ChatTwo didn't forget never shows the item twice.
+        this.Unregister();
         try {
             this._id = this._register.InvokeFunc();
         } catch (IpcNotReadyError) {
@@ -177,18 +185,25 @@ internal sealed class ChatTwoContextMenuInvites : IDisposable {
 
             try {
                 foreach (var offer in offers) {
-                    ImGui.BeginDisabled(!offer.Available);
                     var colour = ChannelPalette.ChatColourOf(offer.Colour);
-                    if (colour != null) {
-                        ImGui.PushStyleColor(ImGuiCol.Text, colour.Value);
+                    bool picked;
+                    ImGui.BeginDisabled(!offer.Available);
+                    try {
+                        if (colour != null) {
+                            ImGui.PushStyleColor(ImGuiCol.Text, colour.Value);
+                        }
+
+                        try {
+                            picked = ImGui.Selectable($"{WithoutIdMarks(offer.Label)}##lg-invite-{offer.ChannelId}");
+                        } finally {
+                            if (colour != null) {
+                                ImGui.PopStyleColor();
+                            }
+                        }
+                    } finally {
+                        ImGui.EndDisabled();
                     }
 
-                    var picked = ImGui.Selectable($"{offer.Label}##lg-invite-{offer.ChannelId}");
-                    if (colour != null) {
-                        ImGui.PopStyleColor();
-                    }
-
-                    ImGui.EndDisabled();
                     if (picked && offer.Available) {
                         this._inviter.Invite(invitee, offer);
                     }
@@ -201,17 +216,35 @@ internal sealed class ChatTwoContextMenuInvites : IDisposable {
         }
     }
 
+    /// <summary>
+    /// A label with no "##" left in it: ImGui reads everything after one as the item's ID, so another member's "##" in a
+    /// channel's name would cut the label short. Each becomes "# #", which reads the same.
+    /// </summary>
+    private static string WithoutIdMarks(string label) {
+        while (label.Contains("##", StringComparison.Ordinal)) {
+            label = label.Replace("##", "# #", StringComparison.Ordinal);
+        }
+
+        return label;
+    }
+
+    /// <summary>Drops the ID ChatTwo gave, if any.</summary>
+    private void Unregister() {
+        if (this._id is not { } id) {
+            return;
+        }
+
+        this._id = null;
+        try {
+            this._unregister.InvokeAction(id);
+        } catch (Exception) {
+            // ChatTwo isn't loaded (it went first, or is reloading): it has forgotten the ID already.
+        }
+    }
+
     public void Dispose() {
         this._invoke.Unsubscribe(this.Draw);
         this._available.Unsubscribe(this.Register);
-        if (this._id is { } id) {
-            try {
-                this._unregister.InvokeAction(id);
-            } catch (Exception) {
-                // ChatTwo went first: nothing to take back.
-            }
-
-            this._id = null;
-        }
+        this.Unregister();
     }
 }

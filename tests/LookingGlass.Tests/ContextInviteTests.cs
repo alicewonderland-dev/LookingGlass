@@ -58,6 +58,15 @@ public sealed class ContextInviteTests {
     }
 
     [Fact]
+    public void AnOldKeysPlaceIsNeverOfferedWhateverRankItShows() {
+        // Pins the old-key check itself: even a view that showed the old place's admin rank offers nothing.
+        var members = ImmutableArray.Create(new MemberView(Me, Rank.Admin, null, false));
+        var oldAdmin = new ChannelView("old", "Tea party", 1, 1, true, false, Rank.Admin, members, OldKeyMembership: true);
+        Assert.Empty(Offers(Snapshot(oldAdmin)));
+        Assert.Equal(["current"], Offers(Snapshot(oldAdmin, Channel("current", Rank.Moderator))).Select(offer => offer.ChannelId));
+    }
+
+    [Fact]
     public void NothingIsOfferedWhereNoChannelCanBeInvitedTo() {
         Assert.Empty(Offers(Snapshot()));
         Assert.Empty(Offers(Snapshot(Channel("member", Rank.Member))));
