@@ -23,6 +23,7 @@ public sealed class SessionManager : IDisposable {
     private volatile ImmutableDictionary<string, string> _nicknames = ImmutableDictionary<string, string>.Empty;
     private volatile ImmutableDictionary<string, ChannelColour> _colours = ImmutableDictionary<string, ChannelColour>.Empty;
     private volatile ImmutableHashSet<string> _gameChatOff = ImmutableHashSet<string>.Empty;
+    private volatile ImmutableDictionary<string, uint> _nameColours = ImmutableDictionary<string, uint>.Empty;
     private Task? _closing;
     // Framework thread only. Bumped by every start and stop, so a start that was
     // waiting for the previous session to close is dropped if anything changed meanwhile.
@@ -36,6 +37,7 @@ public sealed class SessionManager : IDisposable {
         this._chatLogs = new ChatLogKeeper(Services.PluginInterface.ConfigDirectory.FullName, ProtectedSecretStore.ChatLogProtection(),
             message => Services.Log.Warning(message));
         player.Changed += this.OnPlayerChanged;
+        this._nameColours = config.NameColours.ToImmutableDictionary();
     }
 
     /// <summary>The current session, or null when logged out or not connected.</summary>
@@ -345,6 +347,20 @@ public sealed class SessionManager : IDisposable {
     /// <summary>Every channel's colour for the current character, by channel ID. Safe from any thread.</summary>
     public IReadOnlyDictionary<string, ChannelColour> Colours => this._colours;
 
+    /// <summary>A person's name colour (0xRRGGBB), or null for the default (see <see cref="NameColours"/>). Safe from any thread.</summary>
+    public uint? NameColourOf(Protocol.User? user) => NameColours.Of(this._nameColours, user, this._config.ServerUrl);
+
+    /// <summary>
+    /// Gives a person's name a colour (0xRRGGBB), or with null the default, in every channel and for every character (so it
+    /// works with or without a session). Nobody known (user ID 0) gets none. Call on the framework (or draw) thread.
+    /// </summary>
+    public void SetNameColour(Protocol.User user, uint? rgb) {
+        if (NameColours.Set(this._config.NameColours, user.UserId, this._config.ServerUrl, rgb)) {
+            this._config.Save();
+            this._nameColours = this._config.NameColours.ToImmutableDictionary();
+        }
+    }
+
     /// <summary>
     /// Whether a channel's messages also go to the game's chat log ("Show in game chat"; on unless turned off). Off,
     /// they show only in its channel windows, and its notices too, but warnings. Safe from any thread.
@@ -398,7 +414,8 @@ public sealed class SessionManager : IDisposable {
 
     /// <summary>
     /// Configuration is only touched on the framework thread; other threads read
-    /// these immutable copies of the current character's slots, nicknames and colours.
+    /// these immutable copies of the current character's slots, nicknames and colours (and of the name colours, which are
+    /// every character's: see <see cref="SetNameColour"/>).
     /// </summary>
     private void RefreshCommandCache() {
         if (this._sessionPlayer is { } player) {
@@ -441,7 +458,8 @@ public sealed class SessionManager : IDisposable {
         this.History.Add(message, generation);
         this.Unread.Add(message);
         if (WindowsOnly.MessageToGameChat(windowsOnly, off, message.ChannelId)) {
-            this._chat.Message(message, this.SlotOf(message.ChannelId), this.NicknameOf(message.ChannelId), this.ColourOf(message.ChannelId));
+            this._chat.Message(message, this.SlotOf(message.ChannelId), this.NicknameOf(message.ChannelId), this.ColourOf(message.ChannelId),
+                nameColour: this.NameColourOf(message.Sender));
         } else if (windowsOnly) {
             this.WantWindows.Want(message.ChannelId);
         }
@@ -480,7 +498,7 @@ public sealed class SessionManager : IDisposable {
         this._chat.ChannelNotice(plan.Header, tag, colour);
         var now = DateTimeOffset.Now;
         foreach (var message in plan.Shown) {
-            this._chat.Message(message, slot, nickname, colour, CatchUpChat.TimeLabel(message.Timestamp, now));
+            this._chat.Message(message, slot, nickname, colour, CatchUpChat.TimeLabel(message.Timestamp, now), this.NameColourOf(message.Sender));
         }
     }
 

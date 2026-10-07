@@ -18,16 +18,15 @@ public sealed class ChatOutput(Configuration config) {
     /// <param name="nickname">The channel's nickname, if it has one: its tag, unless nickname tags are turned off.</param>
     /// <param name="colour">The channel's colour (a UIColor row or a custom colour), or null for the default: only the tag coloured.</param>
     /// <param name="sentAt">For a message caught up from while the player was away: when it was sent (see <see cref="CatchUpChat.TimeLabel"/>), after the tag.</param>
-    public void Message(IncomingMessage message, int? slot, string? nickname, ChannelColour? colour = null, string? sentAt = null) {
+    /// <param name="nameColour">The sender's name colour (0xRRGGBB; see <see cref="NameColours"/>), or null: their name in the line's colour.</param>
+    public void Message(IncomingMessage message, int? slot, string? nickname, ChannelColour? colour = null, string? sentAt = null, uint? nameColour = null) {
         RunOnFramework(() => {
             var tag = ChannelTag.For(slot, nickname, config.NicknameTags);
-            // Everything from other users is sanitised: raw control bytes would become live game formatting.
-            var sender = $"<{TextSanitizer.Name(message.Sender.Name)}@{TextSanitizer.Name(message.Sender.WorldName)}> ";
-            // The tag in the channel's colour, and the whole line too (like the game's own linkshells) if that's on; a
-            // custom colour layered over its closest game colour (see ColouredText).
-            var parts = ColouredText.Message(tag, colour, sentAt, config.ColourWholeLine, GameText.Nearest);
+            // The tag in the channel's colour, and the whole line too (like the game's own linkshells) if that's on; the
+            // sender's name in its own colour if it has one; a custom colour layered over its closest game colour (see
+            // ColouredText, which also cleans the sender's name and world: everything from other users is sanitised).
+            var parts = ColouredText.Message(tag, colour, sentAt, config.ColourWholeLine, GameText.Nearest, message.Sender.Name, message.Sender.WorldName, nameColour);
             var line = GameText.Append(new SeStringBuilder(), parts, builder => {
-                builder.AddText(sender);
                 if (message.Unsupported) {
                     builder.AddItalics("(a message type this version can't show)");
                 } else if (message.Links.Count == 0) {

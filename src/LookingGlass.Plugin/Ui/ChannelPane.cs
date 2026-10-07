@@ -28,11 +28,11 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
     private bool _nicknameFocus;
     private string _inviteName = "";
     private string _inviteWorld = "";
-    // The colour popup's custom colour part: shown, its wheel's colour, the code as typed, and whether that can't be read.
+    // The colour popup's custom colour part: shown, and its wheel.
     private bool _customOpen;
-    private Vector3 _custom;
-    private string _customCode = "";
-    private bool _customCodeBad;
+    private readonly ColourWheel _wheel = new();
+    // A member's name colour, from a right-click on their name or their menu.
+    private readonly NameColourPopup _nameColour = new(sessions);
 
     /// <summary>Called when the channel is gone (left, disbanded) so the window can pick another.</summary>
     public event Action? Closed;
@@ -463,89 +463,26 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
 
     /// <summary>Shows the custom colour part, starting from the channel's colour (a row's colour as it shows), or LookingGlass blue.</summary>
     private void OpenCustom(ChannelColour? current) {
-        var rgb = current switch {
-            { IsCustom: true } custom => custom.Rgb,
-            { } row when ChannelPalette.ColourOf(row) is { } shown => ChannelPalette.RgbOf(new Vector3(shown.X, shown.Y, shown.Z)),
-            _ => ChannelPalette.ChatColourOf(null) is { } blue ? ChannelPalette.RgbOf(new Vector3(blue.X, blue.Y, blue.Z)) : 0x0099FFu,
-        };
-
         this._customOpen = true;
-        this.SetCustom(rgb);
+        this._wheel.Start(StartingRgb(current));
     }
 
-    private void SetCustom(uint rgb) {
-        var colour = ChannelPalette.OfRgb(rgb);
-        this._custom = new Vector3(colour.X, colour.Y, colour.Z);
-        this._customCode = HexColour.Format(rgb);
-        this._customCodeBad = false;
-    }
+    /// <summary>Where a colour wheel starts for a channel's colour: it exactly, a row as it shows, or LookingGlass blue.</summary>
+    internal static uint StartingRgb(ChannelColour? colour) => colour switch {
+        { IsCustom: true } custom => custom.Rgb,
+        { } row when ChannelPalette.ColourOf(row) is { } shown => ChannelPalette.RgbOf(new Vector3(shown.X, shown.Y, shown.Z)),
+        _ => ChannelPalette.ChatColourOf(null) is { } blue ? ChannelPalette.RgbOf(new Vector3(blue.X, blue.Y, blue.Z)) : 0x0099FFu,
+    };
 
     /// <summary>
-    /// "Custom...": a colour wheel and the colour's code, kept in step both ways; a preview of a chat line; the closest game
-    /// colour, used where the exact one can't be shown; and a warning for a colour too dark to read.
+    /// "Custom...": the colour wheel (see <see cref="ColourWheel"/>) with a preview of a chat line, then Use and Back.
     /// </summary>
     private void DrawCustomColour(ChannelView channel) {
-        var scale = Widgets.Scale;
-        var width = 260 * scale;
-        ImGui.TextUnformatted(ColourWords.CustomTitle);
-        ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + width);
-        ImGui.TextColored(Widgets.Muted, ColourWords.CustomExplanation);
-        ImGuiHelpers.ScaledDummy(4);
-
-        ImGui.SetNextItemWidth(width * 0.8f);
-        if (ImGui.ColorPicker3("##custom-wheel", ref this._custom,
-                ImGuiColorEditFlags.PickerHueWheel | ImGuiColorEditFlags.NoAlpha | ImGuiColorEditFlags.NoSidePreview | ImGuiColorEditFlags.NoInputs |
-                ImGuiColorEditFlags.NoLabel)) {
-            this._customCode = HexColour.Format(ChannelPalette.RgbOf(this._custom));
-            this._customCodeBad = false;
-        }
-
-        ImGuiHelpers.ScaledDummy(2);
-        ImGui.AlignTextToFramePadding();
-        ImGui.TextUnformatted("Colour code");
-        ImGui.SameLine();
-        ImGui.SetNextItemWidth(90 * scale);
-        if (ImGui.InputTextWithHint("##custom-code", ColourWords.CodeHint, ref this._customCode, 16)) {
-            if (HexColour.TryParse(this._customCode, out var typed)) {
-                var colour = ChannelPalette.OfRgb(typed);
-                this._custom = new Vector3(colour.X, colour.Y, colour.Z);
-                this._customCodeBad = false;
-            } else {
-                this._customCodeBad = true;
-            }
-        }
-
-        var rgb = ChannelPalette.RgbOf(this._custom);
-        if (!ImGui.IsItemActive() && !this._customCodeBad) {
-            // Tidied once it's typed: "3fa7d6" reads "#3FA7D6".
-            this._customCode = HexColour.Format(rgb);
-        }
-
-        if (this._customCodeBad) {
-            Widgets.WrappedColoured(Widgets.Error, ColourWords.CodeProblem);
-        }
-
-        ImGuiHelpers.ScaledDummy(4);
-        ImGui.TextColored(Widgets.Muted, ColourWords.Preview);
-        this.DrawPreview(channel, rgb, width);
-
-        if (ColourMatch.HardToRead(rgb)) {
-            ImGuiHelpers.ScaledDummy(2);
-            Widgets.WrappedColoured(Widgets.Warning, ColourWords.HardToRead);
-        }
-
-        if (ChannelPalette.Nearest(rgb) is { } nearest && ChannelPalette.ColourOf(nearest) is { } nearestColour) {
-            ImGuiHelpers.ScaledDummy(2);
-            ImGui.TextColored(Widgets.Muted, ColourWords.Fallback);
-            var swatch = 18 * scale;
-            ImGui.ColorButton("##custom-nearest", nearestColour, ImGuiColorEditFlags.NoTooltip | ImGuiColorEditFlags.NoAlpha, new Vector2(swatch, swatch));
-            Widgets.Tooltip(sessions.AdvancedMode ? $"UIColor {nearest}" : "The closest game colour.");
-        }
-
-        ImGui.PopTextWrapPos();
-        ImGuiHelpers.ScaledDummy(4);
-        ImGui.BeginDisabled(this._customCodeBad);
-        if (ImGui.Button(ColourWords.Use) && !this._customCodeBad) {
+        var width = 260 * Widgets.Scale;
+        var rgb = this._wheel.Draw(ColourWords.CustomTitle, ColourWords.CustomExplanation, width, sessions.AdvancedMode,
+            (colour, previewWidth) => this.DrawPreview(channel, colour, previewWidth));
+        ImGui.BeginDisabled(this._wheel.CodeBad);
+        if (ImGui.Button(ColourWords.Use) && !this._wheel.CodeBad) {
             sessions.SetColour(channel.Id, ChannelColour.Custom(rgb));
             ImGui.CloseCurrentPopup();
         }
@@ -765,11 +702,14 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
         }
 
         ImGui.EndChild();
+        // Outside any member's row and menu, so it is the same popup whichever opened it.
+        this._nameColour.Draw();
     }
 
     /// <summary>
     /// One member: their verification icon (click it to compare fingerprints), green while they're
-    /// online, name, rank on the right, and a menu. The whole row lights up on hover.
+    /// online, name (in its name colour, if it has one), rank on the right, and a menu. The whole row lights up on hover;
+    /// right-clicking it gives the name's own menu (its colour), yours too.
     /// </summary>
     private void DrawMember(ChannelView channel, MemberView member, ClientSession session, SessionSnapshot snapshot) {
         var scale = Widgets.Scale;
@@ -786,9 +726,16 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
         // The highlight reaches halfway into the spacing between rows, so hovered rows have no gap.
         var rowMin = pos with { Y = pos.Y - style.ItemSpacing.Y / 2 };
         var rowMax = new Vector2(pos.X + width, pos.Y + height + style.ItemSpacing.Y / 2);
-        if ((ImGui.IsWindowHovered() && ImGui.IsMouseHoveringRect(rowMin, rowMax)) || ImGui.IsPopupOpen("member-menu")) {
+        var rowHovered = ImGui.IsWindowHovered() && ImGui.IsMouseHoveringRect(rowMin, rowMax);
+        // Lit too while one of its menus, or its name colour, is open, so it's clear whose it is.
+        if (rowHovered || ImGui.IsPopupOpen("member-menu") || ImGui.IsPopupOpen("name-menu") || this._nameColour.IsOpenFor(member.User)) {
             var hover = style.Colors[(int) ImGuiCol.HeaderHovered];
             drawList.AddRectFilled(rowMin, rowMax, ImGui.GetColorU32(hover with { W = hover.W * 0.6f }), 4 * scale);
+        }
+
+        // Nobody known (user ID 0) can't have a name colour, and the menu would be empty.
+        if (rowHovered && ImGui.IsMouseClicked(ImGuiMouseButton.Right) && NameColourPopup.CanColour(member.User)) {
+            ImGui.OpenPopup("name-menu");
         }
 
         // Verification, as the icon's shape: click it to compare fingerprints. Presence, as its colour,
@@ -832,7 +779,8 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
             : member is { KeyReplaced: true, NewFingerprint: { } newFingerprint }
                 ? $"{name}\nFingerprint in this channel: {member.Fingerprint ?? "-"}\nThe key they registered again with: {newFingerprint}"
                 : $"{name}\nFingerprint: {member.Fingerprint ?? "-"}";
-        Widgets.TextEllipsis(name, Math.Max(nameRoom, 20 * scale), null, nameTooltip);
+        var nameColour = sessions.NameColourOf(member.User) is { } rgb ? ChannelPalette.OfRgb(rgb) : (Vector4?) null;
+        Widgets.TextEllipsis(name, Math.Max(nameRoom, 20 * scale), nameColour, nameTooltip);
         if (you != null) {
             ImGui.SameLine();
             ImGui.TextColored(Widgets.Muted, you);
@@ -861,7 +809,33 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
             this.DrawMemberMenu(channel, member, session, snapshot);
         }
 
+        this.DrawNameMenu(channel, member.User);
         ImGui.PopID();
+    }
+
+    /// <summary>A name's own menu, from a right-click on it: its colour. For anyone, yourself too.</summary>
+    private void DrawNameMenu(ChannelView channel, User user) {
+        if (!ImGui.BeginPopup("name-menu")) {
+            return;
+        }
+
+        ImGui.TextColored(Widgets.Muted, $"{user.Name}@{user.WorldName}");
+        ImGuiHelpers.ScaledDummy(2);
+        this.NameColourItem(channel, user);
+        ImGui.EndPopup();
+    }
+
+    /// <summary>"Name colour...", in a menu (not for nobody known): opens the name colour popup once the menu has closed.</summary>
+    private void NameColourItem(ChannelView channel, User user) {
+        if (!NameColourPopup.CanColour(user)) {
+            return;
+        }
+
+        if (Widgets.MenuItem(FontAwesomeIcon.Palette, NameColourWords.MenuItem)) {
+            this._nameColour.Open(user, sessions.ColourOf(channel.Id));
+        }
+
+        Widgets.Tooltip(NameColourWords.MenuTooltip);
     }
 
     /// <summary>The first line of the verification icon's tooltip. Invitees' presence isn't shared.</summary>
@@ -945,6 +919,8 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
         if (!advanced && Modals.HasSomethingToCheck(member) && Widgets.MenuItem(FontAwesomeIcon.UserCheck, "Check it's really them...")) {
             modals.CheckMember(channel.Id, member);
         }
+
+        this.NameColourItem(channel, user);
 
         // The same permissions as the server's: admins promote and demote; moderators and admins remove lower ranks.
         if (channel.MyRank == Rank.Admin && member.Rank is Rank.Member && Widgets.MenuItem(FontAwesomeIcon.ArrowUp, "Make moderator", enabled)) {

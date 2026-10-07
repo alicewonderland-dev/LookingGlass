@@ -1832,8 +1832,9 @@ colours are an addition, the swatches stay, and both can be checked in game
   so it gets the exact colour too.
 - **Everywhere else: exact.** ImGui takes any colour, so the channel list's
   bar, the dot before the channel's name, channel windows' tabs, their "add a
-  channel" list and their senders' names, and ChatTwo's right-click menu show
-  the custom colour itself.
+  channel" list and their senders' names (unless the sender has a
+  [name colour](#name-colours)), and ChatTwo's right-click menu show the
+  custom colour itself.
 - **What is checked in game.** Whether the game's chat log, the server info
   bar and the game's menus show the Color macro (we believe they do: it is
   the game's own formatting), what ChatTwo shows, and whether text after an
@@ -1843,6 +1844,61 @@ colours are an addition, the swatches stay, and both can be checked in game
   any channel, the debug window's **Colour test** (or `/lgdebug colours
   #RRGGBB ...`) prints, for each colour, a line layered as a channel's is,
   one in only its closest row, and one in only the exact colour.
+
+### Name colours
+
+A person's name can have a colour of its own, so people can be told apart at a
+glance in a busy channel. The owner's decision (2026-10-07): one colour per
+person, everywhere.
+
+- **What and where it shows.** One custom colour (any RGB value) per person,
+  on their name only: in every channel's lines in game chat and in channel
+  windows, and in the channel member list in the main window. The rest of the
+  line keeps the channel's colour, as before (the whole line or only the tag,
+  as the setting says). Your own name can have one too.
+- **Setting it.** Right-click a name in a channel's member list (the main
+  window), or a message in a channel window, and choose **Name colour...**
+  (it is also in a member's ⋮ menu). It opens the same colour wheel and colour
+  code field as a channel's **Custom...** (`ColourWheel`, shared), with a
+  preview of a chat line, **Use this colour**, **Default** (back to the line's
+  colour) and **Cancel**. The words are `NameColourWords`, checked for jargon.
+  It isn't offered for user ID 0 (a sender not known), and works with or
+  without a session, since it belongs to no one character.
+- **Kept.** On this computer only, never sent to the server: `NameColours` at
+  the top of the plugin's settings, a map from a person's key to 0xRRGGBB.
+  Unlike channel colours, it isn't per character: one colour per person for
+  every character played on this computer. Settings saved before have none. A
+  colour isn't dropped when the person leaves a channel (they may be in
+  another, or come back); **Default** removes it.
+- **Keyed by who they are, not by name.** The key is the person's user ID,
+  which is their Lodestone character ID: it stays through a name change or a
+  world transfer, and it is the same character on every server, so the colour
+  follows them across channels and servers. A test server's made-up accounts
+  are the exception: their negative IDs are made from the name alone (a hash),
+  the same on every server, but anyone can register any such name on any test
+  server, so the same ID on two servers needn't be the same person. Those keys
+  carry the server's address too (`-1@wss://…`), written the same however it
+  was typed (scheme and host in lower case, no default port, no trailing
+  slash), so tidying the address setting keeps them. User ID 0 (a sender not
+  known) never gets a colour. The rules are the core library's `NameColours`,
+  unit tested.
+- **In game chat: one colour at a time.** The sender shows as
+  `<Name@World> `; only `Name@World` takes the colour, layered like a custom
+  channel colour (closest UIColor row outside, the exact colour inside). When
+  the whole line is in the channel's colour, that colour isn't left open around
+  the name: it is closed before the name and opened again after it, so no
+  colour is nested inside another, and the message after the name (item links
+  and all) sits in the channel's colour exactly as it would without a name
+  colour, whatever a renderer does with nested colours:
+  `channel → "<" → off`, `name → "Name@World" → off`,
+  `channel → "> " + message → off`. Without a name colour the line is what it
+  was before, part for part, so byte for byte. The order is decided in
+  `ColouredText.Message` and tested.
+- **Elsewhere: exact.** Channel windows draw the sender's name in its colour
+  (else the channel's, as before), and the member list draws the name in it.
+  Both read it every frame, so a change shows at once.
+- **Logs.** Nothing is logged about name colours.
+- **Checked in game:** [docs/testing/name-colours-checklist.md](testing/name-colours-checklist.md).
 
 ### Talking in a channel without /lgc
 

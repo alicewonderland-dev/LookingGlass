@@ -239,9 +239,14 @@ public sealed class SettingsWindow : Window {
         Widgets.Tooltip("Saves the URL and reconnects. If you have an identity on the current server, it first asks that server, and the new address, whether they are the same server, to keep your identity.");
         ImGui.PushTextWrapPos();
         if (checking) {
-            ImGui.TextColored(Widgets.Muted, "Asking the current server and the new address whether they are the same server...");
+            // Closing the window drops the change (OnClose), and asking a server that's gone can take a while.
+            ImGui.TextColored(Widgets.Muted, "Asking the current server and the new address whether they are the same server... Keep this window open.");
         } else if (this._moveError is { } error) {
             ImGui.TextColored(Widgets.Error, error);
+        } else if (changed && this._moveOffer == null) {
+            // Typed but not applied: closing the window forgets it (OnOpen starts from what is saved). A tester took a typed
+            // address for a saved one and stayed on a server that was later turned off.
+            Widgets.IconText(FontAwesomeIcon.ExclamationTriangle, "Not saved yet: press Apply (or Enter) to use this address.", Widgets.Warning);
         }
 
         // What the server said on connecting: it lists its addresses, and not this one.
