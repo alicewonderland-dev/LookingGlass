@@ -93,12 +93,17 @@ person together with a colour.
       the line's colour everywhere (the chat line, the window, both member
       lists). The next line in game chat is exactly as before name colours.
 - [ ] 21. Give B a colour again. Reload the plugin (`/xlplugins`, disable and
-      enable) and log out and in: kept. Log in with another character: B's
-      name has no colour there (colours are per character).
+      enable) and log out and in: kept. Log in with another of your
+      characters that shares a channel with B: B's name has the same colour
+      there too (name colours are for every character on this computer,
+      unlike channel colours).
 - [ ] 22. **(A and B)** B leaves `fc`: B's colour stays in `sky`. Invite B to
       `fc` again: the same colour there.
 - [ ] 23. The settings file (`LookingGlass.json`) has the colour under
-      `NameColours`, keyed by B's Lodestone ID only (no name). On a test
-      server, the echo bot's key ends in `@` and the server's address.
+      `NameColours` at the top level (not inside a character's settings),
+      keyed by B's Lodestone ID only (no name). On a test server, the echo
+      bot's key ends in `@` and the server's address. Change only the case of
+      the server address's host in Settings (or add a trailing `/`): the echo
+      bot keeps its colour.
 - [ ] 24. **(A and B)** If B can change their character's name (or a world
       transfer is at hand): B's colour stays with B.
