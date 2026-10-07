@@ -8,7 +8,13 @@ namespace LookingGlass.Server.Services;
 
 public sealed record LodestoneCharacter(long Id, string Name, string WorldName);
 
-public sealed class LodestoneUnavailableException() : Exception("The Lodestone couldn't be reached.");
+/// <summary>What a search found (null: nobody), and how many requests it made of the Lodestone (none if it was cached).</summary>
+public sealed record LodestoneSearch(LodestoneCharacter? Found, int Requests);
+
+/// <summary>The Lodestone couldn't be reached, or didn't answer, after <see cref="Requests"/> requests (the last one failing).</summary>
+public sealed class LodestoneUnavailableException(int requests = 1) : Exception("The Lodestone couldn't be reached.") {
+    public int Requests { get; } = requests;
+}
 
 /// <summary>Too many Lodestone requests are already queued; the caller should try again later.</summary>
 public sealed class LodestoneBusyException() : Exception("Too many Lodestone requests are waiting.");
@@ -38,7 +44,11 @@ public enum ProfileCheck {
 public sealed partial class LodestoneClient(HttpClient http, IOptions<ServerOptions> options, ILogger<LodestoneClient> logger, TimeProvider? time = null) {
     private static readonly TimeSpan SearchCacheTime = TimeSpan.FromHours(1);
     private static readonly TimeSpan SweepEvery = TimeSpan.FromMinutes(10);
-    private const int MaxSearchPages = 10;
+    /// <summary>
+    /// Pages of results read at most. The search is for the exact name, in quotes, on one world, so the character is on the
+    /// first page or so; reading on would only let a name that isn't there (a short one matching many) cost many requests.
+    /// </summary>
+    internal const int MaxSearchPages = 2;
 
     /// <summary>
     /// Requests allowed to wait for the queue. With a gap of seconds between
@@ -55,7 +65,7 @@ public sealed partial class LodestoneClient(HttpClient http, IOptions<ServerOpti
     private int _waiting;
 
     /// <summary>
-    /// Most searches kept cached. Every registration attempt names a character (any name: at most 5 per address an hour, but
+    /// Most searches kept cached. Every registration attempt names a character (any name: at most 10 per address an hour, but
     /// addresses are many), so expired results are dropped every 10 minutes, and past this the soonest to expire go.
     /// </summary>
     internal int MaxCachedSearches { get; init; } = 10_000;
@@ -68,17 +78,25 @@ public sealed partial class LodestoneClient(HttpClient http, IOptions<ServerOpti
     /// <summary>Finds the character with exactly this name on this home world.</summary>
     /// <exception cref="LodestoneUnavailableException">The Lodestone couldn't be reached; nothing is cached.</exception>
     /// <exception cref="LodestoneBusyException">Too many requests are already waiting.</exception>
-    public async Task<LodestoneCharacter?> FindCharacterAsync(string name, string worldName, CancellationToken ct) {
+    public async Task<LodestoneCharacter?> FindCharacterAsync(string name, string worldName, CancellationToken ct) =>
+        (await this.SearchCharacterAsync(name, worldName, ct)).Found;
+
+    /// <summary><see cref="FindCharacterAsync"/>, saying how many requests it made of the Lodestone (at most <see cref="MaxSearchPages"/>).</summary>
+    /// <exception cref="LodestoneUnavailableException">The Lodestone couldn't be reached; nothing is cached.</exception>
+    /// <exception cref="LodestoneBusyException">Too many requests are already waiting.</exception>
+    public async Task<LodestoneSearch> SearchCharacterAsync(string name, string worldName, CancellationToken ct) {
         var cacheKey = $"{name.ToLowerInvariant()}@{worldName.ToLowerInvariant()}";
         if (this._searchCache.TryGetValue(cacheKey, out var cached) && cached.Expires > this._time.GetUtcNow()) {
-            return cached.Result;
+            return new LodestoneSearch(cached.Result, 0);
         }
 
         LodestoneCharacter? found = null;
+        var requests = 0;
         for (var page = 1; page <= MaxSearchPages && found == null; page++) {
             var url = $"{this.Options.BaseUrl}/lodestone/character/?q={Uri.EscapeDataString($"\"{name}\"")}&worldname={Uri.EscapeDataString(worldName)}&page={page}";
+            requests++;
             // A failed request is not "not found": don't cache it, and tell the caller.
-            var html = await this.GetAsync(url, ct) ?? throw new LodestoneUnavailableException();
+            var html = await this.GetAsync(url, ct) ?? throw new LodestoneUnavailableException(requests);
 
             foreach (Match entry in EntryPattern().Matches(html)) {
                 var entryName = WebUtility.HtmlDecode(entry.Groups["name"].Value).Trim();
@@ -104,7 +122,7 @@ public sealed partial class LodestoneClient(HttpClient http, IOptions<ServerOpti
             this.TrimSearchCache(now);
         }
 
-        return found;
+        return new LodestoneSearch(found, requests);
     }
 
     /// <summary>Drops expired searches every 10 minutes, and keeps at most <see cref="MaxCachedSearches"/>, the soonest to expire going first.</summary>
@@ -147,8 +165,12 @@ public sealed partial class LodestoneClient(HttpClient http, IOptions<ServerOpti
 
         var intro = IntroductionPattern().Match(html);
         if (!intro.Success) {
-            // A private profile's page shows no profile text, and says it is private ("This character's profile is private.").
-            return PrivatePattern().IsMatch(TagPattern().Replace(html, " ")) ? ProfileCheck.ProfilePrivate : ProfileCheck.ProfileUnavailable;
+            // A private profile's page shows no profile text. Taken as private only if the page says the profile is ("This
+            // character's profile is private.", "... set their profile to private"): not checked against a real private
+            // page, so anything else gets the general answer (which also says to make the profile public).
+            return PrivatePattern().IsMatch(WebUtility.HtmlDecode(TagPattern().Replace(html, " ")))
+                ? ProfileCheck.ProfilePrivate
+                : ProfileCheck.ProfileUnavailable;
         }
 
         var text = WebUtility.HtmlDecode(TagPattern().Replace(intro.Groups["text"].Value, " "));
@@ -191,6 +213,10 @@ public sealed partial class LodestoneClient(HttpClient http, IOptions<ServerOpti
         } catch (HttpRequestException ex) {
             logger.LogWarning(ex, "Lodestone request failed");
             return null;
+        } catch (TaskCanceledException ex) when (!ct.IsCancellationRequested) {
+            // HttpClient's own timeout (the Lodestone hung), not the caller giving up: the Lodestone not responding.
+            logger.LogWarning(ex, "Lodestone request timed out");
+            return null;
         } finally {
             this._gate.Release();
         }
@@ -208,7 +234,7 @@ public sealed partial class LodestoneClient(HttpClient http, IOptions<ServerOpti
     [GeneratedRegex("<[^>]+>")]
     private static partial Regex TagPattern();
 
-    // "Private" as a word ("Privacy" in a page's links isn't it), in a page's text.
-    [GeneratedRegex(@"\bprivate\b", RegexOptions.IgnoreCase)]
+    // A page's text saying the profile is private: "profile" and then "private" within one short clause.
+    [GeneratedRegex(@"\bprofile\b[^.!?<]{0,40}?\bprivate\b", RegexOptions.IgnoreCase)]
     private static partial Regex PrivatePattern();
 }

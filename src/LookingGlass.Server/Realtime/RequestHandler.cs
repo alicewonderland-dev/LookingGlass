@@ -9,6 +9,7 @@ using LookingGlass.Core.Membership;
 using LookingGlass.Core.Util;
 using LookingGlass.Protocol;
 using LookingGlass.Server.Data;
+using LookingGlass.Server.Hosting;
 using LookingGlass.Server.Services;
 
 namespace LookingGlass.Server.Realtime;
@@ -38,6 +39,10 @@ public sealed class RequestHandler(
 
     private static readonly TimeSpan VerifyCooldown = TimeSpan.FromSeconds(10);
     private const int MaxVerifyAttempts = 10;
+
+    // Verify attempts per challenge the Lodestone couldn't answer that aren't counted in MaxVerifyAttempts: each still took a turn of the
+    // shared Lodestone queue, so only the first few are free.
+    private const int MaxUncountedVerifyAttempts = 3;
 
     /// <summary>How long a key login challenge can be answered.</summary>
     internal static readonly TimeSpan KeyLoginChallengeLifetime = TimeSpan.FromSeconds(60);
@@ -373,7 +378,19 @@ public sealed class RequestHandler(
         // NotThisServer accepted it, so it parses.
         var origin = ServerOrigin.FromUrl(request.ServerUrl)!;
 
-        var address = connection.RemoteAddress;
+        // A name or world the game doesn't have would only cost a search of the shared Lodestone queue: refused first, at no cost.
+        if (!GameWorlds.IsCharacterName(name)) {
+            throw new RequestException(ErrorCode.RegistrationFailed,
+                $"\"{name}\" isn't a name the game allows: a first and last name, each 2 to 15 letters (apostrophes and hyphens are allowed). " +
+                "Check the spelling, then try again.");
+        }
+
+        worldName = GameWorlds.Find(worldName, options.Value.Lodestone.AdditionalWorlds)
+            ?? throw new RequestException(ErrorCode.RegistrationFailed,
+                $"\"{worldName}\" isn't a world this server knows. Check the spelling of your home world, then try again.");
+
+        // Per IPv6 /56, as connections are counted (the least an ISP commonly gives one customer), not per /64.
+        var address = ClientAddresses.WidenToConnectionKey(connection.RemoteAddress);
         RequestException TooMany() => new(ErrorCode.RateLimited,
             $"Too many registrations from your address; try again in {AboutHowLong(this._registrations.RetryAfter(address))}.");
         if (this._registrations.IsFull(address)) {
@@ -390,13 +407,14 @@ public sealed class RequestHandler(
             throw TooMany();
         }
 
-        // A lookup that fails costs no registration: the user fixes the name, or their profile, and tries again.
-        LodestoneCharacter? found;
+        // A lookup that fails costs no registration (the user fixes the name, or their profile, and tries again), but each
+        // request it made of the Lodestone counts against the address's failed lookups.
+        LodestoneSearch search;
         try {
-            found = await lodestone.FindCharacterAsync(name, worldName, ct);
-        } catch (LodestoneUnavailableException) {
+            search = await lodestone.SearchCharacterAsync(name, worldName, ct);
+        } catch (LodestoneUnavailableException ex) {
             this._registrations.Refund(address);
-            this._registrationLookupFailures.TryAdd(address);
+            this.CountFailedLookups(address, ex.Requests);
             throw new RequestException(ErrorCode.RegistrationFailed, "The Lodestone isn't responding right now; try again in a few minutes.");
         } catch (LodestoneBusyException) {
             // Not this user's doing, and nothing was asked of the Lodestone.
@@ -404,9 +422,10 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.RateLimited, "The server is busy checking other characters; try again in a minute.");
         }
 
+        var found = search.Found;
         if (found == null) {
             this._registrations.Refund(address);
-            this._registrationLookupFailures.TryAdd(address);
+            this.CountFailedLookups(address, search.Requests);
             throw new RequestException(ErrorCode.RegistrationFailed,
                 $"Couldn't find {name} on {worldName} on the Lodestone. Check that the name and home world are spelled right. A new character can take " +
                 "a while to show up there, and one whose Lodestone profile is private may not show up at all: make it public in the character's " +
@@ -423,6 +442,7 @@ public sealed class RequestHandler(
         connection.PendingRegistration = new PendingRegistration(
             found.Id, found.Name, character.WorldId, found.WorldName, request.Identity, code, DateTimeOffset.UtcNow.AddMinutes(minutes), false, nonce, origin);
         connection.VerifyAttempts = 0;
+        connection.UncountedVerifyAttempts = 0;
 
         return new Response {
             RegistrationChallenge = new RegistrationChallenge {
@@ -432,6 +452,13 @@ public sealed class RequestHandler(
                 Nonce = ByteString.CopyFrom(connection.PendingRegistration.Nonce),
             },
         };
+    }
+
+    /// <summary>Counts each request a failed registration lookup made of the Lodestone against the address (see <see cref="_registrationLookupFailures"/>).</summary>
+    private void CountFailedLookups(string address, int requests) {
+        for (var i = 0; i < requests; i++) {
+            this._registrationLookupFailures.TryAdd(address);
+        }
     }
 
     /// <summary>Counts a registration refused for its address (see <see cref="_refusedRegistrations"/>), before it is logged.</summary>
@@ -499,8 +526,12 @@ public sealed class RequestHandler(
 
             switch (check) {
                 case ProfileCheck.LodestoneUnavailable:
-                    // Nor this.
-                    connection.VerifyAttempts--;
+                    // Nor this, the first few times; but each took a turn of the shared queue, so past those it counts.
+                    if (connection.UncountedVerifyAttempts < MaxUncountedVerifyAttempts) {
+                        connection.UncountedVerifyAttempts++;
+                        connection.VerifyAttempts--;
+                    }
+
                     throw new RequestException(ErrorCode.RegistrationFailed, "The Lodestone isn't responding right now; try again in a few minutes.");
                 case ProfileCheck.ProfilePrivate:
                     throw new RequestException(ErrorCode.RegistrationFailed,
