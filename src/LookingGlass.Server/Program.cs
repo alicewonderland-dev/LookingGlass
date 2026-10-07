@@ -62,6 +62,8 @@ builder.Services.AddHttpClient<LodestoneClient>(client => {
 });
 builder.Services.AddHostedService<EchoBotHost>();
 builder.Services.AddHostedService<DatabaseMaintenance>();
+builder.Services.AddSingleton<MessageSweeper>();
+builder.Services.AddHostedService(services => services.GetRequiredService<MessageSweeper>());
 
 // Behind a reverse proxy, take the client address from X-Forwarded-For so
 // per-IP limits apply to real clients. Only proxies on this machine are
@@ -89,6 +91,13 @@ if (options.Lodestone.ChallengeMinutes is < LodestoneOptions.MinChallengeMinutes
     app.Logger.LogCritical(
         "LookingGlass:Lodestone:ChallengeMinutes is {Minutes}, so the server won't start: it must be {Min} to {Max} (minutes a registration challenge lasts; 15 by default).",
         options.Lodestone.ChallengeMinutes, LodestoneOptions.MinChallengeMinutes, LodestoneOptions.MaxChallengeMinutes);
+    Environment.ExitCode = 1;
+    return;
+}
+
+// How long, and how many, relayed messages are kept for members who were away.
+if (options.Messages.Problem() is { } messageSettings) {
+    app.Logger.LogCritical("{Problem}", messageSettings);
     Environment.ExitCode = 1;
     return;
 }
@@ -164,9 +173,12 @@ if (options.Dev.AllowDebugAccounts && app.Environment.IsDevelopment()) {
 
 // One line saying how this server is set up, for the operator to check after every start or update.
 app.Logger.LogInformation(
-    "LookingGlass server {Version} in {Environment}: debug accounts {DebugAccounts}, echo bot {EchoBot}; {Addresses}; database {Database}",
+    "LookingGlass server {Version} in {Environment}: debug accounts {DebugAccounts}, echo bot {EchoBot}; {Messages}; {Addresses}; database {Database}",
     RequestHandler.ServerVersion, app.Environment.EnvironmentName, options.Dev.AllowDebugAccounts ? "ON" : "off",
     options.Dev.HostEchoBot && options.Dev.AllowDebugAccounts ? "ON" : "off",
+    options.Messages.Enabled
+        ? $"messages kept {options.Messages.KeepDays} days, at most {options.Messages.MaxPerChannel} per channel, for members who were away"
+        : "no messages kept",
     publicOrigins.Count == 0 ? "no PublicUrls (going by each connection's Host header)"
     : sharedAddresses == 0 ? $"every address is wss:// with a fully qualified name ({publicOrigins.Count})"
     : $"{sharedAddresses} of {publicOrigins.Count} addresses may not be this server's alone (see the warnings above)",

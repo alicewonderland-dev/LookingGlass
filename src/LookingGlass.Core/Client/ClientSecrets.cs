@@ -46,6 +46,40 @@ public sealed class ClientSecrets {
     /// </summary>
     public Dictionary<string, Dictionary<long, long>> NewestMessageTimes { get; set; } = new();
 
+    /// <summary>
+    /// Channel ID → sender → the message IDs (hex) of the messages accepted at the time <see cref="NewestMessageTimes"/> has
+    /// (a few: two in one millisecond are possible), so those, sent again with the same time, count as had too. Saved with them.
+    /// </summary>
+    public Dictionary<string, Dictionary<long, List<string>>> NewestMessageIds { get; set; } = new();
+
+    /// <summary>
+    /// Channel ID → what was already had when that channel's catch-up last failed, while it is still to be done: live messages
+    /// accepted since don't move <see cref="LastMessageIds"/> on, and the missed messages are judged against this rather
+    /// than against the newer messages had since (see <see cref="CatchUpGap"/>). Gone once a catch-up of the channel completes.
+    /// </summary>
+    public Dictionary<string, CatchUpGap> CatchUpGaps { get; set; } = new();
+
+    /// <summary>
+    /// Channel ID → the recent membership changes of its log (joins, leaves, removals, places moved to new keys), with their
+    /// times: a caught-up message under a key made before one of them must be dated before it (give or take a little).
+    /// Not secret. Kept for <see cref="FormerMember.KeptFor"/>.
+    /// </summary>
+    public Dictionary<string, MembershipChanges> MembershipChanges { get; set; } = new();
+
+    /// <summary>
+    /// Channel ID → the newest number the server stored a message of the channel under (ChatMessage.server_id) that this
+    /// client has had, live or caught up: message catch-up asks for what came after it. The server's word, used only to
+    /// ask; it decides nothing about which messages are accepted. Saved with the message times.
+    /// </summary>
+    public Dictionary<string, ulong> LastMessageIds { get; set; } = new();
+
+    /// <summary>
+    /// Channel ID → user → the keys a member had when the log says they left or were removed, and where: a message of
+    /// theirs caught up after they left is checked against these, and only if made under a key from before they left.
+    /// Not secret. Kept for <see cref="FormerMember.KeptFor"/>, at most <see cref="FormerMember.KeptPerChannel"/> per channel.
+    /// </summary>
+    public Dictionary<string, Dictionary<long, FormerMember>> FormerMembers { get; set; } = new();
+
     /// <summary>Users whose invites are declined unseen and whose messages are hidden.</summary>
     public HashSet<long> BlockedUsers { get; set; } = new();
 
@@ -132,10 +166,83 @@ public sealed class PinnedIdentity {
     public bool Compared { get; set; }
 }
 
+/// <summary>A member who left a channel (or was removed), as the channel's log said (see <see cref="ClientSecrets.FormerMembers"/>).</summary>
+public sealed class FormerMember {
+    /// <summary>How long one is remembered: longer than a server keeps messages by default (7 days).</summary>
+    public static readonly TimeSpan KeptFor = TimeSpan.FromDays(8);
+
+    /// <summary>The most remembered per channel (the most recent go last).</summary>
+    public const int KeptPerChannel = 50;
+
+    public byte[] SigningPublicKey { get; set; } = [];
+    public byte[] AgreementPublicKey { get; set; } = [];
+
+    /// <summary>The log entry by which they left: keys made before it were sealed to them.</summary>
+    public ulong LeftAtSeq { get; set; }
+
+    /// <summary>When that entry was made (Unix ms, as signed in it).</summary>
+    public long LeftAtMs { get; set; }
+}
+
+/// <summary>
+/// A channel whose catch-up failed (see <see cref="ClientSecrets.CatchUpGaps"/>): the newest message times (and IDs) had from
+/// each sender when it did, and the IDs of the messages accepted since (at most <see cref="MaxAcceptedSince"/>), which
+/// the next catch-up treats as had.
+/// </summary>
+public sealed class CatchUpGap {
+    public const int MaxAcceptedSince = 5000;
+
+    public Dictionary<long, long> Times { get; set; } = new();
+    public Dictionary<long, List<string>> Ids { get; set; } = new();
+    public List<string> AcceptedSince { get; set; } = new();
+}
+
+/// <summary>A channel's recent membership changes (see <see cref="ClientSecrets.MembershipChanges"/>).</summary>
+public sealed class MembershipChanges {
+    /// <summary>The log entries that changed who is a member (or under which keys), oldest first.</summary>
+    public List<MembershipChange> Changes { get; set; } = new();
+
+    /// <summary>From this log entry on, every change is in <see cref="Changes"/>: those before weren't recorded, or were dropped as old.</summary>
+    public ulong CompleteFrom { get; set; }
+}
+
+/// <summary>One membership change of a channel's log (see <see cref="ClientSecrets.MembershipChanges"/>).</summary>
+public sealed class MembershipChange {
+    /// <summary>The entry's position in the log.</summary>
+    public ulong Seq { get; set; }
+
+    /// <summary>Its time (Unix ms), as the entry says, but never later than when this client verified it.</summary>
+    public long AtMs { get; set; }
+
+    /// <summary>Whose place it changed.</summary>
+    public long SubjectId { get; set; }
+
+    /// <summary>A leave, a removal or a member's place moving to new keys: the keys the subject had stopped being a member's then.</summary>
+    public bool Exit { get; set; }
+
+    /// <summary>The kind of entry it is (a <see cref="Protocol.MembershipEntryKind"/>).</summary>
+    public int Kind { get; set; }
+
+    /// <summary>
+    /// A time by which it had happened that its subject and the server couldn't choose: its own, if someone else signed it (a
+    /// removal), or that of a later entry someone other than its subject signed. Null if there is none (yet).
+    /// </summary>
+    public long? TrustedAtMs { get; set; }
+
+    /// <summary>When this client verified it as it happened, connected (not on coming back): it had happened by then.</summary>
+    public long? SeenLiveAtMs { get; set; }
+}
+
 /// <summary>A membership log position, as saved with an epoch key.</summary>
 public sealed class KeyPosition {
     public ulong Seq { get; set; }
     public byte[] Hash { get; set; } = [];
+
+    /// <summary>When its author says, signed, they made the key (Unix ms; see SealedEpochKey.created_unix_ms), or 0 if the key doesn't say.</summary>
+    public long CreatedMs { get; set; }
+
+    /// <summary>Who made the key (its author), with <see cref="CreatedMs"/>.</summary>
+    public long CreatedBy { get; set; }
 }
 
 /// <summary>Orders channel names: a later epoch wins, then a higher revision within the epoch.</summary>

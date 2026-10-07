@@ -178,6 +178,8 @@ All of these are under `LookingGlass`.
 | `Dev:EchoBotServerUrl` | empty | Where the hosted echo bot connects. Empty: worked out from the server's own address |
 | `Dev:AllowOutsideDevelopment` | false | Lets `AllowDebugAccounts` and `HostEchoBot` be on outside Development. Without it the server refuses to start with either there |
 | `Database:CheckpointMinutes` | 0 | Minutes between explicit (PASSIVE) checkpoints of the write-ahead log; 0 leaves them to SQLite and Litestream: see [Litestream](#replicating-with-litestream) |
+| `Messages:KeepDays` | 7 | Days the server keeps each message it relays (encrypted, as relayed), so members who were away get it when they're back: see [Stored messages](#stored-messages). 0 to 365; 0 keeps none |
+| `Messages:MaxPerChannel` | 5000 | Messages kept per channel at most; past it the oldest go first. 0 to 100,000; 0 keeps none |
 | `Limits:RegistrationsPerHourPerIp` | 5 | Registrations started per IP address per hour |
 | `Limits:RefusedRegistrationsPerHourPerIp` | 10 | Registrations refused for naming an address this server doesn't list, logged per IP per hour; refused silently past that |
 | `Limits:KeyLoginsPerHourPerIp` | 60 | Key login challenges per IP address per hour |
@@ -325,8 +327,53 @@ IPv6 clients are counted per /64.
   count the proxy's connections.
 - **Memory.** Per-address counters keep at most 100,000 addresses, and the
   Lodestone cache 10,000 searches (see [design.md](design.md#server-design)).
+- **Stored messages** take disk space: see below.
 - The full list of protocol limits is in
   [design.md](design.md#abuse-limits).
+
+### Stored messages
+
+The server keeps the messages it relays so that a member who was logged out or
+disconnected gets what they missed when they come back (message catch-up; see
+[design.md](design.md#message-catch-up)). It keeps them exactly as it relays
+them: encrypted, which it can't read, with who sent them, when and in which
+channel, which it sees anyway. Each is kept `Messages:KeepDays` days (7), and
+each channel keeps at most `Messages:MaxPerChannel` (5,000), the oldest going
+first. The server sweeps them when it starts and every ten minutes. A channel
+that is disbanded, or whose last member leaves, loses them at once. The
+server's log never shows them.
+
+**Disk use.** A stored message takes its ciphertext (at most 4 KiB; a line of
+chat is usually 100 to 600 bytes) plus about 300 bytes of envelope (sender,
+times, signature) and indexes. So:
+
+| | Typical (about 500 bytes each) | Worst case (4 KiB each) |
+| --- | --- | --- |
+| One channel at the cap (5,000) | about 4 MB | about 22 MB |
+| 1,000 channels at the cap | about 4 GB | about 22 GB |
+
+One user can send at most one message a second after a burst of five, so a
+user filling channels alone takes days: one channel's cap in under 1.5 hours,
+the 50 channels a user can be in about 3 days, about 1.1 GB at worst. In
+practice a channel stores what its members said in the last week, well under
+its cap. The sealed channel
+keys of epochs that still have stored messages are kept too (up to 64 epochs
+back, a copy per member each, about 250 bytes a copy): at most about 8 MB for a
+channel of 500 members that was rekeyed 64 times in a week, normally a few KB.
+
+Lower `Messages:KeepDays` or `Messages:MaxPerChannel` (and restart) to use
+less; the next sweep, at startup, applies them. `0` for either turns catch-up
+off: the server keeps nothing, deletes what it kept, and doesn't offer it to
+plugins, which then work as before (messages sent while someone is away don't
+reach them). Backups hold the stored messages too, for as long as each backup
+is kept (`--keep`). A Litestream replica holds them for Litestream's own
+retention (its snapshots and write-ahead log segments, by default a day or more):
+a message the server has deleted can still be in the replica until Litestream
+drops what held it. Keep Litestream's retention short, and the replica as
+private as the database.
+
+Nothing is kept of what someone says alone in a channel: nobody else could ever
+fetch it.
 
 ## Deploying on Linux with systemd
 
@@ -620,6 +667,12 @@ channels is upgraded in place.
 **From a server without key recovery.** Places an older server left under
 keys their users no longer have stay as they are until those users next
 register new keys through the Lodestone, which moves them.
+
+**From a server without message catch-up (schema 8).** The database gains a
+table for stored messages; nothing else changes. Messages are kept from the
+upgrade on. Plugins from before (0.2.5) keep working: they just don't ask for
+what they missed. A plugin with catch-up connecting to an older server doesn't
+ask either.
 
 ## Loading a development build of the plugin
 

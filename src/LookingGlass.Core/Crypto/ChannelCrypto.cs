@@ -69,6 +69,29 @@ public static class ChannelCrypto {
         return IdentityKeys.Verify(authorSigningKey, EpochKeySignaturePayload(channelId, epoch, authorId, key), key.Signature.Span);
     }
 
+    internal static byte[] KeyCreatedPayload(string channelId, ulong epoch, long authorId, ReadOnlySpan<byte> commitment, LogPosition? position, long createdMs) {
+        return new SigningPayload(Domains.EpochKeyCreated).Add(channelId).Add(epoch).Add(authorId).Add(commitment).Add(position).Add(createdMs).ToArray();
+    }
+
+    /// <summary>
+    /// The author's signed statement of when they made an epoch key (see <see cref="SealedEpochKey.CreatedUnixMs"/>): over
+    /// the channel, epoch, author, the key's commitment and log position, and the time. The same for every copy of the key.
+    /// </summary>
+    public static byte[] SignKeyCreated(string channelId, ulong epoch, ReadOnlySpan<byte> commitment, LogPosition position, IdentityKeys author, long authorId, long createdMs) {
+        return author.Sign(KeyCreatedPayload(channelId, epoch, authorId, commitment, position, createdMs));
+    }
+
+    /// <summary>When the author says they made a key, if the key says so and they signed it; otherwise null (keys made by older clients don't say).</summary>
+    public static long? KeyCreatedAt(SealedEpochKey key, string channelId, ulong epoch, long authorId, ReadOnlySpan<byte> authorSigningKey) {
+        if (key.CreatedSignature.IsEmpty) {
+            return null;
+        }
+
+        return IdentityKeys.Verify(authorSigningKey, KeyCreatedPayload(channelId, epoch, authorId, key.KeyCommitment.Span, key.LogPosition, key.CreatedUnixMs), key.CreatedSignature.Span)
+            ? key.CreatedUnixMs
+            : null;
+    }
+
     /// <summary>
     /// Verifies and opens a sealed epoch key. <see cref="EpochKeyCheck.Unreadable"/>
     /// and <see cref="EpochKeyCheck.CommitmentMismatch"/> mean the author really

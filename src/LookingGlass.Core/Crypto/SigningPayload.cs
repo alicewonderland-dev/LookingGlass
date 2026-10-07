@@ -59,6 +59,7 @@ public static class Domains {
     public const string Seal = "lookingglass/seal/v1";
     public const string EpochKey = "lookingglass/epoch-key/v1";
     public const string EpochKeyCommitment = "lookingglass/epoch-key-commitment/v1";
+    public const string EpochKeyCreated = "lookingglass/epoch-key-created/v1";
     public const string ChannelName = "lookingglass/channel-name/v1";
     public const string Invite = "lookingglass/invite/v1";
     public const string Message = "lookingglass/message/v1";

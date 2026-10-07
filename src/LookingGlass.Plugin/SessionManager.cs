@@ -348,6 +348,37 @@ public sealed class SessionManager : IDisposable {
         }
     }
 
+    /// <summary>
+    /// A channel's messages sent while the player was away (message catch-up): all of them in its history (for its windows),
+    /// after a line saying how many, and counted as unread; in game chat, unless the channel is turned off there, a line
+    /// saying how many and the last <see cref="CatchUpChat.GameChatCap"/> of them, each with the time it was sent. From any thread.
+    /// </summary>
+    private void DeliverCaughtUp(CaughtUpMessages caughtUp, int generation) {
+        // As in Deliver: where it goes is read before checking it is still this session's.
+        var off = this._gameChatOff;
+        if (generation != this.History.Generation) {
+            return;
+        }
+
+        this.History.AddCaughtUp(caughtUp, generation);
+        foreach (var message in caughtUp.Messages) {
+            this.Unread.Add(message);
+        }
+
+        if (!GameChatChannels.Shows(off, caughtUp.ChannelId)) {
+            return;
+        }
+
+        var (slot, nickname, colour) = (this.SlotOf(caughtUp.ChannelId), this.NicknameOf(caughtUp.ChannelId), this.ColourOf(caughtUp.ChannelId));
+        var tag = ChannelTag.For(slot, nickname, this._config.NicknameTags);
+        var plan = CatchUpChat.Plan(tag, caughtUp.Messages, this.History.Capacity);
+        this._chat.ChannelNotice(plan.Header, tag, colour);
+        var now = DateTimeOffset.Now;
+        foreach (var message in plan.Shown) {
+            this._chat.Message(message, slot, nickname, colour, CatchUpChat.TimeLabel(message.Timestamp, now));
+        }
+    }
+
     private void OnPlayerChanged(PlayerInfo? player) {
         if (player?.ContentId == this._sessionPlayer?.ContentId && this.Session != null) {
             return;
@@ -412,6 +443,11 @@ public sealed class SessionManager : IDisposable {
         session.MessageReceived += message => {
             if (this.Session == session) {
                 this.Deliver(message, history);
+            }
+        };
+        session.MessagesCaughtUp += caughtUp => {
+            if (this.Session == session) {
+                this.DeliverCaughtUp(caughtUp, history);
             }
         };
         session.Notice += notice => {

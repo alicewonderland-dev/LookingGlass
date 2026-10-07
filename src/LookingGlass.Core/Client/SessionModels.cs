@@ -212,7 +212,20 @@ public sealed record IncomingMessage(
 
     /// <summary>The text and its links (see <see cref="LinkedText.Parts"/>).</summary>
     public LinkedText Linked => new(this.Text ?? "", this.Links);
+
+    /// <summary>
+    /// Sent while this client was disconnected, and caught up from the server when it came back (see
+    /// <see cref="ClientSession.MessagesCaughtUp"/>): checked as a live message is, but older. <see cref="Timestamp"/> is when
+    /// it was sent.
+    /// </summary>
+    public bool CaughtUp { get; init; }
 }
+
+/// <summary>
+/// The messages of one channel sent while this client was disconnected, caught up from the server when it came back,
+/// oldest first, each checked as a live message is and accepted once (see "Message catch-up" in docs/design.md).
+/// </summary>
+public sealed record CaughtUpMessages(string ChannelId, string? ChannelName, IReadOnlyList<IncomingMessage> Messages);
 
 public enum NoticeLevel {
     Debug,
@@ -310,4 +323,32 @@ public sealed class ClientSessionOptions {
 
     /// <summary>How often a channel's whole log may be fetched again to look into a possible fork. Only tests change it.</summary>
     internal TimeSpan ForkCheckInterval { get; init; } = TimeSpan.FromMinutes(1);
+
+    /// <summary>
+    /// Offer message catch-up (the "history.v1" capability) in Hello. Only tests turn it off, to play a plugin from before
+    /// it (0.2.5), which never asks for missed messages.
+    /// </summary>
+    internal bool OfferMessageCatchUp { get; init; } = true;
+
+    /// <summary>
+    /// What a channel's catch-up asks for when this client has no position in it yet (the first login with this version, or
+    /// on a new computer): the messages the server stored in this long. Those already received live before are recognised
+    /// and left out; a new computer's keys can't read older ones anyway.
+    /// </summary>
+    public TimeSpan CatchUpWithoutPosition { get; init; } = TimeSpan.FromHours(1);
+
+    /// <summary>
+    /// The most live messages held back while catching up; past that they are taken as they come (and the channel's missed
+    /// messages judged against what was had before). Only tests change it.
+    /// </summary>
+    internal int MaxHeldLiveMessages { get; init; } = 2000;
+
+    /// <summary>How long a channel's failed catch-up waits before it is tried again (doubling each time). Only tests change it.</summary>
+    internal TimeSpan CatchUpRetryDelay { get; init; } = TimeSpan.FromSeconds(1);
+
+    /// <summary>
+    /// How soon a change to the message times and catch-up positions is saved (once for all the changes meanwhile), so a crash
+    /// shows little again as missed. Only tests change it.
+    /// </summary>
+    internal TimeSpan ReplayStateSaveDelay { get; init; } = TimeSpan.FromSeconds(30);
 }

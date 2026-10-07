@@ -19,6 +19,8 @@ public class PolicyTests {
             [ChannelAction.Disband] = Rank.Admin,
             // Invitees read the log to check an invite before answering it.
             [ChannelAction.FetchLog] = Rank.Invited,
+            // Stored messages (catch-up) are for members: an invitee holds no key for them.
+            [ChannelAction.FetchMessages] = Rank.Member,
         };
 
         Rank?[] ranks = [null, Rank.Unspecified, Rank.Invited, Rank.Member, Rank.Moderator, Rank.Admin];

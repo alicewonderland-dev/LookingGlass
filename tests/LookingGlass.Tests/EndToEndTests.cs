@@ -694,6 +694,9 @@ public sealed class EndToEndTests : IAsyncLifetime {
 
         Volatile.Write(ref armed, 1);
         await alice.Session.RekeyAsync(channelId, Ct, force: true);
+        // The request reached her before the server's answer, but events are handled in their own queue: under load it may
+        // not have been yet when the rekey returns. Once a probe sent now is handled, it has.
+        await this._server.SendAndSettleAsync(alice);
 
         Assert.Equal(1, pushed);
         var channel = alice.Session.Snapshot.FindChannel(channelId)!;

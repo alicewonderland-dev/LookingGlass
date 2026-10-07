@@ -16,10 +16,15 @@ public interface IGroupKeyProvider {
     byte[] NewEpochKey();
 
     /// <summary>Seals <paramref name="epochKey"/> to each of <paramref name="recipients"/>, for the members at <paramref name="position"/>.</summary>
+    /// <param name="createdUnixMs">When it was made, stated and signed in every copy (see <see cref="SealedEpochKey.CreatedUnixMs"/>); null for none.</param>
     /// <exception cref="SealingFailedException">The key couldn't be sealed to one of them.</exception>
-    EpochRekey SealToMembers(byte[] epochKey, string channelId, ulong epoch, LogPosition position, IEnumerable<ChannelMember> recipients, IdentityKeys author, long authorId);
+    EpochRekey SealToMembers(byte[] epochKey, string channelId, ulong epoch, LogPosition position, IEnumerable<ChannelMember> recipients, IdentityKeys author, long authorId,
+        long? createdUnixMs = null);
 
     bool VerifyEpochKey(SealedEpochKey key, string channelId, ulong epoch, long authorId, ReadOnlySpan<byte> authorSigningKey);
+
+    /// <summary>When the author says, signed, they made the key; null if the key doesn't say (an older client made it) or it isn't signed.</summary>
+    long? KeyCreatedAt(SealedEpochKey key, string channelId, ulong epoch, long authorId, ReadOnlySpan<byte> authorSigningKey);
 
     EpochKeyCheck OpenEpochKey(SealedEpochKey key, string channelId, ulong epoch, long authorId, ReadOnlySpan<byte> authorSigningKey, IdentityKeys me, long myId, out byte[]? epochKey);
 
@@ -58,21 +63,37 @@ public sealed class SealedEpochKeyProvider : IGroupKeyProvider {
 
     public byte[] NewEpochKey() => ChannelCrypto.NewEpochKey();
 
-    public EpochRekey SealToMembers(byte[] epochKey, string channelId, ulong epoch, LogPosition position, IEnumerable<ChannelMember> recipients, IdentityKeys author, long authorId) {
+    public EpochRekey SealToMembers(byte[] epochKey, string channelId, ulong epoch, LogPosition position, IEnumerable<ChannelMember> recipients, IdentityKeys author, long authorId,
+        long? createdUnixMs = null) {
+        var commitment = ChannelCrypto.KeyCommitment(channelId, epoch, epochKey);
+        // One statement for every copy: it signs the commitment, not the recipient.
+        var created = createdUnixMs is { } at ? ByteString.CopyFrom(ChannelCrypto.SignKeyCreated(channelId, epoch, commitment, position, author, authorId, at)) : null;
         var keys = new List<SealedEpochKey>();
         foreach (var member in recipients) {
+            SealedEpochKey sealedKey;
             try {
-                keys.Add(ChannelCrypto.SealEpochKey(epochKey, channelId, epoch, position, author, authorId, member.UserId, member.Keys.AgreementPublicKey));
+                sealedKey = ChannelCrypto.SealEpochKey(epochKey, channelId, epoch, position, author, authorId, member.UserId, member.Keys.AgreementPublicKey);
             } catch (Exception ex) {
                 throw new SealingFailedException(member, ex);
             }
+
+            if (created != null) {
+                sealedKey.CreatedUnixMs = createdUnixMs!.Value;
+                sealedKey.CreatedSignature = created;
+            }
+
+            keys.Add(sealedKey);
         }
 
-        return new EpochRekey(ByteString.CopyFrom(ChannelCrypto.KeyCommitment(channelId, epoch, epochKey)), keys);
+        return new EpochRekey(ByteString.CopyFrom(commitment), keys);
     }
 
     public bool VerifyEpochKey(SealedEpochKey key, string channelId, ulong epoch, long authorId, ReadOnlySpan<byte> authorSigningKey) {
         return ChannelCrypto.VerifyEpochKey(key, channelId, epoch, authorId, authorSigningKey);
+    }
+
+    public long? KeyCreatedAt(SealedEpochKey key, string channelId, ulong epoch, long authorId, ReadOnlySpan<byte> authorSigningKey) {
+        return ChannelCrypto.KeyCreatedAt(key, channelId, epoch, authorId, authorSigningKey);
     }
 
     public EpochKeyCheck OpenEpochKey(SealedEpochKey key, string channelId, ulong epoch, long authorId, ReadOnlySpan<byte> authorSigningKey, IdentityKeys me, long myId, out byte[]? epochKey) {

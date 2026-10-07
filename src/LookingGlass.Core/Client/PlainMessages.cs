@@ -288,6 +288,57 @@ public static class PlainMessages {
         $"Dropped a message from {sender} dated {dated}: it's older than messages already received from them (replayed?).",
         $"Dropped a message from {sender} dated {dated}: it's older than messages you already have from them, so it may be an old message sent again.");
 
+    /// <summary>
+    /// Message catch-up: some of the messages the server sent from while the user was away didn't pass the checks every
+    /// message must (from someone who wasn't a member, under a key this client never held, or not really from who it says).
+    /// Said once per channel and catch-up, however many, rather than once per message.
+    /// </summary>
+    public static Wording MessagesNotCaughtUp(string channel, int count) => new(NoticeKind.MessagesNotCaughtUp,
+        count == 1
+            ? $"1 message the server sent from while you were away, in {channel}, was dropped: it failed signature or decryption checks, was under a key you never held, or isn't from a member."
+            : $"{count} messages the server sent from while you were away, in {channel}, were dropped: they failed signature or decryption checks, were under keys you never held, or aren't from members.",
+        count == 1
+            ? $"1 message from while you were away, in {channel}, isn't shown: it couldn't be checked as really from a member who could send it then."
+            : $"{count} messages from while you were away, in {channel}, aren't shown: they couldn't be checked as really from members who could send them then.");
+
+    /// <summary>
+    /// Message catch-up left out messages that passed every check, because their senders' keys have stopped since (they
+    /// left, were removed, or set up LookingGlass again) and nothing that neither they nor the server chose says when, so
+    /// it can't be told those messages came before. Information, not a warning: said once per channel and login.
+    /// </summary>
+    /// <param name="senders">Each sender (name@world) and the kind of entry that stopped their keys.</param>
+    public static Wording MessagesNotConfirmed(string channel, IReadOnlyList<(string Who, Protocol.MembershipEntryKind How)> senders) {
+        if (senders.Count == 1) {
+            var (who, how) = senders[0];
+            var (technical, plain) = how switch {
+                Protocol.MembershipEntryKind.Leave => ("they left", $"before leaving {channel}"),
+                Protocol.MembershipEntryKind.Remove => ("they were removed", $"before being removed from {channel}"),
+                _ => ("they re-verified their character with new keys", $"in {channel} before setting up LookingGlass again"),
+            };
+            return new Wording(NoticeKind.MessagesNotConfirmed,
+                $"Some messages {who} sent in {channel} while you were away were left out: the keys they were signed with stopped being theirs ({technical}), " +
+                "and nothing that neither they nor the server chose says when, so it can't be confirmed they were sent before.",
+                $"Some messages {who} sent {plain} couldn't be confirmed, so they weren't restored.");
+        }
+
+        var names = string.Join(", ", senders.Take(senders.Count - 1).Select(sender => sender.Who)) + " and " + senders[^1].Who;
+        return new Wording(NoticeKind.MessagesNotConfirmed,
+            $"Some messages {names} sent in {channel} while you were away were left out: the keys they were signed with have stopped being theirs " +
+            "(they left, were removed, or re-verified with new keys), and nothing that neither they nor the server chose says when.",
+            $"Some messages {names} sent in {channel} before leaving or setting up LookingGlass again couldn't be confirmed, so they weren't restored.");
+    }
+
+    /// <summary>
+    /// A membership change verified as it happened is dated further ahead of this computer's clock than a live message may
+    /// be: whoever dated it (its signer, or the server for a re-verification) is misdating it, perhaps so that old keys seem
+    /// to be allowed to speak for longer. It is dated by when it was seen instead.
+    /// </summary>
+    public static Wording MembershipChangeDatedAhead(string channel) => new(NoticeKind.MembershipChangeDatedAhead,
+        $"A membership change in {channel} is dated in the future (its signer, or the server for a re-verification, misdated it). " +
+        "LookingGlass dates it by when you saw it, so it can't let a replaced key's messages from while you were away pass for longer.",
+        $"A change to who is in {channel} is dated in the future, which can't be right: it may be a mistake, or someone trying to make " +
+        "messages look older or newer than they are. LookingGlass goes by when you saw the change instead.");
+
     // ================================================================ servers
 
     /// <summary>A server that lists its own addresses, without the one this client uses.</summary>
@@ -538,6 +589,13 @@ public static class PlainMessages {
         yield return MessageFromNewSetup("Bob Hatter", "Tea party");
         yield return MessageFailedChecks("Bob Hatter");
         yield return MessageClockSkew("Bob Hatter", "04/10/2026 12:00");
+        yield return MessagesNotCaughtUp("Tea party", 1);
+        yield return MessagesNotCaughtUp("Tea party", 12);
+        yield return MembershipChangeDatedAhead("Tea party");
+        yield return MessagesNotConfirmed("Tea party", [("Carol Queen@Odin", Protocol.MembershipEntryKind.Leave)]);
+        yield return MessagesNotConfirmed("Tea party", [("Carol Queen@Odin", Protocol.MembershipEntryKind.Remove)]);
+        yield return MessagesNotConfirmed("Tea party", [("Carol Queen@Odin", Protocol.MembershipEntryKind.KeyRecovered)]);
+        yield return MessagesNotConfirmed("Tea party", [("Carol Queen@Odin", Protocol.MembershipEntryKind.Leave), ("Bob Hatter@Lich", Protocol.MembershipEntryKind.KeyRecovered)]);
         yield return MessageReplayed("Bob Hatter", "04/10/2026 12:00");
         yield return AddressNotListed("wss://chat.example.com/ws", "ws://203.0.113.5:5180/ws");
         yield return RelayedRegistrationCode;

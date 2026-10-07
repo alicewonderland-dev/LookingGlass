@@ -39,14 +39,15 @@ core ideas, shares no code with it, and doesn't talk to ExtraChat's servers.
   the channel is told. This trade-off was chosen so that losing your keys
   doesn't lose your channels.
 - **The server sees metadata.** It knows who is in which channel, when
-  messages are sent and who is online, and it can drop or delay anything.
+  messages are sent and who is online, and it can drop or delay anything. It
+  keeps each message, encrypted, for a week, so members who were away get it.
 
 ### Status
 
 The current version is 0.2. It has registration, key login, identity recovery,
 channels, invites, ranks, automatic rekeys, encrypted messages, the signed
-membership log, online indicators, blocking, channel windows (pop-out chat)
-and debug tooling. ChatTwo
+membership log, online indicators, blocking, channel windows (pop-out chat),
+message catch-up (what was sent while you were away) and debug tooling. ChatTwo
 integration and the import wizard come next. Local chat and a move to MLS are
 planned (see [Planned features](#planned-features)).
 
@@ -65,6 +66,8 @@ planned (see [Planned features](#planned-features)).
 | Place | A user's member or invite row in a channel: their rank or invite, under particular keys |
 | Epoch, epoch key | The channel key for one stretch between membership changes |
 | Rekey | Making the next epoch key and sealing a copy to each member |
+| Catch-up | A member coming back gets the messages sent while they were disconnected, which the server keeps for a while (see [Message catch-up](#message-catch-up)) |
+| First epoch | The first epoch whose key was sealed to a member's place: they may only fetch stored messages from it on |
 | Sealing | Encrypting something to one recipient's X25519 key, so only they can open it |
 | Key recovered entry | A log entry that moves a user's place to new keys after they re-verify through the Lodestone |
 | Origin | The scheme, host and port of a server address (`wss://host:port`) |
@@ -117,6 +120,7 @@ with key distribution, and from unsafe concurrency on both sides.
 | Errors | Swallowed on the client; any error drops the server connection | Silent message loss, reconnect loops | Typed error codes shown to the user; only protocol violations disconnect |
 | Limits | No rate, size or count limits | Easy to flood the server and the Lodestone | Limits advertised in the handshake and enforced by the server |
 | Secret recovery | The serialiser was missing two request kinds | The feature never worked | The server stores sealed epoch keys, so members can catch up |
+| Disconnects | Messages are only relayed to whoever is connected | Messages sent during an untimely disconnect are lost | The server keeps the encrypted messages for a week, and a returning member catches up (see [Message catch-up](#message-catch-up)) |
 | Upkeep | Stale CI, an example config that doesn't load, frozen dependencies | Hard to build, hard to trust | The plugin's package versions are locked; CI and automated dependency updates are planned |
 
 ## Core principles
@@ -907,6 +911,7 @@ rank and action.
 | --- | --- |
 | Read the membership log | Anyone with a place, invitees included (to check an invite before answering it) |
 | Send, fetch epoch keys, rekey | Members and above |
+| Fetch stored messages (catch-up) | Members and above, only those sent under epochs from their first one on (see [Message catch-up](#message-catch-up)) |
 | Leave | Members and above, except the admin while others remain |
 | Invite, cancel an invite | Moderators and above |
 | Remove a member | Moderators and above, for members ranked strictly below them |
@@ -1225,14 +1230,218 @@ has the checks to make in game.
 - Clients remember the IDs of recent verified messages (in memory) and drop
   duplicates.
 - They drop messages dated more than 10 minutes from their own clock.
-- They save, per channel and sender, the timestamp of the newest message
-  accepted, and drop messages more than 2 minutes older than that, even after
-  a restart.
-- Those timestamps are saved with other changes, on shutdown, and while
-  messages keep arriving, at least every 5 minutes. A crash can lose up to
-  about 5 minutes of them.
+- They save, per channel and sender, the timestamp (and message ID) of the
+  newest message accepted, and drop messages more than 2 minutes older than
+  that, even after a restart.
+- Those timestamps (with the IDs of the newest messages, and each channel's
+  catch-up position) are saved within 30 seconds of changing, with other
+  changes, on shutdown, and after each channel's catch-up. A crash can lose up
+  to about 30 seconds of them.
+- A live message that is one of the newest already accepted from its sender
+  (same time and ID) is dropped too, even after a restart.
 - Your own messages aren't recorded this way. After a restart, the server
   could replay one you sent in the last 10 minutes back to you.
+- Messages caught up from while you were away are older than the first two
+  rules allow, so they have a rule of their own (see
+  [Message catch-up](#message-catch-up)): each must be newer than everything
+  already accepted from its sender in the channel. A caught-up message replayed
+  later, live or caught up again, fails that rule or the seen-set like any other.
+
+### Message catch-up
+
+Built at the owner's request (2026-10-07; the first half of
+[Chat history](#chat-history)): messages sent while a member was disconnected
+reach them when they come back. Testers lost messages to untimely disconnects
+with ExtraChat; this fixes that. The server keeps recent messages for **7
+days**, and at most **5,000 per channel** (the oldest go first), both operator
+settings (`Messages:KeepDays`, `Messages:MaxPerChannel`, see
+[server.md](server.md#stored-messages)). Capability `history.v1`.
+
+**What the server keeps.** Each channel message exactly as it relays it: the
+ciphertext and the envelope it sees anyway (channel, epoch, sender, message ID,
+the sender's signed time, the signature), plus the time it relayed it and a
+number per channel (`server_id`, schema 9). Nothing it can read. It numbers and
+fans out a channel's messages under one lock (one of 64, by channel), so every
+member is sent them in number order, and stores one only while the channel is
+still at its epoch with no rekey pending (checked in the same transaction). It
+keeps nothing someone says alone in a channel: nobody else could ever fetch it
+(a member joining later gets nothing from before they joined). The cap is kept
+as each is stored; the rest (age, a lowered cap) is swept at startup
+and every ten minutes. Disbanding a channel, or its last member leaving, deletes
+its messages with it. The sealed keys of epochs that still have stored messages
+are kept too (normally only the newest 4 epochs' are), up to 64 epochs back;
+messages under older epochs go with their keys.
+
+**Who may fetch what.** `FetchMessages` goes through the single authorization
+check like every channel request: a member (rank Member and above), through a
+place under the account's current keys and the keys the connection signed in
+with. So an invitee, a place removed from the user's list (forgotten), a place
+under keys the account no longer has, and anyone removed or gone get nothing.
+Then each member row has a **first epoch**:
+
+- the channel's creator: epoch 0;
+- a member who joins (an accept): the epoch after the one the channel is at;
+- a member whose place moves to new keys (a key recovered entry): likewise, the
+  next epoch.
+
+A member gets only messages under their first epoch or later, never their own.
+
+Why this is exactly "sent while they were a member, under keys they could
+hold": the server stores a message under epoch E only while the channel is at E
+with no rekey pending; a join, a leave, a removal or a move sets a rekey
+pending, and the next epoch's key is sealed to exactly the members at the log's
+head (the server refuses a rekey that isn't). So a member row that exists, with
+first epoch F, was at the head when every epoch from F on was made, and was
+sealed each of those keys; and no epoch before F was sealed to its keys. A row
+goes when the member leaves or is removed (a rejoin is a new row, with a new
+first epoch), and a move to new keys moves the first epoch on, so a member
+waiting for a key across a recovery gets nothing until the rekey that gives
+their new keys one, and nothing from before. Rows from before schema 9 start at
+the channel's current epoch (the next one if a rekey is pending): nothing older
+is stored. Clients never rely on any of this: they check each message
+themselves (below), and couldn't open one under a key they weren't given.
+
+**Asking.** At every login (a reconnect too), the client asks per channel for
+the messages after the last `server_id` it has had from it, live or caught up
+(saved per character and server address with the message times). With none (the
+first login with this version, a new computer, a channel just joined) it asks
+for what was stored in the last hour: those it already received live are
+recognised and left out, and a new computer's new keys can't read older ones
+anyway. Pages hold at most 200 messages and 96 KiB of ciphertext (well within
+the 128 KiB frame); the client asks again while there are more, waiting and
+retrying if told to slow down. Each page is charged to a per-user budget of its
+own (100 at once, then 4 a second). `StoredMessages.latest_id` lets a client
+skip what it may not read (its own, from before it joined) once nothing more
+is to come; and if it is lower than the client's position (the server's
+database was restored from a backup), the client carries on from it. Only what
+a page says comes after the position, in order and of that channel, is looked
+at.
+
+**Order, and live messages meanwhile.** The server relays to a connection as
+soon as it is logged in, so from before the login the client holds back live
+messages. Each channel's caught-up messages are taken first, page by page, then
+that channel's held live messages. All of it runs in the session's one inbox,
+in turn with the server's events, so nothing races. A message both relayed live
+and in a page is taken once (by its signed message ID). One the server leaves
+out of the pages but relays live is taken, after them. Nothing is reordered
+within a channel: the server relays in number order, and a sender's messages in
+the order sent.
+
+**When a catch-up fails.** A channel whose catch-up fails (a timeout, an error,
+a key that couldn't be fetched) is tried again twice, from where it got to,
+waiting a little longer each time, while its live messages stay held. If the
+connection closed, its held live messages are let go: the server has them, and
+the next login fetches them after what was missed, in order. If it still fails
+on a working connection, its live messages are taken, and the channel is
+marked as having a gap: its position doesn't move on with live messages, the
+times (and IDs) already had from each sender are kept as they were, and the
+messages accepted since are remembered. So the next catch-up fetches from
+before the gap, judges the missed messages against what was had before it (a
+sender who has spoken live since doesn't make them look old), and leaves out
+what was already shown. A catch-up that completes ends the gap. More live
+messages than the client holds back (2,000) are handled the same way: taken as
+they come, with the channel marked.
+
+**Checks.** A caught-up message is checked as a live one, with these changes:
+
+- **Who could send it.** The sender must have held the key of its epoch: it is
+  checked against the keys the log had for them where that key was made (a
+  member's moves are followed back, as for names). Someone who has left (or was
+  removed) since counts if that key was made before they left: the client
+  remembers, for 8 days, who left each channel and with which keys.
+- **Not after its key was replaced.** Live, a message under an older key is
+  taken only within 2 minutes of the newer one arriving. Caught up, a message
+  under epoch E must be dated no later than:
+  - 10 minutes after E+1's key was made, which every new key states, signed
+    by whoever made it (`SealedEpochKey.created_unix_ms`, a signature of its
+    own so older clients still take the key): a member at that point of the
+    log, under the keys they had then, so not the server, not someone who left,
+    and not a place's replaced keys. 10 minutes, as much as a live message may
+    be from the clock, so a member whose clock is a few minutes slow doesn't
+    make others lose what was sent just before. The server refuses a new key
+    whose stated time is more than 10 minutes from its own clock, saying the
+    maker's clock is off; keys from older clients state none;
+  - 2 minutes after the first membership change (a join, a leave, a removal, a member's place
+    moving to new keys) after where E's key was made, as the client dates it:
+    as the entry says, but never later than when the client verified it, and
+    no later than any later entry signed by someone other than the change's
+    subject. A key recovered entry's time is the server's (nothing signs it),
+    and a leave's or a join's is signed by its own subject, so on their own
+    they only count up to when the client saw them.
+  - And if the sender's own keys stopped after E's key was made (they left,
+    were removed, or their place moved to new keys: a stolen computer's keys
+    after its owner re-verified), a time by which that had happened that
+    neither they nor the server chose: when E+1's key was made, if someone else
+    made it before this client came back; an entry someone else signed after
+    it; or when this client saw the change happen, connected (with the same
+    10 or 2 minutes). Without one, nothing of those keys is caught up: how long
+    they spoke can't be told. That isn't a failed check, so it isn't a warning:
+    one blue line per channel and login says it plainly ("Some messages Carol
+    sent before leaving couldn't be confirmed, so they weren't restored."), and
+    the diagnostic log notes it without who or what. It happens when nobody
+    else was there to make the next key or sign an entry (a two-member channel
+    the other left), and when the next key was made by an older plugin, which
+    states no time: members should update together.
+
+  A membership change dated more than 10 minutes ahead of the clock when it is
+  verified is misdated (by its signer, or the server for a re-verification):
+  the user is told, once per channel and session (members who see it happen
+  see the lie), and it counts as dated when it was seen.
+
+  The client remembers each channel's membership changes for 8 days; a message
+  under a key from before the changes it knows of (or before its channel's
+  last membership change when it started recording them) is dropped, unless
+  E+1's key says when it was made.
+- **When.** The live rules (within 10 minutes of the clock, and not more than 2
+  minutes older than the newest from the sender) would refuse an older message.
+  Instead, a caught-up message must be newer than the newest message already
+  accepted from its sender in the channel (by its signed time; at the same
+  time, a different message from those accepted then: the IDs of the newest
+  few are kept), saved across restarts, and not dated further in the future
+  than a live message may be (10 minutes). (One dated ahead, which only its
+  sender can sign, can make their own next live messages look like replays
+  for a while, as live.)
+
+So the server can't pass an old message off as new: a caught-up one is shown as
+such, with the time it was sent, and is accepted at most once, whether the
+server sends it again in a page, out of order, or live, before or after a
+restart. One it shows twice or out of order is dropped quietly (nothing was
+forged or hidden). One under a key the member never held (from before they
+joined), from someone who couldn't have sent it, not really the sender's, dated
+after its key was replaced, or dated in the future is dropped, and each
+channel's drops are told in one notice
+("3 messages from while you were away … aren't shown").
+
+**Keys missed while away.** A channel rekeyed while a member was away has
+epochs whose keys they never fetched (a client fetches only the newest two on
+login). For a caught-up message under one, the client fetches its keys from that
+epoch on, and keeps those older than its newest key in memory, for reading only:
+each sealed to it and signed by a member (or someone who left since, for a key
+from before they left) for a position of the log it verified. It never sends
+with one, and the key it sends with is unchanged. A message's authenticity comes
+from its sender's signature, not from the key.
+
+**Showing them.** The session raises each channel's caught-up messages once
+(`MessagesCaughtUp`), not as live messages. The plugin puts every one in the
+channel's window history, after a dimmed line ("12 messages were sent while you
+were away:"), each with the time it was sent (with the day, if not today), and
+counts them as unread. In game chat, unless the channel is turned off there, one
+blue line with the channel's tag says how many, then the last 50 follow, each
+with its time after the tag (`[sky] [14:05] <Bob@Lich> hi`); if there were more,
+the line says the earlier ones are in the channel's window. The rules are in the
+core library (`CatchUpChat`, `ChannelHistory.AddCaughtUp`) and unit tested.
+
+**Compatibility.** Additive, no new protocol version: a new capability string,
+a request and response, `ChatMessage.server_id`, and two limits in `Welcome`.
+A plugin from before (0.2.5) doesn't offer the capability and never asks: it
+works as before, and skips `server_id`. A plugin with catch-up asks only a
+server that agreed, so against an older server (or one keeping nothing) it works
+as before too.
+
+**The trade-off.** See [Known limitations](#known-limitations): a stolen
+identity key now reads up to a week of a channel's stored messages, not only
+new ones, and the server keeps the metadata it saw (who sent when, in which
+channel) for as long as it keeps the message.
 
 ### Online status
 
@@ -1262,8 +1471,10 @@ again.
 
 ### What the encryption protects
 
-- The server can't read channel names or messages.
-- The server can't forge, alter or re-attribute messages.
+- The server can't read channel names or messages, including the messages it
+  keeps for members who were away.
+- The server can't forge, alter or re-attribute messages, or pass an old one
+  off as new (a caught-up message is shown as such, with its time, once).
 - The server can't add members, change ranks or reorder the membership log.
 - Removed members and declined invitees get no later keys, so they can't read
   anything sent afterwards.
@@ -1301,6 +1512,55 @@ again.
   to a channel (or invited to it) replays it from the start.
 - **Metadata and availability.** The server sees who is in which channel, when
   messages are sent and who is online, and can drop or delay anything.
+- **Stored messages widen what a stolen key reads** (message catch-up, owner's
+  decision 2026-10-07). The server keeps each channel's messages, encrypted, for
+  7 days (an operator setting). Someone who steals a member's identity keys can
+  sign in as them and fetch, and read, up to a week of that channel's stored
+  messages from the epochs that member held, not only what is sent from then
+  on. Before, nothing was kept to fetch. The server still can't read them, and a
+  member who leaves or is removed fetches nothing more. "Reset my identity"
+  stops the stolen keys signing in, and their place moves to the new keys.
+- **Metadata is kept, not only seen.** With each stored message the server
+  keeps what it saw when relaying it: who sent it, when, in which channel, under
+  which epoch, and its size, for as long as it keeps the message (7 days by
+  default). So do its backups and Litestream replicas. A server operator could
+  always have logged this as it went by; now it is in the database for a week.
+  Setting `Messages:KeepDays` to 0 turns catch-up (and this) off.
+- **A sender and a malicious server together can backdate.** A member (or
+  someone who has left since) can sign a message now with an earlier time,
+  under a key they held then, and a server can show it to the others as one
+  missed while they were away, if it is newer than anything they already have
+  from that sender. It must be dated no later than 10 minutes after the next
+  key was made (as its maker signed) and 2 minutes after the next membership
+  change; and
+  for keys that stopped being theirs (they left, or their place moved), after
+  a time neither they nor the server chose (see
+  [Message catch-up](#message-catch-up)), or nothing of them is caught up.
+  What is left: a server can hold back the next key (by not asking anyone to
+  make it) and the evidence of a change, so the window lasts until a member
+  makes the key, someone else signs an entry, or the reader sees the change
+  happen; until then a sender can post under a key they still hold as a
+  member. A test pins this window
+  (`KnownLimitTheWindowLastsUntilSomeoneElseMakesTheNextKey`): a
+  re-verification the server dates ahead, with the next key made only when
+  another member comes back later, lets the old keys post up to then. Within the 10 minutes' grace
+  after the next key, anyone who held a key can post under it, dated before.
+  Keys made by older clients don't say when they were made, and then only the
+  change times count (and the fail-closed rule drops what can't be dated). (An honest server
+  stores only what members send, as they send it.)
+- **Catch-up has limits.** A client with no position in a channel (the first
+  login with this version) catches up only the last hour. A channel rekeyed
+  more than 64 times within the 7 days keeps only its newest 64 epochs'
+  messages. Up to about 30 seconds of messages accepted just before a crash can
+  show again as missed after it (the message times weren't saved yet). If more
+  than 5,000 live messages arrive in a channel while its catch-up keeps failing
+  (it has a gap), the oldest of them could show again once it catches up. A sender whose clock is
+  more than 2 minutes fast can lose messages they sent under a key just before
+  it was replaced. Messages from someone whose keys stopped while you were
+  away, before anyone else made a new key or signed an entry, aren't caught up. Right
+  after updating to this version, messages under a key from before the
+  channel's last membership change before the update can't be dated, so they
+  aren't caught up.
 - **Shared addresses share limits.** Per-address limits (registrations, key
   login, connections) can't tell apart the people behind one address (a
   shared NAT, a mobile carrier's CGNAT, one IPv6 /64). Someone there can use
@@ -1313,8 +1573,8 @@ again.
   someone registering (whose connection must stay open while they edit their
   Lodestone profile) can have theirs closed and must start again. Only
   10,000 logged-in connections fill the server for good.
-- **Replays of your own messages** within 10 minutes of a restart, and up to 5
-  minutes of replay timestamps lost in a crash (see
+- **Replays of your own messages** within 10 minutes of a restart, and up to 30
+  seconds of replay timestamps lost in a crash (see
   [Replay protection](#replay-protection)).
 - **Debug accounts** on a Development server can be taken over by anyone who
   can reach it, channels and all.
@@ -1353,6 +1613,13 @@ Some additions needed no new version:
 
 - `ForgetChannel` ("Remove from my list"). An older server answers "Unknown
   request.".
+- Message catch-up: the capability `history.v1`, `FetchMessages` and
+  `StoredMessages`, `ChatMessage.server_id`, and `Limits.message_keep_days` and
+  `max_stored_messages_per_channel`. Each new epoch key states when it was made
+  (`SealedEpochKey.created_unix_ms` and `created_signature`, a signature of its
+  own, so older clients still verify the key as before). Agreed in `Hello`/`Welcome` (see
+  [Message catch-up](#message-catch-up)), so neither side uses it with one that
+  doesn't know it.
 - Signed registrations, the registration client nonce and signed URLs. Older
   plugins are refused with a request to update.
 
@@ -2109,10 +2376,12 @@ the plugin's `ChannelWindows` opens and remembers the windows and
   character or server; a reconnect keeps it), and what an old session still
   delivers is dropped (a generation number). A message delivered twice is
   held once. A channel's lines go when the user is no longer in it. The owner
-  accepted showing only what came since login (2026-10-05). Stored history
-  isn't planned, but isn't ruled out: if it comes later, it would be opt-in,
-  kept on the player's computer and encrypted like the secrets file (see the
-  open question on message history).
+  accepted showing only what came since login (2026-10-05). Messages sent
+  while the user was away (logged out or disconnected) are added when they
+  come back, after a dimmed line saying how many, each with the time it was
+  sent (see [Message catch-up](#message-catch-up)). A log kept on the player's
+  computer, to read again later, is planned (see
+  [Chat history](#chat-history)).
 - **Also show in game chat.** Per channel, kept per character like its colour
   (`CharacterSettings.GameChatOff`), in the channel's ⋮ menu and a tab's
   right-click menu; on unless turned off, as before. Off, the channel's
@@ -2201,7 +2470,9 @@ one transaction for every multi-step change.
   gives it the channel's key, unless nobody else holds it.
 - **Storage.** SQLite in WAL mode. Conditional updates (on epoch and rank)
   guard against races. The schema is upgraded in place at startup; the
-  current schema version is 8.
+  current schema version is 9 (stored messages for catch-up).
+- **Stored messages.** Kept as relayed, numbered per channel, swept at startup
+  and every ten minutes (see [Message catch-up](#message-catch-up)).
 - **Memory.** Nothing kept per address, user or name grows without bound.
   Per-address counters drop addresses whose window has passed, and keep at
   most 100,000 (past that, the least recently seen are forgotten and start
@@ -2233,6 +2504,8 @@ one transaction for every multi-step change.
 | Requests per connection | 200 at once, then 20 a second; faster ones are slowed, not refused | Bounds the work one connection makes |
 | Connections in all | 10,000; at the cap the oldest not logged in is closed for a new one, and only when all have logged in is one refused (503) | Connections that never log in can't keep plugins out; about 2 GB at most |
 | Outbound queue per connection | 256 events | A slow client is disconnected, not waited on |
+| Stored messages (catch-up) | 7 days, 5,000 per channel; the oldest go first | Bounds the disk a channel can take (about 22 MB at worst); operator settings |
+| Pages of stored messages | 200 messages or 96 KiB each; 100 pages per user at once, then 4 a second | A returning client asks once per channel; within the frame limit |
 | Devices per user | 20 most recently used | Bounds stored logins |
 
 Channel creation, renames, disbands, identity lookups and heavy reads have
@@ -2262,7 +2535,8 @@ are under [Key login](#key-login). Operators can change some of these (see
   requests finish and checkpoints the database. Every change is one
   transaction, so a crash leaves the database whole.
 - It never logs messages, channel names, tokens, keys or registration codes;
-  client addresses only where abuse handling needs them.
+  client addresses only where abuse handling needs them. It keeps relayed
+  messages, encrypted, for catch-up (7 days by default), and so do its backups.
 - The first tester server runs as a systemd service on a Linux machine behind
   Tailscale Funnel. The public one is an ARM64 cloud machine, also behind
   Funnel, with its database replicated by Litestream.
@@ -2283,8 +2557,10 @@ How to build, configure, deploy, back up and restore a server is in
   force a rekey, or simulate an incoming message.
 - **Automated tests.** Cryptography, the policy table, the membership log and
   its rules, key login, recovery, identity resets, server moves, secrets
-  files, limits, end-to-end flows, and malicious-server and malicious-member
-  suites that inject forged and replayed events.
+  files, limits, message catch-up (storage, sweeps, who may fetch what, paging,
+  and a server that repeats, reorders or forges what it sends back),
+  end-to-end flows, and malicious-server and malicious-member suites that
+  inject forged and replayed events.
 
 Acceptance tests for the membership log:
 
@@ -2411,36 +2687,34 @@ advanced mode.
 
 ### Chat history
 
-Status: planned, details to be decided. Added by the owner (2026-10-06) after
-testers asked for it: with ExtraChat, losing messages to an untimely
+Status: the first half (messages sent while you were disconnected) is built:
+see [Message catch-up](#message-catch-up). The second (a log on the player's
+computer) is planned, details to be decided. Added by the owner (2026-10-06)
+after testers asked for it: with ExtraChat, losing messages to an untimely
 disconnect was a common problem. ChatTwo keeps its own log, but many players
 use the game's own chat, which keeps nothing, so LookingGlass should offer it
-itself. This replaces "stored history isn't planned" in Channel windows: it is
-planned now.
+itself.
 
 Two different losses, which may need different answers:
 
-- **Messages sent while you were disconnected** never reach you today: the
-  server only relays to whoever is connected. Keeping recent messages on the
-  server (as the ciphertext it already relays, which it can't read) and
-  sending a returning member what they missed would fix this. The server
-  already keeps sealed epoch keys for catching up, so a member who reconnects
-  could read them. To decide: how long and how many messages to keep, per
-  channel limits, and whether a member removed in the meantime may still fetch
-  messages from before the removal (they could read them then).
+- **Messages sent while you were disconnected**: built (owner's decision,
+  2026-10-07). The server keeps recent messages (as the ciphertext it already
+  relays, which it can't read) for 7 days, at most 5,000 per channel, and a
+  returning member catches up on what they missed. A member removed in the
+  meantime fetches nothing more (they are no longer a member). See
+  [Message catch-up](#message-catch-up).
 - **Messages you saw, but want to read again later** (after a crash, a
   relog, or the next day): a log on the player's own computer. Decided (owner,
   2026-10-06): **opt-in**, one setting that logs **every channel** (no
   per-channel choice, for simplicity), and kept to a **size limit** rather
   than an age: when the log reaches it, the oldest messages go first. Still
   to decide: the default size and its range, encrypting it like the secrets
-  file, showing it in channel windows (they show only messages since login
-  today) and/or exporting it, and deleting it (all at once, and what happens
-  on leaving a channel or resetting the identity).
+  file, showing it in channel windows (they show messages since login, and
+  those caught up from while away) and/or exporting it, and deleting it (all
+  at once, and what happens on leaving a channel or resetting the identity).
 
-Both are wanted (owner, 2026-10-06). For the first, the owner is asking a
-heavy ExtraChat user among the testers how long the server should keep
-messages.
+Both are wanted (owner, 2026-10-06). For the first, the owner chose 7 days
+and about 5,000 messages per channel (2026-10-07).
 
 Either way the same privacy rules hold: nothing readable leaves the player's
 computer, and a log is never shared or uploaded.
@@ -2528,9 +2802,17 @@ The owner's decisions, and why.
   be open at a time, each with tabs for several channels: right-click a
   channel in the list to make a window for it (or add it to one), and a "+"
   after the tabs to add another channel. They show only what came since login,
-  like the game's chat log (accepted 2026-10-05); stored history isn't planned
-  but isn't ruled out. Game chat stays optional per channel, warnings
-  excepted. See [Channel windows](#channel-windows).
+  like the game's chat log (accepted 2026-10-05), and since 2026-10-07 what
+  was sent while away (see [Message catch-up](#message-catch-up)). Game chat
+  stays optional per channel, warnings excepted. See
+  [Channel windows](#channel-windows).
+- **Message catch-up (2026-10-07).** Messages sent while a member was
+  disconnected must reach them when they reconnect: testers lost messages to
+  untimely disconnects with ExtraChat. The server keeps recent messages for 7
+  days, plus a per-channel cap (about 5,000, oldest dropped first), both
+  operator settings. It costs a wider reach for a stolen key and a week of kept
+  metadata (see [Known limitations](#known-limitations)). See
+  [Message catch-up](#message-catch-up).
 - **Friends-only local chat (2026-10-05).** No party or Free Company option,
   since those can include people a player doesn't trust.
 - **Key-change policy for re-verified keys.** Keys re-verified through the
@@ -2559,8 +2841,9 @@ The owner's decisions, and why.
   input's label; asking ChatTwo for a neutral override (one that names the
   command to send plain text with, and adds no "(Warning: ...)") would make
   the label exact.
-- **Message history:** planned (see Planned features, "Chat history"); how
-  it works is still to be decided.
+- **Message history:** catching up on what was sent while away is built (see
+  [Message catch-up](#message-catch-up)); how the log on the player's computer
+  works is still to be decided (see Planned features, "Chat history").
 - **Limits:** confirm after beta load testing.
 - **Public hosting:** who runs it, the cost, a privacy note, and an acceptable
   Lodestone volume.

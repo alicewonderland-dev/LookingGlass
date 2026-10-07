@@ -537,7 +537,10 @@ public sealed class ChannelWindow : Window {
     private sealed record Piece(string Text, ChatLink? Link = null, string? Tooltip = null);
 
     private ShownLine Build(HistoryLine line, bool advanced) {
-        var time = line.Time.ToLocalTime().ToString("HH:mm", CultureInfo.InvariantCulture);
+        // A message caught up from while the player was away shows when it was sent (with the day, if not today).
+        var time = line.CaughtUp
+            ? CatchUpChat.TimeLabel(line.SentAt, DateTimeOffset.Now)
+            : line.Time.ToLocalTime().ToString("HH:mm", CultureInfo.InvariantCulture);
         if (line.Kind != HistoryLineKind.Message) {
             var text = TextSanitizer.Clean(line.TextFor(advanced));
             // LookingGlass's own lines: notices dimmed, warnings in their colour; feedback (Not sent) in LookingGlass blue.
