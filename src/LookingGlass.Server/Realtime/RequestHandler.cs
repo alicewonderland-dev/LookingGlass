@@ -112,20 +112,21 @@ public sealed class RequestHandler(
     private readonly KeyLoginOrigins _keyLoginOrigins =ChooseKeyLoginOrigins(ParsePublicUrls(options.Value.PublicUrls), environment?.IsDevelopment() == true);
     private readonly TimeProvider _time = time ?? TimeProvider.System;
     private readonly UserRateLimits _rekeys = new(perSecond: 0.5, burst: 5);
-    private readonly UserRateLimits _lookups = new(perSecond: 0.5, burst: 10);
+    // Lookups by name: each invite by name starts with one (the plugin reuses them for a while). An operator setting.
+    private readonly UserRateLimits _lookups = new(PerSecond(options.Value.Limits.LookupIntervalSeconds), Burst(options.Value.Limits.LookupBurst), time);
     private readonly UserRateLimits _messages = new(ProtocolInfo.DefaultLimits().MessagesPerSecond, ProtocolInfo.DefaultLimits().MessageBurst);
     // Invites are limited on both ends: an inviter can't spam many people, and many inviters (or invite, cancel, invite
     // loops) can't flood one person. Operator settings (LookingGlass:Limits:Invite...), checked at startup.
     private readonly UserRateLimits _invitesSent = new(
-        InvitesPerSecond(options.Value.Limits.InviteIntervalSecondsPerInviter), InviteBurst(options.Value.Limits.InviteBurstPerInviter), time);
+        PerSecond(options.Value.Limits.InviteIntervalSecondsPerInviter), Burst(options.Value.Limits.InviteBurstPerInviter), time);
     private readonly UserRateLimits _invitesReceived = new(
-        InvitesPerSecond(options.Value.Limits.InviteIntervalSecondsPerInvitee), InviteBurst(options.Value.Limits.InviteBurstPerInvitee), time);
+        PerSecond(options.Value.Limits.InviteIntervalSecondsPerInvitee), Burst(options.Value.Limits.InviteBurstPerInvitee), time);
     // And between each inviter and invitee, checked first, so one person can't use up someone's invites alone: not their
     // budget above (an inviter they blocked would otherwise keep it spent, as the server doesn't know whom they block, and
     // their client declines such invites unseen), nor their pending invites (see MaxPendingInvitesFromOneInviter). Smaller
     // and slower than the invitee's budget (the startup check sees to it), so others always have some of it left.
     private readonly KeyedRateLimits<(long Inviter, long Invitee)> _invitesBetween = new(
-        InvitesPerSecond(options.Value.Limits.InviteIntervalSecondsPerPair), InviteBurst(options.Value.Limits.InviteBurstPerPair), time);
+        PerSecond(options.Value.Limits.InviteIntervalSecondsPerPair), Burst(options.Value.Limits.InviteBurstPerPair), time);
     // Invites refused by a limit are logged (limit and user IDs only), at most one line a minute per inviter.
     private readonly UserRateLimits _inviteRefusalLogs = new(perSecond: 1.0 / 60, burst: 1, time);
     private readonly UserRateLimits _creates = new(perSecond: 1.0 / 60, burst: 10);
@@ -247,10 +248,10 @@ public sealed class RequestHandler(
         return limits;
     }
 
-    // The invite settings, kept in range even by a handler made without the startup check (see LimitOptions.InviteProblem).
-    private static double InviteBurst(int burst) => Math.Clamp(burst, 1, LimitOptions.MaxInviteBurst);
+    // The invite and lookup settings, kept in range even by a handler made without the startup check (see LimitOptions.Problem).
+    private static double Burst(int burst) => Math.Clamp(burst, 1, LimitOptions.MaxBurst);
 
-    private static double InvitesPerSecond(int intervalSeconds) => 1.0 / Math.Clamp(intervalSeconds, 1, LimitOptions.MaxInviteIntervalSeconds);
+    private static double PerSecond(int intervalSeconds) => 1.0 / Math.Clamp(intervalSeconds, 1, LimitOptions.MaxIntervalSeconds);
 
     private static int PendingInvitesPerUser(LimitOptions limits) => Math.Clamp(limits.MaxPendingInvitesPerUser, 2, LimitOptions.MaxMaxPendingInvitesPerUser);
 
@@ -1007,8 +1008,8 @@ public sealed class RequestHandler(
 
     private Response LookupUser(ClientConnection connection, LookupUser request) {
         var me = RequireUser(connection);
-        if (!this._lookups.TryTake(me.UserId)) {
-            throw new RequestException(ErrorCode.RateLimited, "Too many lookups; slow down.");
+        if (!this._lookups.TryTake(me.UserId, out var wait)) {
+            throw new RequestException(ErrorCode.RateLimited, $"You've looked up a lot of players recently; try again in {AboutHowLong(wait)}.");
         }
 
         var user = db.FindUser(request.Name, request.WorldName)

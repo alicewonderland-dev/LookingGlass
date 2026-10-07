@@ -102,9 +102,9 @@ if (options.Messages.Problem() is { } messageSettings) {
     return;
 }
 
-// The invite limits, which keep their protective shape: one inviter can't use up what others can send someone.
-if (options.Limits.InviteProblem() is { } inviteSettings) {
-    app.Logger.LogCritical("{Problem}", inviteSettings);
+// The invite and lookup limits; the invite limits keep their protective shape: one inviter can't use up what others can send someone.
+if (options.Limits.Problem() is { } limitSettings) {
+    app.Logger.LogCritical("{Problem}", limitSettings);
     Environment.ExitCode = 1;
     return;
 }

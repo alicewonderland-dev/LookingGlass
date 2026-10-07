@@ -414,28 +414,119 @@ public sealed class ServerLimitTests : IAsyncLifetime {
             .Select(entry => entry.Message).ToList();
     }
 
-    /// <summary>The invite settings are checked at startup, keeping one inviter from using up what others can send someone.</summary>
+    /// <summary>
+    /// Looking players up by name (each invite by name starts with one) allows as many at once as invites: 60, then one a
+    /// second; a refusal says how long to wait.
+    /// </summary>
     [Fact]
-    public void InviteSettingsOutOfRangeAreRefused() {
-        Assert.Null(new LookingGlass.Server.LimitOptions().InviteProblem());
-        Assert.Contains("InviteBurstPerInviter", new LookingGlass.Server.LimitOptions { InviteBurstPerInviter = 0 }.InviteProblem());
-        Assert.Contains("InviteIntervalSecondsPerInvitee", new LookingGlass.Server.LimitOptions { InviteIntervalSecondsPerInvitee = 0 }.InviteProblem());
-        Assert.Contains("InviteIntervalSecondsPerPair", new LookingGlass.Server.LimitOptions { InviteIntervalSecondsPerPair = 100_000 }.InviteProblem());
-        // The pair's allowance must stay smaller and slower than the invitee's.
-        Assert.Contains("InviteBurstPerPair", new LookingGlass.Server.LimitOptions { InviteBurstPerPair = 30 }.InviteProblem());
-        Assert.Contains("InviteIntervalSecondsPerPair", new LookingGlass.Server.LimitOptions { InviteIntervalSecondsPerPair = 10 }.InviteProblem());
-        Assert.Null(new LookingGlass.Server.LimitOptions { InviteBurstPerPair = 29, InviteIntervalSecondsPerPair = 11 }.InviteProblem());
-        // One inviter can't fill all of someone's pending invites.
-        Assert.Contains("MaxPendingInvitesFromOneInviter", new LookingGlass.Server.LimitOptions { MaxPendingInvitesFromOneInviter = 50 }.InviteProblem());
-        Assert.Contains("MaxPendingInvitesPerUser", new LookingGlass.Server.LimitOptions { MaxPendingInvitesPerUser = 201 }.InviteProblem());
-        Assert.Null(new LookingGlass.Server.LimitOptions { MaxPendingInvitesPerUser = 200, MaxPendingInvitesFromOneInviter = 199 }.InviteProblem());
+    public async Task LookupsAreRateLimitedAndSayHowLongToWait() {
+        var clock = await this.StopTheClockAsync();
+        var alice = await this._server.RegisterAsync("Alice Looking Up");
+        var bob = await this._server.RegisterAsync("Bob Looked Up");
+        var lookup = new ClientFrame { LookupUser = new LookupUser { Name = bob.Name, WorldName = ProtocolInfo.DebugWorldName } };
+        for (var i = 0; i < 60; i++) {
+            Assert.NotNull((await alice.Session.SendRawAsync(lookup, Ct)).Identities);
+        }
+
+        var refused = await Assert.ThrowsAsync<ServerErrorException>(() => alice.Session.SendRawAsync(lookup, Ct));
+        Assert.Equal(ErrorCode.RateLimited, refused.Code);
+        Assert.Equal("You've looked up a lot of players recently; try again in a few seconds.", refused.ServerMessage);
+        PlainLanguage.AssertPlain(refused.ServerMessage);
+
+        clock.Advance(TimeSpan.FromSeconds(1));
+        Assert.NotNull((await alice.Session.SendRawAsync(lookup, Ct)).Identities);
+        await Assert.ThrowsAsync<ServerErrorException>(() => alice.Session.SendRawAsync(lookup, Ct));
     }
 
-    /// <summary>A server with an invite setting out of range doesn't start, and says why.</summary>
+    /// <summary>The lookup limits are the operator's settings (LookupBurst, LookupIntervalSeconds).</summary>
+    [Fact]
+    public async Task LookupLimitsAreSettings() {
+        await this.StopTheClockAsync(settings: [("LookingGlass:Limits:LookupBurst", "3"), ("LookingGlass:Limits:LookupIntervalSeconds", "120")]);
+        var alice = await this._server.RegisterAsync("Alice Few Lookups");
+        var lookup = new ClientFrame { LookupUser = new LookupUser { Name = alice.Name, WorldName = ProtocolInfo.DebugWorldName } };
+        for (var i = 0; i < 3; i++) {
+            await alice.Session.SendRawAsync(lookup, Ct);
+        }
+
+        var refused = await Assert.ThrowsAsync<ServerErrorException>(() => alice.Session.SendRawAsync(lookup, Ct));
+        Assert.Equal("You've looked up a lot of players recently; try again in about 2 minutes.", refused.ServerMessage);
+    }
+
+    /// <summary>
+    /// The plugin reuses a lookup by name for 10 minutes, so inviting one friend to many channels looks them up once; an
+    /// invite that fails forgets it, so the next one looks them up again. (This server allows one lookup every 10 minutes,
+    /// and 3 invites at once between two players, so a lookup the plugin makes shows as one the server then refuses.)
+    /// </summary>
+    [Fact]
+    public async Task InvitingOneFriendToManyChannelsLooksThemUpOnce() {
+        var clock = new ManualClock();
+        await this._server.DisposeAsync();
+        this._server = new Harness(serverTime: clock, settings: [
+            ("LookingGlass:Limits:LookupBurst", "1"), ("LookingGlass:Limits:LookupIntervalSeconds", "600"), ("LookingGlass:Limits:InviteBurstPerPair", "3"),
+        ]);
+        // Every clock here moves together.
+        var alice = await this._server.RegisterAsync("Alice Reusing", options: this._server.Options(time: clock));
+        var bob = await this._server.RegisterAsync("Bob Reused", options: this._server.Options(time: clock));
+        var channels = new List<string>();
+        for (var i = 0; i < 6; i++) {
+            channels.Add(await alice.Session.CreateChannelAsync($"Moved {i}", Ct));
+        }
+
+        Task Invite(int channel) => alice.Session.InviteAsync(channels[channel], bob.Name, ProtocolInfo.DebugWorldName, Ct);
+
+        // Three invites, one lookup: a second would be refused.
+        for (var i = 0; i < 3; i++) {
+            await Invite(i);
+        }
+
+        // The fourth is refused (the pair's three are spent), with the lookup reused; it forgets the lookup, and its fresh
+        // try at once (in case his keys changed) is refused by the server, so what is said is still why the invite was.
+        var refused = await Assert.ThrowsAsync<ServerErrorException>(() => Invite(3));
+        Assert.StartsWith("You've sent a lot of invites to Bob Reused@Debug recently", refused.ServerMessage);
+
+        // So the next try looks him up again (refused: the server's one lookup every 10 minutes is spent).
+        clock.Offset += TimeSpan.FromSeconds(61);
+        refused = await Assert.ThrowsAsync<ServerErrorException>(() => Invite(3));
+        Assert.Equal("You've looked up a lot of players recently; try again in about 9 minutes.", refused.ServerMessage);
+
+        // Once the server allows one, it goes, and the next invite reuses it.
+        clock.Offset += TimeSpan.FromMinutes(9);
+        await Invite(3);
+        await Invite(4);
+
+        // Ten minutes on, the plugin looks him up again: the server's one lookup since is spent by then.
+        clock.Offset += ClientSession.LookupReusedFor;
+        await Invite(5);
+        var lookup = new ClientFrame { LookupUser = new LookupUser { Name = bob.Name, WorldName = ProtocolInfo.DebugWorldName } };
+        Assert.Equal(ErrorCode.RateLimited, (await Assert.ThrowsAsync<ServerErrorException>(() => alice.Session.SendRawAsync(lookup, Ct))).Code);
+        Assert.Equal(6, this._server.Database.CountInvitesForUser(bob.UserId));
+    }
+
+    /// <summary>The invite and lookup settings are checked at startup, keeping one inviter from using up what others can send someone.</summary>
+    [Fact]
+    public void InviteAndLookupSettingsOutOfRangeAreRefused() {
+        Assert.Null(new LookingGlass.Server.LimitOptions().Problem());
+        Assert.Contains("InviteBurstPerInviter", new LookingGlass.Server.LimitOptions { InviteBurstPerInviter = 0 }.Problem());
+        Assert.Contains("InviteIntervalSecondsPerInvitee", new LookingGlass.Server.LimitOptions { InviteIntervalSecondsPerInvitee = 0 }.Problem());
+        Assert.Contains("InviteIntervalSecondsPerPair", new LookingGlass.Server.LimitOptions { InviteIntervalSecondsPerPair = 100_000 }.Problem());
+        // The pair's allowance must stay smaller and slower than the invitee's.
+        Assert.Contains("InviteBurstPerPair", new LookingGlass.Server.LimitOptions { InviteBurstPerPair = 30 }.Problem());
+        Assert.Contains("InviteIntervalSecondsPerPair", new LookingGlass.Server.LimitOptions { InviteIntervalSecondsPerPair = 10 }.Problem());
+        Assert.Null(new LookingGlass.Server.LimitOptions { InviteBurstPerPair = 29, InviteIntervalSecondsPerPair = 11 }.Problem());
+        // One inviter can't fill all of someone's pending invites.
+        Assert.Contains("MaxPendingInvitesFromOneInviter", new LookingGlass.Server.LimitOptions { MaxPendingInvitesFromOneInviter = 50 }.Problem());
+        Assert.Contains("MaxPendingInvitesPerUser", new LookingGlass.Server.LimitOptions { MaxPendingInvitesPerUser = 201 }.Problem());
+        Assert.Null(new LookingGlass.Server.LimitOptions { MaxPendingInvitesPerUser = 200, MaxPendingInvitesFromOneInviter = 199 }.Problem());
+        Assert.Contains("LookupBurst", new LookingGlass.Server.LimitOptions { LookupBurst = 0 }.Problem());
+        Assert.Contains("LookupIntervalSeconds", new LookingGlass.Server.LimitOptions { LookupIntervalSeconds = 86_401 }.Problem());
+    }
+
+    /// <summary>A server with an invite or lookup setting out of range doesn't start, and says why.</summary>
     [Theory]
     [InlineData("InviteBurstPerPair", "0")]
     [InlineData("InviteBurstPerPair", "40")]
     [InlineData("MaxPendingInvitesFromOneInviter", "60")]
+    [InlineData("LookupIntervalSeconds", "0")]
     public async Task AServerWithInviteSettingsOutOfRangeDoesntStart(string setting, string value) {
         var logs = new CapturingLoggerProvider();
         await ExitCodeGate.WaitAsync(Ct);

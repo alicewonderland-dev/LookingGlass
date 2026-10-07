@@ -181,8 +181,20 @@ public sealed class LimitOptions {
     /// </summary>
     public int MaxPendingInvitesFromOneInviter { get; set; } = 25;
 
-    public const int MaxInviteBurst = 10_000;
-    public const int MaxInviteIntervalSeconds = 86_400;
+    /// <summary>
+    /// Players one user may look up by name at once (each invite by name starts with one; the plugin reuses a lookup for 10
+    /// minutes); past it, one more every <see cref="LookupIntervalSeconds"/>. As many as <see cref="InviteBurstPerInviter"/>.
+    /// </summary>
+    public int LookupBurst { get; set; } = 60;
+
+    /// <summary>Seconds between lookups one user may make once <see cref="LookupBurst"/> is spent.</summary>
+    public int LookupIntervalSeconds { get; set; } = 1;
+
+    /// <summary>The most a burst setting here can be.</summary>
+    public const int MaxBurst = 10_000;
+
+    /// <summary>The most an interval setting here can be, in seconds (a day).</summary>
+    public const int MaxIntervalSeconds = 86_400;
 
     /// <summary>
     /// The most <see cref="MaxPendingInvitesPerUser"/> can be: every pending invite is in the invitee's channel list, which
@@ -190,26 +202,28 @@ public sealed class LimitOptions {
     /// </summary>
     public const int MaxMaxPendingInvitesPerUser = 200;
 
-    /// <summary>Why the invite limits are out of range (the server doesn't start then), or null if they aren't.</summary>
-    public string? InviteProblem() {
-        foreach (var (name, value, fallback) in new[] {
-                     (nameof(this.InviteBurstPerInviter), this.InviteBurstPerInviter, 60),
-                     (nameof(this.InviteBurstPerInvitee), this.InviteBurstPerInvitee, 30),
-                     (nameof(this.InviteBurstPerPair), this.InviteBurstPerPair, 20),
+    /// <summary>Why the invite or lookup limits are out of range (the server doesn't start then), or null if they aren't.</summary>
+    public string? Problem() {
+        foreach (var (name, value, what, fallback) in new[] {
+                     (nameof(this.InviteBurstPerInviter), this.InviteBurstPerInviter, "invites", 60),
+                     (nameof(this.InviteBurstPerInvitee), this.InviteBurstPerInvitee, "invites", 30),
+                     (nameof(this.InviteBurstPerPair), this.InviteBurstPerPair, "invites", 20),
+                     (nameof(this.LookupBurst), this.LookupBurst, "lookups", 60),
                  }) {
-            if (value is < 1 or > MaxInviteBurst) {
-                return $"LookingGlass:Limits:{name} is {value}, so the server won't start: it must be 1 to {MaxInviteBurst} (invites at once; {fallback} by default).";
+            if (value is < 1 or > MaxBurst) {
+                return $"LookingGlass:Limits:{name} is {value}, so the server won't start: it must be 1 to {MaxBurst} ({what} at once; {fallback} by default).";
             }
         }
 
-        foreach (var (name, value, fallback) in new[] {
-                     (nameof(this.InviteIntervalSecondsPerInviter), this.InviteIntervalSecondsPerInviter, 5),
-                     (nameof(this.InviteIntervalSecondsPerInvitee), this.InviteIntervalSecondsPerInvitee, 10),
-                     (nameof(this.InviteIntervalSecondsPerPair), this.InviteIntervalSecondsPerPair, 60),
+        foreach (var (name, value, what, fallback) in new[] {
+                     (nameof(this.InviteIntervalSecondsPerInviter), this.InviteIntervalSecondsPerInviter, "invites", 5),
+                     (nameof(this.InviteIntervalSecondsPerInvitee), this.InviteIntervalSecondsPerInvitee, "invites", 10),
+                     (nameof(this.InviteIntervalSecondsPerPair), this.InviteIntervalSecondsPerPair, "invites", 60),
+                     (nameof(this.LookupIntervalSeconds), this.LookupIntervalSeconds, "lookups", 1),
                  }) {
-            if (value is < 1 or > MaxInviteIntervalSeconds) {
-                return $"LookingGlass:Limits:{name} is {value}, so the server won't start: it must be 1 to {MaxInviteIntervalSeconds} " +
-                       $"(seconds between invites once the burst is spent; {fallback} by default).";
+            if (value is < 1 or > MaxIntervalSeconds) {
+                return $"LookingGlass:Limits:{name} is {value}, so the server won't start: it must be 1 to {MaxIntervalSeconds} " +
+                       $"(seconds between {what} once the burst is spent; {fallback} by default).";
             }
         }
 
