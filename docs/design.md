@@ -2022,7 +2022,9 @@ Sticky:
   counts. The long forms (`/party hi`) always go to the game.
 - Any other line starting with `/` is a command and goes to the game
   untouched, `/lgc` commands included. Only a `/` at the very start counts: a
-  line with a space before it goes to the channel, never the game.
+  line with a space before it goes to the channel, never the game. (Except
+  in ChatTwo, which trims its input before sending: there "  /s hi" is sent
+  as "/s hi" and goes to Say once, as ChatTwo itself would send it.)
 - Anything else goes to the channel, trimmed, as text and links. A line with
   only a link goes too (it used to be kept from the game, "not sent", while
   links couldn't be sent): that is a line with only links (payloads) or only
@@ -2248,7 +2250,7 @@ about it:
   command, "/s hi", the same length as the line) or without the command
   ChatTwo put in front (plain text: "hi", sent as "/p hi", the line's length
   less "/p "). ChatTwo sends the input trimmed but reports its length as
-  typed, so up to four spaces more (`ChatTwoLine.MostTrimmed`, before and
+  typed, so up to two spaces more (`ChatTwoLine.MostTrimmed`, before and
   after together) still count as the line: "/s hi " is the main input's, and
   goes to Say once. (Before 0.2.9 the lengths had to match exactly, and a
   stray space sent "/s hi " to the channel.) The plugin reads the IPC in its
@@ -2258,9 +2260,9 @@ about it:
   lines run inside it (`ChatTwoLine`). A line from a pop-out, the web
   interface or another plugin finds the main input empty, or holding a draft
   of another length, and is held to the strict rule (every short command is
-  text); a draft of that length or up to four characters longer is the one
+  text); a draft of that length or up to two characters longer is the one
   way to mistake it, and only for a short command other than the main
-  input's. A main-input line whose length doesn't match (more than four spaces
+  input's. A main-input line whose length doesn't match (more than two spaces
   around a command, an auto-translate phrase, another plugin changing it on
   the way in) also gets the strict rule: it goes to the channel, never to game
   chat. The diagnostic log then gives both lengths ("not ChatTwo's main input
@@ -2385,7 +2387,8 @@ command, to the game once", "short command with text", "plain text" …), and
 the short-command rule used ("rule: typed in the game: short commands go to
 the game once", "rule: ChatTwo's main input on /p: only /p is text, other
 short commands go to the game once", "rule: not ChatTwo's main input: short
-commands are text", and so on: a known command at most). A message sent
+commands are text (it holds 14 characters, the line 5)", and so on: a known
+command and lengths at most). A message sent
 adds a "sending" entry: sizes and counts only (bytes typed, characters
 sent, how many links, whether one was left out, how many text commands were
 replaced), never a name or an id. A

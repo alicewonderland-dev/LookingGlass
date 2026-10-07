@@ -24,13 +24,14 @@ public sealed record ChatTwoLine(string? Prefix, bool FromMainInput, int? InputL
     /// <summary>
     /// The most spaces ChatTwo may have trimmed off its input's line (before and after together) for it still to count as
     /// that line. ChatTwo sends <c>chatInput.Trim()</c> but its typing IPC says the input's length as typed, so a stray
-    /// space made "/s hi " look like another input's line, and every short command go to the channel. A few, not any
-    /// number: the more room, the likelier a pop-out's line is taken for a main input draft of nearly its length.
+    /// space made "/s hi " look like another input's line, and every short command go to the channel. Two (one stray space
+    /// at each end), not any number: the more room, the likelier a pop-out's line is taken for a main input draft of nearly
+    /// its length.
     /// </summary>
-    public const int MostTrimmed = 4;
+    public const int MostTrimmed = 2;
 
     /// <param name="chatType">ChatTwo's chat type for its main input's channel (its own numbering: 14 is Party).</param>
-    /// <param name="hasText">The main input holds more than spaces.</param>
+    /// <param name="hasText">The main input isn't empty (ChatTwo's own test: its length is more than 0).</param>
     /// <param name="textLength">The main input's length, as typed (untrimmed).</param>
     /// <param name="lineText">The line's text, as it reached <c>ProcessChatBoxEntry</c>.</param>
     public static ChatTwoLine Of(int chatType, bool hasText, int textLength, string lineText) {
@@ -50,7 +51,7 @@ public sealed record ChatTwoLine(string? Prefix, bool FromMainInput, int? InputL
 
 /// <summary>Which short channel commands (/s, /p, /cwl1) followed by text stand for plain text, for one line, and why.</summary>
 /// <param name="AsText">The short commands that, followed by anything, go to the LookingGlass channel as plain text would.</param>
-/// <param name="Why">Why, in fixed words, for the diagnostic log (a known command at most, never what was typed).</param>
+/// <param name="Why">Why, in fixed words, for the diagnostic log (a known command and lengths at most, never what was typed).</param>
 public sealed record ShortCommands(IReadOnlyCollection<string> AsText, string Why);
 
 /// <summary>

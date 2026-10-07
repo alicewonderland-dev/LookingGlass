@@ -234,6 +234,9 @@ second character, checks every step: the label alone proves nothing.
 - [ ] 31. Type `/party hi`. It goes to Party. You're still in [sky].
 - [ ] 32. **(changed)** Type `/s hi`. It goes to Say once (B sees it in Say),
       and you're still in [sky]. `/say hi` goes to Say too.
+- [ ] 32b. **(new, 0.2.9)** Type `/s hi ` with a space after it (and once
+      more with a space before it as well). It still goes to Say once, not
+      to [sky].
 - [ ] 33. **(changed)** Type `/fc hi`: it goes to FC once (B sees it in FC),
       and you're still in [sky]. `/freecompany hi`: to FC too.
 - [ ] 33b. **(new)** Type `hello` once more after those: only in LookingGlass.
