@@ -1350,24 +1350,46 @@ they come, with the channel marked.
   removed) since counts if that key was made before they left: the client
   remembers, for 8 days, who left each channel and with which keys.
 - **Not after its key was replaced.** Live, a message under an older key is
-  taken only within 2 minutes of the newer one arriving. Caught up, it must be
-  dated no later than 2 minutes after the first membership change (a join, a
-  leave, a removal, a member's place moving to new keys) that followed where
-  its key was made: an honest server refuses messages under a key from then on.
-  So the keys someone held then can't speak after they left, and a place's old
-  keys (a stolen computer's, after its owner re-verified) can't speak after the
-  move. The client remembers each channel's membership changes for 8 days,
-  each dated as its entry says but never later than when the client verified
-  it; a message under a key from before the changes it knows of (or before it
-  started recording them) is dropped.
+  taken only within 2 minutes of the newer one arriving. Caught up, a message
+  under epoch E must be dated no later than 2 minutes after:
+  - when E+1's key was made, which every new key states, signed by whoever
+    made it (`SealedEpochKey.created_unix_ms`, a signature of its own so older
+    clients still take the key): a member at that point of the log, under the
+    keys they had then, so not the server, not someone who left, and not a
+    place's replaced keys;
+  - the first membership change (a join, a leave, a removal, a member's place
+    moving to new keys) after where E's key was made, as the client dates it:
+    as the entry says, but never later than when the client verified it, and
+    no later than any later entry signed by someone other than the change's
+    subject. A key recovered entry's time is the server's (nothing signs it),
+    and a leave's or a join's is signed by its own subject, so on their own
+    they only count up to when the client saw them.
+  - And if the sender's own keys stopped after E's key was made (they left,
+    were removed, or their place moved to new keys: a stolen computer's keys
+    after its owner re-verified), a time by which that had happened that
+    neither they nor the server chose: when E+1's key was made, if someone else
+    made it before this client came back; an entry someone else signed after
+    it; or when this client saw the change happen, connected. Without one,
+    nothing of those keys is caught up: how long they spoke can't be told.
+
+  A membership change dated more than 10 minutes ahead of the clock when it is
+  verified is misdated (by its signer, or the server for a re-verification):
+  the user is told, once per channel and session (members who see it happen
+  see the lie), and it counts as dated when it was seen.
+
+  The client remembers each channel's membership changes for 8 days; a message
+  under a key from before the changes it knows of (or before its channel's
+  last membership change when it started recording them) is dropped, unless
+  E+1's key says when it was made.
 - **When.** The live rules (within 10 minutes of the clock, and not more than 2
   minutes older than the newest from the sender) would refuse an older message.
   Instead, a caught-up message must be newer than the newest message already
   accepted from its sender in the channel (by its signed time; at the same
   time, a different message from those accepted then: the IDs of the newest
-  few are kept), saved across restarts, and not dated more than 2 minutes in
-  the future, so it can't make the sender's next live messages look like
-  replays.
+  few are kept), saved across restarts, and not dated further in the future
+  than a live message may be (10 minutes). (One dated ahead, which only its
+  sender can sign, can make their own next live messages look like replays
+  for a while, as live.)
 
 So the server can't pass an old message off as new: a caught-up one is shown as
 such, with the time it was sent, and is accepted at most once, whether the
@@ -1497,18 +1519,29 @@ again.
   someone who has left since) can sign a message now with an earlier time,
   under a key they held then, and a server can show it to the others as one
   missed while they were away, if it is newer than anything they already have
-  from that sender. It must be dated before that key was replaced (2 minutes
-  after the next membership change, such as their leaving), so it can't be
-  dated after they left, or after their place moved to new keys; nor shown from
-  anyone else, under a key the sender never held, twice, or as live. Someone
-  who plans it and dates their own leave later than it is (with the server's
-  help) widens that only up to when each reader learns of the leave. (An honest
-  server stores only what members send, as they send it.)
+  from that sender. It must be dated no later than 2 minutes after the next
+  key was made (as its maker signed) and after the next membership change; and
+  for keys that stopped being theirs (they left, or their place moved), after
+  a time neither they nor the server chose (see
+  [Message catch-up](#message-catch-up)), or nothing of them is caught up.
+  What is left: a server can hold back the next key (by not asking anyone to
+  make it) and the evidence of a change, so the window lasts until a member
+  makes the key, someone else signs an entry, or the reader sees the change
+  happen; until then a sender can post under a key they still hold as a
+  member. Within the 2 minutes' grace after the next key, anyone who held a key
+  can post under it, dated before. Keys made by older clients don't say when
+  they were made, and then only the change times count. (An honest server
+  stores only what members send, as they send it.)
 - **Catch-up has limits.** A client with no position in a channel (the first
   login with this version) catches up only the last hour. A channel rekeyed
   more than 64 times within the 7 days keeps only its newest 64 epochs'
   messages. Up to about 30 seconds of messages accepted just before a crash can
-  show again as missed after it (the message times weren't saved yet). Right
+  show again as missed after it (the message times weren't saved yet). If more
+  than 5,000 live messages arrive in a channel while its catch-up keeps failing
+  (it has a gap), the oldest of them could show again once it catches up. A sender whose clock is
+  more than 2 minutes fast can lose messages they sent under a key just before
+  it was replaced. Messages from someone whose keys stopped while you were
+  away, before anyone else made a new key or signed an entry, aren't caught up. Right
   after updating to this version, messages under a key from before the
   channel's last membership change before the update can't be dated, so they
   aren't caught up.
@@ -1566,7 +1599,9 @@ Some additions needed no new version:
   request.".
 - Message catch-up: the capability `history.v1`, `FetchMessages` and
   `StoredMessages`, `ChatMessage.server_id`, and `Limits.message_keep_days` and
-  `max_stored_messages_per_channel`. Agreed in `Hello`/`Welcome` (see
+  `max_stored_messages_per_channel`. Each new epoch key states when it was made
+  (`SealedEpochKey.created_unix_ms` and `created_signature`, a signature of its
+  own, so older clients still verify the key as before). Agreed in `Hello`/`Welcome` (see
   [Message catch-up](#message-catch-up)), so neither side uses it with one that
   doesn't know it.
 - Signed registrations, the registration client nonce and signed URLs. Older
