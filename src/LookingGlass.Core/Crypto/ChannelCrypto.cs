@@ -69,7 +69,7 @@ public static class ChannelCrypto {
         return IdentityKeys.Verify(authorSigningKey, EpochKeySignaturePayload(channelId, epoch, authorId, key), key.Signature.Span);
     }
 
-    private static byte[] KeyCreatedPayload(string channelId, ulong epoch, long authorId, ReadOnlySpan<byte> commitment, LogPosition? position, long createdMs) {
+    internal static byte[] KeyCreatedPayload(string channelId, ulong epoch, long authorId, ReadOnlySpan<byte> commitment, LogPosition? position, long createdMs) {
         return new SigningPayload(Domains.EpochKeyCreated).Add(channelId).Add(epoch).Add(authorId).Add(commitment).Add(position).Add(createdMs).ToArray();
     }
 

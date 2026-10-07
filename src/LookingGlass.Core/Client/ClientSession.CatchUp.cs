@@ -98,6 +98,10 @@ public sealed partial class ClientSession {
         public Connection Connection { get; } = connection;
         public List<IncomingMessage> Accepted { get; } = new();
         public int Dropped { get; set; }
+
+        /// <summary>Senders whose messages were left out only because their keys stopped (how) with no time for it they couldn't choose.</summary>
+        public Dictionary<long, MembershipEntryKind> Unconfirmed { get; } = new();
+        public int UnconfirmedCount { get; set; }
         public HashSet<ulong> KeysLookedFor { get; } = new();
     }
 
@@ -313,8 +317,8 @@ public sealed partial class ClientSession {
         // Signed by the keys the sender had when the key it is under was made (someone who left since, too, if it was made
         // before they left), not whatever the server says their keys are now; and dated no later than that key stopped being
         // the channel's, so keys someone held then can't speak after they left, or after their place moved to new keys.
-        var (signer, until) = key == null
-            ? (null, long.MinValue)
+        var (signer, (until, unconfirmed)) = key == null
+            ? (null, (long.MinValue, (MembershipEntryKind?) null))
             : this.Read(() => (this.SignerFor(channelId, message.SenderId, key.Position), this.UsableUntil(channelId, message.Epoch, key.Position, message.SenderId)));
         var content = signer == null ? null : this._groupKeys.DecryptMessage(message, key!.Key, signer.SigningPublicKey);
         var now = this._options.TimeProvider.GetUtcNow();
@@ -323,6 +327,15 @@ public sealed partial class ClientSession {
             // Under a key this client never held (from before it joined, say), from someone who couldn't send it then, not
             // really theirs, dated after its key was replaced, or dated further in the future than a live message may be.
             batch.Dropped++;
+            this.Noted(channelId, message);
+            return;
+        }
+
+        if (unconfirmed is { } how) {
+            // Genuine as far as can be told, but the sender's keys stopped (they left, were removed, set up again) with nothing to
+            // tell when that neither they nor the server chose: left out, and said plainly, not as a failed check.
+            batch.Unconfirmed[message.SenderId] = how;
+            batch.UnconfirmedCount++;
             this.Noted(channelId, message);
             return;
         }
@@ -371,6 +384,13 @@ public sealed partial class ClientSession {
 
         if (batch.Dropped > 0) {
             this.RaiseNotice(NoticeLevel.Warning, PlainMessages.MessagesNotCaughtUp(display ?? ChannelView.PlaceholderName(channelId), batch.Dropped), channelId);
+        }
+
+        if (batch.Unconfirmed.Count > 0) {
+            // Not a warning: nothing failed a check. Who, but nothing of what they said, in the diagnostic log.
+            this.Log(NoticeLevel.Info, $"{batch.UnconfirmedCount} caught-up messages in {channelId}, from {batch.Unconfirmed.Count} senders whose keys have stopped since, couldn't be dated independently and were left out");
+            var senders = this.Read(() => batch.Unconfirmed.Select(pair => (Who: Shown(this.UserOf(pair.Key)) is var user ? $"{user.Name}@{user.WorldName}" : "", How: pair.Value)).ToList());
+            this.RaiseNotice(NoticeLevel.Info, PlainMessages.MessagesNotConfirmed(display ?? ChannelView.PlaceholderName(channelId), senders), channelId);
         }
 
         List<ChatMessage> held;
@@ -499,23 +519,29 @@ public sealed partial class ClientSession {
     /// </list>
     /// Call inside the lock.
     /// </summary>
-    /// <returns><see cref="long.MinValue"/> if it can't be told: nothing passes then.</returns>
-    private long UsableUntil(string channelId, ulong epoch, LogPosition? position, long senderId) {
-        var grace = (long) OldEpochGrace.TotalMilliseconds;
+    /// <returns>
+    /// The latest time (<see cref="long.MinValue"/> if it can't be told: nothing passes then); and, when the sender's keys
+    /// stopped (the kind of entry that stopped them) with no such time, which means nothing of theirs passes either way.
+    /// </returns>
+    private (long Until, MembershipEntryKind? Unconfirmed) UsableUntil(string channelId, ulong epoch, LogPosition? position, long senderId) {
+        var changeGrace = (long) OldEpochGrace.TotalMilliseconds;
+        // A key's maker may be a member whose clock is a few minutes out: as much as a live message may be.
+        var keyGrace = (long) MaxMessageClockSkew.TotalMilliseconds;
         var next = this.KeyFor(channelId, epoch + 1) is { CreatedMs: > 0 } made ? made : null;
-        var byChange = this.ChangeBound(channelId, position, grace);
-        var until = next != null ? Math.Min(next.CreatedMs + grace, byChange ?? long.MaxValue) : byChange ?? long.MinValue;
+        var byChange = this.ChangeBound(channelId, position, changeGrace);
+        var until = next != null ? Math.Min(next.CreatedMs + keyGrace, byChange ?? long.MaxValue) : byChange ?? long.MinValue;
         if (position == null || this._secrets.MembershipChanges.GetValueOrDefault(channelId)?.Changes
                 .Where(change => change.Exit && change.SubjectId == senderId && change.Seq > position.Seq).MinBy(change => change.Seq) is not { } exit) {
-            return until;
+            return (until, null);
         }
 
         var evidence = new[] {
-            exit.TrustedAtMs,
-            exit.SeenLiveAtMs,
-            next != null && next.CreatedBy != senderId && next.CreatedMs <= this._loginStartedMs ? next.CreatedMs : null,
+            exit.TrustedAtMs + changeGrace,
+            exit.SeenLiveAtMs + changeGrace,
+            next != null && next.CreatedBy != senderId && next.CreatedMs <= this._loginStartedMs ? next.CreatedMs + keyGrace : null,
         }.Where(at => at != null).Select(at => at!.Value).DefaultIfEmpty(long.MinValue).Min();
-        return evidence == long.MinValue ? long.MinValue : Math.Min(until, evidence + grace);
+        // Without a time by which their keys had stopped that neither they nor the server chose, nothing of those keys passes.
+        return evidence == long.MinValue ? (until, (MembershipEntryKind) exit.Kind) : (Math.Min(until, evidence), null);
     }
 
     /// <summary>
@@ -794,15 +820,17 @@ public sealed partial class ClientSession {
                     Seq = entry.Seq,
                     AtMs = at,
                     SubjectId = entry.Subject.UserId,
+                    Kind = (int) entry.Kind,
                     Exit = entry.Kind is MembershipEntryKind.Leave or MembershipEntryKind.Remove || memberMoved,
                     TrustedAtMs = trusted ? at : null,
                     SeenLiveAtMs = live ? now : null,
                 });
             }
 
-            if (trusted) {
-                // Entries are made in order: whatever came before this one had happened by its time.
-                foreach (var earlier in changes.Changes.Where(known => known.Seq < entry.Seq)) {
+            if (entry.Kind != MembershipEntryKind.KeyRecovered) {
+                // Entries are made in order: whatever came before this one had happened by its time, as far as its signer can say:
+                // never a change's own subject, about their own change.
+                foreach (var earlier in changes.Changes.Where(known => known.Seq < entry.Seq && known.SubjectId != entry.ActorId)) {
                     earlier.AtMs = Math.Min(earlier.AtMs, at);
                     earlier.TrustedAtMs = Math.Min(earlier.TrustedAtMs ?? long.MaxValue, at);
                 }

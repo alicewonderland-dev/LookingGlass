@@ -78,7 +78,7 @@ public sealed partial class CatchUpTests {
         var thief = Signed(oldKeys, alice.UserId, oldEpochKey, channelId, epoch, "the thief, after the recovery", DateTimeOffset.UtcNow.AddMinutes(5));
         var back = await this.BackAsync(bob, this.Adding(new ManualClock { Offset = TimeSpan.FromMinutes(10) }, thief));
         Assert.DoesNotContain(back.Messages, m => m.Text == "the thief, after the recovery");
-        Assert.Contains(back.Notices, n => n.Kind == NoticeKind.MessagesNotCaughtUp);
+        Assert.Contains(back.Notices, n => n.Kind == NoticeKind.MessagesNotConfirmed);
     }
 
     /// <summary>
@@ -151,16 +151,46 @@ public sealed partial class CatchUpTests {
     public async Task WithoutCreationTimesAMessageFromBeforeARecoveryStillShows() {
         var alice = await this._server.RegisterAsync("Alice Recovers Later");
         var bob = await this._server.RegisterAsync("Bob Reads Later");
-        var channelId = await ChannelWith(alice, "Recovered Later Channel", bob);
+        var carol = await this._server.RegisterAsync("Carol Moderates Later");
+        var dave = await this._server.RegisterAsync("Dave Invited Later");
+        var channelId = await ChannelWith(alice, "Recovered Later Channel", bob, carol);
+        await alice.Session.SetRankAsync(channelId, carol.UserId, Rank.Moderator, Ct);
+        await WaitFor(() => carol.Session.Snapshot.FindChannel(channelId) is { MyRank: Rank.Moderator } c ? c : null);
         await bob.Session.DisposeAsync();
         await SayAsync(alice, channelId, "before the recovery");
         var again = await KeyRecoveryTests.NewComputerAsync(this._server, alice);
         await WaitFor(() => again.Session.Snapshot.FindChannel(channelId));
-        // Signed by Alice's new keys after the recovery, about Bob: it dates the recovery as Bob can trust.
-        await again.Session.SetRankAsync(channelId, bob.UserId, Rank.Moderator, Ct);
+        // Signed by Carol after the recovery: it dates the recovery as Bob can trust (Alice's own entries couldn't).
+        await WaitFor(() => carol.Session.Snapshot.FindChannel(channelId) is { RekeyPending: false } c ? c : null);
+        await carol.Session.InviteAsync(channelId, dave.Name, ProtocolInfo.DebugWorldName, Ct);
 
         var back = await this.BackAsync(bob, this.WithoutCreationTimes(null));
         Assert.Equal(["before the recovery"], back.Messages.Select(m => m.Text));
+    }
+
+    /// <summary>
+    /// Where the keys don't say when they were made, the new keys' own entries (Alice's, after her recovery) don't date her
+    /// recovery for the old keys: they are the change's own subject. A message under the old keys dated after the recovery,
+    /// and before her own later entry, isn't confirmed.
+    /// </summary>
+    [Fact]
+    public async Task WithoutCreationTimesTheChangesOwnSubjectDoesntDateIt() {
+        var alice = await this._server.RegisterAsync("Alice Dates Herself");
+        var bob = await this._server.RegisterAsync("Bob Trusts Others");
+        var channelId = await ChannelWith(alice, "Self Dated Channel", bob);
+        var epoch = alice.Session.Snapshot.FindChannel(channelId)!.Epoch;
+        var oldEpochKey = alice.LoadEpochKey(channelId, epoch);
+        using var oldKeys = alice.LoadIdentity();
+        await bob.Session.DisposeAsync();
+        var again = await KeyRecoveryTests.NewComputerAsync(this._server, alice);
+        await WaitFor(() => again.Session.Snapshot.FindChannel(channelId));
+        var thief = Signed(oldKeys, alice.UserId, oldEpochKey, channelId, epoch, "the thief, between the recovery and alice's rank change", DateTimeOffset.UtcNow);
+        await Task.Delay(50, Ct);
+        await again.Session.SetRankAsync(channelId, bob.UserId, Rank.Moderator, Ct);
+
+        var back = await this.BackAsync(bob, this.WithoutCreationTimes(null, thief));
+        Assert.Empty(back.Messages);
+        Assert.Contains(back.Notices, n => n.Kind == NoticeKind.MessagesNotConfirmed);
     }
 
     /// <summary>
@@ -258,8 +288,8 @@ public sealed partial class CatchUpTests {
         await SayAsync(alice, channelId, "before dave");
         await AddMemberAsync(alice, channelId, dave);
 
-        var late = alice.ForgeMessage(channelId, epoch, "under the old key, after the new one", DateTimeOffset.UtcNow.AddMinutes(5));
-        var back = await this.BackAsync(bob, this.Adding(new ManualClock { Offset = TimeSpan.FromMinutes(10) }, late));
+        var late = alice.ForgeMessage(channelId, epoch, "under the old key, after the new one", DateTimeOffset.UtcNow.AddMinutes(15));
+        var back = await this.BackAsync(bob, this.Adding(new ManualClock { Offset = TimeSpan.FromMinutes(20) }, late));
         Assert.Equal(["before dave"], back.Messages.Select(m => m.Text));
         Assert.Contains(back.Notices, n => n.Kind == NoticeKind.MessagesNotCaughtUp);
     }
@@ -272,7 +302,7 @@ public sealed partial class CatchUpTests {
     public async Task SomeoneWhoLeftCantVouchForTheirOwnKeysEnd() {
         var alice = await this._server.RegisterAsync("Alice Stays Again");
         var bob = await this._server.RegisterAsync("Bob Away Again");
-        var carol = await this._server.RegisterAsync("Carol Rekeys Ahead", options: this._server.Options(time: new ManualClock { Offset = TimeSpan.FromDays(1) }));
+        var carol = await this._server.RegisterAsync("Carol Rekeys Ahead", options: this._server.Options(time: new ManualClock { Offset = TimeSpan.FromMinutes(9) }));
         var channelId = await ChannelWith(alice, "Own Key Channel", bob, carol);
         var epoch = alice.Session.Snapshot.FindChannel(channelId)!.Epoch;
         var carolsKey = carol.LoadEpochKey(channelId, epoch);
@@ -284,10 +314,12 @@ public sealed partial class CatchUpTests {
         await WaitFor(() => alice.Session.Snapshot.FindChannel(channelId) is { RekeyPending: false } c && c.Members.All(m => m.User.Name != carol.Name) ? c : null);
         await SayAsync(alice, channelId, "after carol left");
 
-        // Bob comes back after the time her key claims (as he might, days later): only who made it rules it out.
+        // Her clock (9 minutes ahead, as the server allows) dates her key and her leave; Bob comes back after the time her key
+        // claims: only who made it rules it out as evidence of when her keys stopped.
         var afterLeaving = Signed(carolsKeys, carol.UserId, carolsKey, channelId, epoch, "carol, after leaving, under the key before hers", DateTimeOffset.UtcNow.AddMinutes(5));
-        var back = await this.BackAsync(bob, this.Adding(new ManualClock { Offset = TimeSpan.FromDays(2) }, afterLeaving));
+        var back = await this.BackAsync(bob, this.Adding(new ManualClock { Offset = TimeSpan.FromMinutes(10) }, afterLeaving));
         Assert.Equal(["after carol left"], back.Messages.Select(m => m.Text));
+        Assert.Contains(back.Notices, n => n.Kind == NoticeKind.MessagesNotConfirmed);
     }
 
     /// <summary>
@@ -355,7 +387,85 @@ public sealed partial class CatchUpTests {
         await this.CaughtUpAsync(back);
 
         Assert.DoesNotContain(back.Messages, m => m.Text == "the thief, just after the recovery");
-        Assert.Contains(back.Notices, n => n.Kind == NoticeKind.MessagesNotCaughtUp);
+        Assert.Contains(back.Notices, n => n.Kind == NoticeKind.MessagesNotConfirmed);
+    }
+
+    /// <summary>
+    /// Someone says goodbye and leaves a two-member channel while the other is away: nobody else made a new key or signed
+    /// anything, so when their keys stopped can't be told, and the goodbye isn't restored. That is said once, in plain words
+    /// and LookingGlass blue, not as a failed check.
+    /// </summary>
+    [Fact]
+    public async Task AGoodbyeThatCantBeConfirmedIsSaidPlainlyNotAsAWarning() {
+        var alice = await this._server.RegisterAsync("Alice Comes Back To Two");
+        var carol = await this._server.RegisterAsync("Carol Says Goodbye");
+        var channelId = await ChannelWith(alice, "Pair Channel", carol);
+        await alice.Session.DisposeAsync();
+        await SayAsync(carol, channelId, "goodbye alice");
+        await SayAsync(carol, channelId, "take care");
+        await carol.Session.LeaveAsync(channelId, Ct);
+
+        var log = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        var back = await this.BackAsync(alice, this._server.Options(log: (_, text) => log.Enqueue(text)));
+        Assert.Empty(back.Messages);
+        Assert.DoesNotContain(back.Notices, n => n.Kind == NoticeKind.MessagesNotCaughtUp);
+        var told = Assert.Single(back.Notices, n => n.Kind == NoticeKind.MessagesNotConfirmed);
+        Assert.Equal(NoticeLevel.Info, told.Level);
+        Assert.Equal(NoticeTone.Info, NoticeColours.ToneOf(told.Level, told.Kind));
+        Assert.Equal("Some messages Carol Says Goodbye@Debug sent before leaving Pair Channel couldn't be confirmed, so they weren't restored.", told.Plain);
+        // The diagnostic log says so, without who or what.
+        Assert.Contains(log, line => line.Contains("couldn't be dated independently"));
+        Assert.DoesNotContain(log, line => line.Contains("goodbye") || line.Contains("Carol"));
+    }
+
+    /// <summary>A caught-up message may be dated as far ahead as a live one (10 minutes), and is taken.</summary>
+    [Fact]
+    public async Task AMessageDatedAFewMinutesAheadIsCaughtUp() {
+        var alice = await this._server.RegisterAsync("Alice Clock Ahead");
+        var bob = await this._server.RegisterAsync("Bob Clock Right");
+        var channelId = await ChannelWith(alice, "Clock Ahead Channel", bob);
+        var epoch = alice.Session.Snapshot.FindChannel(channelId)!.Epoch;
+        await bob.Session.DisposeAsync();
+        var ahead = alice.ForgeMessage(channelId, epoch, "from a clock 8 minutes ahead", DateTimeOffset.UtcNow.AddMinutes(8));
+
+        var back = await this.BackAsync(bob, this.Adding(null, ahead));
+        Assert.Equal(["from a clock 8 minutes ahead"], back.Messages.Select(m => m.Text));
+    }
+
+    /// <summary>
+    /// A known limit, pinned so it stays as documented: until a member other than the one whose keys stopped makes the next
+    /// key, the old keys' time can't be told for someone away throughout. A server that dates a re-verification ahead, with
+    /// the next key made only when another member comes back (later: here, by a clock 9 minutes ahead), lets the old keys
+    /// post up to then (plus the 10 minutes' grace).
+    /// </summary>
+    [Fact]
+    public async Task KnownLimitTheWindowLastsUntilSomeoneElseMakesTheNextKey() {
+        var alice = await this._server.RegisterAsync("Alice Stolen Late");
+        var bob = await this._server.RegisterAsync("Bob Away Late");
+        var dave = await this._server.RegisterAsync("Dave Back Late");
+        var channelId = await ChannelWith(alice, "Late Key Channel", bob, dave);
+        var epoch = alice.Session.Snapshot.FindChannel(channelId)!.Epoch;
+        var oldEpochKey = alice.LoadEpochKey(channelId, epoch);
+        using var oldKeys = alice.LoadIdentity();
+        await bob.Session.DisposeAsync();
+        await dave.Session.DisposeAsync();
+        var again = await KeyRecoveryTests.NewComputerAsync(this._server, alice);
+        await WaitFor(() => again.Session.Snapshot.FindChannel(channelId));
+        await again.Session.DisposeAsync();
+        var recovered = this._server.Database.GetLogEntries(channelId, 0, 100).Last();
+        recovered.TimestampUnixMs = DateTimeOffset.UtcNow.AddDays(1).ToUnixTimeMilliseconds();
+        var hash = MembershipEntries.Hash(recovered);
+        this._server.ExecuteSql("UPDATE membership_log SET entry = $e, hash = $h WHERE channel_id = $c AND seq = $s;",
+            ("$e", recovered.ToByteArray()), ("$h", hash), ("$c", channelId), ("$s", (long) recovered.Seq));
+        this._server.ExecuteSql("UPDATE channels SET log_hash = $h WHERE channel_id = $c;", ("$h", hash), ("$c", channelId));
+
+        var daveBack = this._server.StartClient(dave.Name, dave.Store, this._server.Options(time: new ManualClock { Offset = TimeSpan.FromMinutes(9) }));
+        await WaitFor(() => this._server.Database.GetChannel(channelId) is { RekeyPending: false, Epoch: var e } c && e > epoch ? c : null);
+        await daveBack.Session.DisposeAsync();
+
+        var thief = Signed(oldKeys, alice.UserId, oldEpochKey, channelId, epoch, "the thief, before the next key", DateTimeOffset.UtcNow.AddMinutes(15));
+        var back = await this.BackAsync(bob, this.Adding(new ManualClock { Offset = TimeSpan.FromMinutes(60) }, thief));
+        Assert.Contains(back.Messages, m => m.Text == "the thief, before the next key");
     }
 
     /// <summary>Two live messages in one millisecond: either, sent again live after a restart, is had already.</summary>

@@ -220,6 +220,9 @@ public sealed class MembershipChange {
     /// <summary>A leave, a removal or a member's place moving to new keys: the keys the subject had stopped being a member's then.</summary>
     public bool Exit { get; set; }
 
+    /// <summary>The kind of entry it is (a <see cref="Protocol.MembershipEntryKind"/>).</summary>
+    public int Kind { get; set; }
+
     /// <summary>
     /// A time by which it had happened that its subject and the server couldn't choose: its own, if someone else signed it (a
     /// removal), or that of a later entry someone other than its subject signed. Null if there is none (yet).

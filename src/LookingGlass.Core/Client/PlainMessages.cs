@@ -302,6 +302,33 @@ public static class PlainMessages {
             : $"{count} messages from while you were away, in {channel}, aren't shown: they couldn't be checked as really from members who could send them then.");
 
     /// <summary>
+    /// Message catch-up left out messages that passed every check, because their senders' keys have stopped since (they
+    /// left, were removed, or set up LookingGlass again) and nothing that neither they nor the server chose says when, so
+    /// it can't be told those messages came before. Information, not a warning: said once per channel and login.
+    /// </summary>
+    /// <param name="senders">Each sender (name@world) and the kind of entry that stopped their keys.</param>
+    public static Wording MessagesNotConfirmed(string channel, IReadOnlyList<(string Who, Protocol.MembershipEntryKind How)> senders) {
+        if (senders.Count == 1) {
+            var (who, how) = senders[0];
+            var (technical, plain) = how switch {
+                Protocol.MembershipEntryKind.Leave => ("they left", $"before leaving {channel}"),
+                Protocol.MembershipEntryKind.Remove => ("they were removed", $"before being removed from {channel}"),
+                _ => ("they re-verified their character with new keys", $"in {channel} before setting up LookingGlass again"),
+            };
+            return new Wording(NoticeKind.MessagesNotConfirmed,
+                $"Some messages {who} sent in {channel} while you were away were left out: the keys they were signed with stopped being theirs ({technical}), " +
+                "and nothing that neither they nor the server chose says when, so it can't be confirmed they were sent before.",
+                $"Some messages {who} sent {plain} couldn't be confirmed, so they weren't restored.");
+        }
+
+        var names = string.Join(", ", senders.Take(senders.Count - 1).Select(sender => sender.Who)) + " and " + senders[^1].Who;
+        return new Wording(NoticeKind.MessagesNotConfirmed,
+            $"Some messages {names} sent in {channel} while you were away were left out: the keys they were signed with have stopped being theirs " +
+            "(they left, were removed, or re-verified with new keys), and nothing that neither they nor the server chose says when.",
+            $"Some messages {names} sent in {channel} before leaving or setting up LookingGlass again couldn't be confirmed, so they weren't restored.");
+    }
+
+    /// <summary>
     /// A membership change verified as it happened is dated further ahead of this computer's clock than a live message may
     /// be: whoever dated it (its signer, or the server for a re-verification) is misdating it, perhaps so that old keys seem
     /// to be allowed to speak for longer. It is dated by when it was seen instead.
@@ -565,6 +592,10 @@ public static class PlainMessages {
         yield return MessagesNotCaughtUp("Tea party", 1);
         yield return MessagesNotCaughtUp("Tea party", 12);
         yield return MembershipChangeDatedAhead("Tea party");
+        yield return MessagesNotConfirmed("Tea party", [("Carol Queen@Odin", Protocol.MembershipEntryKind.Leave)]);
+        yield return MessagesNotConfirmed("Tea party", [("Carol Queen@Odin", Protocol.MembershipEntryKind.Remove)]);
+        yield return MessagesNotConfirmed("Tea party", [("Carol Queen@Odin", Protocol.MembershipEntryKind.KeyRecovered)]);
+        yield return MessagesNotConfirmed("Tea party", [("Carol Queen@Odin", Protocol.MembershipEntryKind.Leave), ("Bob Hatter@Lich", Protocol.MembershipEntryKind.KeyRecovered)]);
         yield return MessageReplayed("Bob Hatter", "04/10/2026 12:00");
         yield return AddressNotListed("wss://chat.example.com/ws", "ws://203.0.113.5:5180/ws");
         yield return RelayedRegistrationCode;

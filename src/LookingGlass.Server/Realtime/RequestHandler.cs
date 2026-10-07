@@ -1043,6 +1043,8 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.InvalidRequest, "The creator's epoch key is missing or wrongly signed.");
         }
 
+        this.RequireClockNear(request.CreatorKey);
+
         this.ValidateName(request.Name, channelId, 0, me, position);
         RequireFirstRevision(request.Name);
         RequireNoSource(request.Name);
@@ -1351,6 +1353,8 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.InvalidRequest, "Every key in a rekey must say the same time it was made, signed by its author.");
         }
 
+        this.RequireClockNear(first);
+
         this.ValidateName(request.Name, channelId, request.NewEpoch, me, request.LogPosition);
         RequireFirstRevision(request.Name);
         if (request.Name.CarriedFrom is { } source && (source.Epoch >= request.NewEpoch || source.Revision > ProtocolInfo.MaxNameRevision)) {
@@ -1451,6 +1455,22 @@ public sealed class RequestHandler(
         }
 
         return Ack();
+    }
+
+    /// <summary>How far a new key's stated time (see <see cref="SealedEpochKey.CreatedUnixMs"/>) may be from this server's clock: as far as a live message may be from a reader's.</summary>
+    internal static readonly TimeSpan MaxKeyClockSkew = TimeSpan.FromMinutes(10);
+
+    /// <summary>
+    /// Refuses a new key whose stated time is far from this server's clock, so a member whose clock is wrong is told rather
+    /// than make others drop messages they missed (message catch-up dates the previous key's end by it). Keys from older
+    /// clients state none.
+    /// </summary>
+    private void RequireClockNear(SealedEpochKey key) {
+        if (!key.CreatedSignature.IsEmpty && Math.Abs(key.CreatedUnixMs - this._time.GetUtcNow().ToUnixTimeMilliseconds()) > MaxKeyClockSkew.TotalMilliseconds) {
+            throw new RequestException(ErrorCode.InvalidRequest,
+                "Your computer's clock is more than 10 minutes off, so the server didn't accept this change to the channel. Set your clock right (turn on " +
+                "setting the time automatically), then try again.");
+        }
     }
 
     /// <summary>The lock a channel's messages are numbered and relayed under (see <see cref="_relayLocks"/>).</summary>
