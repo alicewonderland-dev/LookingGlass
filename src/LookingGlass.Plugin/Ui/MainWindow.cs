@@ -35,6 +35,8 @@ public sealed class MainWindow : Window {
     private readonly ChannelWindows _windows;
 
     private string? _selectedChannel;
+    // The registration code last scrolled into view, so a new code is scrolled to once, not every frame.
+    private string? _codeScrolledTo;
     private volatile string? _selectAfterCreate;
     private string _newChannelName = "";
     private float _sidebarWidth = DefaultSidebarWidth;
@@ -360,7 +362,10 @@ public sealed class MainWindow : Window {
 
         // A login the server refused: first what may be wrong and what to try, then registering again as the last resort.
         var rejected = snapshot.State == ConnectionState.LoginNotRecognized || snapshot.LoginRejected;
-        if (rejected) {
+        var challenge = snapshot.PendingChallenge;
+        // Once a code is out, registering is what the player chose: the notice would only push the code and Verify out of
+        // sight (below the window's bottom at its usual size, which testers took for no Verify button at all).
+        if (rejected && challenge == null) {
             this.DrawLoginNotRecognised(session, advanced);
         }
 
@@ -384,7 +389,6 @@ public sealed class MainWindow : Window {
         ImGui.Spacing();
         ImGui.Spacing();
 
-        var challenge = snapshot.PendingChallenge;
         var character = new Character { Name = player.Name, WorldId = player.HomeWorldId, WorldName = player.HomeWorldName };
 
         // 1. The character.
@@ -445,6 +449,11 @@ public sealed class MainWindow : Window {
             }
 
             ImGui.EndDisabled();
+            // A new code: scroll so the steps down to Verify are in sight, in a window too short to show them all.
+            if (this._codeScrolledTo != challenge.Code) {
+                this._codeScrolledTo = challenge.Code;
+                ImGui.SetScrollHereY(1.0f);
+            }
         }
 
         EndStep();
