@@ -481,23 +481,25 @@ public sealed class ServerLimitTests : IAsyncLifetime {
         }
 
         // The fourth is refused (the pair's three are spent), with the lookup reused. That has nothing to do with his keys,
-        // so he isn't looked up again then: the server's second lookup is left.
+        // so he isn't looked up again then: the server's second lookup is left (taken here).
         var refused = await Assert.ThrowsAsync<ServerErrorException>(() => Invite(3));
         Assert.StartsWith("You've sent a lot of invites to Bob Reused@Debug recently", refused.ServerMessage);
+        var lookup = new ClientFrame { LookupUser = new LookupUser { Name = bob.Name, WorldName = ProtocolInfo.DebugWorldName } };
+        Assert.NotNull((await alice.Session.SendRawAsync(lookup, Ct)).Identities);
 
-        // The next try looks him up (the failure forgot the lookup), with that second lookup: had the refusal looked him up,
-        // this one would be refused.
+        // The refusal forgot the lookup, so the next try looks him up: refused by the server now, its lookups spent.
         clock.Offset += TimeSpan.FromSeconds(61);
-        await Invite(3);
+        refused = await Assert.ThrowsAsync<ServerErrorException>(() => Invite(3));
+        Assert.Equal("You've looked up a lot of players recently; try again in about 9 minutes.", refused.ServerMessage);
 
-        // A minute on (the pair has one more), the next invite reuses that lookup: the server would refuse another now.
-        clock.Offset += TimeSpan.FromSeconds(60);
+        // Once the server allows one, it goes, and the next invite reuses that lookup: the server would refuse another now.
+        clock.Offset += TimeSpan.FromMinutes(9);
+        await Invite(3);
         await Invite(4);
 
         // Ten minutes on, the plugin looks him up again, spending the one the server has allowed since.
         clock.Offset += LookupMemory.ReusedFor;
         await Invite(5);
-        var lookup = new ClientFrame { LookupUser = new LookupUser { Name = bob.Name, WorldName = ProtocolInfo.DebugWorldName } };
         Assert.Equal(ErrorCode.RateLimited, (await Assert.ThrowsAsync<ServerErrorException>(() => alice.Session.SendRawAsync(lookup, Ct))).Code);
         Assert.Equal(6, this._server.Database.CountInvitesForUser(bob.UserId));
     }
