@@ -232,7 +232,10 @@ app.Map(ProtocolInfo.WebSocketPath, async (HttpContext context, RequestHandler h
             RequestOrigin = ServerOrigin.FromRequest(context.Request.Scheme, context.Request.Host.Value),
         };
         // At the cap, the oldest connection that hasn't logged in (and isn't registering, if any isn't) makes room for a new one.
-        ticket.Attach(() => connection.PendingRegistration != null, () => connection.Abort("Server busy", WebSocketCloseStatus.EndpointUnavailable));
+        // One whose login is being answered has logged in already (its user is set, and online), though the gate hears of it
+        // only once the answer goes out.
+        ticket.Attach(() => connection.PendingRegistration != null, () => connection.Abort("Server busy", WebSocketCloseStatus.EndpointUnavailable),
+            isLoggedIn: () => connection.User != null);
 
         // Stopping (systemd sends SIGTERM) closes every connection at once, saying the server is going away, so clients
         // reconnect later and the server stops without waiting out its shutdown timeout.

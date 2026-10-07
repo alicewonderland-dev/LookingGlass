@@ -74,6 +74,65 @@ public sealed class ConnectionLimitTests {
         Assert.Equal(4, closed.Count);
     }
 
+    /// <summary>
+    /// The server takes a connection as logged in (and online) while answering its login, and tells the gate when the answer
+    /// goes out: in between, it isn't one to close to make room.
+    /// </summary>
+    [Fact]
+    public void AConnectionLoggingInIsNotClosedToMakeWay() {
+        var gate = new ConnectionGate(max: 2, perAddress: 20, notLoggedInPerAddress: 20, newPerMinute: 100);
+        var closed = new List<string>();
+        var loggedIn = false;
+        var loggingIn = gate.TryAdmit("203.0.113.60").Ticket!;
+        loggingIn.Attach(() => false, () => closed.Add("logging in"), isLoggedIn: () => loggedIn);
+        gate.TryAdmit("203.0.113.61").Ticket!.Attach(() => false, () => closed.Add("idle"));
+        loggedIn = true;
+
+        // Older, but logging in: the idle one goes.
+        Assert.NotNull(gate.TryAdmit("203.0.113.62").Ticket);
+        Assert.Equal(["idle"], closed);
+
+        // With only it left to close, a new connection is refused instead.
+        var alone = new ConnectionGate(max: 1, perAddress: 20, notLoggedInPerAddress: 20, newPerMinute: 100);
+        alone.TryAdmit("203.0.113.63").Ticket!.Attach(() => false, () => closed.Add("alone"), isLoggedIn: () => true);
+        Assert.Equal((null, ConnectionRefusal.ServerFull), alone.TryAdmit("203.0.113.64"));
+        Assert.Equal(["idle"], closed);
+    }
+
+    /// <summary>
+    /// When every connection that could make room is registering, one from the address that would hold the most of them goes
+    /// (counting the new connection with its address), not simply the oldest: someone opening many connections (at most
+    /// 4 an address) to push others out pushes out their own first.
+    /// </summary>
+    [Fact]
+    public void WhenAllThatCouldMakeWayAreRegisteringTheBusiestAddressGivesWay() {
+        var gate = new ConnectionGate(max: 4, perAddress: 20, notLoggedInPerAddress: 20, newPerMinute: 100);
+        var closed = new List<string>();
+        void Admit(string name, string address) {
+            var (ticket, refusal) = gate.TryAdmit(address);
+            Assert.Equal(ConnectionRefusal.None, refusal);
+            ticket!.Attach(() => true, () => closed.Add(name));
+        }
+
+        Admit("someone registering", "198.51.100.1");
+        Admit("crowd 1", "203.0.113.1");
+        Admit("crowd 2", "203.0.113.1");
+        Admit("crowd 3", "203.0.113.2");
+
+        // Full, and all registering: the address with two gives way (its oldest), not the oldest connection.
+        Admit("crowd 4", "203.0.113.3");
+        Assert.Equal(["crowd 1"], closed);
+
+        // One each now: a new connection from an address already registering makes room from its own address.
+        Admit("crowd 5", "203.0.113.2");
+        Assert.Equal(["crowd 1", "crowd 3"], closed);
+
+        // Only when every address holds one, and the new connection comes from another, does the oldest go.
+        Admit("newcomer", "192.0.2.9");
+        Assert.Equal(["crowd 1", "crowd 3", "someone registering"], closed);
+        Assert.Equal(4, gate.Open);
+    }
+
     [Fact]
     public void AConnectionChosenToMakeWayBeforeItWasSetUpClosesAsSoonAsItIs() {
         var gate = new ConnectionGate(max: 1, perAddress: 20, notLoggedInPerAddress: 20, newPerMinute: 100);
