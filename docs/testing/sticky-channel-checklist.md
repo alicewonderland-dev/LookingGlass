@@ -9,7 +9,19 @@ the hooks, the chat box label and ChatTwo behave as the design says
 **(new)** marks a step that wasn't there before. Those are the ones to test
 again; the rest passed last round.
 
-What changed this round:
+**(verbose)** marks what is new this round (October 7): a setting, **Verbose
+channel messages** (Settings, under Chat), off by default. Off, LookingGlass
+no longer says "Now talking in [sky]." nor "Stopped talking in [sky]." when
+you stopped it yourself (`/s`, Tab, ChatTwo's picker or tabs, a one-off
+switch, clicking the info bar, `/lgc2`); the label and the info bar show it
+instead. Stops you didn't choose (disconnected, logged out, the connection
+started over, no longer in the channel, LookingGlass turned off) are still
+said. **Turn the setting on before Part 1** (see Before you start), so Parts 1
+to 3 show every line they expect, as last round; Part 4 checks it off. If you
+ticked the (changed) and (new) steps last round, Part 4 and the (verbose)
+steps are all there is to test.
+
+What changed last round:
 
 - Short channel commands work as usual again: `/s hi`, `/p brb`, `/fc hi`
   typed while you talk in [sky] go to that game channel once, and you stay in
@@ -40,6 +52,10 @@ did a step that went wrong (and its number), and we read the log from there.
 - [ ] A and B are both in one LookingGlass channel, here called **sky** on
       `/lgc1`. Give it the nickname `sky`. A is also in a second channel,
       **moon**, on `/lgc2`.
+- [ ] **(verbose)** Open `/lg`, the gear (Settings), and under Chat tick
+      **Verbose channel messages**. It is off by default, and Parts 1 to 3
+      expect the "Now talking in" and "Stopped talking in" lines, so it must
+      be on until Part 4.
 - [ ] Turn ExtraChat off (it is tested on its own at the end).
 - [ ] In every step, "only in LookingGlass" means: B sees it in the
       LookingGlass channel, and nowhere in Say, Party or FC.
@@ -52,7 +68,9 @@ second character, checks every step: the label alone proves nothing.
 
 ### Starting
 
-- [ ] 1. **(changed)** In Say, type `/lgc1`.
+- [ ] 1. **(changed)** In Say, type `/lgc1`. (**(verbose)** With Verbose
+      channel messages on, as set up above. Off, the first line isn't said:
+      Part 4.)
   - One short line: "Now talking in [sky]." in LookingGlass blue, with `[sky]`
     in sky's own colour.
   - The chat box's channel name (where it said "Say") now says `[sky]`.
@@ -299,6 +317,43 @@ Skip this part if none of your pop-outs has an input box.
       (LookingGlass, ExtraChat, or both), and what ChatTwo's channel name
       shows.
 - [ ] 49. Turn ExtraChat off again.
+
+## Part 4: Verbose channel messages off
+
+**(verbose)** All new. In Settings, under Chat, untick **Verbose channel
+messages** (the default). Do this part with ChatTwo off, then steps 50 to 53
+again with it on (in 53, also switch to a ChatTwo tab with another channel,
+and pick another channel in ChatTwo's picker). B checks as before: nothing
+here changes where typing goes, only which lines are said.
+
+- [ ] 50. In Say, type `/lgc1`. No "Now talking in" line. The chat box's
+      channel name says `[sky]` (with ChatTwo: "LookingGlass [sky] …") and
+      the info bar shows "LG [sky]". Type `hello`: only in LookingGlass.
+- [ ] 51. Type `/s`. No "Stopped talking in" line. The label says "Say" and
+      the info bar entry goes away at once. Type `test`: it goes to Say.
+- [ ] 52. `/lgc1`, then `/lgc2`: no line; the label and the info bar change to
+      the moon tag. `/lgc1` again: back to `[sky]`, no line.
+- [ ] 53. Each of these stops it with no line, the label and info bar showing
+      the change at once: Tab in the chat box; `/p`; clicking "LG [sky]" in
+      the info bar; `/t <B's name>`. (`/lgc1` again before each.)
+- [ ] 54. `/lgc1`, then press **Disconnect** in `/lg`. The line "Stopped
+      talking in [sky]: disconnected." is still said. Connect again.
+- [ ] 55. `/lgc1`, then leave sky in `/lg` (or have its admin remove you):
+      "Stopped talking in [sky]: you're no longer in it." is still said. Join
+      sky again afterwards.
+- [ ] 56. `/lgc1`, then turn the plugin off: "Stopped talking in [sky]:
+      LookingGlass was turned off." is still said. Turn it on again.
+- [ ] 57. Type `/lgc3` for a channel number you don't have: "No channel is on
+      /lgc3." is still said, and so is any "Not sent to [sky] or game chat"
+      line (step 19's dropped connection, step 20's too-fast message).
+- [ ] 58. With ChatTwo on and its note not yet seen (it shows once ever, so
+      skip this if you saw it in step 28): `/lgc1` shows the ChatTwo note on
+      its own, without "Now talking in".
+- [ ] 59. With ExtraChat on, `/lgc1`: the ExtraChat warning (light red) is
+      still said, on its own. Turn ExtraChat off again.
+- [ ] 60. Turn **Verbose channel messages** back on: `/lgc1` says "Now talking
+      in [sky].", `/s` says "Stopped talking in [sky]." The setting is kept
+      after reloading the plugin.
 
 ## What to send back
 
