@@ -2942,6 +2942,46 @@ or GagSpeak is gone, the message is sent as typed (it is cosmetic), with a
 warning in the log that never holds the text. The same words in simple and
 advanced mode.
 
+### Spotting abuse, and banning
+
+Status: planned, **required before public release** (owner, 2026-10-07).
+
+Rate limits stop one burst of abuse, but someone who keeps hitting them, hour
+after hour, is unlikely to be doing so by accident. The server should notice
+that, tell the operator, and let the operator ban them from connecting.
+
+- **Noticing.** The server already refuses requests over a limit (and, from
+  the invite-limit change on, logs a short line with the limit's name and user
+  IDs, never names or content). It counts refusals per account and per address
+  (IPv4, and IPv6 per /64 and /56) over a sliding window, across all limits
+  (invites, messages, lookups, registrations, key logins, connections). Past a
+  threshold (for example, refused by limits in most minutes of an hour, or by
+  several different limits), the account or address is **flagged**: one
+  warning line in the server log, and an entry in a list the operator can
+  read. Thresholds are settings, and generous: a shared address (a household,
+  a carrier's NAT) or a buggy plugin must not get an innocent player flagged
+  often.
+- **Banning is the operator's decision.** No automatic permanent ban. A ban
+  is made from the server's command line (the server runs as a service, and
+  has no admin interface yet), for example `LookingGlass.Server --ban
+  <name@world | user id | address> [--days N] [--reason "..."]`, `--unban`
+  and `--bans` (list, with flags). Optionally, an automatic **temporary**
+  block (minutes, not days) for an address far past the threshold, to blunt a
+  flood until the operator looks.
+- **What a ban does.** A banned account can't sign in (key login and saved
+  logins refused) and its character can't register again: the ban is on the
+  Lodestone character, not the keys, so new keys don't get round it. A banned
+  address can't open connections. The banned player is told plainly that the
+  server's operator has blocked them, and why if a reason was given. Their
+  places in channels stay (admins can remove them as usual); while banned they
+  can't send or receive.
+- **To decide when it's built:** the exact thresholds and window; whether
+  flags expire on their own; whether a channel's admins are told a member was
+  banned; whether bans are kept in the database (so they survive restarts and
+  backups: yes, probably) and how long a ban's history is kept; and a way to
+  review flags without reading logs (a `--flags` command, or a small
+  operator-only page later).
+
 ### Windows only, never game chat
 
 Status: planned, not started (tester request, accepted by the owner
