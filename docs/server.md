@@ -172,6 +172,7 @@ All of these are under `LookingGlass`.
 | `Lodestone:BaseUrl` | `https://na.finalfantasyxiv.com` | Where characters are looked up |
 | `Lodestone:MinDelaySeconds` | 2 | Least time between Lodestone requests, server-wide |
 | `Lodestone:ChallengeMinutes` | 15 | How long a registration code can be used, 1 to 60. The server won't start with anything else |
+| `Lodestone:AdditionalWorlds` | empty | Worlds to accept for registering besides the public worlds the server knows: a world the game opened since this release (registering on a world the server doesn't know is refused without asking the Lodestone) |
 | `Dev:AllowDebugAccounts` | false | Characters on world `Debug` register without the Lodestone |
 | `Dev:HostEchoBot` | false | Runs the echo bot inside the server. Needs `AllowDebugAccounts` |
 | `Dev:EchoBotName` | `Echo Bot` | The hosted echo bot's name |
@@ -180,8 +181,8 @@ All of these are under `LookingGlass`.
 | `Database:CheckpointMinutes` | 0 | Minutes between explicit (PASSIVE) checkpoints of the write-ahead log; 0 leaves them to SQLite and Litestream: see [Litestream](#replicating-with-litestream) |
 | `Messages:KeepDays` | 7 | Days the server keeps each message it relays (encrypted, as relayed), so members who were away get it when they're back: see [Stored messages](#stored-messages). 0 to 365; 0 keeps none |
 | `Messages:MaxPerChannel` | 5000 | Messages kept per channel at most; past it the oldest go first. 0 to 100,000; 0 keeps none |
-| `Limits:RegistrationsPerHourPerIp` | 10 | Registrations started per IP address per hour. One whose character the Lodestone doesn't list (or can't be asked about) doesn't count |
-| `Limits:RegistrationLookupFailuresPerHourPerIp` | 20 | Registrations per IP address per hour whose character the Lodestone doesn't list (a typo, a new character, a private profile) or can't be asked about; past it, nothing more is looked up for that address until the hour is up. 1 to 10,000 |
+| `Limits:RegistrationsPerHourPerIp` | 10 | Registrations started per IP address (IPv6: per /56) per hour. One whose character the Lodestone doesn't list (or can't be asked about) doesn't count |
+| `Limits:RegistrationLookupFailuresPerHourPerIp` | 20 | Lodestone requests per IP address (IPv6: per /56) per hour made by registrations whose character the Lodestone doesn't list (a typo, a new character, a private profile) or that it couldn't answer; a search makes 1 or 2. Past it, nothing more is looked up for that address until the hour is up. 1 to 10,000 |
 | `Limits:RefusedRegistrationsPerHourPerIp` | 10 | Registrations refused for naming an address this server doesn't list, logged per IP per hour; refused silently past that |
 | `Limits:KeyLoginsPerHourPerIp` | 60 | Key login challenges per IP address per hour |
 | `Limits:KeyLoginFailuresPerHourPerIp` | 10 | Failed key logins after which an IP address gets no more challenges for the hour |

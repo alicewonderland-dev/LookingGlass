@@ -606,27 +606,43 @@ keeps one, moves with it (see
 ## Lodestone traffic
 
 - All Lodestone requests go through one worker, with a server-wide rate limit
-  and a cache of the characters found. A search that finds nobody isn't
-  cached, so someone who fixes a typo, or makes their profile public, is
-  looked up again at once.
-- Registration is rate-limited per IP address (`RegistrationsPerHourPerIp`,
-  10 an hour), and verification attempts per connection (once every 10
-  seconds, 10 per challenge). Each Verify reads the character's page afresh
-  (asking for no cached copy), in the same queue.
+  (one every 2 seconds, at most 20 waiting) and a cache of the characters
+  found. A search that finds nobody isn't cached, so someone who fixes a
+  typo, or makes their profile public, is looked up again at once.
+- Nothing is asked of the Lodestone for a name the game wouldn't allow (a
+  first and last name, each 2 to 15 letters, apostrophes or hyphens) or a
+  world it doesn't have (the server's list of public worlds, plus
+  `Lodestone:AdditionalWorlds` for one opened since a release): those are
+  refused at once, saying what to fix, and cost nothing. A search is for the
+  exact name on one world, and reads at most 2 pages of results.
+- Registration is rate-limited per address (`RegistrationsPerHourPerIp`, 10
+  an hour), and verification attempts per connection (once every 10 seconds,
+  10 per challenge). Each Verify reads the character's page afresh (asking
+  for no cached copy), in the same queue. Addresses here are IPv4 addresses
+  and IPv6 /56s, as for connections, so one customer's many /64s count once.
 - A registration whose character the Lodestone doesn't list, or that the
-  Lodestone can't be asked about, gives its registration back: the user fixes
-  it and tries again. Those are counted per IP on their own
-  (`RegistrationLookupFailuresPerHourPerIp`, 20 an hour), checked before
-  anything is asked of the Lodestone, so names that aren't there can't fill
-  the queue.
+  Lodestone can't be asked about (an error, or no answer within HttpClient's
+  20-second timeout), gives its registration back: the user fixes it and
+  tries again. Each request such a lookup made of the Lodestone counts per
+  address on its own (`RegistrationLookupFailuresPerHourPerIp`, 20 an hour,
+  so at least 10 lookups that fail), checked before anything is asked of the
+  Lodestone. So an address can make at most about 30 searches an hour of
+  the queue, and no one address can fill it. A refusal because the queue is
+  full costs nothing.
+- A Verify the Lodestone couldn't answer isn't counted against the
+  challenge, but only the first 3 times: past those it counts, so one
+  pending registration can't keep taking turns of the queue.
 - What the user is told says what to do. A character not listed: check the
   name and home world; a new character can take a while to show up, and one
   whose profile is private may not show up at all, so make it public in the
   character's privacy settings on the Lodestone, wait a moment and try again.
-  A private profile when verifying (its page says it is private and shows no
-  profile text): make it public, wait a moment, press Verify again. A limit
-  reached says how long to wait ("Too many registrations from your address;
-  try again in about 40 minutes.").
+  A private profile when verifying: make it public, wait a moment, press
+  Verify again. A profile is taken as private when its page has no profile
+  text and says the profile is private ("profile" then "private" in one
+  clause). That is a guess at the real page, not yet checked against one;
+  any other page without profile text gets a general message that also says
+  to make the profile public. A limit reached says how long to wait ("Too
+  many registrations from your address; try again in about 40 minutes.").
 - A registration refused for naming an address that isn't the server's costs
   neither of those, but logs a warning. So those refusals are counted per IP
   on their own (`RefusedRegistrationsPerHourPerIp`, 10 an hour), and refused
@@ -2777,8 +2793,8 @@ one transaction for every multi-step change.
 | Invites received per user | 30 at once, then 1 every 10 seconds | Stops many inviters together flooding one person; operator settings |
 | Lookups by name per user | 60 at once, then 1 a second; the plugin reuses one for 10 minutes (until an invite with it fails) | Each invite by name starts with one, so inviting a friend to many channels isn't stopped here first; bounds enumerating players; operator settings |
 | Invites from one person to another | 20 at once, then 1 a minute; checked first | Someone can invite a friend to all their channels in one go, but one inviter (blocked or not) can't use up someone's invites; operator settings |
-| Registration attempts | 10 per hour per IP (a household's players and alts); verify once per 10 seconds, 10 per challenge | Protects the Lodestone and the challenge flow; operator setting |
-| Registrations whose character the Lodestone doesn't list (or can't be asked about) | Cost no registration; 20 per hour per IP, past which nothing more is looked up for that address | Someone fixing a typo or a private profile isn't locked out, while names that aren't there can't fill the server-wide Lodestone queue; operator setting |
+| Registration attempts | 10 per hour per IP (IPv6 per /56; a household's players and alts); verify once per 10 seconds, 10 per challenge (3 more the Lodestone couldn't answer) | Protects the Lodestone and the challenge flow; operator setting |
+| Registrations whose character the Lodestone doesn't list (or can't be asked about) | Cost no registration; each Lodestone request they made counts, 20 per hour per IP (IPv6 per /56), past which nothing more is looked up for that address; a search reads at most 2 pages; names and worlds the game can't have are refused without asking | Someone fixing a typo or a private profile isn't locked out, while names that aren't there can't fill the server-wide Lodestone queue; operator settings |
 | Lodestone requests (server-wide) | 1 every 2 seconds, cached | Avoids being blocked by the Lodestone |
 | Connections per IP (IPv6 per /56) | 20 open, 60 new a minute, 4 not logged in; one not logged in closes after 3 minutes (registering: when its code expires); no answer to a ping within 60 seconds closes one | Bounds idle, unauthenticated and churning load |
 | Requests per connection | 200 at once, then 20 a second; faster ones are slowed, not refused | Bounds the work one connection makes |
