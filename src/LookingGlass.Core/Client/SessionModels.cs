@@ -336,4 +336,19 @@ public sealed class ClientSessionOptions {
     /// and left out; a new computer's keys can't read older ones anyway.
     /// </summary>
     public TimeSpan CatchUpWithoutPosition { get; init; } = TimeSpan.FromHours(1);
+
+    /// <summary>
+    /// The most live messages held back while catching up; past that they are taken as they come (and the channel's missed
+    /// messages judged against what was had before). Only tests change it.
+    /// </summary>
+    internal int MaxHeldLiveMessages { get; init; } = 2000;
+
+    /// <summary>How long a channel's failed catch-up waits before it is tried again (doubling each time). Only tests change it.</summary>
+    internal TimeSpan CatchUpRetryDelay { get; init; } = TimeSpan.FromSeconds(1);
+
+    /// <summary>
+    /// How soon a change to the message times and catch-up positions is saved (once for all the changes meanwhile), so a crash
+    /// shows little again as missed. Only tests change it.
+    /// </summary>
+    internal TimeSpan ReplayStateSaveDelay { get; init; } = TimeSpan.FromSeconds(30);
 }

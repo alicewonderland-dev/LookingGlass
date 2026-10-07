@@ -47,10 +47,24 @@ public sealed class ClientSecrets {
     public Dictionary<string, Dictionary<long, long>> NewestMessageTimes { get; set; } = new();
 
     /// <summary>
-    /// Channel ID → sender → the message ID (hex) of the message <see cref="NewestMessageTimes"/> dates, so that one, sent
-    /// again with the same time, counts as seen too (message catch-up accepts only messages newer than these). Saved with them.
+    /// Channel ID → sender → the message IDs (hex) of the messages accepted at the time <see cref="NewestMessageTimes"/> has
+    /// (a few: two in one millisecond are possible), so those, sent again with the same time, count as had too. Saved with them.
     /// </summary>
-    public Dictionary<string, Dictionary<long, string>> NewestMessageIds { get; set; } = new();
+    public Dictionary<string, Dictionary<long, List<string>>> NewestMessageIds { get; set; } = new();
+
+    /// <summary>
+    /// Channel ID → what was already had when that channel's catch-up last failed, while it is still to be done: live messages
+    /// accepted since don't move <see cref="LastMessageIds"/> on, and the missed messages are judged against this rather
+    /// than against the newer messages had since (see <see cref="CatchUpGap"/>). Gone once a catch-up of the channel completes.
+    /// </summary>
+    public Dictionary<string, CatchUpGap> CatchUpGaps { get; set; } = new();
+
+    /// <summary>
+    /// Channel ID → the recent membership changes of its log (joins, leaves, removals, places moved to new keys), with their
+    /// times: a caught-up message under a key made before one of them must be dated before it (give or take a little).
+    /// Not secret. Kept for <see cref="FormerMember.KeptFor"/>.
+    /// </summary>
+    public Dictionary<string, MembershipChanges> MembershipChanges { get; set; } = new();
 
     /// <summary>
     /// Channel ID → the newest number the server stored a message of the channel under (ChatMessage.server_id) that this
@@ -169,6 +183,32 @@ public sealed class FormerMember {
     /// <summary>When that entry was made (Unix ms, as signed in it).</summary>
     public long LeftAtMs { get; set; }
 }
+
+/// <summary>
+/// A channel whose catch-up failed (see <see cref="ClientSecrets.CatchUpGaps"/>): the newest message times (and IDs) had from
+/// each sender when it did, and the IDs of the messages accepted since (at most <see cref="MaxAcceptedSince"/>), which
+/// the next catch-up treats as had.
+/// </summary>
+public sealed class CatchUpGap {
+    public const int MaxAcceptedSince = 5000;
+
+    public Dictionary<long, long> Times { get; set; } = new();
+    public Dictionary<long, List<string>> Ids { get; set; } = new();
+    public List<string> AcceptedSince { get; set; } = new();
+}
+
+/// <summary>A channel's recent membership changes (see <see cref="ClientSecrets.MembershipChanges"/>).</summary>
+public sealed class MembershipChanges {
+    /// <summary>The log entries that changed who is a member (or under which keys), oldest first.</summary>
+    public List<MembershipChange> Changes { get; set; } = new();
+
+    /// <summary>From this log entry on, every change is in <see cref="Changes"/>: those before weren't recorded, or were dropped as old.</summary>
+    public ulong CompleteFrom { get; set; }
+}
+
+/// <param name="Seq">The entry's position in the log.</param>
+/// <param name="AtMs">Its time (Unix ms): as signed in it, but never later than when this client verified it.</param>
+public sealed record MembershipChange(ulong Seq, long AtMs);
 
 /// <summary>A membership log position, as saved with an epoch key.</summary>
 public sealed class KeyPosition {

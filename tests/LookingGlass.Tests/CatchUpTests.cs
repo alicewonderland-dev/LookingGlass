@@ -12,7 +12,7 @@ namespace LookingGlass.Tests;
 /// server can't pass a caught-up message off as new, show one twice, or show what the member couldn't have read; and
 /// plugins and servers from before work as they did.
 /// </summary>
-public sealed class CatchUpTests : IAsyncLifetime {
+public sealed partial class CatchUpTests : IAsyncLifetime {
     private Harness _server = null!;
 
     public ValueTask InitializeAsync() {
@@ -355,6 +355,119 @@ public sealed class CatchUpTests : IAsyncLifetime {
         await this.CaughtUpAsync(back);
         Assert.Null(back.Session.Snapshot.FindChannel(channelId));
         Assert.Empty(back.Messages);
+    }
+
+    /// <summary>A message signed by <paramref name="keys"/> as <paramref name="senderId"/>, under an epoch key the sender held.</summary>
+    private static ChatMessage Signed(IdentityKeys keys, long senderId, byte[] epochKey, string channelId, ulong epoch, string text, DateTimeOffset when) {
+        var sent = ChannelCrypto.EncryptMessage(new Content { Text = new TextContent { Text = text } }, epochKey, channelId, epoch, keys, senderId, when.ToUnixTimeMilliseconds());
+        return new ChatMessage {
+            ChannelId = channelId, Epoch = epoch, SenderId = senderId, MessageId = sent.MessageId, TimestampUnixMs = sent.TimestampUnixMs,
+            Ciphertext = sent.Ciphertext, Signature = sent.Signature,
+        };
+    }
+
+    /// <summary>Options under which the server adds <paramref name="extra"/> to the end of every page of stored messages.</summary>
+    private ClientSessionOptions Adding(TimeProvider? time, params ChatMessage[] extra) => this._server.Options(time: time, wrap: socket => new RewritingWebSocket(socket, frame => {
+        if (frame.Response?.StoredMessages is { } stored) {
+            var id = Math.Max(stored.LatestId, stored.Messages.Count == 0 ? 0 : stored.Messages[^1].ServerId);
+            foreach (var message in extra) {
+                var copy = message.Clone();
+                copy.ServerId = ++id;
+                stored.Messages.Add(copy);
+            }
+
+            stored.LatestId = id;
+        }
+
+        return frame;
+    }));
+
+    /// <summary>
+    /// Someone who left, with the server's help, signs a message dated after they left, under the key they held while a
+    /// member: it can't pass as one missed while away. (The reader's clock is ahead, so it isn't dated in its future.)
+    /// </summary>
+    [Fact]
+    public async Task SomeoneWhoLeftCantPostAfterLeaving() {
+        var alice = await this._server.RegisterAsync("Alice Stays On");
+        var bob = await this._server.RegisterAsync("Bob Comes Back Later");
+        var carol = await this._server.RegisterAsync("Carol Leaves Early");
+        var channelId = await ChannelWith(alice, "Leavers Channel", bob, carol);
+        var epoch = alice.Session.Snapshot.FindChannel(channelId)!.Epoch;
+        var carolsKey = carol.LoadEpochKey(channelId, epoch);
+        using var carolsKeys = carol.LoadIdentity();
+        await bob.Session.DisposeAsync();
+
+        await carol.Session.LeaveAsync(channelId, Ct);
+        await WaitFor(() => alice.Session.Snapshot.FindChannel(channelId) is { RekeyPending: false } c && c.Members.All(m => m.User.Name != carol.Name) ? c : null);
+        await SayAsync(alice, channelId, "after carol left");
+        var afterLeaving = Signed(carolsKeys, carol.UserId, carolsKey, channelId, epoch, "carol after leaving", DateTimeOffset.UtcNow.AddMinutes(5));
+
+        var clock = new ManualClock { Offset = TimeSpan.FromMinutes(10) };
+        var back = await this.BackAsync(bob, this.Adding(clock, afterLeaving));
+        Assert.Equal(["after carol left"], back.Messages.Select(m => m.Text));
+        Assert.Contains(back.Notices, n => n.Kind == NoticeKind.MessagesNotCaughtUp);
+    }
+
+    /// <summary>
+    /// A character re-verified with new keys (its old computer was stolen, say): whoever holds the old keys, with the server's
+    /// help, can't post as them, dated after the move, under a key the old keys held.
+    /// </summary>
+    [Fact]
+    public async Task OldKeysCantPostAfterTheirPlaceMoved() {
+        var alice = await this._server.RegisterAsync("Alice Stolen Laptop");
+        var bob = await this._server.RegisterAsync("Bob Trusts Alice");
+        var channelId = await ChannelWith(alice, "Stolen Channel", bob);
+        await SayAsync(alice, channelId, "the real alice");
+        await WaitFor(() => bob.Messages.FirstOrDefault(m => m.Text == "the real alice"));
+        var epoch = alice.Session.Snapshot.FindChannel(channelId)!.Epoch;
+        var oldEpochKey = alice.LoadEpochKey(channelId, epoch);
+        using var oldKeys = alice.LoadIdentity();
+        await bob.Session.DisposeAsync();
+
+        var again = await KeyRecoveryTests.NewComputerAsync(this._server, alice);
+        await WaitFor(() => again.Session.Snapshot.FindChannel(channelId));
+        var thief = Signed(oldKeys, again.UserId, oldEpochKey, channelId, epoch, "the thief as alice", DateTimeOffset.UtcNow.AddMinutes(5));
+
+        var clock = new ManualClock { Offset = TimeSpan.FromMinutes(10) };
+        var back = await this.BackAsync(bob, this.Adding(clock, thief));
+        Assert.DoesNotContain(back.Messages, m => m.Text == "the thief as alice");
+        Assert.Contains(back.Notices, n => n.Kind == NoticeKind.MessagesNotCaughtUp);
+    }
+
+    /// <summary>
+    /// A catch-up that fails (the server errs every time) doesn't lose what was missed: the live messages after it don't move
+    /// the position past the gap, nor make the missed ones look older than what was already had, so the next login gets them.
+    /// </summary>
+    [Fact]
+    public async Task AFailedCatchUpLosesNothing() {
+        var alice = await this._server.RegisterAsync("Alice Keeps Talking");
+        var bob = await this._server.RegisterAsync("Bob Unlucky");
+        var channelId = await ChannelWith(alice, "Unlucky Channel", bob);
+        await SayAsync(alice, channelId, "seen");
+        await WaitFor(() => bob.Messages.FirstOrDefault(m => m.Text == "seen"));
+        await bob.Session.DisposeAsync();
+        await SayAsync(alice, channelId, "missed");
+
+        var failing = this._server.Options(wrap: socket => new RewritingWebSocket(socket, frame => {
+            if (frame.Response?.StoredMessages != null) {
+                frame.Response.Error = new Error { Code = ErrorCode.Internal, Message = "Internal server error." };
+            }
+
+            return frame;
+        }));
+        var first = await this.BackAsync(bob, failing);
+        Assert.Empty(first.Messages);
+        await SayAsync(alice, channelId, "later, live");
+        var live = await WaitFor(() => first.Messages.FirstOrDefault(m => m.Text == "later, live"));
+        Assert.False(live.CaughtUp);
+        await first.Session.DisposeAsync();
+
+        var second = await this.BackAsync(first);
+        Assert.Equal(["missed"], second.Messages.Select(m => m.Text));
+        // And once it is in, the position carries on as usual.
+        await second.Session.DisposeAsync();
+        var third = await this.BackAsync(second);
+        Assert.Empty(third.Messages);
     }
 
     [Fact]

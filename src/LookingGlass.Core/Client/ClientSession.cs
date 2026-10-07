@@ -2525,8 +2525,9 @@ public sealed partial class ClientSession : IAsyncDisposable {
             var channel = this._channels.GetValueOrDefault(message.ChannelId);
             // Not a member under this identity key (say, after registering again): nothing here can be read.
             var member = channel != null && this.IsMember(message.ChannelId);
-            if (member) {
-                // Had, whatever comes of it: catching up next time carries on after it.
+            if (member && !this._secrets.CatchUpGaps.ContainsKey(message.ChannelId)) {
+                // Had, whatever comes of it: catching up next time carries on after it. Not while the channel's catch-up is
+                // still to be done (it failed): the next one starts from before what it missed.
                 this.NoteServerId(message.ChannelId, message.ServerId);
             }
 
@@ -2605,20 +2606,14 @@ public sealed partial class ClientSession : IAsyncDisposable {
 
         bool saveNow;
         lock (this._lock) {
-            if (!this.MarkSeen(messageId)) {
+            // The newest message had from them, sent again (after a restart, when the seen-set is empty): had already.
+            if (this.IsNewestHad(message.ChannelId, message.SenderId, message.TimestampUnixMs, messageId) || !this.MarkSeen(messageId)) {
                 return;
             }
 
-            if (!this._secrets.NewestMessageTimes.TryGetValue(message.ChannelId, out var senders)) {
-                senders = new Dictionary<long, long>();
-                this._secrets.NewestMessageTimes[message.ChannelId] = senders;
-            }
+            this.Accepted(message.ChannelId, message.SenderId, message.TimestampUnixMs, messageId);
 
-            if (!senders.TryGetValue(message.SenderId, out var previous) || message.TimestampUnixMs > previous) {
-                this.SetNewestMessage(message.ChannelId, message.SenderId, message.TimestampUnixMs, messageId);
-            }
-
-            // Saved with the next other change, and at least every few minutes; never once per message.
+            // Saved soon (see ScheduleReplaySave), with the next other change, and at least every few minutes; never once per message.
             saveNow = this._replayStateDirty && now - this._replayStateSavedAt > ReplayStateSaveInterval;
             channelName = this._channels.GetValueOrDefault(message.ChannelId)?.Name;
         }
@@ -3056,7 +3051,8 @@ public sealed partial class ClientSession : IAsyncDisposable {
     private void SetMembership(string channelId, IChannelMembership membership, IReadOnlyList<MembershipEntry> applied) {
         // Entries that follow a membership already verified here happened since this client last looked; a log replayed
         // from its start is history.
-        var followsOn = this.MembershipOf(channelId).Head != null;
+        var before = this.MembershipOf(channelId);
+        var followsOn = before.Head != null;
         this._memberships[channelId] = membership;
         var me = this._me?.UserId;
         if (this._secrets.Memberships.ContainsKey(channelId)
@@ -3078,6 +3074,8 @@ public sealed partial class ClientSession : IAsyncDisposable {
         foreach (var entry in applied.Where(entry => entry.Kind is MembershipEntryKind.Leave or MembershipEntryKind.Remove)) {
             this.RememberFormerMember(channelId, entry);
         }
+
+        this.RecordMembershipChanges(channelId, before, membership, applied);
 
         foreach (var entry in applied.Where(entry => entry.Kind == MembershipEntryKind.KeyRecovered)) {
             if (entry.Subject.UserId != me) {
@@ -3361,6 +3359,7 @@ public sealed partial class ClientSession : IAsyncDisposable {
             this._pastKeys.Remove(channelId);
             // Joining again starts afresh: nothing from before is theirs to catch up.
             this._secrets.LastMessageIds.Remove(channelId);
+            this._secrets.CatchUpGaps.Remove(channelId);
             // The name version, message times and verified membership stay (they aren't secret): otherwise
             // a server could fake a removal, list the channel again and replay older names, messages or logs.
             this._secretsVersion++;
