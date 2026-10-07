@@ -172,7 +172,6 @@ All of these are under `LookingGlass`.
 | `Lodestone:BaseUrl` | `https://na.finalfantasyxiv.com` | Where characters are looked up |
 | `Lodestone:MinDelaySeconds` | 2 | Least time between Lodestone requests, server-wide |
 | `Lodestone:ChallengeMinutes` | 15 | How long a registration code can be used, 1 to 60. The server won't start with anything else |
-| `Lodestone:AdditionalWorlds` | empty | Worlds to accept for registering besides the public worlds the server knows: a world the game opened since this release (registering on a world the server doesn't know is refused without asking the Lodestone) |
 | `Dev:AllowDebugAccounts` | false | Characters on world `Debug` register without the Lodestone |
 | `Dev:HostEchoBot` | false | Runs the echo bot inside the server. Needs `AllowDebugAccounts` |
 | `Dev:EchoBotName` | `Echo Bot` | The hosted echo bot's name |

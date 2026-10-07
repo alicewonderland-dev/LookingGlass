@@ -100,29 +100,25 @@ public sealed class RequestHandlerTests : IDisposable {
     }
 
     /// <summary>
-    /// A name the game wouldn't allow (a first and last name, each 2 to 15 letters, apostrophes or hyphens), or a world it
-    /// doesn't have, is refused before the Lodestone is asked, in words that say what to fix, and costs nothing.
+    /// A name the game wouldn't allow (a first and last name, each 2 to 15 letters, apostrophes or hyphens) is refused before
+    /// the Lodestone is asked, in words that say what to fix, and costs nothing.
     /// </summary>
     [Theory]
-    [InlineData("Test", World, "name")]
-    [InlineData("T Person", World, "name")]
-    [InlineData("Test P", World, "name")]
-    [InlineData("Testpersonpersonx Person", World, "name")]
-    [InlineData("Test Per5on", World, "name")]
-    [InlineData("Test Person Three", World, "name")]
-    [InlineData("-Test Person", World, "name")]
-    [InlineData("a b", World, "name")]
-    [InlineData("Test Person", "Atlantis", "world")]
-    [InlineData("Test Person", "Gilgamesh2", "world")]
-    public async Task ANameOrWorldTheGameDoesntHaveIsRefusedBeforeTheLodestoneIsAsked(string name, string world, string wrong) {
+    [InlineData("Test")]
+    [InlineData("T Person")]
+    [InlineData("Test P")]
+    [InlineData("Testpersonpersonx Person")]
+    [InlineData("Test Per5on")]
+    [InlineData("Test Person Three")]
+    [InlineData("-Test Person")]
+    [InlineData("a b")]
+    public async Task ANameTheGameWouldntAllowIsRefusedBeforeTheLodestoneIsAsked(string name) {
         var connection = await this.HelloAsync("203.0.113.90");
         for (var i = 0; i < 25; i++) {
-            var refused = await this.StartRegistrationAsync(connection, name, world);
+            var refused = await this.StartRegistrationAsync(connection, name);
             Assert.Equal(ErrorCode.RegistrationFailed, refused.Error?.Code);
-            Assert.Equal(wrong == "name"
-                    ? $"\"{name}\" isn't a name the game allows: a first and last name, each 2 to 15 letters (apostrophes and hyphens are allowed). Check the spelling, then try again."
-                    : $"\"{world}\" isn't a world this server knows. Check the spelling of your home world, then try again.",
-                refused.Error!.Message);
+            Assert.Equal($"\"{name}\" isn't a name the game allows: a first and last name, each 2 to 15 letters (apostrophes and hyphens are allowed). " +
+                         "Check the spelling, then try again.", refused.Error!.Message);
             PlainLanguage.AssertPlain(refused.Error.Message);
         }
 
@@ -133,17 +129,22 @@ public sealed class RequestHandlerTests : IDisposable {
         }
     }
 
-    /// <summary>Names with apostrophes and hyphens, and worlds in any case, are as the game allows; and an operator can add worlds.</summary>
+    /// <summary>
+    /// Names with apostrophes and hyphens are as the game allows. Any world is looked up: the plugin sends the game's own
+    /// name for the character's home world, so one the server's list doesn't have (a new one, say) is never refused. A world
+    /// on the list is searched for as the game spells it.
+    /// </summary>
     [Theory]
-    [InlineData("Y'shtola Rhul", "Gilgamesh")]
-    [InlineData("Ul-Zah Ka'thal", "gilgamesh")]
-    [InlineData("Test Person", "LICH")]
-    [InlineData("Test Person", "Atlantis")]
-    public async Task NamesAndWorldsTheGameHasAreLookedUp(string name, string world) {
-        this._handler = this.NewHandler(15, configure: settings => settings.Lodestone.AdditionalWorlds = ["Atlantis"]);
+    [InlineData("Y'shtola Rhul", "Gilgamesh", "Gilgamesh")]
+    [InlineData("Ul-Zah Ka'thal", "gilgamesh", "Gilgamesh")]
+    [InlineData("Test Person", "LICH", "Lich")]
+    [InlineData("Test Person", "Atlantis", "Atlantis")]
+    [InlineData("Test Person", "new world", "new world")]
+    public async Task NamesTheGameAllowsAreLookedUpOnAnyWorld(string name, string world, string searched) {
         var response = await this.StartRegistrationAsync(await this.HelloAsync("203.0.113.91"), name, world);
         Assert.True(response.RegistrationChallenge != null || response.Error!.Message.StartsWith("Couldn't find", StringComparison.Ordinal), response.Error?.Message);
         Assert.Equal(1, this._lodestone.Requests);
+        Assert.Equal(searched, this._lodestone.LastWorld);
     }
 
     /// <summary>
@@ -869,6 +870,9 @@ public sealed class RequestHandlerTests : IDisposable {
         /// <summary>Searches and profile reads asked for.</summary>
         public int Requests => Volatile.Read(ref this._requests);
 
+        /// <summary>The world the last search was for.</summary>
+        public string? LastWorld { get; private set; }
+
         /// <summary>Requests being held now.</summary>
         public int Holding => Volatile.Read(ref this._holding);
 
@@ -904,6 +908,7 @@ public sealed class RequestHandlerTests : IDisposable {
             string html;
             if (request.RequestUri!.AbsolutePath.TrimEnd('/') == "/lodestone/character") {
                 var query = System.Web.HttpUtility.ParseQueryString(request.RequestUri.Query);
+                this.LastWorld = query["worldname"];
                 var page = int.Parse(query["page"] ?? "1");
                 // Listed: whoever is searched for, on Gilgamesh.
                 html = this.Listed

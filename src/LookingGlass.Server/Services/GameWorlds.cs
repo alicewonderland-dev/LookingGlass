@@ -3,13 +3,14 @@ using System.Text.RegularExpressions;
 namespace LookingGlass.Server.Services;
 
 /// <summary>
-/// What the game allows as a character's name and home world, checked before a registration asks the Lodestone anything:
-/// a name or world that can't exist would only cost a search of the shared Lodestone queue.
+/// What the game allows as a character's name, checked before a registration asks the Lodestone anything (a name that can't
+/// exist would only cost a search of the shared Lodestone queue), and how it spells its worlds.
 /// </summary>
 public static partial class GameWorlds {
     /// <summary>
-    /// The public worlds the Lodestone lists characters on, by data center. A world opened since is allowed with
-    /// <see cref="LodestoneOptions.AdditionalWorlds"/>, until this list has it.
+    /// The public worlds the Lodestone lists characters on, by data center, written from memory: only a hint for spelling a
+    /// world as the game does, never a reason to refuse one (the plugin sends the game's own name for the home world, and this
+    /// may lack a world opened since).
     /// </summary>
     public static readonly IReadOnlyList<string> Known = [
         // North America
@@ -30,11 +31,10 @@ public static partial class GameWorlds {
         "Belias", "Mandragora", "Ramuh", "Shinryu", "Unicorn", "Valefor", "Yojimbo", "Zeromus", // Meteor
     ];
 
-    /// <summary>The world's name as the game spells it, if it is <see cref="Known"/> or one of <paramref name="additional"/> (in any case); else null.</summary>
-    public static string? Find(string world, IEnumerable<string>? additional = null) {
+    /// <summary>The world's name as the game spells it, if it is <see cref="Known"/> (in any case); else null.</summary>
+    public static string? Find(string world) {
         var trimmed = world.Trim();
-        return Known.Concat((additional ?? []).Select(extra => extra.Trim()).Where(extra => extra.Length > 0))
-            .FirstOrDefault(known => string.Equals(known, trimmed, StringComparison.OrdinalIgnoreCase));
+        return Known.FirstOrDefault(known => string.Equals(known, trimmed, StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>

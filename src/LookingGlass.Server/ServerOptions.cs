@@ -68,12 +68,6 @@ public sealed class LodestoneOptions {
     /// </summary>
     public int ChallengeMinutes { get; set; } = 15;
 
-    /// <summary>
-    /// Worlds to accept for registering besides those the server knows (<see cref="Services.GameWorlds.Known"/>): a world the
-    /// game opened since this release, until an update knows it.
-    /// </summary>
-    public string[] AdditionalWorlds { get; set; } = [];
-
     public const int MinChallengeMinutes = 1;
     public const int MaxChallengeMinutes = 60;
 }

@@ -378,16 +378,16 @@ public sealed class RequestHandler(
         // NotThisServer accepted it, so it parses.
         var origin = ServerOrigin.FromUrl(request.ServerUrl)!;
 
-        // A name or world the game doesn't have would only cost a search of the shared Lodestone queue: refused first, at no cost.
+        // A name the game wouldn't allow would only cost a search of the shared Lodestone queue: refused first, at no cost.
         if (!GameWorlds.IsCharacterName(name)) {
             throw new RequestException(ErrorCode.RegistrationFailed,
                 $"\"{name}\" isn't a name the game allows: a first and last name, each 2 to 15 letters (apostrophes and hyphens are allowed). " +
                 "Check the spelling, then try again.");
         }
 
-        worldName = GameWorlds.Find(worldName, options.Value.Lodestone.AdditionalWorlds)
-            ?? throw new RequestException(ErrorCode.RegistrationFailed,
-                $"\"{worldName}\" isn't a world this server knows. Check the spelling of your home world, then try again.");
+        // The world isn't checked: the plugin sends the game's own name for the character's home world, and a list here could
+        // lack a new one. One the list has is searched for as the game spells it.
+        worldName = GameWorlds.Find(worldName) ?? worldName;
 
         // Per IPv6 /56, as connections are counted (the least an ISP commonly gives one customer), not per /64.
         var address = ClientAddresses.WidenToConnectionKey(connection.RemoteAddress);
