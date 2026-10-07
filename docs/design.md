@@ -2873,6 +2873,43 @@ or GagSpeak is gone, the message is sent as typed (it is cosmetic), with a
 warning in the log that never holds the text. The same words in simple and
 advanced mode.
 
+### Windows only, never game chat
+
+Status: planned, not started (tester request, accepted by the owner
+2026-10-07). For heavy users who want the game's own chat kept clean.
+
+- **One setting, "Show LookingGlass messages only in windows"** (off by
+  default). While on, no channel's messages or information lines go to game
+  chat, whatever each channel's "Also show in game chat" says.
+- **A message for a channel no window shows opens one,** without taking the
+  keyboard from the game. A second setting chooses how: **add it as a tab to
+  an existing window** (which one: the most recently used, say), or **open a
+  new window every time**.
+- **To decide when it's built:** whether warnings still go to game chat (today
+  a warning is never hidden there, even for a channel kept out of game chat;
+  keeping that rule is the safe default), how unread counts and the first
+  message's arrival are signalled without game chat (a window opening, its
+  tab's count), and what happens while the game is in a cutscene or in combat
+  (a window opening mid-fight may be unwelcome: maybe wait, or open it
+  minimised).
+
+### A chat history kept unencrypted
+
+Status: planned, not started (tester request, accepted by the owner
+2026-10-07). The chat history stays encrypted by default; a player may opt
+out.
+
+- **A setting, "Keep my chat history unencrypted"** (off by default, only
+  shown while the history is on), with a plain warning: anyone or anything
+  that can read the player's files can read it, including backup and
+  cloud-sync tools.
+- **To decide when it's built:** the format (plain text that other tools can
+  open, which makes it in effect an export, a decision the owner made against
+  for the encrypted history; or the same format without encryption), what
+  happens to what is already stored when the setting changes (convert it, or
+  keep the old part as it was), and how the size cap and deletion work across
+  both.
+
 ### MLS
 
 MLS (RFC 9420) solves the same problems as the membership log and epoch keys,
