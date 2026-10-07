@@ -1351,13 +1351,17 @@ they come, with the channel marked.
   remembers, for 8 days, who left each channel and with which keys.
 - **Not after its key was replaced.** Live, a message under an older key is
   taken only within 2 minutes of the newer one arriving. Caught up, a message
-  under epoch E must be dated no later than 2 minutes after:
-  - when E+1's key was made, which every new key states, signed by whoever
-    made it (`SealedEpochKey.created_unix_ms`, a signature of its own so older
-    clients still take the key): a member at that point of the log, under the
-    keys they had then, so not the server, not someone who left, and not a
-    place's replaced keys;
-  - the first membership change (a join, a leave, a removal, a member's place
+  under epoch E must be dated no later than:
+  - 10 minutes after E+1's key was made, which every new key states, signed
+    by whoever made it (`SealedEpochKey.created_unix_ms`, a signature of its
+    own so older clients still take the key): a member at that point of the
+    log, under the keys they had then, so not the server, not someone who left,
+    and not a place's replaced keys. 10 minutes, as much as a live message may
+    be from the clock, so a member whose clock is a few minutes slow doesn't
+    make others lose what was sent just before. The server refuses a new key
+    whose stated time is more than 10 minutes from its own clock, saying the
+    maker's clock is off; keys from older clients state none;
+  - 2 minutes after the first membership change (a join, a leave, a removal, a member's place
     moving to new keys) after where E's key was made, as the client dates it:
     as the entry says, but never later than when the client verified it, and
     no later than any later entry signed by someone other than the change's
@@ -1369,8 +1373,15 @@ they come, with the channel marked.
     after its owner re-verified), a time by which that had happened that
     neither they nor the server chose: when E+1's key was made, if someone else
     made it before this client came back; an entry someone else signed after
-    it; or when this client saw the change happen, connected. Without one,
-    nothing of those keys is caught up: how long they spoke can't be told.
+    it; or when this client saw the change happen, connected (with the same
+    10 or 2 minutes). Without one, nothing of those keys is caught up: how long
+    they spoke can't be told. That isn't a failed check, so it isn't a warning:
+    one blue line per channel and login says it plainly ("Some messages Carol
+    sent before leaving couldn't be confirmed, so they weren't restored."), and
+    the diagnostic log notes it without who or what. It happens when nobody
+    else was there to make the next key or sign an entry (a two-member channel
+    the other left), and when the next key was made by an older plugin, which
+    states no time: members should update together.
 
   A membership change dated more than 10 minutes ahead of the clock when it is
   verified is misdated (by its signer, or the server for a re-verification):
@@ -1519,8 +1530,9 @@ again.
   someone who has left since) can sign a message now with an earlier time,
   under a key they held then, and a server can show it to the others as one
   missed while they were away, if it is newer than anything they already have
-  from that sender. It must be dated no later than 2 minutes after the next
-  key was made (as its maker signed) and after the next membership change; and
+  from that sender. It must be dated no later than 10 minutes after the next
+  key was made (as its maker signed) and 2 minutes after the next membership
+  change; and
   for keys that stopped being theirs (they left, or their place moved), after
   a time neither they nor the server chose (see
   [Message catch-up](#message-catch-up)), or nothing of them is caught up.
@@ -1528,9 +1540,13 @@ again.
   make it) and the evidence of a change, so the window lasts until a member
   makes the key, someone else signs an entry, or the reader sees the change
   happen; until then a sender can post under a key they still hold as a
-  member. Within the 2 minutes' grace after the next key, anyone who held a key
-  can post under it, dated before. Keys made by older clients don't say when
-  they were made, and then only the change times count. (An honest server
+  member. A test pins this window
+  (`KnownLimitTheWindowLastsUntilSomeoneElseMakesTheNextKey`): a
+  re-verification the server dates ahead, with the next key made only when
+  another member comes back later, lets the old keys post up to then. Within the 10 minutes' grace
+  after the next key, anyone who held a key can post under it, dated before.
+  Keys made by older clients don't say when they were made, and then only the
+  change times count (and the fail-closed rule drops what can't be dated). (An honest server
   stores only what members send, as they send it.)
 - **Catch-up has limits.** A client with no position in a channel (the first
   login with this version) catches up only the last hour. A channel rekeyed
