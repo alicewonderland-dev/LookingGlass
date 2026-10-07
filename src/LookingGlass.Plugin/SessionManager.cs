@@ -37,6 +37,7 @@ public sealed class SessionManager : IDisposable {
         this._chatLogs = new ChatLogKeeper(Services.PluginInterface.ConfigDirectory.FullName, ProtectedSecretStore.ChatLogProtection(),
             message => Services.Log.Warning(message));
         player.Changed += this.OnPlayerChanged;
+        this._nameColours = config.NameColours.ToImmutableDictionary();
     }
 
     /// <summary>The current session, or null when logged out or not connected.</summary>
@@ -334,14 +335,17 @@ public sealed class SessionManager : IDisposable {
     /// <summary>Every channel's colour for the current character, by channel ID. Safe from any thread.</summary>
     public IReadOnlyDictionary<string, ChannelColour> Colours => this._colours;
 
-    /// <summary>A person's name colour (0xRRGGBB) for the current character, or null for the default (see <see cref="NameColours"/>). Safe from any thread.</summary>
+    /// <summary>A person's name colour (0xRRGGBB), or null for the default (see <see cref="NameColours"/>). Safe from any thread.</summary>
     public uint? NameColourOf(Protocol.User? user) => NameColours.Of(this._nameColours, user, this._config.ServerUrl);
 
-    /// <summary>Gives a person's name a colour (0xRRGGBB), or with null the default, in every channel. Call on the framework (or draw) thread.</summary>
+    /// <summary>
+    /// Gives a person's name a colour (0xRRGGBB), or with null the default, in every channel and for every character (so it
+    /// works with or without a session). Nobody known (user ID 0) gets none. Call on the framework (or draw) thread.
+    /// </summary>
     public void SetNameColour(Protocol.User user, uint? rgb) {
-        if (this._sessionPlayer is { } player && NameColours.Set(this._config.ForCharacter(player.ContentId).NameColours, user.UserId, this._config.ServerUrl, rgb)) {
+        if (NameColours.Set(this._config.NameColours, user.UserId, this._config.ServerUrl, rgb)) {
             this._config.Save();
-            this.RefreshCommandCache();
+            this._nameColours = this._config.NameColours.ToImmutableDictionary();
         }
     }
 
@@ -398,7 +402,8 @@ public sealed class SessionManager : IDisposable {
 
     /// <summary>
     /// Configuration is only touched on the framework thread; other threads read
-    /// these immutable copies of the current character's slots, nicknames, colours and name colours.
+    /// these immutable copies of the current character's slots, nicknames and colours (and of the name colours, which are
+    /// every character's: see <see cref="SetNameColour"/>).
     /// </summary>
     private void RefreshCommandCache() {
         if (this._sessionPlayer is { } player) {
@@ -407,13 +412,11 @@ public sealed class SessionManager : IDisposable {
             this._nicknames = settings.Nicknames.ToImmutableDictionary();
             this._colours = ChannelColours.Merge(settings.ChannelColours, settings.CustomChannelColours);
             this._gameChatOff = settings.GameChatOff.ToImmutableHashSet();
-            this._nameColours = settings.NameColours.ToImmutableDictionary();
         } else {
             this._slots = ImmutableDictionary<string, int>.Empty;
             this._nicknames = ImmutableDictionary<string, string>.Empty;
             this._colours = ImmutableDictionary<string, ChannelColour>.Empty;
             this._gameChatOff = ImmutableHashSet<string>.Empty;
-            this._nameColours = ImmutableDictionary<string, uint>.Empty;
         }
     }
 

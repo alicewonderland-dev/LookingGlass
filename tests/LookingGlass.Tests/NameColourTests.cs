@@ -34,7 +34,8 @@ public sealed class NameColourTests {
 
     [Fact]
     public void ATestServersMadeUpAccountsAreKeptPerServer() {
-        // Debug accounts have negative IDs, which each test server hands out on its own: -1 here isn't -1 there.
+        // Debug accounts have negative IDs made from the name alone, the same on every test server; but anyone can register
+        // any debug name on any test server, so -1 here needn't be the same person as -1 there.
         Assert.NotEqual(NameColours.KeyOf(-1, Server), NameColours.KeyOf(-1, OtherServer));
         Assert.Equal(NameColours.KeyOf(-1, Server), NameColours.KeyOf(-1, Server));
         // Never the same as a real character's.
@@ -42,10 +43,43 @@ public sealed class NameColourTests {
         Assert.DoesNotContain(NameColours.KeyOf(-1, Server), new[] { NameColours.KeyOf(1, Server), "-1", "1" });
     }
 
+    [Theory]
+    [InlineData("WSS://LookingGlass.Example:8443/ws")]
+    [InlineData("wss://lookingglass.example:8443/ws/")]
+    [InlineData("  wss://lookingglass.example:8443/ws  ")]
+    public void ATestServersAddressIsTheSameWrittenAnotherWay(string written) {
+        // The case of the scheme and host, a trailing slash or spaces: the same server, so the same colours.
+        Assert.Equal(NameColours.KeyOf(-1, Server), NameColours.KeyOf(-1, written));
+    }
+
+    [Fact]
+    public void ADefaultPortIsTheSameServer() {
+        Assert.Equal(NameColours.KeyOf(-1, "wss://test.example/ws"), NameColours.KeyOf(-1, "wss://test.example:443/ws"));
+        Assert.Equal(NameColours.KeyOf(-1, "ws://localhost/ws"), NameColours.KeyOf(-1, "ws://localhost:80/ws"));
+    }
+
+    [Theory]
+    [InlineData("wss://lookingglass.example:8444/ws")]
+    [InlineData("wss://other.example:8443/ws")]
+    [InlineData("wss://lookingglass.example:8443/other")]
+    [InlineData("ws://lookingglass.example:8443/ws")]
+    public void AnotherServersAddressIsAnotherServer(string other) {
+        Assert.NotEqual(NameColours.KeyOf(-1, Server), NameColours.KeyOf(-1, other));
+    }
+
+    [Fact]
+    public void AnAddressThatIsntOneIsKeptAsWritten() {
+        // Not a URL at all (a hand-edited setting): trimmed, and kept apart from others.
+        Assert.Equal("-1@not a url", NameColours.KeyOf(-1, " not a url/ "));
+        Assert.NotEqual(NameColours.KeyOf(-1, "not a url"), NameColours.KeyOf(-1, Server));
+    }
     [Fact]
     public void NobodyKnownHasNoColour() {
         // User ID 0: a sender not known (a line from a chat log written without one).
         Assert.Null(NameColours.KeyOf(0, Server));
+        Assert.False(NameColours.CanHave(0));
+        Assert.True(NameColours.CanHave(Alice));
+        Assert.True(NameColours.CanHave(-1));
         var colours = new Dictionary<string, uint>();
         Assert.False(NameColours.Set(colours, 0, Server, Pink));
         Assert.Empty(colours);
