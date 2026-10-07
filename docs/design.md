@@ -2756,6 +2756,7 @@ one transaction for every multi-step change.
 | Pending invites per user | 50 (as many as the channels they can be in), at most 25 of them from any one inviter | Stops one person being flooded, or one inviter filling them all; operator settings |
 | Invites sent per user | 60 at once, then 1 every 5 seconds | Stops one person spamming many; operator settings |
 | Invites received per user | 30 at once, then 1 every 10 seconds | Stops many inviters together flooding one person; operator settings |
+| Lookups by name per user | 60 at once, then 1 a second; the plugin reuses one for 10 minutes (until an invite with it fails) | Each invite by name starts with one, so inviting a friend to many channels isn't stopped here first; bounds enumerating players; operator settings |
 | Invites from one person to another | 20 at once, then 1 a minute; checked first | Someone can invite a friend to all their channels in one go, but one inviter (blocked or not) can't use up someone's invites; operator settings |
 | Registration attempts | 5 per hour per IP; verify once per 10 seconds, 10 per challenge | Protects the Lodestone and the challenge flow |
 | Lodestone requests (server-wide) | 1 every 2 seconds, cached | Avoids being blocked by the Lodestone |

@@ -201,8 +201,10 @@ All of these are under `LookingGlass`.
 | `Limits:InviteIntervalSecondsPerPair` | 60 | Seconds between their invites to that one once those are spent. 1 to 86,400, and more than `InviteIntervalSecondsPerInvitee` |
 | `Limits:MaxPendingInvitesPerUser` | 50 | Invites one user can have waiting at once, across all channels. 2 to 200 |
 | `Limits:MaxPendingInvitesFromOneInviter` | 25 | Of those, how many can be from any one inviter. 1 to one less than `MaxPendingInvitesPerUser` |
+| `Limits:LookupBurst` | 60 | Players one user may look up by name at once (each invite by name starts with one). 1 to 10,000 |
+| `Limits:LookupIntervalSeconds` | 1 | Seconds between their lookups once those are spent. 1 to 86,400 |
 
-The server won't start with an invite setting outside its range: see
+The server won't start with an invite or lookup setting outside its range: see
 [Limits worth knowing](#limits-worth-knowing).
 
 The address the server listens on is the top-level `Urls` setting
@@ -342,6 +344,10 @@ IPv6 clients are counted per /64.
   most 25 from any one inviter (`MaxPendingInvitesFromOneInviter`, which must
   be less). A refused invite tells the inviter how long to wait, or that the
   invitee must answer some invites first, and is logged (see [Logs](#logs)).
+  Each invite by name starts with a lookup of the player: 60 at once, then one
+  a second (`LookupBurst`, `LookupIntervalSeconds`), and the plugin reuses a
+  lookup for 10 minutes (until an invite with it fails), so inviting one
+  friend to many channels costs one.
 - **The web server** (Kestrel, under `Kestrel:Limits` in `appsettings.json`)
   takes at most 12,000 connections, 12,000 of them WebSockets
   (`MaxConcurrentConnections`, `MaxConcurrentUpgradedConnections`: above
