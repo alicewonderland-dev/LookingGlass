@@ -2602,10 +2602,11 @@ to make in game are in
 [docs/testing/windows-only-checklist.md](testing/windows-only-checklist.md).
 
 - **One setting, "Show LookingGlass messages only in windows"**, in Settings
-  under Chat (`Configuration.MessagesOnlyInWindows`), off by default, also for
-  settings saved before it. While on, no channel's messages, and none of its
-  information lines (someone was invited, joined, left or was removed; a
-  catch-up's "N messages while you were away"), go to game chat, whatever each
+  under Chat (`Configuration.MessagesOnlyInWindows`), with a dimmed line under
+  it saying what it does; off by default, also for settings saved before it.
+  While on, no channel's messages, and none of its information lines (someone
+  was invited, joined, left or was removed; a catch-up's "N messages while you
+  were away"), go to game chat, whatever each
   channel's "Show in game chat" says. They go to the channel's history and
   windows as always. The player's own messages come back from the server the
   same way as everyone else's, so they follow the same rule: no echo in game
@@ -2636,13 +2637,23 @@ to make in game are in
     session only; nothing new is saved. The tab is added at the end, not
     selected, so the tab the player is reading stays where it was, and the new
     one shows its count of new messages (from others since login), as a tab
-    reopened at login behind another does.
+    reopened at login behind another does. A tab opened by an information line
+    alone (someone joined) shows no count: only messages are counted.
   - **Open a new window each time**: a new window with the channel as its only
-    tab.
+    tab. Except for channels with messages from while the player was away
+    (message catch-up, mostly at login): those share one new window, the first
+    opening it and the others added as tabs behind it, for the rest of the
+    session while it is open, so a login never opens a window for every
+    channel. The setting's tooltip says so.
   - With no window open, a new one either way; several channels at once share
     the window opened for the first (or get one each, with a new window each
-    time). A new window opens a little below and right of the window used
-    last, or where ImGui puts new windows if there is none.
+    time). Each new window opens a step (30 pixels, scaled) below and right of
+    the window opened this way before it, or if none was this session, of the
+    window used last, or else near the top left of the screen
+    (`WindowsOnly.NextPlace`). Past the bottom of the game's screen it goes back
+    to the top, past the right back to the left, and it never lands off it, so
+    no new window hides the one before it. The settings are saved once for all
+    the windows opened in a frame.
   - Neither takes the keyboard from the game: a window opened this way doesn't
     take the focus (as windows reopened at login), and adding a tab doesn't
     bring its window to the front. Windows opened this way are remembered like
@@ -2653,6 +2664,10 @@ to make in game are in
     keys); a channel left meanwhile is dropped. They wait for the windows to
     come back at login, so a channel already in a remembered window isn't
     opened twice.
+  - Information lines that arrive at login before their channel is in the
+    published channel list go to game chat, as no window could show them yet
+    (the same rule as an invite to a channel the player isn't in). Accepted:
+    a few lines at most, and nothing is hidden.
 - **In combat, a cutscene or a loading screen** (Dalamud's `ICondition`:
   `InCombat`, `OccupiedInCutSceneEvent`, `WatchingCutscene`,
   `WatchingCutscene78`, `BetweenAreas`, `BetweenAreas51`), no window opens and
@@ -2660,19 +2675,25 @@ to make in game are in
   each and in the order they asked, and open once it is over. Nothing is lost
   meanwhile: the history keeps every line since login.
 - **Each channel's "Show in game chat"** can't be changed while the setting is
-  on: in the channel's ⋮ menu and a tab's right-click menu it is greyed out,
-  with a tooltip saying that only windows show messages now and to change it
-  in Settings, under Chat; a tab's tooltip says the same. It is kept as it was.
+  on: in the channel's ⋮ menu and a tab's right-click menu it shows a red cross
+  (no channel shows in game chat now, whatever its own choice), greyed out,
+  with one tooltip saying that only windows show messages now and to change
+  it in Settings, under Chat; a tab's tooltip says the same. It is kept as it was.
   While the setting is on, a channel off game chat that no window shows isn't
   put back in game chat (the usual "shows in game chat again" rule): the next
   line for it opens a window anyway.
 - **Turning it off** restores the usual behaviour at once (the next line goes
   where its channel's own setting says), and nothing about each channel's
-  choice is lost. What was waiting for a window is dropped. A channel that is
-  off game chat on its own and that no window shows then gets a window (as the
-  setting for opening says), so its choice is kept rather than undone. Turned
-  off while logged out, that happens at the next login, once the channel list
-  is in.
+  choice is lost. A channel still waiting for a window whose own setting shows
+  it in game chat needs none and is dropped; one kept out of game chat on its
+  own still gets its window. So does a channel off game chat on its own that no
+  window shows (as the setting for opening says), so its choice is kept rather
+  than undone by the "shows in game chat again" rule, which leaves channels
+  waiting for a window alone. These wait for combat, a cutscene or a loading
+  screen to end like any other, and in the meantime their lines are kept in
+  the history, to show when the window opens: no line ends up shown nowhere.
+  Turned off while logged out, that happens at the next login, once the
+  channel list is in.
 
 ### Chat log on this computer
 

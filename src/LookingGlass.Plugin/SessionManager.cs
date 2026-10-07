@@ -468,7 +468,7 @@ public sealed class SessionManager : IDisposable {
 
         if (!WindowsOnly.MessageToGameChat(windowsOnly, off, caughtUp.ChannelId)) {
             if (windowsOnly && caughtUp.Messages.Count > 0) {
-                this.WantWindows.Want(caughtUp.ChannelId);
+                this.WantWindows.Want(caughtUp.ChannelId, caughtUp: true);
             }
 
             return;

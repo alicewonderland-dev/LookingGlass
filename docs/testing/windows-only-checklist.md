@@ -15,9 +15,12 @@ channel window open.
 
 - [ ] 1. `/lg`, the gear, Settings. Under **Chat**, after **Verbose channel
       messages**: **Show LookingGlass messages only in windows**, unticked.
-      Under it, greyed out, "For a channel no window shows:" with **Add it as
-      a tab to the window used last** (chosen) and **Open a new window each
-      time**. Hover each: a tooltip says what it does.
+      Under it, a dimmed line says what it does (messages only in windows,
+      warnings and answers to the chat box still in game chat). Below that,
+      greyed out, "For a channel no window shows:" with **Add it as a tab to
+      the window used last** (chosen) and **Open a new window each time**.
+      Hover each: a tooltip says what it does; the second says channels with
+      messages from while you were away share one new window.
 - [ ] 2. Tick the setting. The two choices are no longer greyed out.
 
 ## Nothing in game chat
@@ -34,8 +37,9 @@ channel window open.
 - [ ] 6. **(A and B)** B leaves `fc` and A invites B back (or someone else
       joins `fc`). The "left" and "invited" lines don't show in game chat. A
       tab for `fc` is added to the `sky` window, behind `sky`: `sky` stays
-      selected, and the `fc` tab shows a count, as `(1)` or more if there
-      were messages from others in `fc` since login.
+      selected. The `fc` tab shows no count for those lines (only messages
+      are counted), or a count of the messages from others in `fc` since
+      login if there were any. B sends in `fc`: the count goes up by one.
 - [ ] 7. `/lgc4 hi` (no channel on 4) and `/lgc` alone: the answers show in
       game chat, in blue, as before.
 - [ ] 8. Talk in `raid` with `/lgc3` (no message): "Now talking in [raid]"
@@ -66,8 +70,15 @@ channel window open.
 - [ ] 15. In Settings choose **Open a new window each time**. Close the `sky`
       tab, and have a message arrive in `sky`: a new window opens with `sky`
       only, a little below and right of the window used last, without taking
-      the keyboard. Have messages arrive in two channels no window shows: a
-      window each.
+      the keyboard. Have messages arrive in two channels no window shows (at
+      the same time, then one more a little later): a window each, every one a
+      step below and right of the one before, none exactly on top of another.
+      Move the window used last near the bottom right of the screen and repeat:
+      the new windows stay on the screen.
+- [ ] 15b. **(A and B)** Still with **Open a new window each time**, close
+      every window and log out. B sends in `sky` and `fc`. Log back in: one
+      new window opens with both as tabs (messages from while you were away),
+      not a window each.
 - [ ] 16. Close every window. Have messages arrive in two channels: with
       **Add it as a tab to the window used last**, one window opens, with the
       first channel selected and the second as a tab behind it.
@@ -86,10 +97,11 @@ channel window open.
 ## Show in game chat, per channel
 
 - [ ] 20. In `sky`'s ⋮ menu (main window) and its tab's right-click menu,
-      **Show in game chat** is greyed out and can't be clicked. Hover it: it
-      says "Show LookingGlass messages only in windows" is on and to change it
-      in Settings, under Chat. Hover a tab: "Not shown in game chat: only
-      windows show messages (change it in Settings)."
+      **Show in game chat** shows a red cross, greyed out, for every channel
+      (even one whose own setting is on), and can't be clicked. Hover it: one
+      tooltip, saying "Show LookingGlass messages only in windows" is on and
+      to change it in Settings, under Chat. Hover a tab: "Not shown in game
+      chat: only windows show messages (change it in Settings)."
 - [ ] 21. Close every window that has a channel turned off game chat on its
       own (turn one off before step 2 to try this): no "shows in game chat
       again" line, and it stays off.
@@ -102,6 +114,12 @@ channel window open.
 - [ ] 23. A channel turned off game chat on its own that no window showed
       (step 21) gets a window when the setting is turned off, rather than going
       back to game chat.
+- [ ] 23b. Turn the setting on, close the window of a channel turned off game
+      chat on its own, start a fight, and turn the setting off while still in
+      combat: no window opens, and no "shows in game chat again" line. Leave
+      combat: its window opens then. A channel waiting for a window whose own
+      setting shows it in game chat gets none, and its next message shows in
+      game chat.
 - [ ] 24. Turn the setting on, log out, turn it off in Settings on the title
       screen (or another character), and log back in: the same as step 23
       happens once the channel list is in.

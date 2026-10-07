@@ -60,7 +60,8 @@ public sealed class Configuration : IPluginConfiguration {
 
     /// <summary>
     /// While <see cref="MessagesOnlyInWindows"/> is on, how a window is found for a channel no window shows: as a tab in the
-    /// window used last (the default, also for settings saved before it existed), or a new window each time.
+    /// window used last (the default, also for settings saved before it existed), or a new window each time (channels caught
+    /// up at login share one).
     /// </summary>
     public WindowOpening WindowOpening { get; set; }
 

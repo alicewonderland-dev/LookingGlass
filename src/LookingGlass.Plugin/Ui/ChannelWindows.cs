@@ -28,6 +28,9 @@ public sealed class ChannelWindows(WindowSystem system, Configuration config, Se
     // The window the player used last (see Used), by its layout's ID; and windows only as it was last followed.
     private string? _lastUsed;
     private bool _windowsOnly = config.MessagesOnlyInWindows;
+    // The window last opened for windows only, which the next steps from; and the one caught-up channels share this session.
+    private ChannelWindowLayout? _lastPlaced;
+    private string? _catchUpWindow;
 
     /// <summary>The windows open now, in the order they were opened.</summary>
     public IReadOnlyList<ChannelWindow> Open => this._open;
@@ -73,6 +76,8 @@ public sealed class ChannelWindows(WindowSystem system, Configuration config, Se
             this._restored = false;
             this._opened.Clear();
             this._lastUsed = null;
+            this._lastPlaced = null;
+            this._catchUpWindow = null;
         }
 
         if (session == null || this.Layouts is not { } layouts) {
@@ -111,8 +116,9 @@ public sealed class ChannelWindows(WindowSystem system, Configuration config, Se
         }
 
         // A channel off game chat that no window shows any more (its last tab or window closed, or none came back at
-        // login) would show nowhere: it goes back to game chat, and says so there.
-        foreach (var channelId in GameChatChannels.ShownNowhere(sessions.GameChatOff, layouts, snapshot)) {
+        // login) would show nowhere: it goes back to game chat, and says so there. Not one waiting for a window (see
+        // FollowWindowsOnly): it gets one once the game isn't busy.
+        foreach (var channelId in GameChatChannels.ShownNowhere(sessions.GameChatOff, layouts, snapshot).Where(id => !sessions.WantWindows.Contains(id))) {
             sessions.SetShowInGameChat(channelId, true);
             var tag = ChannelTag.For(sessions.SlotOf(channelId), sessions.NicknameOf(channelId), config.NicknameTags);
             chat.ChannelNotice(GameChatChannels.BackInGameChat(tag), tag, sessions.ColourOf(channelId));
@@ -123,40 +129,34 @@ public sealed class ChannelWindows(WindowSystem system, Configuration config, Se
     /// "Show LookingGlass messages only in windows" (see <see cref="WindowsOnly"/>), once the windows are back. While it is
     /// on, each channel a line arrived for that game chat didn't show gets a window, or a tab in one, if none shows it: once
     /// the game isn't busy (<see cref="GameBusy"/>), and without taking the keyboard from the game. Just turned off, a
-    /// channel turned off game chat on its own that no window shows opens in one too, so its choice is kept rather than
-    /// undone by the rule below that puts such a channel back in game chat.
+    /// channel waiting whose own setting shows it in game chat goes there from now on, and needs no window; one kept out
+    /// of game chat on its own still gets its window, and so does one that no window shows, so its choice is kept rather
+    /// than undone by the rule that puts such a channel back in game chat. Those wait for the game too.
     /// </summary>
     /// <returns>
-    /// True while it is on, or was just turned off: then no channel is put back in game chat for being shown nowhere (just
-    /// turned off, not until the windows opened for that are in the layouts the rule reads, at the next frame).
+    /// True while it is on, or just turned off but the channel list isn't complete yet, or a window or tab was opened this
+    /// frame: then no channel is put back in game chat for being shown nowhere (after opening, not until the layouts that
+    /// rule reads have the new ones, at the next frame).
     /// </returns>
     private bool FollowWindowsOnly(SessionSnapshot snapshot) {
-        if (config.MessagesOnlyInWindows) {
+        var on = config.MessagesOnlyInWindows;
+        if (on) {
             this._windowsOnly = true;
-            if (sessions.WantWindows.Count > 0) {
-                foreach (var channelId in sessions.WantWindows.Take(snapshot, GameBusy())) {
-                    this.OpenInBackground(channelId);
-                }
+        } else if (this._windowsOnly) {
+            // Just turned off (or while logged out): once the channel list is complete, so no channel is missed.
+            if (snapshot is not { State: ConnectionState.Ready, ChannelsLoaded: true } || this.Layouts is not { } layouts) {
+                return true;
             }
 
-            return true;
-        }
-
-        // Off: what was waiting goes to game chat from now on, as each channel's own setting says.
-        sessions.WantWindows.Clear();
-        if (!this._windowsOnly) {
-            return false;
-        }
-
-        // Just turned off (or while logged out): once the channel list is complete, so no channel is missed.
-        if (snapshot is { State: ConnectionState.Ready, ChannelsLoaded: true } && this.Layouts is { } layouts) {
             this._windowsOnly = false;
-            foreach (var channelId in GameChatChannels.ShownNowhere(sessions.GameChatOff, layouts, snapshot)) {
-                this.OpenInBackground(channelId);
+            var off = sessions.GameChatOff;
+            sessions.WantWindows.Retain(off.Contains);
+            foreach (var channelId in GameChatChannels.ShownNowhere(off, layouts, snapshot)) {
+                sessions.WantWindows.Want(channelId);
             }
         }
 
-        return true;
+        return (sessions.WantWindows.Count > 0 && this.OpenWaiting(snapshot, on)) || on;
     }
 
     /// <summary>
@@ -167,26 +167,64 @@ public sealed class ChannelWindows(WindowSystem system, Configuration config, Se
         ConditionFlag.WatchingCutscene, ConditionFlag.WatchingCutscene78, ConditionFlag.BetweenAreas, ConditionFlag.BetweenAreas51);
 
     /// <summary>
-    /// A window for a channel that no window shows, found as <see cref="Configuration.WindowOpening"/> says (see
-    /// <see cref="WindowsOnly.Place"/>): a tab added to the window used last, not selected, or a new window. A new one opens
-    /// a little below and right of the window used last, if there is one, and doesn't take the focus from the game.
+    /// A window for each channel waiting that no window shows, once the game isn't busy, found as
+    /// <see cref="Configuration.WindowOpening"/> says (see <see cref="WindowsOnly.Place"/>): a tab added to the window used
+    /// last, not selected, or a new window; channels caught up at login share one new window. A new window doesn't take the
+    /// focus from the game, and opens a step below and right of the one opened this way before it (else the one used last),
+    /// on the screen (<see cref="WindowsOnly.NextPlace"/>). The settings are saved once, after all of them.
     /// </summary>
-    private void OpenInBackground(string channelId) {
+    /// <param name="on">Windows only is on; off, only a channel kept out of game chat on its own still needs a window.</param>
+    /// <returns>True if a window or tab was opened.</returns>
+    private bool OpenWaiting(SessionSnapshot snapshot, bool on) {
         if (sessions.SessionPlayer is not { } player) {
-            return;
+            return false;
         }
 
-        var windows = config.ForCharacter(player.ContentId).WindowsOn(sessions.ServerUrl);
-        if (WindowsOnly.Place(windows, channelId, config.WindowOpening, this._lastUsed) is not { } placed) {
-            return;
+        var taken = sessions.WantWindows.Take(snapshot, GameBusy());
+        if (taken.Count == 0) {
+            return false;
         }
 
-        if (placed.Created && this.LastUsed()?.Layout.Place is { } near) {
-            var step = 30 * Widgets.Scale;
-            placed.Window.Place = near with { X = near.X + step, Y = near.Y + step };
+        var off = sessions.GameChatOff;
+        var settings = config.ForCharacter(player.ContentId);
+        var windows = settings.WindowsOn(sessions.ServerUrl);
+        var changed = false;
+        foreach (var wanted in taken) {
+            if (!on && GameChatChannels.Shows(off, wanted.ChannelId)) {
+                continue;
+            }
+
+            if (WindowsOnly.Place(windows, wanted.ChannelId, config.WindowOpening, this._lastUsed, wanted.CaughtUp, this._catchUpWindow) is not { } placed) {
+                continue;
+            }
+
+            changed = true;
+            if (wanted.CaughtUp) {
+                this._catchUpWindow = placed.Window.Id;
+            }
+
+            if (placed.Created) {
+                placed.Window.Place = this.NewPlace();
+                this._lastPlaced = placed.Window;
+            }
         }
 
-        config.Save();
+        if (changed) {
+            config.Save();
+        } else {
+            settings.DropEmptyWindowLists();
+        }
+
+        return changed;
+    }
+
+    /// <summary>Where a window opened for windows only appears (see <see cref="WindowsOnly.NextPlace"/>): on the game's main viewport.</summary>
+    private WindowPlace NewPlace() {
+        var viewport = ImGui.GetMainViewport();
+        var area = new WindowPlace(viewport.WorkPos.X, viewport.WorkPos.Y, viewport.WorkSize.X, viewport.WorkSize.Y);
+        var size = ChannelWindow.DefaultSize * Widgets.Scale;
+        var from = this._lastPlaced?.Place ?? this.LastUsed()?.Layout.Place;
+        return WindowsOnly.NextPlace(from, area, 30 * Widgets.Scale, size.X, size.Y);
     }
 
     /// <summary>The window used last (see <see cref="Used"/>), or if it is gone or none was used yet, the one opened last.</summary>

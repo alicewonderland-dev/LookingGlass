@@ -13,6 +13,8 @@ public sealed class WindowsOnlyTests {
     /// <summary>The player is in "aaa" and "bbb".</summary>
     private static readonly SessionSnapshot Joined = Snapshot(ConnectionState.Ready, true, "aaa", "bbb");
 
+    private static List<string> Ids(IEnumerable<WantedWindow> wanted) => wanted.Select(window => window.ChannelId).ToList();
+
     // ================================================================ what goes to game chat
 
     [Fact]
@@ -186,6 +188,92 @@ public sealed class WindowsOnlyTests {
         Assert.Equal(["aaa"], placed.Window.Tabs);
     }
 
+    [Fact]
+    public void CaughtUpChannelsShareOneNewWindowEvenWithANewWindowEachTime() {
+        var windows = new List<ChannelWindowLayout>();
+        var used = ChannelWindowLayouts.Open(windows, "aaa");
+
+        // The first channel caught up at login opens a window; the others are tabs in it, behind the first.
+        var first = WindowsOnly.Place(windows, "bbb", WindowOpening.NewWindow, used.Id, caughtUp: true, catchUpWindow: null);
+        Assert.True(first!.Created);
+        var second = WindowsOnly.Place(windows, "ccc", WindowOpening.NewWindow, used.Id, caughtUp: true, catchUpWindow: first.Window.Id);
+        Assert.False(second!.Created);
+        Assert.Same(first.Window, second.Window);
+        Assert.Equal(["bbb", "ccc"], first.Window.Tabs);
+        Assert.Equal("bbb", first.Window.Selected);
+
+        // A live line still gets a window of its own.
+        Assert.True(WindowsOnly.Place(windows, "ddd", WindowOpening.NewWindow, used.Id, catchUpWindow: first.Window.Id)!.Created);
+
+        // The catch-up window was closed: the next caught-up channel opens a new one.
+        windows.Remove(first.Window);
+        Assert.True(WindowsOnly.Place(windows, "eee", WindowOpening.NewWindow, used.Id, caughtUp: true, catchUpWindow: first.Window.Id)!.Created);
+        Assert.Equal(3, windows.Count);
+    }
+
+    [Fact]
+    public void CaughtUpChannelsGoToTheWindowUsedLastLikeAnyOther() {
+        var windows = new List<ChannelWindowLayout>();
+        var used = ChannelWindowLayouts.Open(windows, "aaa");
+        var other = ChannelWindowLayouts.Open(windows, "bbb");
+
+        var placed = WindowsOnly.Place(windows, "ccc", WindowOpening.AddToLastUsed, used.Id, caughtUp: true, catchUpWindow: other.Id);
+
+        Assert.Same(used, placed!.Window);
+    }
+
+    // ================================================================ where a new window appears
+
+    private static readonly WindowPlace Screen = new(0, 0, 1920, 1080);
+
+    [Fact]
+    public void ANewWindowStepsDownAndRightFromTheOneBefore() {
+        var first = WindowsOnly.NextPlace(null, Screen, 30, 440, 340);
+        var second = WindowsOnly.NextPlace(first, Screen, 30, 440, 340);
+        var third = WindowsOnly.NextPlace(second, Screen, 30, 440, 340);
+
+        // With nothing to step from, near the top left of the screen (where ImGui would put it).
+        Assert.Equal(new WindowPlace(60, 60, 440, 340), first);
+        Assert.Equal(new WindowPlace(90, 90, 440, 340), second);
+        Assert.Equal(new WindowPlace(120, 120, 440, 340), third);
+    }
+
+    [Fact]
+    public void ANewWindowTakesTheUsualSizeNotTheOneItStepsFrom() {
+        var big = new WindowPlace(100, 100, 900, 700);
+        Assert.Equal(new WindowPlace(130, 130, 440, 340), WindowsOnly.NextPlace(big, Screen, 30, 440, 340));
+    }
+
+    [Fact]
+    public void ANewWindowNeverLeavesTheScreenAndNeverLandsOnTheOneBefore() {
+        // Past the bottom: back to the top, still a step right. Past the right: back to the left, still a step down.
+        Assert.Equal(new WindowPlace(1030, 0, 440, 340), WindowsOnly.NextPlace(new WindowPlace(1000, 720, 440, 340), Screen, 30, 440, 340));
+        Assert.Equal(new WindowPlace(0, 530, 440, 340), WindowsOnly.NextPlace(new WindowPlace(1460, 500, 440, 340), Screen, 30, 440, 340));
+        Assert.Equal(new WindowPlace(0, 0, 440, 340), WindowsOnly.NextPlace(new WindowPlace(1480, 740, 440, 340), Screen, 30, 440, 340));
+
+        // A screen with its own origin (the game's work area), and a window off it altogether.
+        var area = new WindowPlace(100, 50, 1000, 600);
+        var placed = WindowsOnly.NextPlace(new WindowPlace(-5000, 9000, 440, 340), area, 30, 440, 340);
+        Assert.InRange(placed.X, 100, 100 + 1000 - 440);
+        Assert.InRange(placed.Y, 50, 50 + 600 - 340);
+
+        // Many in a row: each on the screen, none where the one before was.
+        WindowPlace? previous = null;
+        for (var i = 0; i < 200; i++) {
+            var next = WindowsOnly.NextPlace(previous, area, 30, 440, 340);
+            Assert.InRange(next.X, 100, 660);
+            Assert.InRange(next.Y, 50, 310);
+            Assert.False(next.Near(previous));
+            previous = next;
+        }
+    }
+
+    [Fact]
+    public void AWindowBiggerThanTheScreenStartsAtItsTopLeft() {
+        var small = new WindowPlace(10, 20, 300, 200);
+        Assert.Equal(new WindowPlace(10, 20, 440, 340), WindowsOnly.NextPlace(new WindowPlace(50, 50, 440, 340), small, 30, 440, 340));
+    }
+
     // ================================================================ waiting while the game is busy
 
     [Fact]
@@ -198,7 +286,7 @@ public sealed class WindowsOnlyTests {
 
         Assert.Empty(pending.Take(ready, busy: true));
         Assert.Equal(2, pending.Count);
-        Assert.Equal(["bbb", "aaa"], pending.Take(ready, busy: false));
+        Assert.Equal(["bbb", "aaa"], Ids(pending.Take(ready, busy: false)));
         Assert.Equal(0, pending.Count);
         Assert.Empty(pending.Take(ready, busy: false));
     }
@@ -214,7 +302,7 @@ public sealed class WindowsOnlyTests {
         Assert.Equal(2, pending.Count);
 
         // A channel left (or one from a session that has ended) is dropped, not kept for later.
-        Assert.Equal(["aaa"], pending.Take(Snapshot(ConnectionState.Ready, true, "aaa"), busy: false));
+        Assert.Equal(["aaa"], Ids(pending.Take(Snapshot(ConnectionState.Ready, true, "aaa"), busy: false)));
         Assert.Equal(0, pending.Count);
     }
 
@@ -226,7 +314,7 @@ public sealed class WindowsOnlyTests {
         pending.Want("old");
         pending.Want("aaa");
 
-        Assert.Equal(["aaa"], pending.Take(snapshot, busy: false));
+        Assert.Equal(["aaa"], Ids(pending.Take(snapshot, busy: false)));
     }
 
     [Fact]
@@ -236,6 +324,35 @@ public sealed class WindowsOnlyTests {
         pending.Clear();
 
         Assert.Empty(pending.Take(Snapshot(ConnectionState.Ready, true, "aaa"), busy: false));
+    }
+
+    [Fact]
+    public void AChannelCaughtUpAtLoginSaysSoEvenIfALiveLineAskedToo() {
+        var pending = new PendingWindows();
+        var ready = Snapshot(ConnectionState.Ready, true, "aaa", "bbb", "ccc");
+        pending.Want("aaa");
+        pending.Want("bbb", caughtUp: true);
+        pending.Want("aaa", caughtUp: true);
+        pending.Want("ccc", caughtUp: true);
+        pending.Want("ccc");
+
+        Assert.Equal([new WantedWindow("aaa", true), new WantedWindow("bbb", true), new WantedWindow("ccc", true)], pending.Take(ready, busy: false));
+    }
+
+    [Fact]
+    public void WhatWaitsCanBeLookedAtAndThinnedOut() {
+        var pending = new PendingWindows();
+        pending.Want("aaa");
+        pending.Want("bbb");
+        pending.Want("ccc");
+
+        Assert.True(pending.Contains("bbb"));
+        Assert.False(pending.Contains("ddd"));
+
+        // Windows only turned off: only the channels kept out of game chat on their own still wait.
+        pending.Retain(id => id != "bbb");
+        Assert.False(pending.Contains("bbb"));
+        Assert.Equal(["aaa", "ccc"], Ids(pending.Take(Snapshot(ConnectionState.Ready, true, "aaa", "bbb", "ccc"), busy: false)));
     }
 
     [Fact]
@@ -252,13 +369,18 @@ public sealed class WindowsOnlyTests {
     public void ItsWordsArePlain() {
         PlainLanguage.AssertPlain(WindowsOnly.SettingName);
         PlainLanguage.AssertPlain(WindowsOnly.SettingTooltip);
+        PlainLanguage.AssertPlain(WindowsOnly.SettingNote);
         PlainLanguage.AssertPlain(WindowsOnly.GameChatItemTooltip);
         Assert.Contains("Settings", WindowsOnly.GameChatItemTooltip);
         Assert.Contains(WindowsOnly.SettingName, WindowsOnly.GameChatItemTooltip);
         foreach (var how in Enum.GetValues<WindowOpening>()) {
             PlainLanguage.AssertPlain(WindowsOnly.NameOf(how));
+            PlainLanguage.AssertPlain(WindowsOnly.TooltipOf(how));
         }
     }
+
+    [Fact]
+    public void ANewWindowEachTimeSaysWhatHappensAtLogin() => Assert.Contains("away", WindowsOnly.TooltipOf(WindowOpening.NewWindow));
 
     [Fact]
     public void AddingToTheWindowUsedLastIsTheDefault() => Assert.Equal(WindowOpening.AddToLastUsed, default(WindowOpening));

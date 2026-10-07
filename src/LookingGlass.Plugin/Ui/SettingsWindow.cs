@@ -338,6 +338,9 @@ public sealed class SettingsWindow : Window {
         }
 
         Widgets.Tooltip(WindowsOnly.SettingTooltip, "Each channel's own \"Show in game chat\" is kept, for when you turn this off.");
+        ImGui.PushTextWrapPos();
+        ImGui.TextColored(Widgets.Muted, WindowsOnly.SettingNote);
+        ImGui.PopTextWrapPos();
 
         ImGui.Indent();
         ImGui.BeginDisabled(!on);
@@ -348,9 +351,7 @@ public sealed class SettingsWindow : Window {
                 this._config.Save();
             }
 
-            Widgets.Tooltip(how == WindowOpening.AddToLastUsed
-                ? "The channel window you clicked in last, or if it's closed, the one opened last. The tab is added behind the one you're reading, with its count of new messages."
-                : "Every channel that no window shows gets a window of its own.");
+            Widgets.Tooltip(WindowsOnly.TooltipOf(how));
         }
 
         ImGui.EndDisabled();

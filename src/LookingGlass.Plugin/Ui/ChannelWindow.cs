@@ -25,6 +25,9 @@ public sealed class ChannelWindow : Window {
     /// <summary>The game's own limit on a chat line, in characters.</summary>
     public const int MaxLength = 500;
 
+    /// <summary>A new window's size, before the global scale.</summary>
+    internal static readonly Vector2 DefaultSize = new(440, 340);
+
     /// <summary>From how many characters the input shows how many are left.</summary>
     private const int CounterFrom = 400;
 
@@ -62,7 +65,7 @@ public sealed class ChannelWindow : Window {
             this._restorePlace = place;
         } else {
             // Dalamud scales this by the global scale itself.
-            this.Size = new Vector2(440, 340);
+            this.Size = DefaultSize;
             this.SizeCondition = ImGuiCond.FirstUseEver;
             this._placeAtMouse = opened;
         }
