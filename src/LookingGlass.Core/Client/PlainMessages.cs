@@ -288,6 +288,19 @@ public static class PlainMessages {
         $"Dropped a message from {sender} dated {dated}: it's older than messages already received from them (replayed?).",
         $"Dropped a message from {sender} dated {dated}: it's older than messages you already have from them, so it may be an old message sent again.");
 
+    /// <summary>
+    /// Message catch-up: some of the messages the server sent from while the user was away didn't pass the checks every
+    /// message must (from someone who wasn't a member, under a key this client never held, or not really from who it says).
+    /// Said once per channel and catch-up, however many, rather than once per message.
+    /// </summary>
+    public static Wording MessagesNotCaughtUp(string channel, int count) => new(NoticeKind.MessagesNotCaughtUp,
+        count == 1
+            ? $"1 message the server sent from while you were away, in {channel}, was dropped: it failed signature or decryption checks, was under a key you never held, or isn't from a member."
+            : $"{count} messages the server sent from while you were away, in {channel}, were dropped: they failed signature or decryption checks, were under keys you never held, or aren't from members.",
+        count == 1
+            ? $"1 message from while you were away, in {channel}, isn't shown: it couldn't be checked as really from a member who could send it then."
+            : $"{count} messages from while you were away, in {channel}, aren't shown: they couldn't be checked as really from members who could send them then.");
+
     // ================================================================ servers
 
     /// <summary>A server that lists its own addresses, without the one this client uses.</summary>
@@ -538,6 +551,8 @@ public static class PlainMessages {
         yield return MessageFromNewSetup("Bob Hatter", "Tea party");
         yield return MessageFailedChecks("Bob Hatter");
         yield return MessageClockSkew("Bob Hatter", "04/10/2026 12:00");
+        yield return MessagesNotCaughtUp("Tea party", 1);
+        yield return MessagesNotCaughtUp("Tea party", 12);
         yield return MessageReplayed("Bob Hatter", "04/10/2026 12:00");
         yield return AddressNotListed("wss://chat.example.com/ws", "ws://203.0.113.5:5180/ws");
         yield return RelayedRegistrationCode;

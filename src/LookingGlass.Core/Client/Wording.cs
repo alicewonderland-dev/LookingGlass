@@ -48,6 +48,8 @@ public enum NoticeKind {
     MessageClockSkew,
     /// <summary>Older than messages already received from its sender.</summary>
     MessageReplayed,
+    /// <summary>Some of the messages caught up from while the user was away didn't pass the checks (said once, with how many).</summary>
+    MessagesNotCaughtUp,
 
     // ---- The user's own identity
     /// <summary>After registering, the account's channels and invites moved to the new keys.</summary>

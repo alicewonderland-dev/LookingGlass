@@ -161,9 +161,11 @@ public sealed class Harness : IAsyncDisposable {
     /// <param name="forkCheckInterval">How often the client may fetch a channel's whole log to look into a possible fork.</param>
     /// <param name="loginRetryDelay">How often a saved login the server didn't recognise is tried again (by default, soon and often).</param>
     /// <param name="serverUri">The address the client thinks it connects to (and signs for); it reaches this server whatever it is.</param>
+    /// <param name="offerCatchUp">Offer message catch-up in Hello; off plays a plugin from before it (0.2.5).</param>
+    /// <param name="catchUpWithoutPosition">How far back a channel without a position catches up.</param>
     public ClientSessionOptions Options(bool autoRekey = true, Action<NoticeLevel, string>? log = null, TimeProvider? time = null, Func<CancellationToken, Task>? beforeConnect = null,
         uint protocolVersion = ProtocolInfo.CurrentVersion, Func<WebSocket, WebSocket>? wrap = null, TimeSpan? forkCheckInterval = null, TimeSpan? loginRetryDelay = null,
-        Uri? serverUri = null) => new() {
+        Uri? serverUri = null, bool offerCatchUp = true, TimeSpan? catchUpWithoutPosition = null) => new() {
         ServerUri = serverUri ?? new Uri(this.Factory.Server.BaseAddress, ProtocolInfo.WebSocketPath),
         Connect = async (uri, ct) => {
             if (beforeConnect != null) {
@@ -181,6 +183,8 @@ public sealed class Harness : IAsyncDisposable {
         TimeProvider = time ?? TimeProvider.System,
         ProtocolVersion = protocolVersion,
         ForkCheckInterval = forkCheckInterval ?? TimeSpan.FromMinutes(1),
+        OfferMessageCatchUp = offerCatchUp,
+        CatchUpWithoutPosition = catchUpWithoutPosition ?? TimeSpan.FromHours(1),
     };
 
     /// <summary>Opens a WebSocket to this server, whatever address <paramref name="uri"/> names (as a client's Connect).</summary>
@@ -633,13 +637,25 @@ public sealed class TestClient {
     private readonly ConcurrentQueue<IncomingMessage> _messages = new();
     private readonly ConcurrentQueue<SessionNotice> _notices = new();
 
+    private readonly ConcurrentQueue<CaughtUpMessages> _caughtUp = new();
+
     public TestClient(string name, ClientSession session, ISecretStore store) {
         this.Name = name;
         this.Session = session;
         this.Store = store;
         session.MessageReceived += this._messages.Enqueue;
         session.Notice += this._notices.Enqueue;
+        // Caught-up messages are in Messages too (flagged CaughtUp), in the order they were raised.
+        session.MessagesCaughtUp += batch => {
+            this._caughtUp.Enqueue(batch);
+            foreach (var message in batch.Messages) {
+                this._messages.Enqueue(message);
+            }
+        };
     }
+
+    /// <summary>Every batch of messages caught up from while this client was disconnected, oldest first.</summary>
+    public IReadOnlyCollection<CaughtUpMessages> CaughtUp => this._caughtUp.ToArray();
 
     public string Name { get; }
     public ClientSession Session { get; }

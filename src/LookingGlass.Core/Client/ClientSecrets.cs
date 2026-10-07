@@ -46,6 +46,26 @@ public sealed class ClientSecrets {
     /// </summary>
     public Dictionary<string, Dictionary<long, long>> NewestMessageTimes { get; set; } = new();
 
+    /// <summary>
+    /// Channel ID → sender → the message ID (hex) of the message <see cref="NewestMessageTimes"/> dates, so that one, sent
+    /// again with the same time, counts as seen too (message catch-up accepts only messages newer than these). Saved with them.
+    /// </summary>
+    public Dictionary<string, Dictionary<long, string>> NewestMessageIds { get; set; } = new();
+
+    /// <summary>
+    /// Channel ID → the newest number the server stored a message of the channel under (ChatMessage.server_id) that this
+    /// client has had, live or caught up: message catch-up asks for what came after it. The server's word, used only to
+    /// ask; it decides nothing about which messages are accepted. Saved with the message times.
+    /// </summary>
+    public Dictionary<string, ulong> LastMessageIds { get; set; } = new();
+
+    /// <summary>
+    /// Channel ID → user → the keys a member had when the log says they left or were removed, and where: a message of
+    /// theirs caught up after they left is checked against these, and only if made under a key from before they left.
+    /// Not secret. Kept for <see cref="FormerMember.KeptFor"/>, at most <see cref="FormerMember.KeptPerChannel"/> per channel.
+    /// </summary>
+    public Dictionary<string, Dictionary<long, FormerMember>> FormerMembers { get; set; } = new();
+
     /// <summary>Users whose invites are declined unseen and whose messages are hidden.</summary>
     public HashSet<long> BlockedUsers { get; set; } = new();
 
@@ -130,6 +150,24 @@ public sealed class PinnedIdentity {
 
     /// <summary>The user confirmed these keys (compared fingerprints). Cleared when the keys change.</summary>
     public bool Compared { get; set; }
+}
+
+/// <summary>A member who left a channel (or was removed), as the channel's log said (see <see cref="ClientSecrets.FormerMembers"/>).</summary>
+public sealed class FormerMember {
+    /// <summary>How long one is remembered: longer than a server keeps messages by default (7 days).</summary>
+    public static readonly TimeSpan KeptFor = TimeSpan.FromDays(8);
+
+    /// <summary>The most remembered per channel (the most recent go last).</summary>
+    public const int KeptPerChannel = 50;
+
+    public byte[] SigningPublicKey { get; set; } = [];
+    public byte[] AgreementPublicKey { get; set; } = [];
+
+    /// <summary>The log entry by which they left: keys made before it were sealed to them.</summary>
+    public ulong LeftAtSeq { get; set; }
+
+    /// <summary>When that entry was made (Unix ms, as signed in it).</summary>
+    public long LeftAtMs { get; set; }
 }
 
 /// <summary>A membership log position, as saved with an epoch key.</summary>

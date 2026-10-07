@@ -25,7 +25,7 @@ namespace LookingGlass.Core.Client;
 /// never from the server's word. Keys are sealed to, and signatures checked
 /// against, the keys in that log.
 /// </summary>
-public sealed class ClientSession : IAsyncDisposable {
+public sealed partial class ClientSession : IAsyncDisposable {
     private const int KeptEpochsPerChannel = 4;
     private const int SeenMessageCapacity = 2048;
     // Identities per GetIdentities when the server doesn't say (older servers allow 500),
@@ -57,7 +57,8 @@ public sealed class ClientSession : IAsyncDisposable {
     // Logging in (with the saved login or the identity key) and registering, one request at a time: a try of a saved
     // login the server didn't recognise never runs alongside registering again, so neither's answer can undo the other's.
     private readonly SemaphoreSlim _loginGate = new(1, 1);
-    private readonly Channel<Event> _inbox = Channel.CreateUnbounded<Event>(new UnboundedChannelOptions { SingleReader = true });
+    // Server events, and work that must run in order with them (see RunInInboxAsync), handled one at a time by InboxLoop.
+    private readonly Channel<InboxItem> _inbox = Channel.CreateUnbounded<InboxItem>(new UnboundedChannelOptions { SingleReader = true });
     private readonly ConcurrentQueue<TraceEntry> _trace = new();
     private readonly ConcurrentDictionary<Task, byte> _background = new();
 
@@ -1226,6 +1227,9 @@ public sealed class ClientSession : IAsyncDisposable {
         var hello = new Hello { ClientVersion = this._options.ClientVersion };
         hello.ProtocolVersions.Add(this._options.ProtocolVersion);
         hello.Capabilities.Add(ProtocolInfo.Capabilities.Chat);
+        if (this._options.OfferMessageCatchUp) {
+            hello.Capabilities.Add(ProtocolInfo.Capabilities.History);
+        }
 
         Response response;
         try {
@@ -1248,6 +1252,8 @@ public sealed class ClientSession : IAsyncDisposable {
             this._limits = welcome.Limits;
             this._debugAccountsEnabled = welcome.DebugAccountsEnabled;
             this._addressNotListed = addressNotListed;
+            // Only a server that agreed is asked for missed messages: an older one doesn't know the request.
+            this._catchUpAgreed = this._options.OfferMessageCatchUp && welcome.Capabilities.Contains(ProtocolInfo.Capabilities.History);
         }
 
         if (!string.IsNullOrWhiteSpace(welcome.Announcement)) {
@@ -1445,8 +1451,17 @@ public sealed class ClientSession : IAsyncDisposable {
 
     private async Task AuthenticateAsync(Connection connection, CancellationToken ct) {
         var token = this.Read(() => this._secrets.DeviceToken) ?? throw new InvalidOperationException("Not registered.");
-        var response = await this.RequestAsync(connection, new ClientFrame { Authenticate = new Authenticate { DeviceToken = token } }, ct);
-        var ok = response.AuthenticateOk ?? throw Unexpected(response);
+        // Live messages are held back from before the login (the server relays to a connection as soon as it is logged in)
+        // until each channel's missed messages are in, so a channel's messages are taken in the server's order.
+        var catchUp = this.HoldLiveMessages(connection);
+        AuthenticateOk ok;
+        try {
+            var response = await this.RequestAsync(connection, new ClientFrame { Authenticate = new Authenticate { DeviceToken = token } }, ct);
+            ok = response.AuthenticateOk ?? throw Unexpected(response);
+        } catch {
+            this.ReleaseLater(catchUp);
+            throw;
+        }
 
         lock (this._lock) {
             this._me = ok.User;
@@ -1462,8 +1477,16 @@ public sealed class ClientSession : IAsyncDisposable {
         }
 
         this.Publish();
-        // Identities cached before a disconnect may be stale: someone may have registered again meanwhile.
-        await this.RefreshAsync(connection, ct, refreshIdentities: true, rekeyIfDesignated: true);
+        try {
+            // Identities cached before a disconnect may be stale: someone may have registered again meanwhile.
+            await this.RefreshAsync(connection, ct, refreshIdentities: true, rekeyIfDesignated: true);
+        } catch {
+            this.ReleaseLater(catchUp);
+            throw;
+        }
+
+        // In the background: a long absence can take a while, and nothing else needs to wait for it.
+        this.StartCatchUp(connection, catchUp);
     }
 
     /// <param name="refreshIdentities">Fetch every identity again, not only those not cached yet.</param>
@@ -2097,7 +2120,7 @@ public sealed class ClientSession : IAsyncDisposable {
                 }
             }
 
-            this._inbox.Writer.TryWrite(ev);
+            this._inbox.Writer.TryWrite(new InboxItem(ev, null));
             return;
         }
 
@@ -2108,7 +2131,7 @@ public sealed class ClientSession : IAsyncDisposable {
 
         // Everything in order: an entry must be checked before a key made for it, and a key
         // before messages encrypted under it.
-        this._inbox.Writer.TryWrite(ev);
+        this._inbox.Writer.TryWrite(new InboxItem(ev, null));
     }
 
     /// <summary>
@@ -2154,7 +2177,14 @@ public sealed class ClientSession : IAsyncDisposable {
 
     private async Task InboxLoop(CancellationToken ct) {
         try {
-            await foreach (var ev in this._inbox.Reader.ReadAllAsync(ct)) {
+            await foreach (var item in this._inbox.Reader.ReadAllAsync(ct)) {
+                if (item.Work != null) {
+                    // Its caller awaits it, and hears how it went.
+                    await item.Work(ct);
+                    continue;
+                }
+
+                var ev = item.Event!;
                 try {
                     await this.HandleEventAsync(ev, ct);
                 } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
@@ -2482,6 +2512,11 @@ public sealed class ClientSession : IAsyncDisposable {
     }
 
     private async Task ProcessChatMessageAsync(ChatMessage message, CancellationToken ct) {
+        if (this.HeldBack(message)) {
+            // Its channel's missed messages come first (see HoldLiveMessages); it is taken once they're in.
+            return;
+        }
+
         var messageId = Convert.ToHexString(message.MessageId.Span);
 
         // Cheap checks first. Nothing is marked seen until the message has been verified,
@@ -2489,7 +2524,13 @@ public sealed class ClientSession : IAsyncDisposable {
         var (channelKnown, sender, seen, channelName, blocked) = this.Read(() => {
             var channel = this._channels.GetValueOrDefault(message.ChannelId);
             // Not a member under this identity key (say, after registering again): nothing here can be read.
-            return (channel != null && this.IsMember(message.ChannelId),
+            var member = channel != null && this.IsMember(message.ChannelId);
+            if (member) {
+                // Had, whatever comes of it: catching up next time carries on after it.
+                this.NoteServerId(message.ChannelId, message.ServerId);
+            }
+
+            return (member,
                 channel == null ? null : this.MembershipOf(message.ChannelId).FindMember(message.SenderId),
                 this._seenMessages.Contains(messageId),
                 channel?.DisplayName,
@@ -2574,8 +2615,7 @@ public sealed class ClientSession : IAsyncDisposable {
             }
 
             if (!senders.TryGetValue(message.SenderId, out var previous) || message.TimestampUnixMs > previous) {
-                senders[message.SenderId] = message.TimestampUnixMs;
-                this._replayStateDirty = true;
+                this.SetNewestMessage(message.ChannelId, message.SenderId, message.TimestampUnixMs, messageId);
             }
 
             // Saved with the next other change, and at least every few minutes; never once per message.
@@ -3035,6 +3075,10 @@ public sealed class ClientSession : IAsyncDisposable {
             }
         }
 
+        foreach (var entry in applied.Where(entry => entry.Kind is MembershipEntryKind.Leave or MembershipEntryKind.Remove)) {
+            this.RememberFormerMember(channelId, entry);
+        }
+
         foreach (var entry in applied.Where(entry => entry.Kind == MembershipEntryKind.KeyRecovered)) {
             if (entry.Subject.UserId != me) {
                 this.PinRecoveredKeys(channelId, membership, entry, followsOn);
@@ -3314,6 +3358,9 @@ public sealed class ClientSession : IAsyncDisposable {
             this._channels.Remove(channelId);
             this._secrets.EpochKeys.Remove(channelId);
             this._secrets.EpochKeyPositions.Remove(channelId);
+            this._pastKeys.Remove(channelId);
+            // Joining again starts afresh: nothing from before is theirs to catch up.
+            this._secrets.LastMessageIds.Remove(channelId);
             // The name version, message times and verified membership stay (they aren't secret): otherwise
             // a server could fake a removal, list the channel again and replay older names, messages or logs.
             this._secretsVersion++;
