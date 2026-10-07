@@ -454,15 +454,16 @@ public sealed class ServerLimitTests : IAsyncLifetime {
 
     /// <summary>
     /// The plugin reuses a lookup by name for 10 minutes, so inviting one friend to many channels looks them up once; an
-    /// invite that fails forgets it, so the next one looks them up again. (This server allows one lookup every 10 minutes,
-    /// and 3 invites at once between two players, so a lookup the plugin makes shows as one the server then refuses.)
+    /// invite that fails forgets it (without looking them up again then, unless the failure was about their keys), so the
+    /// next one looks them up. (This server allows 2 lookups at once, then one every 10 minutes, and 3 invites at once
+    /// between two players, so whether the plugin looked someone up shows in whether the server lets the next lookup through.)
     /// </summary>
     [Fact]
     public async Task InvitingOneFriendToManyChannelsLooksThemUpOnce() {
         var clock = new ManualClock();
         await this._server.DisposeAsync();
         this._server = new Harness(serverTime: clock, settings: [
-            ("LookingGlass:Limits:LookupBurst", "1"), ("LookingGlass:Limits:LookupIntervalSeconds", "600"), ("LookingGlass:Limits:InviteBurstPerPair", "3"),
+            ("LookingGlass:Limits:LookupBurst", "2"), ("LookingGlass:Limits:LookupIntervalSeconds", "600"), ("LookingGlass:Limits:InviteBurstPerPair", "3"),
         ]);
         // Every clock here moves together.
         var alice = await this._server.RegisterAsync("Alice Reusing", options: this._server.Options(time: clock));
@@ -474,32 +475,54 @@ public sealed class ServerLimitTests : IAsyncLifetime {
 
         Task Invite(int channel) => alice.Session.InviteAsync(channels[channel], bob.Name, ProtocolInfo.DebugWorldName, Ct);
 
-        // Three invites, one lookup: a second would be refused.
+        // Three invites, one lookup.
         for (var i = 0; i < 3; i++) {
             await Invite(i);
         }
 
-        // The fourth is refused (the pair's three are spent), with the lookup reused; it forgets the lookup, and its fresh
-        // try at once (in case his keys changed) is refused by the server, so what is said is still why the invite was.
+        // The fourth is refused (the pair's three are spent), with the lookup reused. That has nothing to do with his keys,
+        // so he isn't looked up again then: the server's second lookup is left.
         var refused = await Assert.ThrowsAsync<ServerErrorException>(() => Invite(3));
         Assert.StartsWith("You've sent a lot of invites to Bob Reused@Debug recently", refused.ServerMessage);
 
-        // So the next try looks him up again (refused: the server's one lookup every 10 minutes is spent).
+        // The next try looks him up (the failure forgot the lookup), with that second lookup: had the refusal looked him up,
+        // this one would be refused.
         clock.Offset += TimeSpan.FromSeconds(61);
-        refused = await Assert.ThrowsAsync<ServerErrorException>(() => Invite(3));
-        Assert.Equal("You've looked up a lot of players recently; try again in about 9 minutes.", refused.ServerMessage);
-
-        // Once the server allows one, it goes, and the next invite reuses it.
-        clock.Offset += TimeSpan.FromMinutes(9);
         await Invite(3);
+
+        // A minute on (the pair has one more), the next invite reuses that lookup: the server would refuse another now.
+        clock.Offset += TimeSpan.FromSeconds(60);
         await Invite(4);
 
-        // Ten minutes on, the plugin looks him up again: the server's one lookup since is spent by then.
-        clock.Offset += ClientSession.LookupReusedFor;
+        // Ten minutes on, the plugin looks him up again, spending the one the server has allowed since.
+        clock.Offset += LookupMemory.ReusedFor;
         await Invite(5);
         var lookup = new ClientFrame { LookupUser = new LookupUser { Name = bob.Name, WorldName = ProtocolInfo.DebugWorldName } };
         Assert.Equal(ErrorCode.RateLimited, (await Assert.ThrowsAsync<ServerErrorException>(() => alice.Session.SendRawAsync(lookup, Ct))).Code);
         Assert.Equal(6, this._server.Database.CountInvitesForUser(bob.UserId));
+    }
+
+    /// <summary>
+    /// An invite refused because the invitee has been sent too many gives back what it took of the inviter's allowance for
+    /// them, so the inviter is told about the invitee's allowance each time, never about their own. (Here: 2 between a pair,
+    /// 3 to anyone.)
+    /// </summary>
+    [Fact]
+    public async Task AnInviteRefusedForTheInviteesAllowanceGivesBackThePairs() {
+        await this.StopTheClockAsync(settings: [("LookingGlass:Limits:InviteBurstPerPair", "2"), ("LookingGlass:Limits:InviteBurstPerInvitee", "3")]);
+        var bob = await this._server.RegisterAsync("Bob Popular");
+        var invitee = new Invitee(bob.UserId, bob.Keys());
+        foreach (var (name, count) in new[] { ("Carol Popular", 2), ("Dave Popular", 1) }) {
+            var other = await this._server.RegisterAsync(name);
+            Assert.Equal((count, (ServerErrorException?) null), await this.InviteUntilLimitedAsync(other, this.SeedChannels(other, count).Select(id => (id, invitee)).ToList()));
+        }
+
+        var alice = await this._server.RegisterAsync("Alice Popular");
+        foreach (var channelId in this.SeedChannels(alice, 3)) {
+            var (sent, refused) = await this.InviteUntilLimitedAsync(alice, [(channelId, invitee)]);
+            Assert.Equal(0, sent);
+            Assert.StartsWith("Bob Popular@Debug has been sent a lot of invites recently", refused?.ServerMessage);
+        }
     }
 
     /// <summary>The invite and lookup settings are checked at startup, keeping one inviter from using up what others can send someone.</summary>
