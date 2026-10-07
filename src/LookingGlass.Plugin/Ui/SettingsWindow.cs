@@ -28,6 +28,14 @@ public sealed class SettingsWindow : Window {
     private Task<SecretsBackup?>? _backupCheck;
     private (ulong ContentId, string ServerUrl)? _backupFor;
 
+    // The chat log: how much room every one on this computer takes (looked at in the background, now and then while the
+    // window is open), and, just after it was turned off, the size to offer deleting.
+    private Task<long>? _logSize;
+    private long _knownLogSize;
+    private DateTime _logSizeAt;
+    private Task<long>? _offerDelete;
+    private int? _logMegabytes;
+
     public SettingsWindow(Configuration config, SessionManager sessions, UiActions actions) : base("LookingGlass settings###lookingglass-settings") {
         this._config = config;
         this._sessions = sessions;
@@ -48,6 +56,7 @@ public sealed class SettingsWindow : Window {
         this._moveError = null;
         // Look again: files may have changed since.
         this._backupCheck = null;
+        this._logSize = null;
     }
 
     public override void OnClose() {
@@ -59,6 +68,7 @@ public sealed class SettingsWindow : Window {
     public override void Draw() {
         this.DrawServer();
         this.DrawChat();
+        this.DrawChatLog();
         this.DrawIdentity();
         this.DrawBlockedUsers();
         ImGui.Spacing();
@@ -312,6 +322,98 @@ public sealed class SettingsWindow : Window {
         ImGui.TextColored(Widgets.Muted, "Say in chat when you start or stop talking in a channel (the server info bar and the chat box label always show it). " +
                                          "Stops you didn't choose, like a disconnect, are always said.");
         ImGui.PopTextWrapPos();
+    }
+
+    /// <summary>
+    /// "Keep a chat log on this computer" (off by default), its size limit, how much room it takes, and "Delete my chat log",
+    /// there whenever any log exists, on or off. Turning it off offers to delete what was kept.
+    /// </summary>
+    private void DrawChatLog() {
+        var advanced = this._config.AdvancedMode;
+        Widgets.Heading(advanced ? "Chat log" : "Chat history");
+
+        // How much room they take: looked at again every few seconds while the window is open, never on this thread.
+        if (this._logSize == null || (this._logSize.IsCompleted && DateTime.UtcNow - this._logSizeAt > TimeSpan.FromSeconds(3))) {
+            this.MeasureLog();
+        }
+
+        var keep = this._config.KeepChatLog;
+        if (ImGui.Checkbox(ChatLogWords.KeepIt.For(advanced) + "###keep-chat-log", ref keep)) {
+            this._sessions.SetKeepChatLog(keep);
+            if (!keep) {
+                // Once closed, how much there is to offer deleting.
+                this._offerDelete = this._sessions.ChatLogSize();
+            }
+
+            this.MeasureLog();
+        }
+
+        ImGui.PushTextWrapPos();
+        ImGui.TextColored(Widgets.Muted, ChatLogWords.Explanation(ProtectedSecretStore.Protection).For(advanced));
+        ImGui.PopTextWrapPos();
+
+        if (keep) {
+            ImGui.AlignTextToFramePadding();
+            ImGui.TextUnformatted(ChatLogWords.SizeLimit.For(advanced));
+            ImGui.SameLine();
+            ImGui.SetNextItemWidth(Math.Max(120 * Widgets.Scale, ImGui.GetContentRegionAvail().X * 0.5f));
+            // A slider (Ctrl+click to type a number); applied once let go, not at every step of a drag.
+            var megabytes = this._logMegabytes ?? ChatLogLimits.ClampMegabytes(this._config.ChatLogMegabytes);
+            ImGui.SliderInt("##chat-log-megabytes", ref megabytes, ChatLogLimits.MinMegabytes, ChatLogLimits.MaxMegabytes, "%d MB",
+                ImGuiSliderFlags.Logarithmic | ImGuiSliderFlags.AlwaysClamp);
+            this._logMegabytes = ImGui.IsItemActive() ? megabytes : null;
+            if (ImGui.IsItemDeactivatedAfterEdit()) {
+                this._sessions.SetChatLogMegabytes(megabytes);
+                this.MeasureLog();
+            }
+
+            Widgets.Tooltip(ChatLogWords.SizeLimitTooltip.For(advanced));
+        }
+
+        if (this._sessions.ChatLog is { State: ChatLogState.Unreadable } unreadable) {
+            ImGui.PushTextWrapPos();
+            ImGui.TextColored(Widgets.Warning, ChatLogWords.Unreadable(unreadable.Problem).For(advanced));
+            ImGui.PopTextWrapPos();
+        }
+
+        // The last size known, so nothing flickers while it is looked at again.
+        if (this._logSize is { IsCompletedSuccessfully: true } measured) {
+            this._knownLogSize = measured.Result;
+        }
+
+        var size = this._knownLogSize;
+        if (size > 0) {
+            ImGui.TextColored(Widgets.Muted, ChatLogWords.Uses(size).For(advanced));
+            ImGui.BeginDisabled(this._actions.Busy);
+            if (ImGui.Button(ChatLogWords.Delete.For(advanced) + "...###delete-chat-log")) {
+                this.ConfirmDelete(ChatLogWords.DeleteConfirm(size).For(advanced), advanced);
+            }
+
+            ImGui.EndDisabled();
+        }
+
+        // Just turned off: offer to delete what was kept, if anything was.
+        if (this._offerDelete is { IsCompleted: true } offer) {
+            this._offerDelete = null;
+            if (offer.IsCompletedSuccessfully && offer.Result > 0 && !this._config.KeepChatLog) {
+                this.ConfirmDelete(ChatLogWords.TurnedOff(offer.Result).For(advanced), advanced);
+            }
+        }
+    }
+
+    private void ConfirmDelete(string text, bool advanced) {
+        var title = ChatLogWords.Delete.For(advanced);
+        this._modals.Confirm(title, text, title, () => {
+            var deleting = this._sessions.DeleteChatLogs();
+            this._actions.Run(advanced ? "Deleting your chat log" : "Deleting your chat history", () => deleting);
+            this._logSize = deleting.ContinueWith(_ => this._sessions.ChatLogSize(), TaskScheduler.Default).Unwrap();
+            this._logSizeAt = DateTime.UtcNow;
+        });
+    }
+
+    private void MeasureLog() {
+        this._logSize = this._sessions.ChatLogSize();
+        this._logSizeAt = DateTime.UtcNow;
     }
 
     private void DrawIdentity() {

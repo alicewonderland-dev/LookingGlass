@@ -50,6 +50,22 @@ public sealed class Configuration : IPluginConfiguration {
     /// </summary>
     public bool VerboseChannelMessages { get; set; }
 
+    /// <summary>
+    /// Keep a chat log on this computer (off by default): every channel's messages, encrypted, for channel windows to show
+    /// again after the next login. One setting for every channel, character and server; each character's log for each
+    /// server is kept apart. See <see cref="ChatLog"/>.
+    /// </summary>
+    public bool KeepChatLog { get; set; }
+
+    /// <summary>
+    /// The most room each chat log may take, in megabytes (see <see cref="ChatLogLimits"/>): the oldest messages go first.
+    /// Read through <see cref="ChatLogMaxBytes"/>, which keeps a hand-edited value in range.
+    /// </summary>
+    public int ChatLogMegabytes { get; set; } = ChatLogLimits.DefaultMegabytes;
+
+    /// <summary><see cref="ChatLogMegabytes"/> in bytes, within its range (a method, so it isn't saved with the settings).</summary>
+    public long ChatLogMaxBytes() => ChatLogLimits.Bytes(this.ChatLogMegabytes);
+
     /// <summary>Per character, keyed by content ID.</summary>
     public Dictionary<ulong, CharacterSettings> Characters { get; set; } = new();
 

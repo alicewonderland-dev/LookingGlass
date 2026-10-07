@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Globalization;
 using System.Text;
 using System.Numerics;
@@ -14,9 +15,11 @@ namespace LookingGlass.Plugin.Ui;
 
 /// <summary>
 /// A channel window (pop-out chat): one tab per channel, each with the channel's warnings, its messages since login
-/// (from <see cref="SessionManager.History"/>), and an input box that sends only to that channel, through the same path
-/// as /lgc (<see cref="ChannelSender"/>). What is typed here never goes near the game's chat box. Opened, remembered and
-/// closed by <see cref="ChannelWindows"/>; its tabs follow its <see cref="ChannelWindowLayout"/>.
+/// (from <see cref="SessionManager.History"/>), above them older ones from the chat log on this computer if the player keeps
+/// one (<see cref="SessionManager.ChatLog"/>, a page at a time, with a dimmed line for each day), and an input box that
+/// sends only to that channel, through the same path as /lgc (<see cref="ChannelSender"/>). What is typed here never goes
+/// near the game's chat box. Opened, remembered and closed by <see cref="ChannelWindows"/>; its tabs follow its
+/// <see cref="ChannelWindowLayout"/>.
 /// </summary>
 public sealed class ChannelWindow : Window {
     /// <summary>The game's own limit on a chat line, in characters.</summary>
@@ -354,6 +357,9 @@ public sealed class ChannelWindow : Window {
 
     private void DrawLines(string channelId, TabState state, bool advanced) {
         var lines = this.Sessions.History.LinesOf(channelId);
+        // Older lines from the chat log on this computer, if the player keeps one: a page at a time, above these.
+        var earlier = this.Sessions.ChatLog?.Earlier(channelId);
+        var older = earlier?.ShownWith(lines) ?? ImmutableArray<HistoryLine>.Empty;
         var width = ImGui.GetContentRegionAvail().X;
         if (state.Advanced != advanced) {
             // Notices say other words now.
@@ -362,35 +368,56 @@ public sealed class ChannelWindow : Window {
             state.Advanced = advanced;
         }
 
-        // Following the newest line unless scrolled up (as at the last frame).
-        var follow = state.ScrollToBottom || ImGui.GetScrollY() >= ImGui.GetScrollMaxY() - 1;
+        if (!ReferenceEquals(state.Earlier, earlier)) {
+            // Another log (or none): what was drawn of the old one's lines goes.
+            foreach (var seq in state.Shown.Keys.Where(seq => seq < 0).ToList()) {
+                state.Shown.Remove(seq);
+                state.Heights.Remove(seq);
+            }
+
+            state.Earlier = earlier;
+        }
+
+        // Following the newest line unless scrolled up (as at the last frame), or reading older lines.
+        var atBottom = ImGui.GetScrollY() >= ImGui.GetScrollMaxY() - 1;
+        if (state.ReadingOlder && atBottom && ImGui.GetScrollMaxY() > 0) {
+            state.ReadingOlder = false;
+        }
+
+        var follow = state.ScrollToBottom || (atBottom && !state.ReadingOlder);
+        if (earlier != null) {
+            DrawOlderControls(earlier, older, state, advanced);
+        }
+
+        var colour = this.ColourOf(channelId);
+        var top = (Seq: 0L, Y: 0f);
+        var first = true;
+        DateTime? day = null;
+        foreach (var line in older) {
+            // A dimmed line above each day's older lines.
+            var shownAt = (line.CaughtUp ? line.SentAt : line.Time).ToLocalTime();
+            if (shownAt.Date != day) {
+                day = shownAt.Date;
+                DrawDivider(ChatLogWords.Earlier(shownAt).For(advanced));
+            }
+
+            this.DrawOne(line, state, advanced, colour, width, follow, ref first, ref top);
+        }
+
+        if (!older.IsEmpty) {
+            DrawDivider(ChatLogWords.SinceLogin.For(advanced));
+        }
+
         if (lines.IsEmpty) {
             ImGui.TextColored(Widgets.Muted, "No messages since you logged in. New ones show here.");
         }
 
-        var colour = this.ColourOf(channelId);
         foreach (var line in lines) {
-            // A line out of view whose height is known takes its room without being laid out. Lines in view are laid out,
-            // and measured again, every frame: after a resize, the others catch up as they come into view.
-            if (state.Heights.TryGetValue(line.Seq, out var height) && !ImGui.IsRectVisible(new Vector2(width, height))) {
-                ImGui.Dummy(new Vector2(1, height));
-                continue;
-            }
-
-            if (!state.Shown.TryGetValue(line.Seq, out var shown)) {
-                shown = this.Build(line, advanced);
-                state.Shown[line.Seq] = shown;
-            }
-
-            ImGui.BeginGroup();
-            DrawLine(shown, colour);
-            ImGui.EndGroup();
-            state.Heights[line.Seq] = ImGui.GetItemRectSize().Y;
-            if (ImGui.IsItemHovered() && ImGui.IsMouseClicked(ImGuiMouseButton.Right)) {
-                state.MenuText = shown.CopyText;
-                ImGui.OpenPopup("line-menu");
-            }
+            this.DrawOne(line, state, advanced, colour, width, follow, ref first, ref top);
         }
+
+        state.TopSeq = top.Seq;
+        state.TopY = top.Y;
 
         if (ImGui.BeginPopup("line-menu")) {
             if (ImGui.MenuItem("Copy") && state.MenuText != null) {
@@ -400,22 +427,98 @@ public sealed class ChannelWindow : Window {
             ImGui.EndPopup();
         }
 
+        // Scrolling up at the top of what is shown reads the next older page.
+        if (earlier is { HasMore: true, Loading: false } && ImGui.GetScrollY() <= 0.5f && ImGui.IsWindowHovered() && ImGui.GetIO().MouseWheel > 0) {
+            state.ReadingOlder = true;
+            _ = earlier.LoadMoreAsync();
+        }
+
         var last = lines.IsEmpty ? 0 : lines[^1].Seq;
         if (follow) {
             ImGui.SetScrollHereY(1f);
             state.BottomSeq = last;
             state.ScrollToBottom = false;
+            state.ReadingOlder = false;
         } else if (last > state.BottomSeq) {
             this.DrawNewMessagesButton(state);
         }
 
-        // What fell out of the history goes from here too.
-        if (!lines.IsEmpty && state.Shown.Count > lines.Length + 50) {
-            var first = lines[0].Seq;
-            foreach (var seq in state.Shown.Keys.Where(seq => seq < first).ToList()) {
+        // What fell out of the history goes from here too (older lines from the log stay while shown).
+        if (!lines.IsEmpty && state.Shown.Count > lines.Length + older.Length + 50) {
+            var oldest = lines[0].Seq;
+            foreach (var seq in state.Shown.Keys.Where(seq => seq > 0 && seq < oldest).ToList()) {
                 state.Shown.Remove(seq);
                 state.Heights.Remove(seq);
             }
+        }
+    }
+
+    /// <summary>
+    /// Draws one line. The line that was at the top at the last frame keeps its place on screen when older lines arrive
+    /// above it, so reading on up doesn't jump.
+    /// </summary>
+    private void DrawOne(HistoryLine line, TabState state, bool advanced, Vector4? colour, float width, bool follow, ref bool first,
+        ref (long Seq, float Y) top) {
+        var y = ImGui.GetCursorPosY();
+        if (first) {
+            top = (line.Seq, y);
+        } else if (line.Seq == state.TopSeq && y > state.TopY + 0.5f && !follow) {
+            ImGui.SetScrollY(ImGui.GetScrollY() + (y - state.TopY));
+        }
+
+        first = false;
+
+        // A line out of view whose height is known takes its room without being laid out. Lines in view are laid out,
+        // and measured again, every frame: after a resize, the others catch up as they come into view.
+        if (state.Heights.TryGetValue(line.Seq, out var height) && !ImGui.IsRectVisible(new Vector2(width, height))) {
+            ImGui.Dummy(new Vector2(1, height));
+            return;
+        }
+
+        if (!state.Shown.TryGetValue(line.Seq, out var shown)) {
+            shown = this.Build(line, advanced);
+            state.Shown[line.Seq] = shown;
+        }
+
+        ImGui.BeginGroup();
+        DrawLine(shown, colour);
+        ImGui.EndGroup();
+        state.Heights[line.Seq] = ImGui.GetItemRectSize().Y;
+        if (ImGui.IsItemHovered() && ImGui.IsMouseClicked(ImGuiMouseButton.Right)) {
+            state.MenuText = shown.CopyText;
+            ImGui.OpenPopup("line-menu");
+        }
+    }
+
+    /// <summary>Above the older lines: "Show older messages", or that they're being read, or that there are no more.</summary>
+    private static void DrawOlderControls(EarlierLines earlier, ImmutableArray<HistoryLine> older, TabState state, bool advanced) {
+        if (earlier.Loading) {
+            ImGui.TextColored(Widgets.Muted, ChatLogWords.Loading.For(advanced));
+        } else if (earlier.HasMore) {
+            if (Widgets.GhostButton(ChatLogWords.ShowOlder.For(advanced) + "##older")) {
+                state.ReadingOlder = true;
+                _ = earlier.LoadMoreAsync();
+            }
+        } else if (!older.IsEmpty) {
+            ImGui.TextColored(Widgets.Muted, ChatLogWords.NothingOlder.For(advanced));
+        }
+    }
+
+    /// <summary>A dimmed line across the messages with words in the middle: a day of older lines, or where this session's start.</summary>
+    private static void DrawDivider(string text) {
+        var width = ImGui.GetContentRegionAvail().X;
+        var size = ImGui.CalcTextSize(text);
+        var start = ImGui.GetCursorScreenPos();
+        var indent = Math.Max(0, (width - size.X) / 2);
+        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + indent);
+        ImGui.TextColored(Widgets.Muted, text);
+        var pad = 6 * Widgets.Scale;
+        if (indent > pad * 2) {
+            var y = MathF.Floor(start.Y + size.Y / 2);
+            var colour = ImGui.GetColorU32(Widgets.Muted with { W = Widgets.Muted.W * 0.5f });
+            var drawList = ImGui.GetWindowDrawList();
+            drawList.AddLine(new Vector2(start.X, y), new Vector2(start.X + indent - pad, y), colour);
+            drawList.AddLine(new Vector2(start.X + indent + size.X + pad, y), new Vector2(start.X + width, y), colour);
         }
     }
 
@@ -537,9 +640,10 @@ public sealed class ChannelWindow : Window {
     private sealed record Piece(string Text, ChatLink? Link = null, string? Tooltip = null);
 
     private ShownLine Build(HistoryLine line, bool advanced) {
-        // A message caught up from while the player was away shows when it was sent (with the day, if not today).
-        var time = line.CaughtUp
-            ? CatchUpChat.TimeLabel(line.SentAt, DateTimeOffset.Now)
+        // A message caught up from while the player was away shows when it was sent, and one from the chat log when it
+        // was shown then; both with the day, if not today.
+        var time = line.CaughtUp || line.FromLog
+            ? CatchUpChat.TimeLabel(line.CaughtUp ? line.SentAt : line.Time, DateTimeOffset.Now)
             : line.Time.ToLocalTime().ToString("HH:mm", CultureInfo.InvariantCulture);
         if (line.Kind != HistoryLineKind.Message) {
             var text = TextSanitizer.Clean(line.TextFor(advanced));
@@ -744,6 +848,17 @@ public sealed class ChannelWindow : Window {
 
         public string? MenuText;
         public bool Advanced;
+
+        /// <summary>The chat log's older lines drawn for this tab (see <see cref="EarlierLines"/>); another means another log.</summary>
+        public EarlierLines? Earlier;
+
+        /// <summary>The player asked for older lines: the tab doesn't follow the newest until scrolled back down.</summary>
+        public bool ReadingOlder;
+
+        /// <summary>The line at the top at the last frame, and where: it keeps its place when older lines arrive above it.</summary>
+        public long TopSeq;
+
+        public float TopY;
         public readonly Dictionary<long, float> Heights = new();
         public readonly Dictionary<long, ShownLine> Shown = new();
     }

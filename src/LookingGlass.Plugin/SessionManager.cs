@@ -16,6 +16,7 @@ public sealed class SessionManager : IDisposable {
     private readonly ChatOutput _chat;
     private readonly Lock _noticesLock = new();
     private readonly LinkedList<SessionNotice> _notices = new();
+    private readonly ChatLogKeeper _chatLogs;
     private ClientSession? _session;
     private PlayerInfo? _sessionPlayer;
     private volatile ImmutableDictionary<string, int> _slots = ImmutableDictionary<string, int>.Empty;
@@ -31,6 +32,9 @@ public sealed class SessionManager : IDisposable {
         this._config = config;
         this._player = player;
         this._chat = chat;
+        // Diagnostics only: the chat log never says what was said, or who said it.
+        this._chatLogs = new ChatLogKeeper(Services.PluginInterface.ConfigDirectory.FullName, ProtectedSecretStore.ChatLogProtection(),
+            message => Services.Log.Warning(message));
         player.Changed += this.OnPlayerChanged;
     }
 
@@ -56,6 +60,12 @@ public sealed class SessionManager : IDisposable {
     /// whenever a session stops or starts (logging out, another character or server); reconnects keep it. Safe from any thread.
     /// </summary>
     public ChannelHistory History { get; } = new();
+
+    /// <summary>
+    /// The current session's chat log on this computer, while the player keeps one (<see cref="Configuration.KeepChatLog"/>):
+    /// channel windows read older lines from it. Null when off or logged out. Safe from any thread.
+    /// </summary>
+    public ChatLog? ChatLog => this._chatLogs.Current;
 
     /// <summary>The character the current session is for, or null. Framework (and draw) thread.</summary>
     public PlayerInfo? SessionPlayer => this._sessionPlayer;
@@ -230,6 +240,51 @@ public sealed class SessionManager : IDisposable {
 
         return replacing;
     }
+
+    /// <summary>
+    /// "Keep a chat log on this computer" on or off. On, the current session's lines from now on are kept (this character's
+    /// log for this server); off, nothing more is added, and the log open is closed (its files stay until deleted). Call on
+    /// the framework (or draw) thread.
+    /// </summary>
+    public void SetKeepChatLog(bool keep) {
+        if (this._config.KeepChatLog == keep) {
+            return;
+        }
+
+        this._config.KeepChatLog = keep;
+        this._config.Save();
+        if (keep && this.Session != null && this._sessionPlayer is { } player) {
+            this.History.SetRecorder(this._chatLogs.Open(player.ContentId, this._config.ServerUrl, this._config.ChatLogMaxBytes()));
+        } else if (!keep) {
+            this.History.SetRecorder(null);
+            this._chatLogs.Close();
+        }
+    }
+
+    /// <summary>The chat log's size limit, in megabytes (kept in range). The oldest lines go at once if it is over. Framework thread.</summary>
+    public void SetChatLogMegabytes(int megabytes) {
+        megabytes = ChatLogLimits.ClampMegabytes(megabytes);
+        if (this._config.ChatLogMegabytes == megabytes) {
+            return;
+        }
+
+        this._config.ChatLogMegabytes = megabytes;
+        this._config.Save();
+        this._chatLogs.SetLimit(this._config.ChatLogMaxBytes());
+    }
+
+    /// <summary>
+    /// "Delete my chat log": every character's chat log on this computer, for every server. If it is on, the current
+    /// session's goes on afterwards, empty. The returned task fails if some of it couldn't be deleted.
+    /// </summary>
+    public Task DeleteChatLogs() {
+        var deleting = this._chatLogs.DeleteAllAsync();
+        Services.Log.Information("Deleting the chat logs on this computer");
+        return deleting;
+    }
+
+    /// <summary>How much room every chat log on this computer takes. Reads the disk in the background.</summary>
+    public Task<long> ChatLogSize() => this._chatLogs.SizeAsync();
 
     /// <summary>The command slot of a channel for the current character. Safe from any thread.</summary>
     public int? SlotOf(string channelId) {
@@ -436,8 +491,10 @@ public sealed class SessionManager : IDisposable {
             return;
         }
 
-        // A new session's history starts empty, and what an older one still delivers is dropped.
-        var history = this.History.Clear();
+        // A new session's history starts empty, and what an older one still delivers is dropped. Its lines go to its chat
+        // log too, if the player keeps one: this character's for this server.
+        var log = this._config.KeepChatLog ? this._chatLogs.Open(player.ContentId, this._config.ServerUrl, this._config.ChatLogMaxBytes()) : null;
+        var history = this.History.Clear(log);
 
         // Events from a session that has since been replaced are ignored.
         session.MessageReceived += message => {
@@ -522,8 +579,10 @@ public sealed class SessionManager : IDisposable {
     private void Stop() {
         this._generation++;
         var session = Interlocked.Exchange(ref this._session, null);
-        // The history's next generation first, then the channel settings: see Deliver.
+        // The history's next generation first, then the channel settings: see Deliver. Its chat log closes in the
+        // background, once it has written what it was given.
         this.History.Clear();
+        this._chatLogs.Close();
         this._sessionPlayer = null;
         this.RefreshCommandCache();
         this.Unread.Reset();
@@ -546,8 +605,10 @@ public sealed class SessionManager : IDisposable {
         this._player.Changed -= this.OnPlayerChanged;
         this.Stop();
 
-        // Unloading: the final save must finish before the plugin goes away, so this one may wait.
-        if (this._closing is { IsCompleted: false } closing && !closing.Wait(TimeSpan.FromSeconds(5))) {
+        // Unloading: the final save must finish before the plugin goes away, so this one may wait. So does the chat log's
+        // last write (it only ever loses its last few lines if it doesn't make it).
+        var closing = Task.WhenAll(this._closing ?? Task.CompletedTask, this._chatLogs.Settled);
+        if (!closing.IsCompleted && !closing.Wait(TimeSpan.FromSeconds(5))) {
             Services.Log.Warning("Previous LookingGlass session is still closing");
         }
     }
