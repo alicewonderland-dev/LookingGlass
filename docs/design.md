@@ -1233,9 +1233,12 @@ has the checks to make in game.
 - They save, per channel and sender, the timestamp (and message ID) of the
   newest message accepted, and drop messages more than 2 minutes older than
   that, even after a restart.
-- Those timestamps are saved with other changes, on shutdown, after each
-  channel's catch-up, and while messages keep arriving, at least every 5
-  minutes. A crash can lose up to about 5 minutes of them.
+- Those timestamps (with the IDs of the newest messages, and each channel's
+  catch-up position) are saved within 30 seconds of changing, with other
+  changes, on shutdown, and after each channel's catch-up. A crash can lose up
+  to about 30 seconds of them.
+- A live message that is one of the newest already accepted from its sender
+  (same time and ID) is dropped too, even after a restart.
 - Your own messages aren't recorded this way. After a restart, the server
   could replay one you sent in the last 10 minutes back to you.
 - Messages caught up from while you were away are older than the first two
@@ -1260,8 +1263,10 @@ the sender's signed time, the signature), plus the time it relayed it and a
 number per channel (`server_id`, schema 9). Nothing it can read. It numbers and
 fans out a channel's messages under one lock (one of 64, by channel), so every
 member is sent them in number order, and stores one only while the channel is
-still at its epoch with no rekey pending (checked in the same transaction). The
-cap is kept as each is stored; the rest (age, a lowered cap) is swept at startup
+still at its epoch with no rekey pending (checked in the same transaction). It
+keeps nothing someone says alone in a channel: nobody else could ever fetch it
+(a member joining later gets nothing from before they joined). The cap is kept
+as each is stored; the rest (age, a lowered cap) is swept at startup
 and every ten minutes. Disbanding a channel, or its last member leaving, deletes
 its messages with it. The sealed keys of epochs that still have stored messages
 are kept too (normally only the newest 4 epochs' are), up to 64 epochs back;
@@ -1307,7 +1312,10 @@ the 128 KiB frame); the client asks again while there are more, waiting and
 retrying if told to slow down. Each page is charged to a per-user budget of its
 own (100 at once, then 4 a second). `StoredMessages.latest_id` lets a client
 skip what it may not read (its own, from before it joined) once nothing more
-is to come.
+is to come; and if it is lower than the client's position (the server's
+database was restored from a backup), the client carries on from it. Only what
+a page says comes after the position, in order and of that channel, is looked
+at.
 
 **Order, and live messages meanwhile.** The server relays to a connection as
 soon as it is logged in, so from before the login the client holds back live
@@ -1319,27 +1327,56 @@ out of the pages but relays live is taken, after them. Nothing is reordered
 within a channel: the server relays in number order, and a sender's messages in
 the order sent.
 
-**Checks.** A caught-up message is checked as a live one, with two changes:
+**When a catch-up fails.** A channel whose catch-up fails (a timeout, an error,
+a key that couldn't be fetched) is tried again twice, from where it got to,
+waiting a little longer each time, while its live messages stay held. If the
+connection closed, its held live messages are let go: the server has them, and
+the next login fetches them after what was missed, in order. If it still fails
+on a working connection, its live messages are taken, and the channel is
+marked as having a gap: its position doesn't move on with live messages, the
+times (and IDs) already had from each sender are kept as they were, and the
+messages accepted since are remembered. So the next catch-up fetches from
+before the gap, judges the missed messages against what was had before it (a
+sender who has spoken live since doesn't make them look old), and leaves out
+what was already shown. A catch-up that completes ends the gap. More live
+messages than the client holds back (2,000) are handled the same way: taken as
+they come, with the channel marked.
+
+**Checks.** A caught-up message is checked as a live one, with these changes:
 
 - **Who could send it.** The sender must have held the key of its epoch: it is
   checked against the keys the log had for them where that key was made (a
   member's moves are followed back, as for names). Someone who has left (or was
   removed) since counts if that key was made before they left: the client
   remembers, for 8 days, who left each channel and with which keys.
+- **Not after its key was replaced.** Live, a message under an older key is
+  taken only within 2 minutes of the newer one arriving. Caught up, it must be
+  dated no later than 2 minutes after the first membership change (a join, a
+  leave, a removal, a member's place moving to new keys) that followed where
+  its key was made: an honest server refuses messages under a key from then on.
+  So the keys someone held then can't speak after they left, and a place's old
+  keys (a stolen computer's, after its owner re-verified) can't speak after the
+  move. The client remembers each channel's membership changes for 8 days,
+  each dated as its entry says but never later than when the client verified
+  it; a message under a key from before the changes it knows of (or before it
+  started recording them) is dropped.
 - **When.** The live rules (within 10 minutes of the clock, and not more than 2
   minutes older than the newest from the sender) would refuse an older message.
   Instead, a caught-up message must be newer than the newest message already
   accepted from its sender in the channel (by its signed time; at the same
-  time, a different message), saved across restarts with that message's ID,
-  and not dated more than 10 minutes in the future.
+  time, a different message from those accepted then: the IDs of the newest
+  few are kept), saved across restarts, and not dated more than 2 minutes in
+  the future, so it can't make the sender's next live messages look like
+  replays.
 
 So the server can't pass an old message off as new: a caught-up one is shown as
 such, with the time it was sent, and is accepted at most once, whether the
 server sends it again in a page, out of order, or live, before or after a
 restart. One it shows twice or out of order is dropped quietly (nothing was
 forged or hidden). One under a key the member never held (from before they
-joined), from someone who couldn't have sent it, not really the sender's, or
-dated in the future is dropped, and each channel's drops are told in one notice
+joined), from someone who couldn't have sent it, not really the sender's, dated
+after its key was replaced, or dated in the future is dropped, and each
+channel's drops are told in one notice
 ("3 messages from while you were away … aren't shown").
 
 **Keys missed while away.** A channel rekeyed while a member was away has
@@ -1460,14 +1497,21 @@ again.
   someone who has left since) can sign a message now with an earlier time,
   under a key they held then, and a server can show it to the others as one
   missed while they were away, if it is newer than anything they already have
-  from that sender. It can't show it from anyone else, under a key the sender
-  never held, twice, or as live. (An honest server stores only what members
-  send, as they send it.)
+  from that sender. It must be dated before that key was replaced (2 minutes
+  after the next membership change, such as their leaving), so it can't be
+  dated after they left, or after their place moved to new keys; nor shown from
+  anyone else, under a key the sender never held, twice, or as live. Someone
+  who plans it and dates their own leave later than it is (with the server's
+  help) widens that only up to when each reader learns of the leave. (An honest
+  server stores only what members send, as they send it.)
 - **Catch-up has limits.** A client with no position in a channel (the first
   login with this version) catches up only the last hour. A channel rekeyed
   more than 64 times within the 7 days keeps only its newest 64 epochs'
-  messages. Up to about 5 minutes of messages accepted just before a crash can
-  show again as missed after it (the message times weren't saved yet).
+  messages. Up to about 30 seconds of messages accepted just before a crash can
+  show again as missed after it (the message times weren't saved yet). Right
+  after updating to this version, messages under a key from before the
+  channel's last membership change before the update can't be dated, so they
+  aren't caught up.
 - **Shared addresses share limits.** Per-address limits (registrations, key
   login, connections) can't tell apart the people behind one address (a
   shared NAT, a mobile carrier's CGNAT, one IPv6 /64). Someone there can use
@@ -1480,8 +1524,8 @@ again.
   someone registering (whose connection must stay open while they edit their
   Lodestone profile) can have theirs closed and must start again. Only
   10,000 logged-in connections fill the server for good.
-- **Replays of your own messages** within 10 minutes of a restart, and up to 5
-  minutes of replay timestamps lost in a crash (see
+- **Replays of your own messages** within 10 minutes of a restart, and up to 30
+  seconds of replay timestamps lost in a crash (see
   [Replay protection](#replay-protection)).
 - **Debug accounts** on a Development server can be taken over by anyone who
   can reach it, channels and all.

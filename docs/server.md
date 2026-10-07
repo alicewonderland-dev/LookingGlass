@@ -365,8 +365,15 @@ Lower `Messages:KeepDays` or `Messages:MaxPerChannel` (and restart) to use
 less; the next sweep, at startup, applies them. `0` for either turns catch-up
 off: the server keeps nothing, deletes what it kept, and doesn't offer it to
 plugins, which then work as before (messages sent while someone is away don't
-reach them). Backups and Litestream replicas hold the stored messages too, for
-as long as they're kept.
+reach them). Backups hold the stored messages too, for as long as each backup
+is kept (`--keep`). A Litestream replica holds them for Litestream's own
+retention (its snapshots and write-ahead log segments, by default a day or more):
+a message the server has deleted can still be in the replica until Litestream
+drops what held it. Keep Litestream's retention short, and the replica as
+private as the database.
+
+Nothing is kept of what someone says alone in a channel: nobody else could ever
+fetch it.
 
 ## Deploying on Linux with systemd
 
