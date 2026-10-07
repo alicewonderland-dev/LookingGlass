@@ -193,35 +193,35 @@ public sealed class CustomColourTests {
 
     [Fact]
     public void AMessageInACustomColour() {
-        // The whole line coloured: the tag, then the message, each layered.
+        // The whole line coloured: the tag, then the sender and the message, each layered.
         AssertParts([
             new ForegroundOn(45), new ColourOn(0x33DDAA), new Text("[sky]"), new ColourOff(), new ForegroundOff(),
-            new ForegroundOn(45), new ColourOn(0x33DDAA), new Body(), new ColourOff(), new ForegroundOff(),
-        ], ColouredText.Message("[sky]", Teal, null, colourWholeLine: true, Nearest45));
+            new ForegroundOn(45), new ColourOn(0x33DDAA), new Text("<B@W> "), new Body(), new ColourOff(), new ForegroundOff(),
+        ], ColouredText.Message("[sky]", Teal, null, colourWholeLine: true, Nearest45, "B", "W"));
 
         // Only the tag coloured.
         AssertParts([
             new ForegroundOn(45), new ColourOn(0x33DDAA), new Text("[sky]"), new ColourOff(), new ForegroundOff(),
-            new Body(),
-        ], ColouredText.Message("[sky]", Teal, null, colourWholeLine: false, Nearest45));
+            new Text("<B@W> "), new Body(),
+        ], ColouredText.Message("[sky]", Teal, null, colourWholeLine: false, Nearest45, "B", "W"));
 
         // Caught up on: the time between the tag and the message, uncoloured.
         AssertParts([
             new ForegroundOn(45), new ColourOn(0x33DDAA), new Text("[sky]"), new ColourOff(), new ForegroundOff(),
             new Text("[Yesterday 21:04] "),
-            new ForegroundOn(45), new ColourOn(0x33DDAA), new Body(), new ColourOff(), new ForegroundOff(),
-        ], ColouredText.Message("[sky]", Teal, "Yesterday 21:04", colourWholeLine: true, Nearest45));
+            new ForegroundOn(45), new ColourOn(0x33DDAA), new Text("<B@W> "), new Body(), new ColourOff(), new ForegroundOff(),
+        ], ColouredText.Message("[sky]", Teal, "Yesterday 21:04", colourWholeLine: true, Nearest45, "B", "W"));
     }
 
     [Fact]
     public void AMessageInARowOrTheDefaultIsAsBefore() {
-        AssertParts([new ForegroundOn(45), new Text("[sky]"), new ForegroundOff(), new ForegroundOn(45), new Body(), new ForegroundOff()],
-            ColouredText.Message("[sky]", ChannelColour.OfRow(45), null, colourWholeLine: true, Nearest45));
+        AssertParts([new ForegroundOn(45), new Text("[sky]"), new ForegroundOff(), new ForegroundOn(45), new Text("<B@W> "), new Body(), new ForegroundOff()],
+            ColouredText.Message("[sky]", ChannelColour.OfRow(45), null, colourWholeLine: true, Nearest45, "B", "W"));
 
         // The default: only the tag, in LookingGlass blue, whatever the setting.
         foreach (var wholeLine in new[] { true, false }) {
-            AssertParts([new ForegroundOn(NoticeColours.Blue), new Text("[LGC3]"), new ForegroundOff(), new Body()],
-                ColouredText.Message("[LGC3]", null, null, wholeLine, Nearest45));
+            AssertParts([new ForegroundOn(NoticeColours.Blue), new Text("[LGC3]"), new ForegroundOff(), new Text("<B@W> "), new Body()],
+                ColouredText.Message("[LGC3]", null, null, wholeLine, Nearest45, "B", "W"));
         }
     }
 
@@ -265,8 +265,8 @@ public sealed class CustomColourTests {
     [Fact]
     public void EveryColourPushedIsPoppedInTheOppositeOrder() {
         var lines = new List<IReadOnlyList<TextPart>> {
-            ColouredText.Message("[sky]", Teal, "12:00", true, Nearest45),
-            ColouredText.Message("[sky]", Teal, null, false, NoSheet),
+            ColouredText.Message("[sky]", Teal, "12:00", true, Nearest45, "B", "W"),
+            ColouredText.Message("[sky]", Teal, null, false, NoSheet, "B", "W"),
             ColouredText.Notice(NoticeTone.Info, "a [sky] b", "[sky]", Teal, Nearest45),
             ColouredText.InfoBar("[sky]", Teal, NoSheet),
         };

@@ -26,7 +26,7 @@ public abstract record TextPart {
     /// <summary>The Color macro with "stackcolor": back to the colour before the matching <see cref="ColourOn"/>.</summary>
     public sealed record ColourOff : TextPart;
 
-    /// <summary>Where a chat message's own sender and text go (built by the plugin: they hold links).</summary>
+    /// <summary>Where a chat message's own text goes (built by the plugin: it holds links).</summary>
     public sealed record Body : TextPart;
 }
 
@@ -88,22 +88,40 @@ public static class ColouredText {
 
     /// <summary>
     /// A channel's message in game chat: its tag in the channel's colour (LookingGlass blue for the default), the time it
-    /// was sent for one caught up on, then the message (<see cref="TextPart.Body"/>), in the channel's colour too if it has
-    /// one and <paramref name="colourWholeLine"/> is on.
+    /// was sent for one caught up on, then the sender as "&lt;Name@World&gt; " and the message (<see cref="TextPart.Body"/>),
+    /// in the channel's colour too if it has one and <paramref name="colourWholeLine"/> is on.
     /// </summary>
-    public static IReadOnlyList<TextPart> Message(string tag, ChannelColour? colour, string? sentAt, bool colourWholeLine, Func<uint, ushort?> nearest) {
+    /// <remarks>
+    /// With a name colour (see <see cref="NameColours"/>), only "Name@World" takes it. The channel's colour isn't left open
+    /// around the name: it is closed before it and opened again after it, so no colour is ever nested in another, and the
+    /// message, links and all, is in the channel's colour exactly as without a name colour, whatever a renderer does with
+    /// nested colours. Without one, the line is what it was before name colours, part for part (so byte for byte).
+    /// </remarks>
+    /// <param name="senderName">The sender's name as received: cleaned here, as all remote text is.</param>
+    /// <param name="senderWorld">The sender's home world as received: cleaned here too.</param>
+    /// <param name="nameColour">The sender's name colour (0xRRGGBB), or null for none.</param>
+    public static IReadOnlyList<TextPart> Message(string tag, ChannelColour? colour, string? sentAt, bool colourWholeLine, Func<uint, ushort?> nearest,
+        string? senderName, string? senderWorld, uint? nameColour = null) {
         var parts = new List<TextPart>(Wrap(colour ?? DefaultTag, nearest, tag));
         if (sentAt != null) {
             // Before the sender, in brackets, so it reads as when, not as part of what was said.
             parts.Add(new TextPart.Text($"[{sentAt}] "));
         }
 
-        if (colour is { } whole && colourWholeLine) {
-            parts.AddRange(Wrap(whole, nearest, [new TextPart.Body()]));
-        } else {
-            parts.Add(new TextPart.Body());
+        // Everything from other users is cleaned: raw control bytes would become live game formatting.
+        var name = $"{TextSanitizer.Name(senderName)}@{TextSanitizer.Name(senderWorld)}";
+        var whole = colour is { } c && colourWholeLine ? c : (ChannelColour?) null;
+        if (nameColour is not { } rgb) {
+            TextPart[] body = [new TextPart.Text($"<{name}> "), new TextPart.Body()];
+            parts.AddRange(whole is { } line ? Wrap(line, nearest, body) : body);
+            return parts;
         }
 
+        TextPart[] before = [new TextPart.Text("<")];
+        TextPart[] after = [new TextPart.Text("> "), new TextPart.Body()];
+        parts.AddRange(whole is { } open ? Wrap(open, nearest, before) : before);
+        parts.AddRange(Wrap(ChannelColour.Custom(rgb), nearest, name));
+        parts.AddRange(whole is { } reopen ? Wrap(reopen, nearest, after) : after);
         return parts;
     }
 

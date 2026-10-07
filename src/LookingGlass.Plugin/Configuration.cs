@@ -106,6 +106,19 @@ public sealed class CharacterSettings {
     private Dictionary<string, uint>? _customChannelColours;
 
     /// <summary>
+    /// Person → name colour (0xRRGGBB), for their name in every channel's lines and in member lists, keyed as
+    /// <see cref="Core.Client.NameColours.KeyOf"/> says (their user ID, which is their Lodestone ID). Settings saved before
+    /// name colours have none. Kept when the person leaves a channel. Never sent to the server.
+    /// </summary>
+    public Dictionary<string, uint> NameColours {
+        // Never null, even from a hand-edited file.
+        get => this._nameColours ??= new Dictionary<string, uint>();
+        set => this._nameColours = value;
+    }
+
+    private Dictionary<string, uint>? _nameColours;
+
+    /// <summary>
     /// Channels whose messages don't also go to the game's chat log ("Show in game chat" turned off): they show only in
     /// their channel windows. Every other channel's do. Never sent to the server.
     /// </summary>
