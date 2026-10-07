@@ -27,10 +27,15 @@ early testing (version 0.2).
   of its own, with tabs for more channels (the **+**). What you type there only
   ever goes to that channel, never to game chat, and you can choose which
   channels also show in game chat (the channel's ⋮ menu).
+- **Nothing missed.** Messages sent while you were logged out or disconnected
+  (for up to a week) show up when you're back, marked with the time they were
+  sent.
 - **Who's online.** Each member's icon is green while they're connected.
 - **Blocking.** Hide someone's messages and silently decline their invites.
 - **Privacy.** Only the members of a channel can read its name and messages.
-  The server still sees who is in which channel and when messages are sent.
+  The server still sees who is in which channel and when messages are sent,
+  and keeps the encrypted messages for a week so members who were away get
+  them.
 
 ## Commands
 
