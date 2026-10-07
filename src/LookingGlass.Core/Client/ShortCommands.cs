@@ -18,20 +18,34 @@ namespace LookingGlass.Core.Client;
 /// channel is one LookingGlass doesn't know.
 /// </param>
 /// <param name="FromMainInput">The main input holds this very line, so it was typed there.</param>
-public sealed record ChatTwoLine(string? Prefix, bool FromMainInput) {
+/// <param name="InputLength">The main input's length as typed, for the diagnostic log, or null if not known.</param>
+/// <param name="LineLength">The line's length, for the diagnostic log, or null if not known.</param>
+public sealed record ChatTwoLine(string? Prefix, bool FromMainInput, int? InputLength = null, int? LineLength = null) {
+    /// <summary>
+    /// The most spaces ChatTwo may have trimmed off its input's line (before and after together) for it still to count as
+    /// that line. ChatTwo sends <c>chatInput.Trim()</c> but its typing IPC says the input's length as typed, so a stray
+    /// space made "/s hi " look like another input's line, and every short command go to the channel. A few, not any
+    /// number: the more room, the likelier a pop-out's line is taken for a main input draft of nearly its length.
+    /// </summary>
+    public const int MostTrimmed = 4;
+
     /// <param name="chatType">ChatTwo's chat type for its main input's channel (its own numbering: 14 is Party).</param>
     /// <param name="hasText">The main input holds more than spaces.</param>
     /// <param name="textLength">The main input's length, as typed (untrimmed).</param>
     /// <param name="lineText">The line's text, as it reached <c>ProcessChatBoxEntry</c>.</param>
     public static ChatTwoLine Of(int chatType, bool hasText, int textLength, string lineText) {
         var prefix = ChatChannelPrefixes.OfChatTwoType(chatType);
-        // A command, sent as typed.
-        var typedAsIs = hasText && textLength == lineText.Length;
-        // Plain text, sent after the channel's command and a space.
+        // A command, sent as typed (trimmed).
+        var typedAsIs = hasText && Trimmed(textLength, lineText.Length);
+        // Plain text, sent (trimmed) after the channel's command and a space.
         var prefixed = hasText && prefix != null && lineText.StartsWith(prefix + " ", StringComparison.OrdinalIgnoreCase)
-                       && textLength == lineText.Length - prefix.Length - 1;
-        return new ChatTwoLine(prefix, typedAsIs || prefixed);
+                       && Trimmed(textLength, lineText.Length - prefix.Length - 1);
+        return new ChatTwoLine(prefix, typedAsIs || prefixed, textLength, lineText.Length);
     }
+
+    /// <summary>An input of <paramref name="inputLength"/> could have been <paramref name="sentLength"/> once trimmed.</summary>
+    private static bool Trimmed(int inputLength, int sentLength) =>
+        inputLength >= sentLength && inputLength - sentLength <= MostTrimmed;
 }
 
 /// <summary>Which short channel commands (/s, /p, /cwl1) followed by text stand for plain text, for one line, and why.</summary>
@@ -62,6 +76,8 @@ public static class ShortCommandRule {
             LineSource.Plugin => chatTwo switch {
                 null => new ShortCommands(all, "ChatTwo's input unreadable: short commands are text"),
                 { Prefix: null } => new ShortCommands(all, "ChatTwo's channel unknown: short commands are text"),
+                { FromMainInput: false, InputLength: { } input, LineLength: { } line } =>
+                    new ShortCommands(all, $"not ChatTwo's main input (it holds {input} characters, the line {line}): short commands are text"),
                 { FromMainInput: false } => new ShortCommands(all, "not ChatTwo's main input: short commands are text"),
                 { Prefix: { } prefix } when all.Contains(prefix) =>
                     new ShortCommands(new[] { prefix }.ToHashSet(StringComparer.OrdinalIgnoreCase),

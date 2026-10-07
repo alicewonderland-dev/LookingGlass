@@ -360,9 +360,10 @@ public sealed class StickyChannelTests {
         var notMain = MainInput(ChatTwoParty, "", "/s hi");
         Assert.False(notMain.FromMainInput);
         foreach (var chatTwo in new ChatTwoLine?[] {
-                     // A pop-out with its own input on Say, the main input empty (or holding a draft of another length).
+                     // A pop-out with its own input on Say, the main input empty (or holding a draft of another length,
+                     // more than the few spaces ChatTwo could have trimmed off).
                      notMain,
-                     MainInput(ChatTwoParty, "a draft", "/s hi"),
+                     MainInput(ChatTwoParty, "a longer draft", "/s hi"),
                      // ChatTwo's typing IPC didn't answer, or named a channel LookingGlass doesn't know.
                      null,
                      ChatTwoLine.Of(9999, true, 5, "/s hi"),
@@ -391,6 +392,31 @@ public sealed class StickyChannelTests {
         // An empty input sent nothing.
         Assert.False(ChatTwoLine.Of(ChatTwoParty, false, 0, "/s hi").FromMainInput);
         Assert.False(ChatTwoLine.Of(ChatTwoParty, false, 5, "/s hi").FromMainInput);
+    }
+
+    [Fact]
+    public void ChatTwosMainInputIsKnownWithSpacesItTrimmedOff() {
+        // ChatTwo sends its input trimmed, but says how long it is as typed: a stray space before or after is still its
+        // main input's line. "/s hi " typed in ChatTwo on Cross-world Linkshell 1 goes to Say once, not to the channel.
+        Assert.True(MainInput(ChatTwoCrossLinkshell1, "/s hi ", "/s hi").FromMainInput);
+        Assert.True(MainInput(ChatTwoCrossLinkshell1, "  /s hi  ", "/s hi").FromMainInput);
+        Assert.Equal(StickyRoute.Game, Route("/s hi", LineSource.Plugin, MainInput(ChatTwoCrossLinkshell1, "/s hi ", "/s hi")));
+        // Plain text too: " hi " is sent as "/cwl1 hi", to the channel.
+        Assert.True(MainInput(ChatTwoCrossLinkshell1, " hi ", "/cwl1 hi").FromMainInput);
+        Assert.Equal(new StickyRoute.ToChannel("aaa", "hi"),
+            Route("/cwl1 hi", LineSource.Plugin, MainInput(ChatTwoCrossLinkshell1, "hi  ", "/cwl1 hi")));
+        // A few spaces at most: a draft much longer than the line isn't the line.
+        Assert.False(MainInput(ChatTwoParty, "/s hi" + new string(' ', ChatTwoLine.MostTrimmed + 1), "/s hi").FromMainInput);
+        Assert.False(MainInput(ChatTwoParty, "a longer draft", "/s hi").FromMainInput);
+        // Nor shorter than it.
+        Assert.False(MainInput(ChatTwoParty, "/s h", "/s hi").FromMainInput);
+    }
+
+    [Fact]
+    public void NotChatTwosMainInputLogsBothLengths() {
+        // When the main input isn't the line, the log says both lengths (sizes only), to tell a pop-out from a missed line.
+        var rule = ShortCommandRule.For(LineSource.Plugin, MainInput(ChatTwoParty, "a longer draft", "/s hi"));
+        Assert.Equal("not ChatTwo's main input (it holds 14 characters, the line 5): short commands are text", rule.Why);
     }
 
     [Fact]
@@ -1006,6 +1032,7 @@ public sealed class StickyChannelTests {
             ShortCommandRule.For(LineSource.Plugin, null),
             ShortCommandRule.For(LineSource.Plugin, new ChatTwoLine(null, true)),
             ShortCommandRule.For(LineSource.Plugin, new ChatTwoLine("/p", false)),
+            ShortCommandRule.For(LineSource.Plugin, ChatTwoLine.Of(ChatTwoParty, true, 14, "/s hi")),
             ShortCommandRule.For(LineSource.Plugin, new ChatTwoLine("/p", true)),
             ShortCommandRule.For(LineSource.Plugin, new ChatTwoLine("/e", true)),
             ShortCommandRule.For(LineSource.Unknown, new ChatTwoLine("/p", true)),
