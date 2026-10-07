@@ -35,6 +35,9 @@ public sealed class DebugWindow : Window {
         ImGui.TextUnformatted($"Debug accounts on server: {(snapshot.DebugAccountsEnabled ? "yes" : "no")}");
         if (snapshot.Limits is { } limits) {
             ImGui.TextDisabled($"Limits: message {limits.MaxMessageBytes} B, frame {limits.MaxFrameBytes} B, {limits.MessagesPerSecond}/s burst {limits.MessageBurst}, {limits.MaxMembersPerChannel} members, {limits.MaxChannelsPerUser} channels");
+            ImGui.TextDisabled(limits.MessageKeepDays > 0
+                ? $"Message catch-up: the server keeps messages {limits.MessageKeepDays} days, at most {limits.MaxStoredMessagesPerChannel} per channel"
+                : "Message catch-up: the server keeps no messages (or is older)");
         }
 
         ImGui.Separator();

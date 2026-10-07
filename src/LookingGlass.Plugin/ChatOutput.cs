@@ -17,12 +17,17 @@ public sealed class ChatOutput(Configuration config) {
     /// <param name="slot">The channel's command number, if it has one.</param>
     /// <param name="nickname">The channel's nickname, if it has one: its tag, unless nickname tags are turned off.</param>
     /// <param name="colour">The channel's colour (a UIColor row), or null for the default: only the tag coloured.</param>
-    public void Message(IncomingMessage message, int? slot, string? nickname, ushort? colour = null) {
+    /// <param name="sentAt">For a message caught up from while the player was away: when it was sent (see <see cref="CatchUpChat.TimeLabel"/>), after the tag.</param>
+    public void Message(IncomingMessage message, int? slot, string? nickname, ushort? colour = null, string? sentAt = null) {
         RunOnFramework(() => {
             var tag = ChannelTag.For(slot, nickname, config.NicknameTags);
             // Everything from other users is sanitised: raw control bytes would become live game formatting.
             var sender = $"<{TextSanitizer.Name(message.Sender.Name)}@{TextSanitizer.Name(message.Sender.WorldName)}> ";
             var builder = new SeStringBuilder().AddUiForeground(tag, colour ?? TagColour);
+            if (sentAt != null) {
+                // Before the sender, in brackets, so it reads as when, not as part of what was said.
+                builder.AddText($"[{sentAt}] ");
+            }
 
             // The whole line in the channel's colour, like the game's own linkshells.
             var wholeLine = colour != null && config.ColourWholeLine;

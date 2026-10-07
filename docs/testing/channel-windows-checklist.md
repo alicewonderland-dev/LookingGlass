@@ -137,7 +137,8 @@ any linkshell, for A or B.
       Log out to the title screen: the windows close. Log back in to the same
       character: they open again where they were, with the same tabs in the
       same order and the same tab selected, empty of messages (only since
-      login), and the game keeps the keyboard.
+      login, and any sent while you were logged out: see below), and the game
+      keeps the keyboard.
 - [ ] 39. Leave a channel that is a tab (or have B remove you): its tab goes; a
       window left with no tab closes. After a relog it doesn't come back.
 - [ ] 40. Close a window with its ×, relog: it doesn't come back.
@@ -148,6 +149,27 @@ any linkshell, for A or B.
       windows come back.
 - [ ] 43. Change the server address in Settings: the windows close, and come
       back when you switch back.
+
+## Messages sent while you were away
+
+Message catch-up (see [Message catch-up](../design.md#message-catch-up)), on
+a server that keeps messages (the debug window says how long).
+
+- [ ] 43b. Log A out to the title screen. B sends three messages in `sky`.
+      Log A back in: game chat shows, in blue with `[sky]` in its colour,
+      "[sky] 3 messages were sent while you were away:", then the three, each
+      with the time B sent it (`[HH:mm]` after the tag), once. The `sky` window
+      shows the same line (dimmed), then the three with B's times; the channel
+      list counts them as unread.
+- [ ] 43c. B sends something while A is logging back in (on the loading
+      screen): it shows once, after the missed ones.
+- [ ] 43d. Log A out again; B sends 60 short messages in `sky` (one a second
+      after the first five, as the server allows). Log A in: game chat
+      shows the line saying 60 were sent, that the last 50 are below and the
+      10 before them are in the window, then 50 messages. The window has all 60.
+- [ ] 43e. With `sky` off game chat (see above), repeat 43b: nothing in game
+      chat, all of it in the window.
+- [ ] 43f. Relog A again without anything new: nothing is shown again.
 
 ## Look
 

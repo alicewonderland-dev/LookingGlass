@@ -39,6 +39,12 @@ public sealed record HistoryLine(long Seq, string ChannelId, HistoryLineKind Kin
     /// <summary>A message of a kind this version can't show.</summary>
     public bool Unsupported { get; init; }
 
+    /// <summary>
+    /// A message sent while you were away, caught up when you came back (see <see cref="ChannelHistory.AddCaughtUp"/>): it
+    /// shows the time it was sent (<see cref="SentAt"/>), not when it arrived.
+    /// </summary>
+    public bool CaughtUp { get; init; }
+
     /// <summary>What a <see cref="HistoryLineKind.Notice"/> says, in both modes' words.</summary>
     public SessionNotice? Notice { get; init; }
 
@@ -60,8 +66,9 @@ public sealed record HistoryLine(long Seq, string ChannelId, HistoryLineKind Kin
 }
 
 /// <summary>
-/// What each channel's window shows: the messages received and sent since login (your own as the server accepted them),
-/// LookingGlass's notices about the channel, and feedback on what was typed in a window, oldest first, up to
+/// What each channel's window shows: the messages received and sent since login (your own as the server accepted them, and
+/// those sent while you were away, caught up when you came back), LookingGlass's notices about the channel, and feedback
+/// on what was typed in a window, oldest first, up to
 /// <see cref="Capacity"/> lines per channel. Like the game's own chat log it lives only in memory: it starts empty at each
 /// login (<see cref="Clear"/>), and nothing of it is written anywhere. It belongs to the session, not to any window, so
 /// closing and opening windows loses nothing. Safe from any thread: lines arrive on the session's threads, windows read
@@ -149,6 +156,44 @@ public sealed class ChannelHistory {
                 Unsupported = message.Unsupported,
             });
             return true;
+        }
+    }
+
+    /// <summary>
+    /// A channel's messages sent while you were away (message catch-up): a dimmed line saying how many, then each, oldest
+    /// first, marked <see cref="HistoryLine.CaughtUp"/>. One already held isn't added again (nor counted in that line).
+    /// </summary>
+    /// <param name="generation">The <see cref="Generation"/> they are for; null for the current one.</param>
+    /// <returns>How many were added: none if all were held already, or they're for an older session.</returns>
+    public int AddCaughtUp(CaughtUpMessages caughtUp, int? generation = null) {
+        lock (this._lock) {
+            if (!this.IsCurrent(generation)) {
+                return 0;
+            }
+
+            var fresh = caughtUp.Messages.Where(message => !this._held.Contains(MessageKey.Of(message))).DistinctBy(MessageKey.Of).ToList();
+            if (fresh.Count == 0) {
+                return 0;
+            }
+
+            var now = this._time.GetUtcNow();
+            this.Append(new HistoryLine(++this._seq, caughtUp.ChannelId, HistoryLineKind.Notice, now) {
+                Notice = SessionNotice.Of(NoticeLevel.Info, Wording.Same(CatchUpChat.WindowSeparator(fresh.Count)), caughtUp.ChannelId),
+                Tone = NoticeTone.Info,
+            });
+            foreach (var message in fresh) {
+                this._held.Add(MessageKey.Of(message));
+                this.Append(new HistoryLine(++this._seq, caughtUp.ChannelId, HistoryLineKind.Message, now) {
+                    Sender = message.Sender,
+                    IsOwn = message.IsOwn,
+                    SentAt = message.Timestamp,
+                    Message = message.Unsupported ? null : message.Linked,
+                    Unsupported = message.Unsupported,
+                    CaughtUp = true,
+                });
+            }
+
+            return fresh.Count;
         }
     }
 
