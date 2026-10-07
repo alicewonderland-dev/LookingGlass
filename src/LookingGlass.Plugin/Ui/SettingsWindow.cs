@@ -322,6 +322,39 @@ public sealed class SettingsWindow : Window {
         ImGui.TextColored(Widgets.Muted, "Say in chat when you start or stop talking in a channel (the server info bar and the chat box label always show it). " +
                                          "Stops you didn't choose, like a disconnect, are always said.");
         ImGui.PopTextWrapPos();
+
+        this.DrawWindowsOnly();
+    }
+
+    /// <summary>
+    /// "Show LookingGlass messages only in windows" (off by default; see <see cref="WindowsOnly"/>), and under it how a channel
+    /// that no window shows gets one, which counts only while it is on.
+    /// </summary>
+    private void DrawWindowsOnly() {
+        var on = this._config.MessagesOnlyInWindows;
+        if (ImGui.Checkbox(WindowsOnly.SettingName, ref on)) {
+            this._config.MessagesOnlyInWindows = on;
+            this._config.Save();
+        }
+
+        Widgets.Tooltip(WindowsOnly.SettingTooltip, "Each channel's own \"Show in game chat\" is kept, for when you turn this off.");
+
+        ImGui.Indent();
+        ImGui.BeginDisabled(!on);
+        ImGui.TextUnformatted("For a channel no window shows:");
+        foreach (var how in Enum.GetValues<WindowOpening>()) {
+            if (ImGui.RadioButton(WindowsOnly.NameOf(how), this._config.WindowOpening == how)) {
+                this._config.WindowOpening = how;
+                this._config.Save();
+            }
+
+            Widgets.Tooltip(how == WindowOpening.AddToLastUsed
+                ? "The channel window you clicked in last, or if it's closed, the one opened last. The tab is added behind the one you're reading, with its count of new messages."
+                : "Every channel that no window shows gets a window of its own.");
+        }
+
+        ImGui.EndDisabled();
+        ImGui.Unindent();
     }
 
     /// <summary>

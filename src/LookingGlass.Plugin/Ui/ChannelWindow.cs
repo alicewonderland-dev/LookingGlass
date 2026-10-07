@@ -132,6 +132,11 @@ public sealed class ChannelWindow : Window {
         var advanced = this.Sessions.AdvancedMode;
         var history = this.Sessions.History;
         var focused = ImGui.IsWindowFocused(ImGuiFocusedFlags.RootAndChildWindows);
+        if (focused) {
+            // The window a channel is added to while only windows show messages.
+            this._windows.Used(this);
+        }
+
         string? shown = null;
         var closing = new List<string>();
         var order = new List<(float X, string Id)>();
@@ -162,8 +167,14 @@ public sealed class ChannelWindow : Window {
                 this.TabTooltip(channelId, channel, unread, advanced);
                 if (ImGui.BeginPopupContextItem("##tab-menu")) {
                     var inGameChat = this.Sessions.ShowsInGameChat(channelId);
-                    if (ImGui.MenuItem("Also show in game chat", "", inGameChat)) {
+                    // While only windows show messages, it can't change (and is kept for when that is turned off).
+                    var windowsOnly = this.Sessions.MessagesOnlyInWindows;
+                    if (ImGui.MenuItem("Also show in game chat", "", inGameChat, !windowsOnly)) {
                         this._windows.SetShowInGameChat(channelId, !inGameChat);
+                    }
+
+                    if (windowsOnly) {
+                        Widgets.Tooltip(WindowsOnly.GameChatItemTooltip);
                     }
 
                     if (ImGui.MenuItem("Close tab")) {
@@ -313,7 +324,9 @@ public sealed class ChannelWindow : Window {
             ImGui.TextUnformatted(unread == 1 ? "1 new message" : $"{unread} new messages");
         }
 
-        if (!this.Sessions.ShowsInGameChat(channelId)) {
+        if (this.Sessions.MessagesOnlyInWindows) {
+            ImGui.TextColored(Widgets.Muted, "Not shown in game chat: only windows show messages (change it in Settings).");
+        } else if (!this.Sessions.ShowsInGameChat(channelId)) {
             ImGui.TextColored(Widgets.Muted, "Not shown in game chat: right-click to change.");
         }
 

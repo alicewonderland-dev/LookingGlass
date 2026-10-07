@@ -1,4 +1,5 @@
 using Dalamud.Bindings.ImGui;
+using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Interface.Windowing;
 using LookingGlass.Core.Client;
 
@@ -24,6 +25,9 @@ public sealed class ChannelWindows(WindowSystem system, Configuration config, Se
     private ClientSession? _session;
     private SessionSnapshot? _synced;
     private bool _restored;
+    // The window the player used last (see Used), by its layout's ID; and windows only as it was last followed.
+    private string? _lastUsed;
+    private bool _windowsOnly = config.MessagesOnlyInWindows;
 
     /// <summary>The windows open now, in the order they were opened.</summary>
     public IReadOnlyList<ChannelWindow> Open => this._open;
@@ -68,6 +72,7 @@ public sealed class ChannelWindows(WindowSystem system, Configuration config, Se
             this._synced = null;
             this._restored = false;
             this._opened.Clear();
+            this._lastUsed = null;
         }
 
         if (session == null || this.Layouts is not { } layouts) {
@@ -101,6 +106,10 @@ public sealed class ChannelWindows(WindowSystem system, Configuration config, Se
             this._open.Add(window);
         }
 
+        if (this.FollowWindowsOnly(snapshot)) {
+            return;
+        }
+
         // A channel off game chat that no window shows any more (its last tab or window closed, or none came back at
         // login) would show nowhere: it goes back to game chat, and says so there.
         foreach (var channelId in GameChatChannels.ShownNowhere(sessions.GameChatOff, layouts, snapshot)) {
@@ -109,6 +118,85 @@ public sealed class ChannelWindows(WindowSystem system, Configuration config, Se
             chat.ChannelNotice(GameChatChannels.BackInGameChat(tag), tag, sessions.ColourOf(channelId));
         }
     }
+
+    /// <summary>
+    /// "Show LookingGlass messages only in windows" (see <see cref="WindowsOnly"/>), once the windows are back. While it is
+    /// on, each channel a line arrived for that game chat didn't show gets a window, or a tab in one, if none shows it: once
+    /// the game isn't busy (<see cref="GameBusy"/>), and without taking the keyboard from the game. Just turned off, a
+    /// channel turned off game chat on its own that no window shows opens in one too, so its choice is kept rather than
+    /// undone by the rule below that puts such a channel back in game chat.
+    /// </summary>
+    /// <returns>
+    /// True while it is on, or was just turned off: then no channel is put back in game chat for being shown nowhere (just
+    /// turned off, not until the windows opened for that are in the layouts the rule reads, at the next frame).
+    /// </returns>
+    private bool FollowWindowsOnly(SessionSnapshot snapshot) {
+        if (config.MessagesOnlyInWindows) {
+            this._windowsOnly = true;
+            if (sessions.WantWindows.Count > 0) {
+                foreach (var channelId in sessions.WantWindows.Take(snapshot, GameBusy())) {
+                    this.OpenInBackground(channelId);
+                }
+            }
+
+            return true;
+        }
+
+        // Off: what was waiting goes to game chat from now on, as each channel's own setting says.
+        sessions.WantWindows.Clear();
+        if (!this._windowsOnly) {
+            return false;
+        }
+
+        // Just turned off (or while logged out): once the channel list is complete, so no channel is missed.
+        if (snapshot is { State: ConnectionState.Ready, ChannelsLoaded: true } && this.Layouts is { } layouts) {
+            this._windowsOnly = false;
+            foreach (var channelId in GameChatChannels.ShownNowhere(sessions.GameChatOff, layouts, snapshot)) {
+                this.OpenInBackground(channelId);
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// In combat, a cutscene or a loading screen: no window opens for windows only then, as one appearing mid-fight would be
+    /// in the way. The channels wait (their lines are kept meanwhile), and open once it's over.
+    /// </summary>
+    private static bool GameBusy() => Services.Condition.Any(ConditionFlag.InCombat, ConditionFlag.OccupiedInCutSceneEvent,
+        ConditionFlag.WatchingCutscene, ConditionFlag.WatchingCutscene78, ConditionFlag.BetweenAreas, ConditionFlag.BetweenAreas51);
+
+    /// <summary>
+    /// A window for a channel that no window shows, found as <see cref="Configuration.WindowOpening"/> says (see
+    /// <see cref="WindowsOnly.Place"/>): a tab added to the window used last, not selected, or a new window. A new one opens
+    /// a little below and right of the window used last, if there is one, and doesn't take the focus from the game.
+    /// </summary>
+    private void OpenInBackground(string channelId) {
+        if (sessions.SessionPlayer is not { } player) {
+            return;
+        }
+
+        var windows = config.ForCharacter(player.ContentId).WindowsOn(sessions.ServerUrl);
+        if (WindowsOnly.Place(windows, channelId, config.WindowOpening, this._lastUsed) is not { } placed) {
+            return;
+        }
+
+        if (placed.Created && this.LastUsed()?.Layout.Place is { } near) {
+            var step = 30 * Widgets.Scale;
+            placed.Window.Place = near with { X = near.X + step, Y = near.Y + step };
+        }
+
+        config.Save();
+    }
+
+    /// <summary>The window used last (see <see cref="Used"/>), or if it is gone or none was used yet, the one opened last.</summary>
+    private ChannelWindow? LastUsed() => this._open.FirstOrDefault(window => window.Layout.Id == this._lastUsed) ?? this._open.LastOrDefault();
+
+    /// <summary>
+    /// A window the player is using (it has the focus): the one a channel is added to while windows only is on. Kept for the
+    /// session only, not saved.
+    /// </summary>
+    internal void Used(ChannelWindow window) => this._lastUsed = window.Layout.Id;
 
     /// <summary>A new window with the channel as its only tab.</summary>
     public void OpenNew(string channelId) {
