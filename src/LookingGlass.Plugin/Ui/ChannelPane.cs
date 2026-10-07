@@ -290,7 +290,7 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
             Widgets.Tooltip("Chat here in a window of its own. What you type there only ever goes to this channel.",
                 "Right-click a channel in the list to add it to a window that's open.");
             var inGameChat = sessions.ShowsInGameChat(channel.Id);
-            if (Widgets.MenuItem(inGameChat ? FontAwesomeIcon.CheckSquare : FontAwesomeIcon.Square, "Also show in game chat")) {
+            if (Widgets.ToggleMenuItem("Show in game chat", inGameChat)) {
                 windows.SetShowInGameChat(channel.Id, !inGameChat);
             }
 

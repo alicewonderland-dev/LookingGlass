@@ -2549,11 +2549,13 @@ the plugin's `ChannelWindows` opens and remembers the windows and
 - **Older lines** (`EarlierLines`), if the player keeps a chat log on this
   computer (see [Chat log on this computer](#chat-log-on-this-computer)):
   above a tab's lines since login, a page at a time.
-- **Also show in game chat.** Per channel, kept per character like its colour
+- **Show in game chat.** Per channel, kept per character like its colour
   (`CharacterSettings.GameChatOff`), in the channel's ⋮ menu and a tab's
-  right-click menu; on unless turned off, as before. Off, the channel's
-  messages and its notices go only to its history and windows
-  (`GameChatChannels`), except warnings, which go to game chat too, so a
+  right-click menu, with a green check while on and a red cross while off (a
+  plain checkbox was hard to read, testers said); on unless turned off, as
+  before. Off, the channel's messages and its notices go only to its history
+  and windows (`GameChatChannels`), except warnings, which go to game chat
+  too, so a
   warning is never kept from it. Turning it off while no window has the
   channel opens one, and a channel off game chat is never left shown nowhere:
   once no window has it (its last tab or window was closed, or none came back
@@ -3127,7 +3129,7 @@ Status: planned, not started (tester request, accepted by the owner
 
 - **One setting, "Show LookingGlass messages only in windows"** (off by
   default). While on, no channel's messages or information lines go to game
-  chat, whatever each channel's "Also show in game chat" says.
+  chat, whatever each channel's "Show in game chat" says.
 - **A message for a channel no window shows opens one,** without taking the
   keyboard from the game. A second setting chooses how: **add it as a tab to
   an existing window** (which one: the most recently used, say), or **open a
