@@ -265,8 +265,10 @@ public sealed class ContextInviteTests {
         Assert.StartsWith("Couldn't invite Bob Hatter@Lich to [sky]: Bob Hatter@Lich isn't registered with LookingGlass on this server: they need to",
             ContextInvites.NotInvited(BobTarget, Sky, notHere, advanced: false));
 
-        var limit = new ServerErrorException(ErrorCode.LimitReached, "Bob Hatter has too many pending invites.");
-        Assert.EndsWith(": Bob Hatter has too many pending invites.", ContextInvites.NotInvited(BobTarget, Sky, limit, advanced: false));
+        var limit = new ServerErrorException(ErrorCode.RateLimited, "You've sent a lot of invites to Bob Hatter@Lich recently; try again in about a minute.");
+        Assert.Equal("Couldn't invite Bob Hatter@Lich to [sky]: You've sent a lot of invites to Bob Hatter@Lich recently; try again in about a minute.",
+            ContextInvites.NotInvited(BobTarget, Sky, limit, advanced: false));
+        Assert.EndsWith("try again in about a minute. (RateLimited)", ContextInvites.NotInvited(BobTarget, Sky, limit, advanced: true));
 
         var offline = new SessionDisconnectedException("Not connected to the server.");
         Assert.Equal("Couldn't invite Bob Hatter@Lich to [sky]: Not connected to the server.", ContextInvites.NotInvited(BobTarget, Sky, offline, advanced: false));

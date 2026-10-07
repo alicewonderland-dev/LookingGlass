@@ -509,9 +509,16 @@ public static class PlainMessages {
         return failure;
     }
 
-    /// <summary>An exception's message for a mode: the plain words of one made by <see cref="Failure"/> in simple mode, else its message.</summary>
+    /// <summary>
+    /// An exception's message for a mode: in simple mode, the plain words of one made by <see cref="Failure"/>, and what a
+    /// server said without its error code (as "You've sent a lot of invites recently; try again in a few seconds.", not
+    /// "... (RateLimited)"); else its message.
+    /// </summary>
     public static string MessageOf(Exception ex, bool advanced) =>
-        !advanced && ex.Data[PlainKey] is string plain ? plain : ex.Message;
+        advanced ? ex.Message
+        : ex.Data[PlainKey] is string plain ? plain
+        : ex is ServerErrorException server ? server.ServerMessage
+        : ex.Message;
 
     /// <summary>What an exception made by <see cref="Failure"/> is about; <see cref="NoticeKind.General"/> for any other.</summary>
     public static NoticeKind KindOf(Exception ex) => ex.Data[KindKey] is NoticeKind kind ? kind : NoticeKind.General;
