@@ -324,6 +324,9 @@ public sealed class SessionManager : IDisposable {
     /// <summary>The colour (a UIColor row) of a channel for the current character, or null for the default. Safe from any thread.</summary>
     public ushort? ColourOf(string channelId) => ChannelColours.Of(this._colours, channelId);
 
+    /// <summary>Every channel's colour (a UIColor row) for the current character, by channel ID. Safe from any thread.</summary>
+    public IReadOnlyDictionary<string, ushort> Colours => this._colours;
+
     /// <summary>
     /// Whether a channel's messages also go to the game's chat log ("Also show in game chat"; on unless turned off). Off,
     /// they show only in its channel windows, and its notices too, but warnings. Safe from any thread.
