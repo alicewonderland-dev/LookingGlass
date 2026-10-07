@@ -136,7 +136,7 @@ second character, checks every step: the label alone proves nothing.
 
 ### Leaving
 
-- [ ] 12. While in Say and in [sky], type `/s` and press Enter. At once a
+- [ ] 12. **(verbose: setting on)** While in Say and in [sky], type `/s` and press Enter. At once a
       line says "Stopped talking in [sky].", the label says "Say" and the info
       bar entry goes away. Type `test`: it goes to Say.
 - [ ] 12b. **(changed)** `/lgc1`, then type `/s test` in one line. It goes to
@@ -208,7 +208,7 @@ second character, checks every step: the label alone proves nothing.
 
 ### The case from the screenshot
 
-- [ ] 28. **(changed)** Switch ChatTwo to Party. Type `/lgc1`.
+- [ ] 28. **(changed)** **(verbose: setting on)** Switch ChatTwo to Party. Type `/lgc1`.
   - "Now talking in [sky]." in blue. One more line follows once, even if you
     saw last round's: ChatTwo's "(Warning: …)" names its own channel, typing
     still goes to [sky], and so does that channel's short command (`/p hi` on
@@ -261,13 +261,13 @@ channel, so switching tabs was step 38, not 36.
       shows it. Type `hello`: only in LookingGlass.
 - [ ] 37. Click into ChatTwo's input and press Escape, or click away. Still in
       [sky].
-- [ ] 38. Switch to a ChatTwo tab whose own channel is different from the
+- [ ] 38. **(verbose: setting on)** Switch to a ChatTwo tab whose own channel is different from the
       game's (for example a tab on FC while the game is on Party). A "Stopped
       talking in [sky]" line appears, and the info bar entry goes away. Type
       `test`: it goes to FC. Switching back to the first tab does not start
       [sky] again: type `/lgc1`. (That is how it is meant to work: you decided
       tabs don't remember it.)
-- [ ] 39. Go back to the first tab, `/lgc1`. Pick another channel in ChatTwo's
+- [ ] 39. **(verbose: setting on)** Go back to the first tab, `/lgc1`. Pick another channel in ChatTwo's
       channel picker (the speech bubble). It stops, with a line.
 
 ### Pop-out with its own input
@@ -291,7 +291,7 @@ Skip this part if none of your pop-outs has an input box.
 
 - [ ] 44. Switch ChatTwo's main input to a tell, then type `/lgc1`. It is
       refused: "Switch ChatTwo off the tell first (type /s), then try again."
-- [ ] 45. With ChatTwo and the game on Say, `/lgc1`, then type `/s` in
+- [ ] 45. **(verbose: setting on)** With ChatTwo and the game on Say, `/lgc1`, then type `/s` in
       ChatTwo. At once: "Stopped talking in [sky].", ChatTwo's channel name
       goes back to plain "Say", the info bar entry goes away. Type `test`: it
       goes to Say, as the label says.
@@ -311,7 +311,7 @@ Skip this part if none of your pop-outs has an input box.
 
 ## Part 3: ExtraChat
 
-- [ ] 48. **(changed)** Turn ExtraChat (or ExtraChat Reborn) on. `/lgc1`.
+- [ ] 48. **(changed)** **(verbose: setting on)** Turn ExtraChat (or ExtraChat Reborn) on. `/lgc1`.
       Besides "Now talking in", a warning in light red says "ExtraChat is on
       too and may take what you type…". Type `hello`: note where it went
       (LookingGlass, ExtraChat, or both), and what ChatTwo's channel name
