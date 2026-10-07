@@ -29,7 +29,7 @@ any linkshell, for A or B.
 - [ ] 5. Right-click `raid`, **Add to window**: the `sky, raid` window is
       ticked. Choose it: no second `raid` tab; `raid` is selected.
 - [ ] 6. The channel's ⋮ menu (in the main window) has **Open in new window**
-      and **Also show in game chat** (ticked). Its other items work as before
+      and **Show in game chat** (a green check). Its other items work as before
       (colour, rename, leave).
 
 ## Tabs and the +
@@ -40,7 +40,7 @@ any linkshell, for A or B.
 - [ ] 8. Click **+** in a window that has every channel: it says so.
 - [ ] 9. Drag a tab to another place. It stays there.
 - [ ] 10. Close a tab that isn't the last with its ×: the next one is
-      selected. Right-click a tab: **Also show in game chat** and **Close
+      selected. Right-click a tab: **Show in game chat** and **Close
       tab**; **Close tab** works too.
 - [ ] 11. Close the last tab of a window: the window closes.
 - [ ] 12. Hover a tab: its full name, its commands (`/lgc1 or /lgc sky`).
@@ -102,16 +102,16 @@ any linkshell, for A or B.
 
 ## Game chat on and off
 
-- [ ] 31. In `sky`'s ⋮ menu, untick **Also show in game chat**. B sends in
-      `sky`: it shows in the window only, not in game chat (or ChatTwo).
+- [ ] 31. In `sky`'s ⋮ menu, turn off **Show in game chat** (it becomes a red
+      cross). B sends in `sky`: it shows in the window only, not in game chat (or ChatTwo).
       Someone joining `sky` shows in the window only too.
-- [ ] 32. Close every window with `sky`, then turn **Also show in game chat**
+- [ ] 32. Close every window with `sky`, then turn **Show in game chat**
       off for `fc` from its ⋮ menu while no window has `fc`: a window with `fc`
       opens.
 - [ ] 33. With `sky` still off game chat, close every window (or tab) that has
       it. Game chat says, once, in blue with `[sky]` in its colour, "[sky] shows
-      in game chat again, since no window shows it.", and the ⋮ menu has **Also
-      show in game chat** ticked again. B sends in `sky`: it shows in game
+      in game chat again, since no window shows it.", and the ⋮ menu has **Show in
+      game chat** with a green check again. B sends in `sky`: it shows in game
       chat, and the channel list counts it as unread.
 - [ ] 33b. Turn `sky` off game chat again (a window opens) and relog: the
       window comes back and `sky` stays off, with no "shows in game chat again"

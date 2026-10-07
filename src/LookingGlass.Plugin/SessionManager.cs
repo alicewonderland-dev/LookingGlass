@@ -346,7 +346,7 @@ public sealed class SessionManager : IDisposable {
     public IReadOnlyDictionary<string, ChannelColour> Colours => this._colours;
 
     /// <summary>
-    /// Whether a channel's messages also go to the game's chat log ("Also show in game chat"; on unless turned off). Off,
+    /// Whether a channel's messages also go to the game's chat log ("Show in game chat"; on unless turned off). Off,
     /// they show only in its channel windows, and its notices too, but warnings. Safe from any thread.
     /// </summary>
     public bool ShowsInGameChat(string channelId) => GameChatChannels.Shows(this._gameChatOff, channelId);
@@ -354,7 +354,7 @@ public sealed class SessionManager : IDisposable {
     /// <summary>The channels turned off game chat, for the current character. Safe from any thread.</summary>
     public IReadOnlySet<string> GameChatOff => this._gameChatOff;
 
-    /// <summary>Turns "Also show in game chat" on or off for a channel. Call on the framework (or draw) thread.</summary>
+    /// <summary>Turns "Show in game chat" on or off for a channel. Call on the framework (or draw) thread.</summary>
     public void SetShowInGameChat(string channelId, bool show) {
         if (this._sessionPlayer is { } player && GameChatChannels.Set(this._config.ForCharacter(player.ContentId).GameChatOff, channelId, show)) {
             this._config.Save();

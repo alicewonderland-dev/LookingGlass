@@ -167,17 +167,17 @@ public sealed class ChannelWindow : Window {
                 this.TabTooltip(channelId, channel, unread, advanced);
                 if (ImGui.BeginPopupContextItem("##tab-menu")) {
                     var inGameChat = this.Sessions.ShowsInGameChat(channelId);
-                    // While only windows show messages, it can't change (and is kept for when that is turned off).
+                    // While only windows show messages, no channel shows in game chat: a red cross, greyed out, as it can't
+                    // change then (the channel's own choice is kept for when that is turned off).
                     var windowsOnly = this.Sessions.MessagesOnlyInWindows;
-                    if (ImGui.MenuItem("Also show in game chat", "", inGameChat, !windowsOnly)) {
+                    if (Widgets.ToggleMenuItem("Show in game chat", !windowsOnly && inGameChat, enabled: !windowsOnly)) {
                         this._windows.SetShowInGameChat(channelId, !inGameChat);
                     }
 
-                    if (windowsOnly) {
-                        Widgets.Tooltip(WindowsOnly.GameChatItemTooltip);
-                    }
-
-                    if (ImGui.MenuItem("Close tab")) {
+                    Widgets.Tooltip(windowsOnly ? WindowsOnly.GameChatItemTooltip : inGameChat
+                        ? "This channel's messages show in game chat and in its windows. Click to see them only in its windows."
+                        : "This channel's messages show only in its windows (warnings still show in game chat). Click to see them in game chat too.");
+                    if (Widgets.MenuItem(FontAwesomeIcon.WindowClose, "Close tab")) {
                         closing.Add(channelId);
                     }
 

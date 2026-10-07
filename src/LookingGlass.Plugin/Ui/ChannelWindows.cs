@@ -222,7 +222,7 @@ public sealed class ChannelWindows(WindowSystem system, Configuration config, Se
     public ChannelWindow? Showing(string channelId) => this._open.FirstOrDefault(window => window.Layout.Tabs.Contains(channelId));
 
     /// <summary>
-    /// Turns "Also show in game chat" on or off for a channel. Turned off while no window has it, it opens in a new one, so
+    /// Turns "Show in game chat" on or off for a channel. Turned off while no window has it, it opens in a new one, so
     /// its messages still show somewhere.
     /// </summary>
     public void SetShowInGameChat(string channelId, bool show) {
