@@ -24,7 +24,6 @@ public sealed class KeyPossessionTests : IAsyncLifetime {
 
     public async ValueTask DisposeAsync() {
         await this._server.DisposeAsync();
-        DeleteDirectory(this._server.DataDirectory);
     }
 
     private string Url => this._server.ServerUri.AbsoluteUri;

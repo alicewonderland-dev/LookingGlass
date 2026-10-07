@@ -23,7 +23,6 @@ public sealed class MessageStoreTests : IAsyncLifetime {
 
     public async ValueTask DisposeAsync() {
         await this._server.DisposeAsync();
-        DeleteDirectory(this._server.DataDirectory);
     }
 
     /// <summary>A channel of <paramref name="admin"/>'s with the others as members, each holding its key.</summary>

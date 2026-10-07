@@ -22,7 +22,6 @@ public sealed class KeyLoginTests : IAsyncLifetime {
 
     public async ValueTask DisposeAsync() {
         await this._server.DisposeAsync();
-        DeleteDirectory(this._server.DataDirectory);
     }
 
     // ================================================================ the client

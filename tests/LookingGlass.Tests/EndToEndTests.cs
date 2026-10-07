@@ -21,7 +21,6 @@ public sealed class EndToEndTests : IAsyncLifetime {
 
     public async ValueTask DisposeAsync() {
         await this._server.DisposeAsync();
-        DeleteDirectory(this._server.DataDirectory);
     }
 
     [Fact]

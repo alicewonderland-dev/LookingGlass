@@ -22,7 +22,6 @@ public sealed partial class CatchUpTests : IAsyncLifetime {
 
     public async ValueTask DisposeAsync() {
         await this._server.DisposeAsync();
-        DeleteDirectory(this._server.DataDirectory);
     }
 
     private static async Task<string> ChannelWith(TestClient admin, string name, params TestClient[] members) {
