@@ -32,6 +32,8 @@ public sealed class ChannelWindow : Window {
 
     private readonly ChannelWindows _windows;
     private readonly Dictionary<string, TabState> _tabs = new();
+    // A sender's name colour, from a right-click on one of their lines.
+    private readonly NameColourPopup _nameColour;
     private string? _selectRequest;
     private WindowPlace? _restorePlace;
     private bool _placeAtMouse;
@@ -43,6 +45,7 @@ public sealed class ChannelWindow : Window {
     /// <param name="opened">Opened by the player just now (else reopened at login): it appears by the mouse, and may take the focus.</param>
     public ChannelWindow(ChannelWindows windows, ChannelWindowLayout layout, bool opened) : base("LookingGlass" + IdPrefix + layout.Id) {
         this._windows = windows;
+        this._nameColour = new NameColourPopup(windows.Sessions);
         this.Layout = layout;
         this.Viewer = "window:" + layout.Id;
         this._selectRequest = layout.Selected;
@@ -428,8 +431,20 @@ public sealed class ChannelWindow : Window {
                 ImGui.SetClipboardText(state.MenuText);
             }
 
+            // A message's sender (if known): their name's colour, everywhere (yours too).
+            if (state.MenuSender is { } sender && NameColourPopup.CanColour(sender)) {
+                if (ImGui.MenuItem(NameColourWords.MenuItem)) {
+                    this._nameColour.Open(sender, this.Sessions.ColourOf(channelId));
+                }
+
+                Widgets.Tooltip(NameColourWords.MenuTooltip);
+            }
+
             ImGui.EndPopup();
         }
+
+        // Outside the menu, so it can open once the menu has closed.
+        this._nameColour.Draw();
 
         // Scrolling up at the top of what is shown reads the next older page.
         if (earlier is { HasMore: true, Loading: false } && ImGui.GetScrollY() <= 0.5f && ImGui.IsWindowHovered() && ImGui.GetIO().MouseWheel > 0) {
@@ -485,11 +500,14 @@ public sealed class ChannelWindow : Window {
         }
 
         ImGui.BeginGroup();
-        DrawLine(shown, colour);
+        // The name colour is read every frame (not kept with the line), so a new one shows at once.
+        var nameColour = this.Sessions.NameColourOf(shown.SenderUser) is { } rgb ? ChannelPalette.OfRgb(rgb) : (Vector4?) null;
+        DrawLine(shown, colour, nameColour);
         ImGui.EndGroup();
         state.Heights[line.Seq] = ImGui.GetItemRectSize().Y;
         if (ImGui.IsItemHovered() && ImGui.IsMouseClicked(ImGuiMouseButton.Right)) {
             state.MenuText = shown.CopyText;
+            state.MenuSender = shown.SenderUser;
             ImGui.OpenPopup("line-menu");
         }
     }
@@ -637,8 +655,12 @@ public sealed class ChannelWindow : Window {
 
     // ================================================================ lines
 
-    /// <summary>A line as drawn: its time, who sent it, and its words, worked out once (links checked against the game's data).</summary>
-    private sealed record ShownLine(string Time, string? Sender, string? SenderDetail, IReadOnlyList<Piece> Pieces, Vector4? Colour, string CopyText);
+    /// <summary>
+    /// A line as drawn: its time, who sent it (their name as shown, and who they are, for their name colour), and its words,
+    /// worked out once (links checked against the game's data).
+    /// </summary>
+    private sealed record ShownLine(string Time, string? Sender, string? SenderDetail, IReadOnlyList<Piece> Pieces, Vector4? Colour, string CopyText,
+        Protocol.User? SenderUser = null);
 
     /// <summary>A run of text, or a link (its name in brackets, checked against the player's own game data).</summary>
     private sealed record Piece(string Text, ChatLink? Link = null, string? Tooltip = null);
@@ -681,7 +703,7 @@ public sealed class ChannelWindow : Window {
 
         var body = string.Concat(pieces.Select(piece => piece.Text));
         return new ShownLine(time, name, $"{name}@{world}" + (line.IsOwn ? " (you)" : ""), pieces, line.Unsupported ? Widgets.Muted : null,
-            $"[{time}] {name}@{world}: {body}");
+            $"[{time}] {name}@{world}: {body}", line.Sender);
     }
 
     private static string LinkTooltip(ChatLink link, string name) => link switch {
@@ -696,16 +718,16 @@ public sealed class ChannelWindow : Window {
     };
 
     /// <summary>
-    /// The time (muted), the sender (in the channel's colour), then the words, wrapped to the window: continuation lines
-    /// start under the sender, so the times stay a column.
+    /// The time (muted), the sender (in their name colour if they have one, else the channel's colour), then the words, wrapped
+    /// to the window: continuation lines start under the sender, so the times stay a column.
     /// </summary>
-    private static void DrawLine(ShownLine line, Vector4? channelColour) {
+    private static void DrawLine(ShownLine line, Vector4? channelColour, Vector4? nameColour) {
         var scale = Widgets.Scale;
         ImGui.TextColored(Widgets.Muted, line.Time);
         ImGui.SameLine(0, 6 * scale);
         var start = ImGui.GetCursorPosX();
         if (line.Sender != null) {
-            ImGui.TextColored(channelColour ?? Widgets.Text, line.Sender);
+            ImGui.TextColored(nameColour ?? channelColour ?? Widgets.Text, line.Sender);
             if (line.SenderDetail != null) {
                 Widgets.Tooltip(line.SenderDetail);
             }
@@ -851,6 +873,9 @@ public sealed class ChannelWindow : Window {
         public volatile string? PutBack;
 
         public string? MenuText;
+
+        /// <summary>Who sent the line the menu is for, if it is a message.</summary>
+        public Protocol.User? MenuSender;
         public bool Advanced;
 
         /// <summary>The chat log's older lines drawn for this tab (see <see cref="EarlierLines"/>); another means another log.</summary>
