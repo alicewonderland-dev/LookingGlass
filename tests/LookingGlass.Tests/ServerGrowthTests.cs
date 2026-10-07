@@ -179,26 +179,43 @@ public sealed class ServerGrowthTests : IDisposable {
         Assert.Equal(1, limits.TrackedKeys);
     }
 
+    /// <summary>A full window counter says how long until it counts again: until its oldest counted event leaves the window.</summary>
+    [Fact]
+    public void AWindowCounterSaysWhenItCountsAgain() {
+        var clock = new ManualClock();
+        var counter = new WindowCounter(2, TimeSpan.FromHours(1), clock);
+        Assert.Equal(TimeSpan.Zero, counter.RetryAfter("203.0.113.9"));
+        Assert.True(counter.TryAdd("203.0.113.9"));
+        clock.Offset += TimeSpan.FromMinutes(10);
+        Assert.True(counter.TryAdd("203.0.113.9"));
+        Assert.InRange(counter.RetryAfter("203.0.113.9").TotalMinutes, 49.9, 50.01);
+
+        // Refunded, it can count again at once.
+        counter.Refund("203.0.113.9");
+        Assert.Equal(TimeSpan.Zero, counter.RetryAfter("203.0.113.9"));
+    }
+
     /// <summary>
-    /// The Lodestone client caches every character it looks up (an hour if found, ten minutes if not). Every registration
-    /// attempt names one, so expired results are dropped, and the cache has a cap.
+    /// The Lodestone client caches every character it finds, for an hour; a search that finds nobody isn't cached (a typo
+    /// fixed, or a profile made public, is looked up again at once). Every registration attempt names one, so expired
+    /// results are dropped, and the cache has a cap.
     /// </summary>
     [Fact]
     public async Task LodestoneSearchesAreForgottenAndCapped() {
         var clock = new ManualClock();
         var options = Microsoft.Extensions.Options.Options.Create(new LookingGlass.Server.ServerOptions { Lodestone = { BaseUrl = FakeLodestone.BaseUrl, MinDelaySeconds = 0 } });
-        var lodestone = new LodestoneClient(new HttpClient(new FakeLodestone { Name = "Nobody Matches" }), options,
+        var lodestone = new LodestoneClient(new HttpClient(new EveryoneLodestone()), options,
             Microsoft.Extensions.Logging.Abstractions.NullLogger<LodestoneClient>.Instance, clock) { MaxCachedSearches = 50 };
 
         for (var i = 0; i < 40; i++) {
-            Assert.Null(await lodestone.FindCharacterAsync($"Seeker {i}", "Gilgamesh", Ct));
+            Assert.NotNull(await lodestone.FindCharacterAsync($"Seeker {i}", "Gilgamesh", Ct));
         }
 
         Assert.Equal(40, lodestone.CachedSearches);
 
         // Long after: they have all expired, and the next search sweeps them out.
         clock.Offset += TimeSpan.FromHours(2);
-        Assert.Null(await lodestone.FindCharacterAsync("Later Seeker", "Gilgamesh", Ct));
+        Assert.NotNull(await lodestone.FindCharacterAsync("Later Seeker", "Gilgamesh", Ct));
         Assert.Equal(1, lodestone.CachedSearches);
 
         // However many names are searched at once, no more than the cap are kept.
@@ -207,6 +224,26 @@ public sealed class ServerGrowthTests : IDisposable {
         }
 
         Assert.InRange(lodestone.CachedSearches, 1, 50);
+
+        // Searches that find nobody aren't kept at all.
+        var nobody = new LodestoneClient(new HttpClient(new FakeLodestone { Name = "Nobody Matches" }), options,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<LodestoneClient>.Instance, clock);
+        for (var i = 0; i < 5; i++) {
+            Assert.Null(await nobody.FindCharacterAsync($"Seeker {i}", "Gilgamesh", Ct));
+        }
+
+        Assert.Equal(0, nobody.CachedSearches);
+    }
+
+    /// <summary>A Lodestone whose every search finds the character searched for (on the world searched).</summary>
+    private sealed class EveryoneLodestone : HttpMessageHandler {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) {
+            var query = System.Web.HttpUtility.ParseQueryString(request.RequestUri!.Query);
+            var name = query["q"]!.Trim('"');
+            var id = (long) (uint) StringComparer.Ordinal.GetHashCode(name) + 1;
+            var html = $"""<a href="/lodestone/character/{id}/" class="entry__link"><p class="entry__name">{name}</p><p class="entry__world">{query["worldname"]} [Aether]</p></a>""";
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent(html) });
+        }
     }
 
     private void SetLastUsed(byte[] token, DateTimeOffset when) {

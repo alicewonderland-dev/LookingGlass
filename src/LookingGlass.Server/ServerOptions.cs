@@ -95,7 +95,18 @@ public sealed class DevOptions {
 }
 
 public sealed class LimitOptions {
-    public int RegistrationsPerHourPerIp { get; set; } = 5;
+    /// <summary>
+    /// Registrations one IP address may start in an hour (a household's players, and their alts). One whose character the
+    /// Lodestone doesn't list, or that the Lodestone can't be asked about, doesn't count: see <see cref="RegistrationLookupFailuresPerHourPerIp"/>.
+    /// </summary>
+    public int RegistrationsPerHourPerIp { get; set; } = 10;
+
+    /// <summary>
+    /// Registrations one IP address may start in an hour whose character the Lodestone doesn't list (a typo, a character too new,
+    /// a private profile), or that the Lodestone couldn't be asked about. Past it, no more are looked up for that address until
+    /// the hour is up, so names that aren't there can't take up the server-wide Lodestone queue. 1 to 10,000.
+    /// </summary>
+    public int RegistrationLookupFailuresPerHourPerIp { get; set; } = 20;
 
     /// <summary>
     /// Registrations one IP address may have refused in an hour for naming an address this server doesn't list (each is
@@ -202,8 +213,13 @@ public sealed class LimitOptions {
     /// </summary>
     public const int MaxMaxPendingInvitesPerUser = 200;
 
-    /// <summary>Why the invite or lookup limits are out of range (the server doesn't start then), or null if they aren't.</summary>
+    /// <summary>Why the invite, lookup or registration lookup limits are out of range (the server doesn't start then), or null if they aren't.</summary>
     public string? Problem() {
+        if (this.RegistrationLookupFailuresPerHourPerIp is < 1 or > MaxBurst) {
+            return $"LookingGlass:Limits:RegistrationLookupFailuresPerHourPerIp is {this.RegistrationLookupFailuresPerHourPerIp}, so the server won't start: it " +
+                   $"must be 1 to {MaxBurst} (registrations from one address whose character the Lodestone doesn't list, in an hour; 20 by default).";
+        }
+
         foreach (var (name, value, what, fallback) in new[] {
                      (nameof(this.InviteBurstPerInviter), this.InviteBurstPerInviter, "invites", 60),
                      (nameof(this.InviteBurstPerInvitee), this.InviteBurstPerInvitee, "invites", 30),

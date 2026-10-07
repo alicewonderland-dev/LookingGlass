@@ -45,17 +45,21 @@ public sealed class RequestHandlerTests : IDisposable {
 
     /// <param name="challengeMinutes">How long a registration challenge lives.</param>
     /// <param name="publicUrls">The server's addresses (by default the one the clients here sign for).</param>
-    private RequestHandler NewHandler(int challengeMinutes, string[]? publicUrls = null) {
-        var options = Options.Create(new ServerOptions {
+    /// <param name="configure">Changes the settings further.</param>
+    /// <param name="time">The handler's (and its Lodestone client's) clock.</param>
+    private RequestHandler NewHandler(int challengeMinutes, string[]? publicUrls = null, Action<ServerOptions>? configure = null, TimeProvider? time = null) {
+        var settings = new ServerOptions {
             Dev = { AllowDebugAccounts = true },
             Lodestone = { BaseUrl = "https://lodestone.test", MinDelaySeconds = 0, ChallengeMinutes = challengeMinutes },
             Limits = { RegistrationsPerHourPerIp = 3 },
             PublicUrls = publicUrls ?? [Url],
-        });
-        var lodestone = new LodestoneClient(new HttpClient(this._lodestone), options, NullLogger<LodestoneClient>.Instance);
+        };
+        configure?.Invoke(settings);
+        var options = Options.Create(settings);
+        var lodestone = new LodestoneClient(new HttpClient(this._lodestone), options, NullLogger<LodestoneClient>.Instance, time);
         var logger = Microsoft.Extensions.Logging.LoggerFactory.Create(logging => logging.AddProvider(this._logs)).CreateLogger<RequestHandler>();
         return new RequestHandler(this._db, this._registry, lodestone, options, logger,
-            SignedLogMembershipProvider.Instance, SealedEpochKeyProvider.Instance);
+            SignedLogMembershipProvider.Instance, SealedEpochKeyProvider.Instance, time: time);
     }
 
     public void Dispose() => DeleteDirectory(this._directory);
@@ -93,6 +97,115 @@ public sealed class RequestHandlerTests : IDisposable {
         Assert.Equal(ErrorCode.RateLimited, second.Error?.Code);
         Assert.Contains("Wait", second.Error!.Message);
         Assert.Equal(1, connection.VerifyAttempts);
+    }
+
+    private const string NotListed =
+        "Couldn't find Test Person on Gilgamesh on the Lodestone. Check that the name and home world are spelled right. A new character can take a " +
+        "while to show up there, and one whose Lodestone profile is private may not show up at all: make it public in the character's privacy " +
+        "settings on the Lodestone, wait a moment, then try again.";
+
+    /// <summary>
+    /// A character the Lodestone doesn't list (a typo, a character too new to be there, a private profile) is said in words
+    /// that say what to do, isn't remembered (a try right after fixing it looks again), and costs none of the address's
+    /// registrations.
+    /// </summary>
+    [Fact]
+    public async Task ACharacterNotListedIsLookedUpAgainAndCostsNoRegistration() {
+        var connection = await this.HelloAsync("203.0.113.80");
+        this._lodestone.Listed = false;
+        // More than the 3 registrations an hour this handler allows.
+        for (var i = 0; i < 5; i++) {
+            var missing = await this.StartRegistrationAsync(connection);
+            Assert.Equal(ErrorCode.RegistrationFailed, missing.Error?.Code);
+            Assert.Equal(NotListed, missing.Error!.Message);
+            PlainLanguage.AssertPlain(missing.Error.Message);
+        }
+
+        // Each was asked again: none came from a cache.
+        Assert.Equal(5, this._lodestone.Requests);
+
+        // Made public: found at once, and all three registrations are still there.
+        this._lodestone.Listed = true;
+        for (var i = 0; i < 3; i++) {
+            Assert.NotNull((await this.StartRegistrationAsync(connection)).RegistrationChallenge);
+        }
+
+        var refused = await this.StartRegistrationAsync(connection);
+        Assert.Equal(ErrorCode.RateLimited, refused.Error?.Code);
+        Assert.Equal("Too many registrations from your address; try again in about an hour.", refused.Error!.Message);
+        PlainLanguage.AssertPlain(refused.Error.Message);
+    }
+
+    /// <summary>
+    /// Lookups that fail (not listed, or the Lodestone down) have their own, looser allowance per address, so the server-wide
+    /// Lodestone queue isn't spent on names that aren't there; past it, nothing more is asked of the Lodestone for an hour.
+    /// </summary>
+    [Fact]
+    public async Task FailedLookupsHaveTheirOwnAllowancePerAddress() {
+        Assert.Equal(20, new LimitOptions().RegistrationLookupFailuresPerHourPerIp);
+        Assert.Equal(10, new LimitOptions().RegistrationsPerHourPerIp);
+        var clock = new ManualClock();
+        this._handler = this.NewHandler(15, configure: settings => settings.Limits.RegistrationLookupFailuresPerHourPerIp = 2, time: clock);
+        var connection = await this.HelloAsync("203.0.113.81");
+        this._lodestone.Listed = false;
+        Assert.Equal(NotListed, (await this.StartRegistrationAsync(connection)).Error?.Message);
+        this._lodestone.Down = true;
+        var down = await this.StartRegistrationAsync(connection);
+        Assert.Equal(ErrorCode.RegistrationFailed, down.Error?.Code);
+        Assert.Equal("The Lodestone isn't responding right now; try again in a few minutes.", down.Error!.Message);
+
+        var asked = this._lodestone.Requests;
+        this._lodestone.Down = false;
+        this._lodestone.Listed = true;
+        var refused = await this.StartRegistrationAsync(connection);
+        Assert.Equal(ErrorCode.RateLimited, refused.Error?.Code);
+        Assert.Equal("Too many characters from your address couldn't be found on the Lodestone; check the name and home world, and try again in about an hour.",
+            refused.Error!.Message);
+        PlainLanguage.AssertPlain(refused.Error.Message);
+        Assert.Equal(asked, this._lodestone.Requests);
+
+        // Another address has its own; and an hour on, this one has its allowance back, its registrations untouched.
+        Assert.NotNull((await this.StartRegistrationAsync(await this.HelloAsync("198.51.100.81"))).RegistrationChallenge);
+        clock.Offset += TimeSpan.FromMinutes(61);
+        for (var i = 0; i < 3; i++) {
+            Assert.NotNull((await this.StartRegistrationAsync(connection)).RegistrationChallenge);
+        }
+    }
+
+    /// <summary>
+    /// A private profile is said to be private, with what to do; and Verify reads the profile afresh each time (asking for no
+    /// cached copy), so it finds the code once the profile is public.
+    /// </summary>
+    [Fact]
+    public async Task APrivateProfileIsSaidSoAndVerifyReadsItAfresh() {
+        var connection = await this.HelloAsync("203.0.113.82");
+        using var keys = IdentityKeys.Generate();
+        var challenge = (await this.StartRegistrationAsync(connection, keys: keys)).RegistrationChallenge!;
+        this._lodestone.Private = true;
+        var hidden = await this.CompleteRegistrationAsync(connection, keys, challenge);
+        Assert.Equal(ErrorCode.RegistrationFailed, hidden.Error?.Code);
+        Assert.Equal("Your character's profile on the Lodestone is private, so the server can't see the code in it. Make it public in the character's " +
+                     "privacy settings on the Lodestone, wait a moment, then press Verify again.", hidden.Error!.Message);
+        PlainLanguage.AssertPlain(hidden.Error.Message);
+
+        // Made public, with the code in it: the next Verify (past its cooldown) finds it.
+        this._lodestone.Private = false;
+        this._lodestone.Profile = $"My code: {challenge.Code}";
+        connection.LastVerifyAttempt = DateTimeOffset.MinValue;
+        Assert.NotNull((await this.CompleteRegistrationAsync(connection, keys, challenge)).RegistrationComplete);
+        Assert.Equal((2, 2), this._lodestone.ProfileReads);
+    }
+
+    /// <summary>The Lodestone down while verifying is said so, and the attempt isn't counted against the challenge.</summary>
+    [Fact]
+    public async Task TheLodestoneDownWhileVerifyingIsSaidSo() {
+        var connection = await this.HelloAsync("203.0.113.83");
+        using var keys = IdentityKeys.Generate();
+        var challenge = (await this.StartRegistrationAsync(connection, keys: keys)).RegistrationChallenge!;
+        this._lodestone.Down = true;
+        var down = await this.CompleteRegistrationAsync(connection, keys, challenge);
+        Assert.Equal("The Lodestone isn't responding right now; try again in a few minutes.", down.Error?.Message);
+        Assert.Equal(0, connection.VerifyAttempts);
     }
 
     /// <summary>
@@ -523,18 +636,49 @@ public sealed class RequestHandlerTests : IDisposable {
     /// <summary>Answers every search with "Test Person" on Gilgamesh, and every profile with <see cref="Profile"/>.</summary>
     private sealed class StubLodestone : HttpMessageHandler {
         private int _requests;
+        private int _profileReads;
+        private int _freshProfileReads;
 
         /// <summary>The profile's text (by default without any code).</summary>
         public string Profile { get; set; } = "Nothing to see here.";
 
+        /// <summary>Whether a search finds the character (else it finds nobody, as for a typo or a character not on the Lodestone yet).</summary>
+        public bool Listed { get; set; } = true;
+
+        /// <summary>Whether the character's profile is private: its page says so, and shows no profile text.</summary>
+        public bool Private { get; set; }
+
+        /// <summary>Whether the Lodestone is down (every request answered 503).</summary>
+        public bool Down { get; set; }
+
         /// <summary>Searches and profile reads asked for.</summary>
         public int Requests => Volatile.Read(ref this._requests);
 
+        /// <summary>Profile reads asked for, and how many of them asked for a fresh page (no cached copy).</summary>
+        public (int All, int Fresh) ProfileReads => (Volatile.Read(ref this._profileReads), Volatile.Read(ref this._freshProfileReads));
+
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) {
             Interlocked.Increment(ref this._requests);
-            var html = request.RequestUri!.AbsolutePath.TrimEnd('/') == "/lodestone/character"
-                ? $"""<a href="/lodestone/character/{LodestoneId}/" class="entry__link"><p class="entry__name">Test Person</p><p class="entry__world">{World} [Aether]</p></a>"""
-                : $"""<div class="character__selfintroduction">{this.Profile}</div>""";
+            if (this.Down) {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
+            }
+
+            string html;
+            if (request.RequestUri!.AbsolutePath.TrimEnd('/') == "/lodestone/character") {
+                html = this.Listed
+                    ? $"""<a href="/lodestone/character/{LodestoneId}/" class="entry__link"><p class="entry__name">Test Person</p><p class="entry__world">{World} [Aether]</p></a>"""
+                    : """<p class="parts__zero">Your search yielded no results.</p>""";
+            } else {
+                Interlocked.Increment(ref this._profileReads);
+                if (request.Headers.CacheControl?.NoCache == true) {
+                    Interlocked.Increment(ref this._freshProfileReads);
+                }
+
+                html = this.Private
+                    ? """<div class="character__content"><p class="parts__zero">This character's profile is private.</p></div>"""
+                    : $"""<div class="character__selfintroduction">{this.Profile}</div>""";
+            }
+
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(html) });
         }
     }

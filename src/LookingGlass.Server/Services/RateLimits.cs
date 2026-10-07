@@ -157,6 +157,26 @@ public sealed class WindowCounter(int limit, TimeSpan window, TimeProvider? time
         }
     }
 
+    /// <summary>How long until the key can be counted again (zero if it can now): until enough of its events leave the window.</summary>
+    public TimeSpan RetryAfter(string key) {
+        if (!this._entries.TryGetValue(key, out var entry)) {
+            return TimeSpan.Zero;
+        }
+
+        lock (entry) {
+            var now = this._time.GetUtcNow();
+            this.Expire(entry.Events, now);
+            if (entry.Removed || entry.Events.Count < limit) {
+                return TimeSpan.Zero;
+            }
+
+            // The event whose leaving brings the count under the limit.
+            var leaving = entry.Events.Skip(entry.Events.Count - limit).First();
+            var wait = leaving + window - now;
+            return wait > TimeSpan.Zero ? wait : TimeSpan.Zero;
+        }
+    }
+
     /// <summary>Whether the key has reached the limit within the window, without counting anything.</summary>
     public bool IsFull(string key) => this.Count(key) >= limit;
 

@@ -519,6 +519,7 @@ public sealed class ServerLimitTests : IAsyncLifetime {
         Assert.Null(new LookingGlass.Server.LimitOptions { MaxPendingInvitesPerUser = 200, MaxPendingInvitesFromOneInviter = 199 }.Problem());
         Assert.Contains("LookupBurst", new LookingGlass.Server.LimitOptions { LookupBurst = 0 }.Problem());
         Assert.Contains("LookupIntervalSeconds", new LookingGlass.Server.LimitOptions { LookupIntervalSeconds = 86_401 }.Problem());
+        Assert.Contains("RegistrationLookupFailuresPerHourPerIp", new LookingGlass.Server.LimitOptions { RegistrationLookupFailuresPerHourPerIp = 0 }.Problem());
     }
 
     /// <summary>A server with an invite or lookup setting out of range doesn't start, and says why.</summary>
@@ -527,6 +528,7 @@ public sealed class ServerLimitTests : IAsyncLifetime {
     [InlineData("InviteBurstPerPair", "40")]
     [InlineData("MaxPendingInvitesFromOneInviter", "60")]
     [InlineData("LookupIntervalSeconds", "0")]
+    [InlineData("RegistrationLookupFailuresPerHourPerIp", "0")]
     public async Task AServerWithInviteSettingsOutOfRangeDoesntStart(string setting, string value) {
         var logs = new CapturingLoggerProvider();
         await ExitCodeGate.WaitAsync(Ct);
