@@ -93,6 +93,19 @@ public sealed class CharacterSettings {
     public Dictionary<string, ushort> ChannelColours { get; set; } = new();
 
     /// <summary>
+    /// Channel ID → custom colour (0xRRGGBB) for its chat lines and its place in the channel list, instead of a UIColor row
+    /// (a channel is in only one of the two; see <see cref="Core.Client.ChannelColours"/>). Settings saved before custom
+    /// colours have none. Never sent to the server.
+    /// </summary>
+    public Dictionary<string, uint> CustomChannelColours {
+        // Never null, even from a hand-edited file.
+        get => this._customChannelColours ??= new Dictionary<string, uint>();
+        set => this._customChannelColours = value;
+    }
+
+    private Dictionary<string, uint>? _customChannelColours;
+
+    /// <summary>
     /// Channels whose messages don't also go to the game's chat log ("Also show in game chat" turned off): they show only in
     /// their channel windows. Every other channel's do. Never sent to the server.
     /// </summary>
@@ -146,13 +159,14 @@ public sealed class CharacterSettings {
     public bool Sync(SessionSnapshot snapshot) {
         var slots = CommandSlots.Sync(this.ChannelSlots, snapshot, Configuration.SlotCount);
         var nicknames = ChannelNicknames.Sync(this.Nicknames, snapshot);
-        var colours = Core.Client.ChannelColours.Sync(this.ChannelColours, snapshot);
+        var colours = Core.Client.ChannelColours.Sync(this.ChannelColours, this.CustomChannelColours, snapshot);
         var gameChat = GameChatChannels.Sync(this.GameChatOff, snapshot);
         return slots || nicknames || colours || gameChat;
     }
 
-    /// <summary>Sets a channel's colour (a UIColor row), or with null its default.</summary>
-    public void SetColour(string channelId, ushort? colour) => Core.Client.ChannelColours.Set(this.ChannelColours, channelId, colour);
+    /// <summary>Sets a channel's colour (a UIColor row or a custom colour), or with null its default.</summary>
+    public void SetColour(string channelId, ChannelColour? colour) =>
+        Core.Client.ChannelColours.Set(this.ChannelColours, this.CustomChannelColours, channelId, colour);
 
     /// <summary>Moves a channel to a slot, swapping with whatever was there.</summary>
     public void AssignSlot(string channelId, int slot) => CommandSlots.Assign(this.ChannelSlots, channelId, slot);

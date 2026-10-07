@@ -110,7 +110,8 @@ internal sealed class GameContextMenuInvites : IDisposable {
                 PrefixColor = NoticeColours.Blue,
                 IsSubmenu = true,
                 OnClicked = clicked => clicked.OpenSubmenu(offers.Select(offer => (IMenuItem) new MenuItem {
-                    Name = new SeStringBuilder().AddUiForeground(offer.Tag, offer.Colour ?? ChatOutput.TagColour).AddText(offer.Rest).Build(),
+                    // The tag in the channel's colour: a custom colour layered over its closest game colour, as in chat.
+                    Name = GameText.Build(ColouredText.MenuEntry(offer, GameText.Nearest)),
                     IsEnabled = offer.Available,
                     OnClicked = offer.Available ? _ => this._inviter.Invite(invitee, offer) : null,
                 }).ToList()),

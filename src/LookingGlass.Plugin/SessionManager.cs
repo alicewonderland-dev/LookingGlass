@@ -21,7 +21,7 @@ public sealed class SessionManager : IDisposable {
     private PlayerInfo? _sessionPlayer;
     private volatile ImmutableDictionary<string, int> _slots = ImmutableDictionary<string, int>.Empty;
     private volatile ImmutableDictionary<string, string> _nicknames = ImmutableDictionary<string, string>.Empty;
-    private volatile ImmutableDictionary<string, ushort> _colours = ImmutableDictionary<string, ushort>.Empty;
+    private volatile ImmutableDictionary<string, ChannelColour> _colours = ImmutableDictionary<string, ChannelColour>.Empty;
     private volatile ImmutableHashSet<string> _gameChatOff = ImmutableHashSet<string>.Empty;
     private Task? _closing;
     // Framework thread only. Bumped by every start and stop, so a start that was
@@ -51,6 +51,12 @@ public sealed class SessionManager : IDisposable {
     /// so switching takes effect at once. Safe from any thread.
     /// </summary>
     public bool AdvancedMode => this._config.AdvancedMode;
+
+    /// <summary>Whether a channel's colour is used for its whole chat line, not only its tag (see <see cref="Configuration.ColourWholeLine"/>).</summary>
+    public bool ColourWholeLine => this._config.ColourWholeLine;
+
+    /// <summary>A channel's tag in chat, as in "[sky]" or "[LGC3]" (see <see cref="ChannelTag"/>). Safe from any thread.</summary>
+    public string TagOf(string channelId) => ChannelTag.For(this.SlotOf(channelId), this.NicknameOf(channelId), this._config.NicknameTags);
 
     /// <summary>Unread messages per channel, for the current session. Safe from any thread.</summary>
     public UnreadCounter Unread { get; } = new();
@@ -321,11 +327,11 @@ public sealed class SessionManager : IDisposable {
         return this._nicknames.TryGetValue(channelId, out var nickname) ? nickname : null;
     }
 
-    /// <summary>The colour (a UIColor row) of a channel for the current character, or null for the default. Safe from any thread.</summary>
-    public ushort? ColourOf(string channelId) => ChannelColours.Of(this._colours, channelId);
+    /// <summary>The colour (a UIColor row or a custom colour) of a channel for the current character, or null for the default. Safe from any thread.</summary>
+    public ChannelColour? ColourOf(string channelId) => ChannelColours.Of(this._colours, channelId);
 
-    /// <summary>Every channel's colour (a UIColor row) for the current character, by channel ID. Safe from any thread.</summary>
-    public IReadOnlyDictionary<string, ushort> Colours => this._colours;
+    /// <summary>Every channel's colour for the current character, by channel ID. Safe from any thread.</summary>
+    public IReadOnlyDictionary<string, ChannelColour> Colours => this._colours;
 
     /// <summary>
     /// Whether a channel's messages also go to the game's chat log ("Also show in game chat"; on unless turned off). Off,
@@ -344,8 +350,8 @@ public sealed class SessionManager : IDisposable {
         }
     }
 
-    /// <summary>Sets a channel's colour (a UIColor row), or with null its default. Call on the framework thread.</summary>
-    public void SetColour(string channelId, ushort? colour) {
+    /// <summary>Sets a channel's colour (a UIColor row or a custom colour), or with null its default. Call on the framework thread.</summary>
+    public void SetColour(string channelId, ChannelColour? colour) {
         if (this._sessionPlayer is { } player) {
             this._config.ForCharacter(player.ContentId).SetColour(channelId, colour);
             this._config.Save();
@@ -387,12 +393,12 @@ public sealed class SessionManager : IDisposable {
             var settings = this._config.ForCharacter(player.ContentId);
             this._slots = settings.ChannelSlots.ToImmutableDictionary();
             this._nicknames = settings.Nicknames.ToImmutableDictionary();
-            this._colours = settings.ChannelColours.ToImmutableDictionary();
+            this._colours = ChannelColours.Merge(settings.ChannelColours, settings.CustomChannelColours);
             this._gameChatOff = settings.GameChatOff.ToImmutableHashSet();
         } else {
             this._slots = ImmutableDictionary<string, int>.Empty;
             this._nicknames = ImmutableDictionary<string, string>.Empty;
-            this._colours = ImmutableDictionary<string, ushort>.Empty;
+            this._colours = ImmutableDictionary<string, ChannelColour>.Empty;
             this._gameChatOff = ImmutableHashSet<string>.Empty;
         }
     }

@@ -815,7 +815,7 @@ public sealed class ChannelWindow : Window {
                ?? (advanced ? ChannelView.PlaceholderName(channelId) : ChannelView.PlainPlaceholderName(channelId));
     }
 
-    private Vector4? ColourOf(string channelId) => this.Sessions.ColourOf(channelId) is { } row ? ChannelPalette.ColourOf(row) : null;
+    private Vector4? ColourOf(string channelId) => this.Sessions.ColourOf(channelId) is { } colour ? ChannelPalette.ColourOf(colour) : null;
 
     /// <summary>The channels in the order of the channel list: by number, then by name.</summary>
     internal static IEnumerable<ChannelView> Ordered(SessionSnapshot snapshot, SessionManager sessions) =>

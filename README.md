@@ -116,9 +116,10 @@ Select a channel in the main window to see its members and settings.
   letters, digits, `-` or `_`, and can't be only digits. Upper and lower case
   count as the same. Nicknames stay on your computer.
 - **Colours.** Choose **Colour...** in the channel's menu (the ⋮ button), or
-  click the coloured dot before its name. In Settings you can choose whether
-  the whole line or only the tag takes the colour, and whether tags show
-  nicknames.
+  click the coloured dot before its name. **Custom...** there lets you pick
+  any colour on a wheel or type its code, like `#3FA7D6`. In Settings you can
+  choose whether the whole line or only the tag takes the colour, and whether
+  tags show nicknames.
 - **Ranks.** Moderators can invite people and remove members below them. The
   admin can also rename the channel, make or unmake moderators, hand over the
   admin role and disband the channel. The admin can't leave while others

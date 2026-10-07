@@ -16,9 +16,9 @@ public sealed record InviteTarget(string Name, string WorldName) {
 }
 
 /// <summary>A channel offered in "Invite to LookingGlass": its tag (in its colour), its name, and why it can't be picked, if it can't.</summary>
-/// <param name="Colour">The channel's colour (a UIColor row), or null for the default (the tag in LookingGlass blue).</param>
+/// <param name="Colour">The channel's colour (a UIColor row or a custom colour), or null for the default (the tag in LookingGlass blue).</param>
 /// <param name="Unavailable">Why the player can't be invited to it (already in it, say), shown after the name; null if they can.</param>
-public sealed record InviteOffer(string ChannelId, string Tag, ushort? Colour, string Name, string? Unavailable) {
+public sealed record InviteOffer(string ChannelId, string Tag, ChannelColour? Colour, string Name, string? Unavailable) {
     public bool Available => this.Unavailable == null;
 
     /// <summary>What follows the tag in the menu: the name, and why it can't be picked.</summary>
@@ -116,7 +116,7 @@ public static class ContextInvites {
     /// <param name="nicknameTags">Whether chat tags show nicknames (the setting).</param>
     /// <param name="advanced">Advanced mode: the words for a channel whose name isn't known yet.</param>
     public static IReadOnlyList<InviteOffer> Offers(SessionSnapshot snapshot, InviteTarget target, IReadOnlyDictionary<string, int> slots,
-        IReadOnlyDictionary<string, string> nicknames, IReadOnlyDictionary<string, ushort> colours, bool nicknameTags, bool advanced) {
+        IReadOnlyDictionary<string, string> nicknames, IReadOnlyDictionary<string, ChannelColour> colours, bool nicknameTags, bool advanced) {
         if (snapshot.State != ConnectionState.Ready || snapshot.Me is not { } me) {
             return [];
         }
