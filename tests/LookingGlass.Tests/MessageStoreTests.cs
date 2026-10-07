@@ -269,7 +269,10 @@ public sealed class MessageStoreTests : IAsyncLifetime {
 
         await alice.Session.KickAsync(channelId, bob.UserId, Ct);
         await carol.Session.LeaveAsync(channelId, Ct);
-        await WaitFor(() => alice.Session.Snapshot.FindChannel(channelId) is { RekeyPending: false } c ? c : null);
+        // Alice may hear that Carol left only after the rekey for Bob's kick has settled on her side: so wait for the server to
+        // have no rekey pending (Carol's leaving set one before LeaveAsync returned), and for Alice to hold its epoch.
+        await WaitFor(() => this._server.Database.GetChannel(channelId) is { RekeyPending: false } server
+            && alice.Session.Snapshot.FindChannel(channelId) is { RekeyPending: false } c && c.Epoch == server.Epoch ? c : null);
         await SendAsync(alice, channelId, "after they went");
 
         Assert.Equal(ErrorCode.NotFound, await RefusedAsync(bob, channelId));
