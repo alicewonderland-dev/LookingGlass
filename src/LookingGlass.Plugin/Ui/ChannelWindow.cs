@@ -432,7 +432,7 @@ public sealed class ChannelWindow : Window {
             }
 
             // A message's sender (if known): their name's colour, everywhere (yours too).
-            if (state.MenuSender is { UserId: not 0 } sender) {
+            if (state.MenuSender is { } sender && NameColourPopup.CanColour(sender)) {
                 if (ImGui.MenuItem(NameColourWords.MenuItem)) {
                     this._nameColour.Open(sender, this.Sessions.ColourOf(channelId));
                 }

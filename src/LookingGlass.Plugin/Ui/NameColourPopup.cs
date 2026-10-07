@@ -20,11 +20,22 @@ internal sealed class NameColourPopup(SessionManager sessions) {
     private ChannelColour? _channel;
     private User? _opening;
 
+    /// <summary>Whether a user can have a name colour: anyone known (not user ID 0, a sender not known).</summary>
+    public static bool CanColour(User user) => NameColours.CanHave(user.UserId);
+
+    /// <summary>The popup is open (or about to open) for this person: their row in a list can stay lit meanwhile.</summary>
+    public bool IsOpenFor(User user) => (this._opening ?? this._user)?.UserId == user.UserId;
+
     /// <summary>
     /// Asks for the popup for a person, to open at the next <see cref="Draw"/> (so it can be asked for from inside a menu).
+    /// Nobody known (user ID 0) gets none.
     /// </summary>
     /// <param name="channel">The colour of the channel it was opened in, for the preview, and where the wheel starts for a name without a colour.</param>
     public void Open(User user, ChannelColour? channel) {
+        if (!CanColour(user)) {
+            return;
+        }
+
         this._opening = user;
         this._channel = channel;
     }
@@ -37,7 +48,13 @@ internal sealed class NameColourPopup(SessionManager sessions) {
             ImGui.OpenPopup(Id);
         }
 
-        if (this._user is not { } user || !ImGui.BeginPopup(Id)) {
+        if (this._user is not { } user) {
+            return;
+        }
+
+        if (!ImGui.BeginPopup(Id)) {
+            // Closed (or never drawn here again): it is nobody's any more.
+            this._user = null;
             return;
         }
 

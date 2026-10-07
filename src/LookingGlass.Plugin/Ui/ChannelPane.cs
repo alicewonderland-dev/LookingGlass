@@ -724,12 +724,14 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
         var rowMin = pos with { Y = pos.Y - style.ItemSpacing.Y / 2 };
         var rowMax = new Vector2(pos.X + width, pos.Y + height + style.ItemSpacing.Y / 2);
         var rowHovered = ImGui.IsWindowHovered() && ImGui.IsMouseHoveringRect(rowMin, rowMax);
-        if (rowHovered || ImGui.IsPopupOpen("member-menu") || ImGui.IsPopupOpen("name-menu")) {
+        // Lit too while one of its menus, or its name colour, is open, so it's clear whose it is.
+        if (rowHovered || ImGui.IsPopupOpen("member-menu") || ImGui.IsPopupOpen("name-menu") || this._nameColour.IsOpenFor(member.User)) {
             var hover = style.Colors[(int) ImGuiCol.HeaderHovered];
             drawList.AddRectFilled(rowMin, rowMax, ImGui.GetColorU32(hover with { W = hover.W * 0.6f }), 4 * scale);
         }
 
-        if (rowHovered && ImGui.IsMouseClicked(ImGuiMouseButton.Right)) {
+        // Nobody known (user ID 0) can't have a name colour, and the menu would be empty.
+        if (rowHovered && ImGui.IsMouseClicked(ImGuiMouseButton.Right) && NameColourPopup.CanColour(member.User)) {
             ImGui.OpenPopup("name-menu");
         }
 
@@ -820,8 +822,12 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
         ImGui.EndPopup();
     }
 
-    /// <summary>"Name colour...", in a menu: opens the name colour popup once the menu has closed.</summary>
+    /// <summary>"Name colour...", in a menu (not for nobody known): opens the name colour popup once the menu has closed.</summary>
     private void NameColourItem(ChannelView channel, User user) {
+        if (!NameColourPopup.CanColour(user)) {
+            return;
+        }
+
         if (Widgets.MenuItem(FontAwesomeIcon.Palette, NameColourWords.MenuItem)) {
             this._nameColour.Open(user, sessions.ColourOf(channel.Id));
         }
