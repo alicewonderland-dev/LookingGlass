@@ -101,7 +101,9 @@ yet. While it's in testing, it is loaded as a dev plugin:
    server.
 3. **Create or join a channel.** Press **Create a channel** and name it, or
    accept an invite from the envelope at the top right of the main window. To
-   invite someone, select the channel and press **Invite**.
+   invite someone, select the channel and press **Invite**, or right-click
+   them (their name in chat or ChatTwo, the party list, your target or your
+   friend list) and choose **Invite to LookingGlass**.
 
 ## Using channels
 
