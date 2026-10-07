@@ -1,37 +1,30 @@
-using System.Security.Cryptography;
-using System.Text;
-using NSec.Cryptography;
 using LookingGlass.Core.Client;
 
 namespace LookingGlass.Plugin;
 
 /// <summary>
-/// Keeps a character's keys encrypted at rest. Uses Windows DPAPI (current
+/// Keeps a character's keys encrypted at rest (see <see cref="LocalProtection"/>). Uses Windows DPAPI (current
 /// user) when it works. Under Wine/Proton, where DPAPI may be unavailable, it
 /// falls back to a random key file in the plugin's config folder: that guards
 /// against accidentally sharing the secrets file, not against someone who can
 /// read your files.
 /// </summary>
 public sealed class ProtectedSecretStore : IFileSecretStore {
-    private static readonly byte[] DpapiMagic = "LGD1"u8.ToArray();
-    private static readonly byte[] KeyFileMagic = "LGK1"u8.ToArray();
-    private static readonly byte[] Entropy = Encoding.UTF8.GetBytes("LookingGlass secrets v1");
-    private static readonly AeadAlgorithm Aead = AeadAlgorithm.XChaCha20Poly1305;
-
     private readonly string _path;
-    private readonly string _keyFilePath;
+    private readonly LocalProtection _protection;
     private readonly Action<string>? _tellUser;
     private readonly HashSet<string> _told = [];
 
     /// <param name="tellUser">Shows a warning to the user, such as a backup being loaded. Called on any thread.</param>
     public ProtectedSecretStore(string path, string keyFilePath, Action<string>? tellUser = null) {
         this._path = path;
-        this._keyFilePath = keyFilePath;
+        // As it always was: DPAPI's entropy names the secrets, and the key file binds nothing after its magic.
+        this._protection = new LocalProtection(keyFilePath, "secrets file", "LookingGlass secrets v1", [], this.Warn, shown: true);
         this._tellUser = tellUser;
     }
 
     /// <summary>How the secrets are protected, for the settings UI.</summary>
-    public static string Protection { get; private set; } = "not saved yet";
+    public static string Protection => LocalProtection.Protection;
 
     // Locks are per file and shared by every instance: a closing session and a new one for
     // the same character use different store objects but the same secrets file.
@@ -45,69 +38,22 @@ public sealed class ProtectedSecretStore : IFileSecretStore {
 
     public ClientSecrets? LoadFileOnly() => AtomicFile.ReadFileOnly(this._path, this.Decode);
 
-    private ClientSecrets Decode(byte[] data) {
-        var magic = data.AsSpan(0, Math.Min(4, data.Length));
-        var body = data.AsSpan(Math.Min(4, data.Length)).ToArray();
-
-        if (magic.SequenceEqual(DpapiMagic)) {
-            Protection = "Windows DPAPI";
-            return ClientSecrets.Deserialize(ProtectedData.Unprotect(body, Entropy, DataProtectionScope.CurrentUser));
-        }
-
-        if (magic.SequenceEqual(KeyFileMagic)) {
-            Protection = "local key file";
-            if (body.Length < Aead.NonceSize) {
-                throw new CryptographicException("The secrets file is truncated.");
-            }
-
-            var nonce = body.AsSpan(0, Aead.NonceSize);
-            // Never a new key here: one made now couldn't decrypt anything.
-            using var key = this.LoadFileKey(create: false);
-            var plaintext = Aead.Decrypt(key, nonce, KeyFileMagic, body.AsSpan(Aead.NonceSize))
-                            ?? throw new CryptographicException("The secrets file couldn't be decrypted with the local key file.");
-            return ClientSecrets.Deserialize(plaintext);
-        }
-
-        throw new CryptographicException("Unrecognised secrets file format.");
-    }
+    private ClientSecrets Decode(byte[] data) => ClientSecrets.Deserialize(this._protection.Unprotect(data));
 
     public void Save(ClientSecrets secrets) {
         lock (AtomicFile.LockFor(this._path)) {
-            var plaintext = secrets.Serialize();
-            byte[] output;
-
-            try {
-                output = [.. DpapiMagic, .. ProtectedData.Protect(plaintext, Entropy, DataProtectionScope.CurrentUser)];
-                Protection = "Windows DPAPI";
-            } catch (Exception ex) when (ex is CryptographicException or PlatformNotSupportedException or EntryPointNotFoundException or DllNotFoundException) {
-                using var key = this.LoadFileKey(create: true);
-                var nonce = RandomNumberGenerator.GetBytes(Aead.NonceSize);
-                output = [.. KeyFileMagic, .. nonce, .. Aead.Encrypt(key, nonce, KeyFileMagic, plaintext)];
-                Protection = "local key file";
-            }
-
-            AtomicFile.Write(this._path, output);
+            AtomicFile.Write(this._path, this._protection.Protect(secrets.Serialize()));
         }
     }
 
-    private Key LoadFileKey(bool create) {
-        // Shared by every character: two stores creating it at once would each encrypt with a different key.
-        lock (AtomicFile.LockFor(this._keyFilePath)) {
-            var raw = AtomicFile.Read(this._keyFilePath,
-                data => data.Length == Aead.KeySize ? data : throw new CryptographicException("The local key file is damaged."),
-                this.Warn);
-            if (raw == null) {
-                if (!create) {
-                    throw new CryptographicException("The local key file is missing.");
-                }
+    /// <summary>
+    /// The protection the chat log's key is kept with: the secrets file's (DPAPI, or the same local key file), for its own
+    /// purpose. Warnings about the key file go to the log only.
+    /// </summary>
+    public static LocalProtection ChatLogProtection() =>
+        new(KeyFilePath, "chat log key file", "LookingGlass chat log v1", "chat log"u8.ToArray(), message => Services.Log.Warning(message));
 
-                raw = RandomNumberGenerator.GetBytes(Aead.KeySize);
-                AtomicFile.Write(this._keyFilePath, raw);
-            }
-
-            return Key.Import(Aead, raw, KeyBlobFormat.RawSymmetricKey);
-        }
-    }
+    private static string KeyFilePath => Path.Combine(ConfigDirectory, "local.key");
 
     private void Warn(string message) {
         Services.Log.Warning(message);
@@ -200,6 +146,6 @@ public sealed class ProtectedSecretStore : IFileSecretStore {
     }
 
     private static ProtectedSecretStore At(string path, Action<string>? tellUser) {
-        return new ProtectedSecretStore(path, Path.Combine(ConfigDirectory, "local.key"), tellUser);
+        return new ProtectedSecretStore(path, KeyFilePath, tellUser);
     }
 }

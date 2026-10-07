@@ -31,6 +31,9 @@ public static partial class ServerSecretFiles {
     /// <summary>The secrets file for a character and server address: 128 bits of the address's SHA-256.</summary>
     public static string FileName(ulong contentId, string serverUrl) => $"secrets-{contentId:X16}-{Hash(serverUrl, HashHexDigits)}.bin";
 
+    /// <summary>128 bits of a server address's SHA-256, in hex: what files kept per address are named after (see <see cref="ChatLogFiles"/> too).</summary>
+    public static string AddressHash(string serverUrl) => Hash(serverUrl, HashHexDigits);
+
     /// <summary>The name earlier versions used: 48 bits of the hash, which a colliding address can be found for.</summary>
     public static string LegacyFileName(ulong contentId, string serverUrl) => $"secrets-{contentId:X16}-{Hash(serverUrl, LegacyHashHexDigits)}.bin";
 

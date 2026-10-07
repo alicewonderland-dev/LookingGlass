@@ -16,6 +16,7 @@ public sealed class SessionManager : IDisposable {
     private readonly ChatOutput _chat;
     private readonly Lock _noticesLock = new();
     private readonly LinkedList<SessionNotice> _notices = new();
+    private readonly ChatLogKeeper _chatLogs;
     private ClientSession? _session;
     private PlayerInfo? _sessionPlayer;
     private volatile ImmutableDictionary<string, int> _slots = ImmutableDictionary<string, int>.Empty;
@@ -31,6 +32,9 @@ public sealed class SessionManager : IDisposable {
         this._config = config;
         this._player = player;
         this._chat = chat;
+        // Diagnostics only: the chat log never says what was said, or who said it.
+        this._chatLogs = new ChatLogKeeper(Services.PluginInterface.ConfigDirectory.FullName, ProtectedSecretStore.ChatLogProtection(),
+            message => Services.Log.Warning(message));
         player.Changed += this.OnPlayerChanged;
     }
 
@@ -57,6 +61,12 @@ public sealed class SessionManager : IDisposable {
     /// </summary>
     public ChannelHistory History { get; } = new();
 
+    /// <summary>
+    /// The current session's chat log on this computer, while the player keeps one (<see cref="Configuration.KeepChatLog"/>):
+    /// channel windows read older lines from it. Null when off or logged out. Safe from any thread.
+    /// </summary>
+    public ChatLog? ChatLog => this._chatLogs.Current;
+
     /// <summary>The character the current session is for, or null. Framework (and draw) thread.</summary>
     public PlayerInfo? SessionPlayer => this._sessionPlayer;
 
@@ -76,15 +86,19 @@ public sealed class SessionManager : IDisposable {
     /// vouched for, which the user confirmed), first copies each of <paramref name="characters"/>' identity to the new
     /// address (see <see cref="ServerMove"/>), once the session has closed; any session started meanwhile waits for that.
     /// If closing took long enough for the check to go stale, the servers are asked again first, and nothing is copied
-    /// unless they still agree. The old address's files are left as they are, so switching back works. Call on the
+    /// unless they still agree. The old address's secrets files are left as they are, so switching back works; each carried
+    /// character's chat log moves with it (once its log has closed), so it goes on at the new address. Call on the
     /// framework thread; the returned task finishes the copying, and fails (having copied what it could) if any copy was refused.
     /// </summary>
     public Task ChangeServer(string newUrl, ServerMoveCheck? keepIdentity = null, IReadOnlyList<ulong>? characters = null) {
         var oldUrl = this._config.ServerUrl;
         this.Stop();
         var closing = this._closing ?? Task.CompletedTask;
+        // The chat log closes with the session (Stop): one carried over moves only once nothing writes to it.
+        var logsClosed = this._chatLogs.Settled;
         var copying = Task.Run(async () => {
             await closing;
+            await logsClosed;
             if (keepIdentity == null) {
                 return;
             }
@@ -95,6 +109,7 @@ public sealed class SessionManager : IDisposable {
                 try {
                     ServerMove.CopyIdentity(check, ProtectedSecretStore.For(contentId, oldUrl), ProtectedSecretStore.For(contentId, newUrl));
                     Services.Log.Information("Carried a character's LookingGlass identity over to the server's new address");
+                    MoveChatLog(contentId, oldUrl, newUrl);
                 } catch (Exception ex) {
                     refused.Add(ex.Message);
                 }
@@ -230,6 +245,65 @@ public sealed class SessionManager : IDisposable {
 
         return replacing;
     }
+
+    /// <summary>
+    /// A character's chat log goes with its identity to the server's new address (see <see cref="ChatLogFiles.MoveToAddress"/>):
+    /// a log already there is left as it is. A failure is only written to the diagnostic log: the identity still moved.
+    /// </summary>
+    private static void MoveChatLog(ulong contentId, string oldUrl, string newUrl) {
+        try {
+            if (ChatLogFiles.MoveToAddress(Services.PluginInterface.ConfigDirectory.FullName, contentId, oldUrl, newUrl)) {
+                Services.Log.Information("Moved a character's chat log to the server's new address");
+            }
+        } catch (Exception ex) {
+            Services.Log.Warning($"Couldn't move a character's chat log to the server's new address: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// "Keep a chat log on this computer" on or off. On, the current session's lines from now on are kept (this character's
+    /// log for this server); off, nothing more is added, and the log open is closed (its files stay until deleted). Call on
+    /// the framework (or draw) thread.
+    /// </summary>
+    public void SetKeepChatLog(bool keep) {
+        if (this._config.KeepChatLog == keep) {
+            return;
+        }
+
+        this._config.KeepChatLog = keep;
+        this._config.Save();
+        if (keep && this.Session != null && this._sessionPlayer is { } player) {
+            this.History.SetRecorder(this._chatLogs.Open(player.ContentId, this._config.ServerUrl, this._config.ChatLogMaxBytes()));
+        } else if (!keep) {
+            this.History.SetRecorder(null);
+            this._chatLogs.Close();
+        }
+    }
+
+    /// <summary>The chat log's size limit, in megabytes (kept in range). The oldest lines go at once if it is over. Framework thread.</summary>
+    public void SetChatLogMegabytes(int megabytes) {
+        megabytes = ChatLogLimits.ClampMegabytes(megabytes);
+        if (this._config.ChatLogMegabytes == megabytes) {
+            return;
+        }
+
+        this._config.ChatLogMegabytes = megabytes;
+        this._config.Save();
+        this._chatLogs.SetLimit(this._config.ChatLogMaxBytes());
+    }
+
+    /// <summary>
+    /// "Delete my chat log": every character's chat log on this computer, for every server. If it is on, the current
+    /// session's goes on afterwards, empty. The returned task fails if some of it couldn't be deleted.
+    /// </summary>
+    public Task DeleteChatLogs() {
+        var deleting = this._chatLogs.DeleteAllAsync();
+        Services.Log.Information("Deleting the chat logs on this computer");
+        return deleting;
+    }
+
+    /// <summary>How much room every chat log on this computer takes. Reads the disk in the background.</summary>
+    public Task<long> ChatLogSize() => this._chatLogs.SizeAsync();
 
     /// <summary>The command slot of a channel for the current character. Safe from any thread.</summary>
     public int? SlotOf(string channelId) {
@@ -436,8 +510,10 @@ public sealed class SessionManager : IDisposable {
             return;
         }
 
-        // A new session's history starts empty, and what an older one still delivers is dropped.
-        var history = this.History.Clear();
+        // A new session's history starts empty, and what an older one still delivers is dropped. Its lines go to its chat
+        // log too, if the player keeps one: this character's for this server.
+        var log = this._config.KeepChatLog ? this._chatLogs.Open(player.ContentId, this._config.ServerUrl, this._config.ChatLogMaxBytes()) : null;
+        var history = this.History.Clear(log);
 
         // Events from a session that has since been replaced are ignored.
         session.MessageReceived += message => {
@@ -522,8 +598,10 @@ public sealed class SessionManager : IDisposable {
     private void Stop() {
         this._generation++;
         var session = Interlocked.Exchange(ref this._session, null);
-        // The history's next generation first, then the channel settings: see Deliver.
+        // The history's next generation first, then the channel settings: see Deliver. Its chat log closes in the
+        // background, once it has written what it was given.
         this.History.Clear();
+        this._chatLogs.Close();
         this._sessionPlayer = null;
         this.RefreshCommandCache();
         this.Unread.Reset();
@@ -546,8 +624,10 @@ public sealed class SessionManager : IDisposable {
         this._player.Changed -= this.OnPlayerChanged;
         this.Stop();
 
-        // Unloading: the final save must finish before the plugin goes away, so this one may wait.
-        if (this._closing is { IsCompleted: false } closing && !closing.Wait(TimeSpan.FromSeconds(5))) {
+        // Unloading: the final save must finish before the plugin goes away, so this one may wait. So does the chat log's
+        // last write (it only ever loses its last few lines if it doesn't make it).
+        var closing = Task.WhenAll(this._closing ?? Task.CompletedTask, this._chatLogs.Settled);
+        if (!closing.IsCompleted && !closing.Wait(TimeSpan.FromSeconds(5))) {
             Services.Log.Warning("Previous LookingGlass session is still closing");
         }
     }

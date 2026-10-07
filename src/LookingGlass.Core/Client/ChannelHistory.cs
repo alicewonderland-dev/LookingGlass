@@ -18,6 +18,12 @@ public enum HistoryLineKind {
     Feedback,
 }
 
+/// <summary>Where a channel history's lines go as well (the chat log): called for every line held, in order.</summary>
+public interface IChannelHistoryRecorder {
+    /// <summary>A line was added. Called inside the history's lock: must only queue it, never block or throw.</summary>
+    void Record(HistoryLine line);
+}
+
 /// <summary>
 /// One line of a channel's history (see <see cref="ChannelHistory"/>).
 /// </summary>
@@ -45,6 +51,12 @@ public sealed record HistoryLine(long Seq, string ChannelId, HistoryLineKind Kin
     /// </summary>
     public bool CaughtUp { get; init; }
 
+    /// <summary>
+    /// A line from the chat log kept on this computer (see <see cref="ChatLog"/>), from an earlier session: shown above the
+    /// lines since login, with its day. Its <see cref="Seq"/> is below zero, and it never counts as unread.
+    /// </summary>
+    public bool FromLog { get; init; }
+
     /// <summary>What a <see cref="HistoryLineKind.Notice"/> says, in both modes' words.</summary>
     public SessionNotice? Notice { get; init; }
 
@@ -70,9 +82,11 @@ public sealed record HistoryLine(long Seq, string ChannelId, HistoryLineKind Kin
 /// those sent while you were away, caught up when you came back), LookingGlass's notices about the channel, and feedback
 /// on what was typed in a window, oldest first, up to
 /// <see cref="Capacity"/> lines per channel. Like the game's own chat log it lives only in memory: it starts empty at each
-/// login (<see cref="Clear"/>), and nothing of it is written anywhere. It belongs to the session, not to any window, so
-/// closing and opening windows loses nothing. Safe from any thread: lines arrive on the session's threads, windows read
-/// them on the draw thread, lock-free (<see cref="LinesOf"/> hands out an immutable copy).
+/// login (<see cref="Clear"/>), and nothing of it is written anywhere, unless the player keeps a chat log on their computer
+/// (opt-in): then each line also goes to its recorder (<see cref="ChatLog"/>), which keeps the messages and information
+/// lines, encrypted, to show again after the next login (<see cref="EarlierLines"/>). It belongs to the session, not to any
+/// window, so closing and opening windows loses nothing. Safe from any thread: lines arrive on the session's threads,
+/// windows read them on the draw thread, lock-free (<see cref="LinesOf"/> hands out an immutable copy).
 /// </summary>
 public sealed class ChannelHistory {
     public const int DefaultCapacity = 500;
@@ -86,6 +100,8 @@ public sealed class ChannelHistory {
     private readonly Dictionary<string, string> _names = new();
     private long _seq;
     private int _generation;
+    // Where each line goes as well as here: the chat log, while the player keeps one (see SetRecorder).
+    private IChannelHistoryRecorder? _recorder;
 
     public ChannelHistory(int capacity = DefaultCapacity, TimeProvider? time = null) {
         ArgumentOutOfRangeException.ThrowIfLessThan(capacity, 1);
@@ -293,13 +309,25 @@ public sealed class ChannelHistory {
     }
 
     /// <summary>A new session (logged out, another character or server): everything goes.</summary>
+    /// <param name="recorder">Where the new session's lines go as well (its chat log), or null: none.</param>
     /// <returns>The new <see cref="Generation"/>.</returns>
-    public int Clear() {
+    public int Clear(IChannelHistoryRecorder? recorder = null) {
         lock (this._lock) {
             this._lines.Clear();
             this._held.Clear();
             this._names.Clear();
+            this._recorder = recorder;
             return ++this._generation;
+        }
+    }
+
+    /// <summary>
+    /// Where the current session's lines go from now on as well as here (the chat log, turned on), or null (turned off).
+    /// Lines already held aren't handed over.
+    /// </summary>
+    public void SetRecorder(IChannelHistoryRecorder? recorder) {
+        lock (this._lock) {
+            this._recorder = recorder;
         }
     }
 
@@ -323,6 +351,14 @@ public sealed class ChannelHistory {
 
         builder.Add(line);
         this._lines[line.ChannelId] = builder.MoveToImmutable();
+
+        // In the lock, so the log has the lines in the order they're held. A recorder only queues it (never blocks), and
+        // whatever it does wrong never keeps a line from being shown.
+        try {
+            this._recorder?.Record(line);
+        } catch {
+            // Its own problem: see ChatLog.Record.
+        }
     }
 
     /// <summary>Call inside the lock.</summary>
@@ -335,7 +371,7 @@ public sealed class ChannelHistory {
     }
 
     /// <summary>The same sender, time (signed, to the millisecond) and text in the same channel is the same message.</summary>
-    private readonly record struct MessageKey(string ChannelId, long SenderId, DateTimeOffset Timestamp, string? Text) {
+    internal readonly record struct MessageKey(string ChannelId, long SenderId, DateTimeOffset Timestamp, string? Text) {
         public static MessageKey Of(IncomingMessage message) => new(message.ChannelId, message.Sender.UserId, message.Timestamp, message.Text);
 
         public static MessageKey Of(HistoryLine line) => new(line.ChannelId, line.Sender?.UserId ?? 0, line.SentAt, line.Message?.Text);

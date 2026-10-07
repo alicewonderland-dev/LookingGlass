@@ -47,7 +47,8 @@ core ideas, shares no code with it, and doesn't talk to ExtraChat's servers.
 The current version is 0.2. It has registration, key login, identity recovery,
 channels, invites, ranks, automatic rekeys, encrypted messages, the signed
 membership log, online indicators, blocking, channel windows (pop-out chat),
-message catch-up (what was sent while you were away) and debug tooling. ChatTwo
+message catch-up (what was sent while you were away), an opt-in chat log on the
+player's computer and debug tooling. ChatTwo
 integration and the import wizard come next. Local chat and a move to MLS are
 planned (see [Planned features](#planned-features)).
 
@@ -556,6 +557,10 @@ file as a backup.
 Channel numbers, nicknames and colours are plugin settings, kept per
 character, and never sent to the server.
 
+**The chat log**, if the player keeps one, is kept apart from the secrets
+file, per character and address too, under a key of its own protected the same
+way (see [Chat log on this computer](#chat-log-on-this-computer)).
+
 ## Moving to a new server address
 
 Identities are kept per address. So `ws://<machine>:5180/ws`,
@@ -581,7 +586,9 @@ registers with new keys.
 
 Either way, the identity for the old address is kept, so switching back
 works. Channel numbers, nicknames and colours belong to the character and the
-channels, so they follow along.
+channels, so they follow along. A carried identity's chat log, if the player
+keeps one, moves with it (see
+[Chat log on this computer](#chat-log-on-this-computer)).
 
 **Why both servers, and why only `wss://`.**
 
@@ -1249,8 +1256,9 @@ has the checks to make in game.
 
 ### Message catch-up
 
-Built at the owner's request (2026-10-07; the first half of
-[Chat history](#chat-history)): messages sent while a member was disconnected
+Built at the owner's request (2026-10-07; with the
+[chat log on this computer](#chat-log-on-this-computer), the answer to lost
+messages): messages sent while a member was disconnected
 reach them when they come back. Testers lost messages to untimely disconnects
 with ExtraChat; this fixes that. The server keeps recent messages for **7
 days**, and at most **5,000 per channel** (the oldest go first), both operator
@@ -2404,16 +2412,18 @@ the plugin's `ChannelWindows` opens and remembers the windows and
   them, the same event that shows them in chat, so nothing shows that wasn't
   sent, and nothing twice), notices about the channel, and the window's
   feedback. In memory only, nothing written to disk, like the game's own chat
-  log. Emptied whenever a session stops or starts (logging out, another
-  character or server; a reconnect keeps it), and what an old session still
+  log (unless the player keeps a chat log, below). Emptied whenever a session
+  stops or starts (logging out, another character or server; a reconnect
+  keeps it), and what an old session still
   delivers is dropped (a generation number). A message delivered twice is
   held once. A channel's lines go when the user is no longer in it. The owner
   accepted showing only what came since login (2026-10-05). Messages sent
   while the user was away (logged out or disconnected) are added when they
   come back, after a dimmed line saying how many, each with the time it was
-  sent (see [Message catch-up](#message-catch-up)). A log kept on the player's
-  computer, to read again later, is planned (see
-  [Chat history](#chat-history)).
+  sent (see [Message catch-up](#message-catch-up)).
+- **Older lines** (`EarlierLines`), if the player keeps a chat log on this
+  computer (see [Chat log on this computer](#chat-log-on-this-computer)):
+  above a tab's lines since login, a page at a time.
 - **Also show in game chat.** Per channel, kept per character like its colour
   (`CharacterSettings.GameChatOff`), in the channel's ⋮ menu and a tab's
   right-click menu; on unless turned off, as before. Off, the channel's
@@ -2453,6 +2463,152 @@ the plugin's `ChannelWindows` opens and remembers the windows and
   or another plugin does can send what is typed there to game chat.
 - **Simple and advanced mode** apply as everywhere: the warnings and notices
   in the mode's words, switching at once; nothing technical in simple mode.
+
+### Chat log on this computer
+
+Built at the owner's request (decided 2026-10-06 and 2026-10-07). Testers asked
+for it: with ExtraChat, losing messages to an untimely disconnect was common.
+[Message catch-up](#message-catch-up) covers what was sent while a player was
+away; this covers reading again what they saw, after a crash, a relog or the
+next day. ChatTwo keeps its own log, but many players use the game's chat,
+which keeps nothing, so LookingGlass offers it itself. The rules are in the
+core library (`ChatLog`, `ChatLogStore`, `EarlierLines`, `ChatLogKeeper`,
+`ChatLogWords`) and unit tested (`ChatLogTests`); the checks to make in game
+are in [docs/testing/chat-log-checklist.md](testing/chat-log-checklist.md).
+
+**The owner's decisions.**
+
+- **Opt-in**, off by default: one setting, **Keep a chat log on this
+  computer** (simple mode: "chat history"), logs **every channel**, with no
+  per-channel choice.
+- **A size limit, not an age**: 50 MB by default, from 5 MB to 1 GB (a slider
+  in Settings while it's on). When the log would pass it, the oldest messages
+  go first. The limit applies to each character's log on each server.
+- **Shown in channel windows**, above the lines since login. **No export.**
+- **Nothing readable leaves the player's computer**: the log is never sent,
+  uploaded or shared, and is encrypted on disk.
+
+**What is kept.** Every line a channel's history (`ChannelHistory`) holds, as
+it holds it, except two kinds: messages, others' and the player's own, live
+and caught up, each with when it arrived, the sender's name, world and ID, the
+signed time, its text and its links (as the message's content encoding, so
+they come back through the same checks as a received message's, and show as
+links again); and LookingGlass's information lines about the channel, in both
+modes' words (joined, left, invited, set up LookingGlass again, the channel's
+new name, "12 messages were sent while you were away"). Not kept: warnings
+(light and dark red: they are about that moment, and were shown when it
+happened; a warning about a channel shown again days later, out of context,
+would mislead), and "Not sent" feedback (about what was typed then). The
+history hands each line to its recorder inside its lock, so the log has them
+in order; the recorder only queues it.
+
+**Where.** One folder per character and server address,
+`chatlog-<content ID>-<128 bits of the address's hash>`, beside the secrets
+files in the plugin's config folder and named the same way, so another
+character or server never reads or adds to it. "Delete my chat log" and the
+size shown cover every folder.
+
+**Format: segment files of encrypted records.** Chosen over SQLite with
+encrypted rows: it needs no native library in the plugin, appends never
+rewrite anything, and every byte on disk is either a fixed header or
+ciphertext (SQLite would keep row IDs, timestamps and page structure in the
+clear, and its own journal). A folder holds `chatlog.key` and numbered
+segments (`0000000001.lgl`, …). A segment is an 8-byte header (`LGCL`, a
+version) and records, each a 4-byte length, a 24-byte random nonce and the
+line's bytes sealed with XChaCha20-Poly1305 under the log's key, with the
+segment's number and the record's offset as associated data, so a record
+can't be moved (to another place or another segment) or swapped unnoticed,
+and every record has a nonce of its own. What is in the clear: the headers,
+each record's 4-byte length, and the files' sizes and times. So someone with
+the files can count the lines and tell roughly how long each is (a message
+from a notice, a short line from a long one), and when they were logged; not
+what they say, who said them, in which channel, or the channel's name.
+
+**Encryption at rest.** Each log has its own random 256-bit key, kept in
+`chatlog.key` protected exactly as the secrets file is (`LocalProtection`):
+Windows DPAPI for the current user, or, where DPAPI is unavailable (Wine,
+Proton), the same local key file (`local.key`), which guards against
+accidentally sharing the files rather than a local attacker. The chat log's
+key uses its own DPAPI entropy and associated data, so its protected bytes
+can't stand in for the secrets file's. A log whose key can't be unlocked here
+(copied from another computer or Windows account, its key file deleted or
+damaged) is **unreadable**: nothing is added to it, nothing of it is changed,
+and Settings says so and offers to delete it. A key file that can't be read
+*just now* (in use, access denied) is not that: the log counts as failed, is
+tried again with the next line, and the key is never replaced.
+
+**Crash safety.** A record is appended in one write, and the writer hands
+each batch to the operating system, so a crash of the game loses at most the
+record being written. Opening a log cuts its last segment back to the end of
+its last record that opens, so what is added afterwards can be read; only an
+unreadable tail goes. A damaged record (its length field too) fails its check
+and is skipped on its own: the reader looks for the next whole record after it,
+byte by byte (a record only opens at its own place). A last segment without
+its header is deleted. A segment is one of the log's only once its file holds
+its header, and a number whose file is already there (left by a deletion that
+failed) is skipped, so a file that couldn't be made, or wasn't deleted, never
+stops logging.
+
+**The size limit** counts every file in the folder. Segments are started once
+one reaches a sixteenth of the limit (at least 4 KiB, at most 16 MiB, so one
+is quick to read back), and whole oldest segments are deleted until a new
+record fits. Lowering the limit deletes the oldest straight away.
+
+**Never in the way.** Everything that touches the disk runs on one background
+task per log (`ChatLog`), in order: recording a line only queues it, so the
+game never waits on the disk. A failure (a full disk, a folder that can't be
+made) is written once to the diagnostic log, with the kind of failure and the
+file system's words, never what was said, who said it or a channel's name,
+and it never keeps a line from being shown or reaches whoever recorded it.
+
+**In channel windows.** A tab shows **Show older messages** above its lines
+since login while the log is on; it, or scrolling up with the wheel at the
+top, reads the 200 lines before (from before this session: this session's are
+in the window already) on the log's task. They go above, under a dimmed
+"Earlier: Tuesday 6 October 2026" line for each day and a dimmed "Since you
+logged in" line before this session's, each line with its time and, if not
+today, its day, drawn as lines since login are (links, notices in the mode's
+words, the copy menu). The line at the top keeps its place on screen as older
+lines arrive, and the tab doesn't jump to new lines while the player reads
+old ones (**New messages** takes it back down). Once the start is reached:
+"That's everything in your chat log for this channel." Opening a window
+reads nothing. **A message is shown once**: one the session holds too (caught
+up again, say) shows as the session's, and one the log holds twice (shown in
+two sessions) once; so does an information line the session holds too (the
+same time and words: the log turned off and on again in one session). Messages
+from someone the player has blocked since aren't shown, as live ones aren't,
+and show again if they are unblocked. Older lines never count as unread.
+Windows show only the channels the player is in now.
+
+**Lifecycle.**
+
+- **Turning it on** keeps the current session's lines from then on (not those
+  already shown) in this character's log for this server, and every session's
+  after.
+- **Turning it off** stops adding to the log at once (what was queued is
+  still written), and asks, in plain words, whether to delete what was kept;
+  Cancel keeps it. Windows no longer show older lines.
+- **"Delete my chat log"** is in Settings whenever any log exists, on or off,
+  with how much room they take. It deletes every character's log on every
+  server, after a confirmation. While on, logging goes on afterwards in a new
+  log with nothing older.
+- **Leaving a channel** (or being removed, or a disband) keeps its lines in the
+  log, the player's own record, until the size limit pushes them out or the
+  log is deleted. No window shows a channel the player isn't in; rejoining the
+  same channel shows them again.
+- **Reset my identity** keeps the log: it is the player's own record, under
+  its own key, not the identity's.
+- **Another character or server** has its own log; logging out closes it.
+- **Moving to a new server address** with the identity (see
+  [Moving to a new server address](#moving-to-a-new-server-address)) moves
+  each carried character's log with it, once its log has closed: the folder is
+  renamed, so the log goes on at the new address. One the new address has
+  already is left as it is (never merged or written over), and the old
+  address's stays. Starting afresh at the new address moves nothing.
+
+**Left for later.** A channel with more than 500 lines in one session (the
+window's in-memory cap) shows the ones that fell out of memory only after the
+next login. There is no search, and no per-channel choice or deletion.
 
 ### Simple and advanced mode
 
@@ -2717,40 +2873,6 @@ or GagSpeak is gone, the message is sent as typed (it is cosmetic), with a
 warning in the log that never holds the text. The same words in simple and
 advanced mode.
 
-### Chat history
-
-Status: the first half (messages sent while you were disconnected) is built:
-see [Message catch-up](#message-catch-up). The second (a log on the player's
-computer) is planned, details to be decided. Added by the owner (2026-10-06)
-after testers asked for it: with ExtraChat, losing messages to an untimely
-disconnect was a common problem. ChatTwo keeps its own log, but many players
-use the game's own chat, which keeps nothing, so LookingGlass should offer it
-itself.
-
-Two different losses, which may need different answers:
-
-- **Messages sent while you were disconnected**: built (owner's decision,
-  2026-10-07). The server keeps recent messages (as the ciphertext it already
-  relays, which it can't read) for 7 days, at most 5,000 per channel, and a
-  returning member catches up on what they missed. A member removed in the
-  meantime fetches nothing more (they are no longer a member). See
-  [Message catch-up](#message-catch-up).
-- **Messages you saw, but want to read again later** (after a crash, a
-  relog, or the next day): a log on the player's own computer. Decided (owner,
-  2026-10-06): **opt-in**, one setting that logs **every channel** (no
-  per-channel choice, for simplicity), and kept to a **size limit** rather
-  than an age: when the log reaches it, the oldest messages go first. Still
-  to decide: the default size and its range, encrypting it like the secrets
-  file, showing it in channel windows (they show messages since login, and
-  those caught up from while away) and/or exporting it, and deleting it (all
-  at once, and what happens on leaving a channel or resetting the identity).
-
-Both are wanted (owner, 2026-10-06). For the first, the owner chose 7 days
-and about 5,000 messages per channel (2026-10-07).
-
-Either way the same privacy rules hold: nothing readable leaves the player's
-computer, and a log is never shared or uploaded.
-
 ### MLS
 
 MLS (RFC 9420) solves the same problems as the membership log and epoch keys,
@@ -2835,7 +2957,9 @@ The owner's decisions, and why.
   channel in the list to make a window for it (or add it to one), and a "+"
   after the tabs to add another channel. They show only what came since login,
   like the game's chat log (accepted 2026-10-05), and since 2026-10-07 what
-  was sent while away (see [Message catch-up](#message-catch-up)). Game chat
+  was sent while away (see [Message catch-up](#message-catch-up)), and older
+  lines from the player's chat log if they keep one (see
+  [Chat log on this computer](#chat-log-on-this-computer)). Game chat
   stays optional per channel, warnings excepted. See
   [Channel windows](#channel-windows).
 - **Message catch-up (2026-10-07).** Messages sent while a member was
@@ -2845,6 +2969,13 @@ The owner's decisions, and why.
   operator settings. It costs a wider reach for a stolen key and a week of kept
   metadata (see [Known limitations](#known-limitations)). See
   [Message catch-up](#message-catch-up).
+- **Chat log on this computer (2026-10-06, 2026-10-07).** Opt-in, one setting
+  for every channel; a size limit (50 MB by default, 5 MB to 1 GB), oldest
+  first; shown in channel windows above the lines since login; no export;
+  encrypted with the secrets file's protection and never uploaded. Deleted
+  only by the player (Settings, or when turning it off), not on leaving a
+  channel or resetting the identity. See
+  [Chat log on this computer](#chat-log-on-this-computer).
 - **Quiet start and stop lines (2026-10-07).** "Now talking in" and the
   "Stopped talking in" lines for stops the player chose are off by default
   (Settings, **Verbose channel messages**): someone who moves between
@@ -2880,9 +3011,6 @@ The owner's decisions, and why.
   input's label; asking ChatTwo for a neutral override (one that names the
   command to send plain text with, and adds no "(Warning: ...)") would make
   the label exact.
-- **Message history:** catching up on what was sent while away is built (see
-  [Message catch-up](#message-catch-up)); how the log on the player's computer
-  works is still to be decided (see Planned features, "Chat history").
 - **Limits:** confirm after beta load testing.
 - **Public hosting:** who runs it, the cost, a privacy note, and an acceptable
   Lodestone volume.

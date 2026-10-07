@@ -30,6 +30,11 @@ early testing (version 0.2).
 - **Nothing missed.** Messages sent while you were logged out or disconnected
   (for up to a week) show up when you're back, marked with the time they were
   sent.
+- **Chat history (optional).** Turn on **Keep a chat history on this
+  computer** in Settings (in advanced mode, **Keep a chat log on this
+  computer**), and channel windows show older messages when you scroll up,
+  even after you log out. It stays on your computer, scrambled so only you
+  can read it there, is never uploaded, and you can delete it any time.
 - **Who's online.** Each member's icon is green while they're connected.
 - **Blocking.** Hide someone's messages and silently decline their invites.
 - **Privacy.** Only the members of a channel can read its name and messages.
