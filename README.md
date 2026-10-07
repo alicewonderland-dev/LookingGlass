@@ -27,6 +27,10 @@ early testing (version 0.2).
   of its own, with tabs for more channels (the **+**). What you type there only
   ever goes to that channel, never to game chat, and you can choose which
   channels also show in game chat (the channel's ⋮ menu).
+- **Windows only.** Settings, **Show LookingGlass messages only in windows**,
+  keeps channel messages out of game chat altogether: a channel that no window
+  shows opens in one (as a tab, or a new window), but not mid-fight or during
+  a cutscene. Warnings still show in game chat.
 - **Nothing missed.** Messages sent while you were logged out or disconnected
   (for up to a week) show up when you're back, marked with the time they were
   sent.

@@ -2589,6 +2589,89 @@ the plugin's `ChannelWindows` opens and remembers the windows and
 - **Simple and advanced mode** apply as everywhere: the warnings and notices
   in the mode's words, switching at once; nothing technical in simple mode.
 
+### Windows only, never game chat
+
+Built at the owner's request (tester request, accepted 2026-10-07; built
+2026-10-07). For heavy users who want the game's own chat kept clean: one
+setting moves every channel into channel windows. The rules are in the core
+library (`WindowsOnly`, `PendingWindows`) and unit tested; the plugin's
+`SessionManager` asks for windows and `ChannelWindows` opens them. The checks
+to make in game are in
+[docs/testing/windows-only-checklist.md](testing/windows-only-checklist.md).
+
+- **One setting, "Show LookingGlass messages only in windows"**, in Settings
+  under Chat (`Configuration.MessagesOnlyInWindows`), off by default, also for
+  settings saved before it. While on, no channel's messages, and none of its
+  information lines (someone was invited, joined, left or was removed; a
+  catch-up's "N messages while you were away"), go to game chat, whatever each
+  channel's "Show in game chat" says. They go to the channel's history and
+  windows as always. The player's own messages come back from the server the
+  same way as everyone else's, so they follow the same rule: no echo in game
+  chat while it is on.
+- **What still goes to game chat** (owner decisions):
+  - *Warnings and critical lines*, light and dark red, as for a channel kept
+    out of game chat, so none is ever hidden. Decided by the line's colour
+    (`NoticeColours.ToneOf`), so a critical kind at the information level goes
+    too (the per-channel rule still decides by level only).
+  - *Lines no window could show*: about no channel in particular (the
+    connection, your identity, "You left sky"), about a channel the player
+    isn't in ("Bob invited you to sky"), or about a place from their old keys.
+  - *Answers to what the player did in the game itself*, where they are
+    looking: a `/lgc` command's usage, "Not connected" and "Not sent: …";
+    sticky mode's own lines ("Now talking in", "Stopped talking in", its "Not
+    sent", the ChatTwo and ExtraChat notes); a right-click invite's "Invited
+    Bob@Lich to [sky]."; and `/lgdebug colours`. These are printed by the
+    plugin directly, never through the channel rules, so the setting can't
+    reach them. What a channel window's input box says ("Not sent: …") stays
+    in the window, as before.
+  - When in doubt about a line about a channel, it goes to windows only.
+- **A channel no window shows opens in one.** A line kept out of game chat
+  asks for a window (`PendingWindows`); if no channel window has the channel,
+  a second setting (`Configuration.WindowOpening`) chooses where it goes:
+  - **Add it as a tab to the window used last** (the default): the channel
+    window that last had the focus, or, if it has been closed or none has had
+    the focus this session, the one opened last. "Used last" is kept for the
+    session only; nothing new is saved. The tab is added at the end, not
+    selected, so the tab the player is reading stays where it was, and the new
+    one shows its count of new messages (from others since login), as a tab
+    reopened at login behind another does.
+  - **Open a new window each time**: a new window with the channel as its only
+    tab.
+  - With no window open, a new one either way; several channels at once share
+    the window opened for the first (or get one each, with a new window each
+    time). A new window opens a little below and right of the window used
+    last, or where ImGui puts new windows if there is none.
+  - Neither takes the keyboard from the game: a window opened this way doesn't
+    take the focus (as windows reopened at login), and adding a tab doesn't
+    bring its window to the front. Windows opened this way are remembered like
+    any other.
+  - The main window's channel pane doesn't count as showing a channel: only
+    channel windows do.
+  - Only channels in the complete channel list open (not a place from old
+    keys); a channel left meanwhile is dropped. They wait for the windows to
+    come back at login, so a channel already in a remembered window isn't
+    opened twice.
+- **In combat, a cutscene or a loading screen** (Dalamud's `ICondition`:
+  `InCombat`, `OccupiedInCutSceneEvent`, `WatchingCutscene`,
+  `WatchingCutscene78`, `BetweenAreas`, `BetweenAreas51`), no window opens and
+  no tab is added (owner decision: wait until after). The channels wait, once
+  each and in the order they asked, and open once it is over. Nothing is lost
+  meanwhile: the history keeps every line since login.
+- **Each channel's "Show in game chat"** can't be changed while the setting is
+  on: in the channel's ⋮ menu and a tab's right-click menu it is greyed out,
+  with a tooltip saying that only windows show messages now and to change it
+  in Settings, under Chat; a tab's tooltip says the same. It is kept as it was.
+  While the setting is on, a channel off game chat that no window shows isn't
+  put back in game chat (the usual "shows in game chat again" rule): the next
+  line for it opens a window anyway.
+- **Turning it off** restores the usual behaviour at once (the next line goes
+  where its channel's own setting says), and nothing about each channel's
+  choice is lost. What was waiting for a window is dropped. A channel that is
+  off game chat on its own and that no window shows then gets a window (as the
+  setting for opening says), so its choice is kept rather than undone. Turned
+  off while logged out, that happens at the next login, once the channel list
+  is in.
+
 ### Chat log on this computer
 
 Built at the owner's request (decided 2026-10-06 and 2026-10-07). Testers asked
@@ -3120,26 +3203,6 @@ that, tell the operator, and let the operator ban them from connecting.
   review flags without reading logs (a `--flags` command, or a small
   operator-only page later).
 
-### Windows only, never game chat
-
-Status: planned, not started (tester request, accepted by the owner
-2026-10-07). For heavy users who want the game's own chat kept clean.
-
-- **One setting, "Show LookingGlass messages only in windows"** (off by
-  default). While on, no channel's messages or information lines go to game
-  chat, whatever each channel's "Also show in game chat" says.
-- **A message for a channel no window shows opens one,** without taking the
-  keyboard from the game. A second setting chooses how: **add it as a tab to
-  an existing window** (which one: the most recently used, say), or **open a
-  new window every time**.
-- **To decide when it's built:** whether warnings still go to game chat (today
-  a warning is never hidden there, even for a channel kept out of game chat;
-  keeping that rule is the safe default), how unread counts and the first
-  message's arrival are signalled without game chat (a window opening, its
-  tab's count), and what happens while the game is in a cutscene or in combat
-  (a window opening mid-fight may be unwelcome: maybe wait, or open it
-  minimised).
-
 ### A chat history kept unencrypted
 
 Status: planned, not started (tester request, accepted by the owner
@@ -3278,6 +3341,13 @@ The owner's decisions, and why.
   the two options. Through Dalamud's `IContextMenu` and ChatTwo's context menu
   IPC, with no game hooks, no protocol change and no server change. See
   [Context menu invites](#context-menu-invites).
+- **Windows only (2026-10-07).** One setting, "Show LookingGlass messages
+  only in windows", keeps every channel's messages and information lines out
+  of game chat; warnings and critical lines still go there, as do answers to
+  what the player typed in the chat box. A channel no window shows gets a tab
+  in the window used last, or a new window, as a second setting says, without
+  taking the keyboard; in combat, a cutscene or a loading screen it waits
+  until that is over. See [Windows only, never game chat](#windows-only-never-game-chat).
 - **Friends-only local chat (2026-10-05).** No party or Free Company option,
   since those can include people a player doesn't trust.
 - **Key-change policy for re-verified keys.** Keys re-verified through the
