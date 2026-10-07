@@ -1705,8 +1705,9 @@ These are plugin settings, kept per character, and never sent to the server.
   unless **Show nicknames in chat tags** is off; otherwise with its number, as
   in `[LGC3]`. A channel with neither (more than fifty channels, or a message
   that arrives before the channel list is in) is tagged `[LGC]`.
-- **Colours.** Any of the game's own chat colours. The channel's lines take
-  the colour, or only the tag if **Colour the whole line in a channel's
+- **Colours.** One of 40 of the game's own chat colours, or a custom colour,
+  any RGB value (see [Custom colours](#custom-colours)). The channel's lines
+  take the colour, or only the tag if **Colour the whole line in a channel's
   colour** is off. The bar beside the channel in the list takes it too.
   **Default** colours only the tag.
 - **Chat channel.** Messages appear in one of the game's chat channels, chosen
@@ -1734,6 +1735,78 @@ These are plugin settings, kept per character, and never sent to the server.
   warning keeps its orange either way, and invitees stay grey until they join.
 - **Confirmations.** Removing a member needs **Ctrl** held. Leaving or
   disbanding asks first. Cancelling an invite happens straight away.
+
+### Custom colours
+
+A channel's colour is either a row of the game's UIColor sheet (one of the 40
+swatches, as every colour was before) or a custom colour, any RGB value. The
+owner's decision (2026-10-07): try arbitrary colours; if they don't show
+correctly in the game, offer the game's whole UIColor table instead. So custom
+colours are an addition, the swatches stay, and both can be checked in game
+([docs/testing/custom-colours-checklist.md](testing/custom-colours-checklist.md)).
+
+- **Kept.** Per character, never sent to the server, like the rest. Rows stay
+  in `ChannelColours` (channel ID → row), unchanged, so settings saved before
+  read the same; custom colours are a second map, `CustomChannelColours`
+  (channel ID → 0xRRGGBB). A channel is in at most one (choosing either clears
+  the other); a hand-edited file with both shows the custom colour. Both are
+  dropped when the channel is gone. An older version of the plugin ignores the
+  second map: those channels show the default colour there. The rules are the
+  core library's `ChannelColour` and `ChannelColours`, unit tested.
+- **Picking one.** The colour menu keeps its swatches and **Default**, and adds
+  **Custom...**: a colour wheel (ImGui's hue wheel) and a colour code field
+  (`#RRGGBB`; the `#` may be left out, either case), kept in step both ways. A
+  code that isn't `#` and six hex digits is refused with a plain line, and
+  **Use this colour** is greyed out until it is fixed. Under them: a preview
+  of a chat line on a dark background like the chat's (the tag, and the whole
+  line if that setting is on), the closest game colour (see below) as a
+  swatch, and, for a colour too dark to read (WCAG contrast below 2:1 against a
+  typical chat background, `#1E1E1E`: navy, maroon, dark grey, pure blue), the
+  plain line "This colour is very dark, so it may be hard to read in chat. You
+  can still use it." A channel with a custom colour shows it as an outlined
+  swatch beside **Custom...**. The picker's words are the same in both modes
+  and checked for jargon.
+- **The closest game colour.** For each custom colour, the UIColor row that
+  looks closest: the smallest distance in CIELAB (ΔE*76, sRGB with a D65
+  white), not in raw RGB, which misjudges by eye (pure green is nearer a
+  darker green in RGB but looks nearer a lighter one). Only fully opaque rows
+  count, row 0 never, and ties go to the lowest row. It is read from the whole
+  sheet (its Dark column, the one ImGui and ChatTwo use), not only the swatches.
+- **In the game's text: layered.** Chat lines (the tag, and the whole line if
+  that's on), LookingGlass's lines that name the channel's tag, the server
+  info bar and the game's right-click menu are SeStrings. A row is the
+  UIForeground macro, as always. A custom colour is two macros, nested:
+  `UIForeground(closest row) → Color(exact) → text → Color off → UIForeground
+  off`. Whatever shows the Color macro shows the exact colour, the innermost;
+  whatever ignores it still shows the closest row instead of no colour. The
+  order of every coloured line is decided in `ColouredText` (core, tested:
+  every push popped, in the opposite order); the plugin's `GameText` writes
+  it. Dalamud's SeString has no payload for the Color macro, so it is written
+  with Lumina's `SeStringBuilder.PushColorRgba` and `PopColor` and read back
+  with `SeString.Parse`, which keeps it byte for byte as a `RawPayload`: for
+  0x123456, `02 13 06 FE FF 12 34 56 03`; the pop, `02 13 02 EC 03`
+  (`stackcolor`).
+- **ChatTwo** (from its public source, 2026-09-27): it reads each chat line's
+  payloads into one stack of colours. UIForeground pushes the row's Dark
+  colour and its "off" pops; a `RawPayload` that is a Color macro (0x13) with
+  a literal colour pushes that exact colour, and `stackcolor` pops. So ChatTwo
+  shows the exact colour (the inner push is on top), and the text after the
+  tag goes back to the chat channel's colour once both are popped. ChatTwo's
+  input label (`ExtraChat.OverrideChannelColour`) takes 0xRRGGBBAA directly,
+  so it gets the exact colour too.
+- **Everywhere else: exact.** ImGui takes any colour, so the channel list's
+  bar, the dot before the channel's name, channel windows' tabs, their "add a
+  channel" list and their senders' names, and ChatTwo's right-click menu show
+  the custom colour itself.
+- **What is checked in game.** Whether the game's chat log, the server info
+  bar and the game's menus show the Color macro (we believe they do: it is
+  the game's own formatting), what ChatTwo shows, and whether text after an
+  item link inside a custom-coloured line keeps the exact colour (the game
+  keeps UIForeground and Color as separate stacks, so this is the one case the
+  layering could show the closest row instead). To compare without changing
+  any channel, the debug window's **Colour test** (or `/lgdebug colours
+  #RRGGBB ...`) prints, for each colour, a line layered as a channel's is,
+  one in only its closest row, and one in only the exact colour.
 
 ### Talking in a channel without /lgc
 
