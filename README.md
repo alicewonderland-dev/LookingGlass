@@ -21,6 +21,9 @@ early testing (version 0.2).
 - **Nicknames and colours.** Give a channel a short nickname and one of the
   game's chat colours. Chat lines are tagged with the nickname, as in `[sky]`,
   or the number, as in `[LGC3]`.
+- **Name colours.** Give someone's name a colour of its own, to tell people
+  apart at a glance in a busy channel. It shows in every channel, and only you
+  see it.
 - **Unread counts.** The channel list counts new messages, and the window's
   title shows the total.
 - **Channel windows.** Right-click a channel in the list to chat in a window
@@ -120,6 +123,10 @@ Select a channel in the main window to see its members and settings.
   any colour on a wheel or type its code, like `#3FA7D6`. In Settings you can
   choose whether the whole line or only the tag takes the colour, and whether
   tags show nicknames.
+- **Name colours.** Right-click a name in the member list, or a message in a
+  channel window, and choose **Name colour...**. That name then shows in the
+  colour in every channel: in chat, in channel windows and in member lists.
+  **Default** puts it back. Your own name works too.
 - **Ranks.** Moderators can invite people and remove members below them. The
   admin can also rename the channel, make or unmake moderators, hand over the
   admin role and disband the channel. The admin can't leave while others
