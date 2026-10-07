@@ -6,6 +6,7 @@ using Dalamud.Interface.Colors;
 using Dalamud.Interface.Components;
 using Dalamud.Interface.Utility;
 using LookingGlass.Core.Client;
+using LookingGlass.Core.Util;
 using LookingGlass.Protocol;
 
 namespace LookingGlass.Plugin.Ui;
@@ -27,6 +28,11 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
     private bool _nicknameFocus;
     private string _inviteName = "";
     private string _inviteWorld = "";
+    // The colour popup's custom colour part: shown, its wheel's colour, the code as typed, and whether that can't be read.
+    private bool _customOpen;
+    private Vector3 _custom;
+    private string _customCode = "";
+    private bool _customCodeBad;
 
     /// <summary>Called when the channel is gone (left, disbanded) so the window can pick another.</summary>
     public event Action? Closed;
@@ -45,6 +51,7 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
             this._nicknameError = null;
             this._inviteName = "";
             this._inviteWorld = "";
+            this._customOpen = false;
         }
 
         ImGui.PushID(channel.Id);
@@ -97,7 +104,7 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
         var buttonY = top + MathF.Round((lineHeight - button) / 2);
 
         // The channel's colour, once: a dot before its name (and the bar in the channel list).
-        if (sessions.ColourOf(channel.Id) is { } row && ChannelPalette.ColourOf(row) is { } colour) {
+        if (sessions.ColourOf(channel.Id) is { } own && ChannelPalette.ColourOf(own) is { } colour) {
             var radius = MathF.Round(ImGui.GetFontSize() * 0.28f);
             var pos = ImGui.GetCursorScreenPos();
             if (ImGui.InvisibleButton("##colour-dot", new Vector2(radius * 2, lineHeight))) {
@@ -384,7 +391,18 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
             return;
         }
 
-        var row = sessions.ColourOf(channel.Id);
+        if (ImGui.IsWindowAppearing()) {
+            // Always opens on the swatches.
+            this._customOpen = false;
+        }
+
+        var current = sessions.ColourOf(channel.Id);
+        if (this._customOpen) {
+            this.DrawCustomColour(channel);
+            ImGui.EndPopup();
+            return;
+        }
+
         ImGui.TextUnformatted("Channel colour");
         ImGui.TextColored(Widgets.Muted, "For its lines in chat and its place in the channel list.");
         ImGuiHelpers.ScaledDummy(4);
@@ -397,24 +415,169 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
             }
 
             if (ImGui.ColorButton($"##swatch{swatchRow}", swatchColour, ImGuiColorEditFlags.NoTooltip | ImGuiColorEditFlags.NoAlpha, new Vector2(swatch, swatch))) {
-                sessions.SetColour(channel.Id, swatchRow);
+                sessions.SetColour(channel.Id, ChannelColour.OfRow(swatchRow));
                 ImGui.CloseCurrentPopup();
             }
 
-            if (swatchRow == row) {
-                var outline = 2 * Widgets.Scale;
-                ImGui.GetWindowDrawList().AddRect(ImGui.GetItemRectMin() - new Vector2(outline), ImGui.GetItemRectMax() + new Vector2(outline),
-                    ImGui.GetColorU32(ImGuiCol.Text), 3 * Widgets.Scale, ImDrawFlags.None, outline);
+            if (current is { IsCustom: false } chosen && chosen.Row == swatchRow) {
+                OutlineLastItem();
             }
         }
 
         ImGuiHelpers.ScaledDummy(4);
-        if (Widgets.GhostButton(row == null ? "Default (selected)" : "Default", "Only the tag is coloured, in the usual colour.")) {
+        if (Widgets.GhostButton(current == null ? "Default (selected)" : "Default", "Only the tag is coloured, in the usual colour.")) {
             sessions.SetColour(channel.Id, null);
             ImGui.CloseCurrentPopup();
         }
 
+        ImGui.SameLine();
+        if (current is { IsCustom: true } custom) {
+            // The channel's own custom colour, selected: click it (or Custom...) to change it.
+            ImGui.AlignTextToFramePadding();
+            if (ImGui.ColorButton("##custom-current", ChannelPalette.OfRgb(custom.Rgb), ImGuiColorEditFlags.NoTooltip | ImGuiColorEditFlags.NoAlpha,
+                    new Vector2(swatch, swatch))) {
+                this.OpenCustom(current);
+            }
+
+            OutlineLastItem();
+            Widgets.Tooltip(ColourWords.CurrentCustom(custom.Rgb));
+            ImGui.SameLine();
+        }
+
+        if (Widgets.GhostButton(ColourWords.CustomButton, ColourWords.CustomTooltip)) {
+            this.OpenCustom(current);
+        }
+
         ImGui.EndPopup();
+    }
+
+    /// <summary>A selected swatch's outline, around the last item.</summary>
+    private static void OutlineLastItem() {
+        var outline = 2 * Widgets.Scale;
+        ImGui.GetWindowDrawList().AddRect(ImGui.GetItemRectMin() - new Vector2(outline), ImGui.GetItemRectMax() + new Vector2(outline),
+            ImGui.GetColorU32(ImGuiCol.Text), 3 * Widgets.Scale, ImDrawFlags.None, outline);
+    }
+
+    /// <summary>Shows the custom colour part, starting from the channel's colour (a row's colour as it shows), or LookingGlass blue.</summary>
+    private void OpenCustom(ChannelColour? current) {
+        var rgb = current switch {
+            { IsCustom: true } custom => custom.Rgb,
+            { } row when ChannelPalette.ColourOf(row) is { } shown => ChannelPalette.RgbOf(new Vector3(shown.X, shown.Y, shown.Z)),
+            _ => ChannelPalette.ChatColourOf(null) is { } blue ? ChannelPalette.RgbOf(new Vector3(blue.X, blue.Y, blue.Z)) : 0x0099FFu,
+        };
+
+        this._customOpen = true;
+        this.SetCustom(rgb);
+    }
+
+    private void SetCustom(uint rgb) {
+        var colour = ChannelPalette.OfRgb(rgb);
+        this._custom = new Vector3(colour.X, colour.Y, colour.Z);
+        this._customCode = HexColour.Format(rgb);
+        this._customCodeBad = false;
+    }
+
+    /// <summary>
+    /// "Custom...": a colour wheel and the colour's code, kept in step both ways; a preview of a chat line; the closest game
+    /// colour, used where the exact one can't be shown; and a warning for a colour too dark to read.
+    /// </summary>
+    private void DrawCustomColour(ChannelView channel) {
+        var scale = Widgets.Scale;
+        var width = 260 * scale;
+        ImGui.TextUnformatted(ColourWords.CustomTitle);
+        ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + width);
+        ImGui.TextColored(Widgets.Muted, ColourWords.CustomExplanation);
+        ImGuiHelpers.ScaledDummy(4);
+
+        ImGui.SetNextItemWidth(width * 0.8f);
+        if (ImGui.ColorPicker3("##custom-wheel", ref this._custom,
+                ImGuiColorEditFlags.PickerHueWheel | ImGuiColorEditFlags.NoAlpha | ImGuiColorEditFlags.NoSidePreview | ImGuiColorEditFlags.NoInputs |
+                ImGuiColorEditFlags.NoLabel)) {
+            this._customCode = HexColour.Format(ChannelPalette.RgbOf(this._custom));
+            this._customCodeBad = false;
+        }
+
+        ImGuiHelpers.ScaledDummy(2);
+        ImGui.AlignTextToFramePadding();
+        ImGui.TextUnformatted("Colour code");
+        ImGui.SameLine();
+        ImGui.SetNextItemWidth(90 * scale);
+        if (ImGui.InputTextWithHint("##custom-code", ColourWords.CodeHint, ref this._customCode, 16)) {
+            if (HexColour.TryParse(this._customCode, out var typed)) {
+                var colour = ChannelPalette.OfRgb(typed);
+                this._custom = new Vector3(colour.X, colour.Y, colour.Z);
+                this._customCodeBad = false;
+            } else {
+                this._customCodeBad = true;
+            }
+        }
+
+        var rgb = ChannelPalette.RgbOf(this._custom);
+        if (!ImGui.IsItemActive() && !this._customCodeBad) {
+            // Tidied once it's typed: "3fa7d6" reads "#3FA7D6".
+            this._customCode = HexColour.Format(rgb);
+        }
+
+        if (this._customCodeBad) {
+            Widgets.WrappedColoured(Widgets.Error, ColourWords.CodeProblem);
+        }
+
+        ImGuiHelpers.ScaledDummy(4);
+        ImGui.TextColored(Widgets.Muted, ColourWords.Preview);
+        this.DrawPreview(channel, rgb, width);
+
+        if (ColourMatch.HardToRead(rgb)) {
+            ImGuiHelpers.ScaledDummy(2);
+            Widgets.WrappedColoured(Widgets.Warning, ColourWords.HardToRead);
+        }
+
+        if (ChannelPalette.Nearest(rgb) is { } nearest && ChannelPalette.ColourOf(nearest) is { } nearestColour) {
+            ImGuiHelpers.ScaledDummy(2);
+            ImGui.TextColored(Widgets.Muted, ColourWords.Fallback);
+            var swatch = 18 * scale;
+            ImGui.ColorButton("##custom-nearest", nearestColour, ImGuiColorEditFlags.NoTooltip | ImGuiColorEditFlags.NoAlpha, new Vector2(swatch, swatch));
+            Widgets.Tooltip(sessions.AdvancedMode ? $"UIColor {nearest}" : "The closest game colour.");
+        }
+
+        ImGui.PopTextWrapPos();
+        ImGuiHelpers.ScaledDummy(4);
+        ImGui.BeginDisabled(this._customCodeBad);
+        if (ImGui.Button(ColourWords.Use) && !this._customCodeBad) {
+            sessions.SetColour(channel.Id, ChannelColour.Custom(rgb));
+            ImGui.CloseCurrentPopup();
+        }
+
+        ImGui.EndDisabled();
+        ImGui.SameLine();
+        if (Widgets.GhostButton(ColourWords.Back)) {
+            this._customOpen = false;
+        }
+    }
+
+    /// <summary>A sample chat line in the colour, on a dark background like the chat's: the tag, and the whole line if that's on.</summary>
+    private void DrawPreview(ChannelView channel, uint rgb, float width) {
+        var scale = Widgets.Scale;
+        var colour = ChannelPalette.OfRgb(rgb);
+        // The rest of the line, when only the tag is coloured: light grey, like most chat text.
+        var rest = new Vector4(0.85f, 0.85f, 0.85f, 1);
+        var me = sessions.Snapshot.Me;
+        var sender = me != null ? $"<{me.Name}@{me.WorldName}> " : "<You> ";
+        var tag = sessions.TagOf(channel.Id) + " ";
+        var padding = 6 * scale;
+        var text = sender + ColourWords.SampleText;
+        var tagWidth = ImGui.CalcTextSize(tag).X;
+        var textSize = ImGui.CalcTextSize(text, false, width - 2 * padding - tagWidth);
+        var height = textSize.Y + 2 * padding;
+        var pos = ImGui.GetCursorScreenPos();
+        ImGui.GetWindowDrawList().AddRectFilled(pos, pos + new Vector2(width, height), ImGui.GetColorU32(ChannelPalette.OfRgb(ColourMatch.TypicalChatBackground)), 4 * scale);
+        ImGui.SetCursorScreenPos(pos + new Vector2(padding, padding));
+        ImGui.TextColored(colour, tag);
+        ImGui.SameLine(0, 0);
+        ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + width - 2 * padding - tagWidth);
+        ImGui.TextColored(sessions.ColourWholeLine ? colour : rest, text);
+        ImGui.PopTextWrapPos();
+        ImGui.SetCursorScreenPos(pos with { Y = pos.Y + height });
+        ImGui.Dummy(new Vector2(width, 0));
     }
 
     // ================================================================ commands

@@ -16,39 +16,28 @@ public sealed class ChatOutput(Configuration config) {
 
     /// <param name="slot">The channel's command number, if it has one.</param>
     /// <param name="nickname">The channel's nickname, if it has one: its tag, unless nickname tags are turned off.</param>
-    /// <param name="colour">The channel's colour (a UIColor row), or null for the default: only the tag coloured.</param>
+    /// <param name="colour">The channel's colour (a UIColor row or a custom colour), or null for the default: only the tag coloured.</param>
     /// <param name="sentAt">For a message caught up from while the player was away: when it was sent (see <see cref="CatchUpChat.TimeLabel"/>), after the tag.</param>
-    public void Message(IncomingMessage message, int? slot, string? nickname, ushort? colour = null, string? sentAt = null) {
+    public void Message(IncomingMessage message, int? slot, string? nickname, ChannelColour? colour = null, string? sentAt = null) {
         RunOnFramework(() => {
             var tag = ChannelTag.For(slot, nickname, config.NicknameTags);
             // Everything from other users is sanitised: raw control bytes would become live game formatting.
             var sender = $"<{TextSanitizer.Name(message.Sender.Name)}@{TextSanitizer.Name(message.Sender.WorldName)}> ";
-            var builder = new SeStringBuilder().AddUiForeground(tag, colour ?? TagColour);
-            if (sentAt != null) {
-                // Before the sender, in brackets, so it reads as when, not as part of what was said.
-                builder.AddText($"[{sentAt}] ");
-            }
+            // The tag in the channel's colour, and the whole line too (like the game's own linkshells) if that's on; a
+            // custom colour layered over its closest game colour (see ColouredText).
+            var parts = ColouredText.Message(tag, colour, sentAt, config.ColourWholeLine, GameText.Nearest);
+            var line = GameText.Append(new SeStringBuilder(), parts, builder => {
+                builder.AddText(sender);
+                if (message.Unsupported) {
+                    builder.AddItalics("(a message type this version can't show)");
+                } else if (message.Links.Count == 0) {
+                    builder.AddText(TextSanitizer.Clean(message.Text));
+                } else {
+                    AddLinked(builder, message.Linked);
+                }
+            });
 
-            // The whole line in the channel's colour, like the game's own linkshells.
-            var wholeLine = colour != null && config.ColourWholeLine;
-            if (wholeLine) {
-                builder.AddUiForeground(colour!.Value);
-            }
-
-            builder.AddText(sender);
-            if (message.Unsupported) {
-                builder.AddItalics("(a message type this version can't show)");
-            } else if (message.Links.Count == 0) {
-                builder.AddText(TextSanitizer.Clean(message.Text));
-            } else {
-                AddLinked(builder, message.Linked);
-            }
-
-            if (wholeLine) {
-                builder.AddUiForegroundOff();
-            }
-
-            Services.Chat.Print(new XivChatEntry { Type = config.ChatType, Message = builder.Build() });
+            Services.Chat.Print(new XivChatEntry { Type = config.ChatType, Message = line.Build() });
         });
     }
 
@@ -86,28 +75,13 @@ public sealed class ChatOutput(Configuration config) {
 
     /// <summary>Shows a notice in chat only, in a tone's colour.</summary>
     /// <param name="tag">A channel's tag in the text, shown in the channel's colour (<paramref name="tagColour"/>).</param>
-    public void Notice(NoticeTone tone, string text, string? tag = null, ushort? tagColour = null) {
+    public void Notice(NoticeTone tone, string text, string? tag = null, ChannelColour? tagColour = null) {
         // Notices embed remote text (names, channel names, server errors and announcements).
         text = TextSanitizer.Clean(text);
         tag = tag == null ? null : TextSanitizer.Clean(tag);
-        var colour = NoticeColours.Of(tone);
         RunOnFramework(() => {
-            var builder = new SeStringBuilder().AddUiForeground("[LookingGlass] ", NoticeColours.Blue);
-            var at = string.IsNullOrEmpty(tag) ? -1 : text.IndexOf(tag, StringComparison.Ordinal);
-            if (at < 0) {
-                builder.AddUiForeground(text, colour);
-            } else {
-                if (at > 0) {
-                    builder.AddUiForeground(text[..at], colour);
-                }
-
-                builder.AddUiForeground(tag!, tagColour ?? TagColour);
-                if (at + tag!.Length < text.Length) {
-                    builder.AddUiForeground(text[(at + tag.Length)..], colour);
-                }
-            }
-
-            Services.Chat.Print(new XivChatEntry { Type = config.ChatType, Message = builder.Build() });
+            var parts = ColouredText.Notice(tone, text, tag, tagColour, GameText.Nearest);
+            Services.Chat.Print(new XivChatEntry { Type = config.ChatType, Message = GameText.Build(parts) });
         });
     }
 
@@ -115,7 +89,22 @@ public sealed class ChatOutput(Configuration config) {
     /// A line about a channel (talking in it, or stopping): information, in LookingGlass blue, with the channel's tag in
     /// its colour (the tag colour for the default).
     /// </summary>
-    public void ChannelNotice(string text, string tag, ushort? colour) => this.Notice(NoticeTone.Info, text, tag, colour);
+    public void ChannelNotice(string text, string tag, ChannelColour? colour) => this.Notice(NoticeTone.Info, text, tag, colour);
+
+    /// <summary>
+    /// The colour test (/lgdebug): for each colour, a line layered as a channel's would be, one in only its closest game
+    /// colour, and one in only the exact colour (see <see cref="ColouredText.Samples"/>). Nothing about any channel changes.
+    /// </summary>
+    public void ColourSamples(IEnumerable<uint> colours) {
+        var samples = colours.ToList();
+        RunOnFramework(() => {
+            foreach (var rgb in samples) {
+                foreach (var line in ColouredText.Samples(rgb, GameText.Nearest)) {
+                    Services.Chat.Print(new XivChatEntry { Type = config.ChatType, Message = GameText.Build(line) });
+                }
+            }
+        });
+    }
 
     private static void RunOnFramework(Action action) {
         _ = Services.Framework.RunOnFrameworkThread(() => {

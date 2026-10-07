@@ -70,7 +70,10 @@ internal sealed class ChatTwoIpc : IDisposable {
         }
     }
 
-    /// <summary>Shows <paramref name="label"/> as ChatTwo's input channel (in a UIColor row's colour), or with null, its own again.</summary>
+    /// <summary>
+    /// Shows <paramref name="label"/> as ChatTwo's input channel, or with null, its own again. ChatTwo draws it in
+    /// <paramref name="rgba"/> exactly (0xRRGGBBAA, as UIColor rows are packed), so a custom colour needs no fallback here.
+    /// </summary>
     public void SetChannelLabel(string? label, uint rgba) {
         this._current = new OverrideInfo { Channel = label, UiColour = 0, Rgba = rgba };
         this.Send();

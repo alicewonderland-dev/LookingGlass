@@ -40,7 +40,7 @@ public sealed class Plugin : IDalamudPlugin {
             this._settingsWindow.IsOpen = true;
             this._settingsWindow.BringToFront();
         });
-        this._debugWindow = new DebugWindow(this._sessions);
+        this._debugWindow = new DebugWindow(this._sessions, chat);
         this._windows.AddWindow(this._mainWindow);
         this._windows.AddWindow(this._settingsWindow);
         this._windows.AddWindow(this._debugWindow);

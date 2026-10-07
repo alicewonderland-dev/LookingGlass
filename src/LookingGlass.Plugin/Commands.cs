@@ -47,9 +47,29 @@ public sealed class Commands : IDisposable {
         Services.Commands.AddHandler(ShortMainCommand, new CommandInfo((_, _) => this._toggleMain()) {
             HelpMessage = "Short for /lookingglass.",
         });
-        Services.Commands.AddHandler(DebugCommand, new CommandInfo((_, _) => this._toggleDebug()) {
-            HelpMessage = "Open the LookingGlass debug window.",
+        Services.Commands.AddHandler(DebugCommand, new CommandInfo(this.OnDebugCommand) {
+            HelpMessage = "Open the LookingGlass debug window. /lgdebug colours [#RRGGBB ...] prints custom colour samples to chat.",
         });
+    }
+
+    /// <summary>
+    /// /lgdebug opens the debug window; "/lgdebug colours" (or "colors") with colour codes, or none for five samples,
+    /// prints the colour test to chat instead (see <see cref="ChatOutput.ColourSamples"/>). Nothing about any channel changes.
+    /// </summary>
+    private void OnDebugCommand(string command, string arguments) {
+        var words = arguments.Trim();
+        var space = words.IndexOf(' ');
+        var first = space < 0 ? words : words[..space];
+        if (!first.Equals("colours", StringComparison.OrdinalIgnoreCase) && !first.Equals("colors", StringComparison.OrdinalIgnoreCase)) {
+            this._toggleDebug();
+            return;
+        }
+
+        if (ColouredText.TestColoursFrom(space < 0 ? "" : words[(space + 1)..]) is { } colours) {
+            this._chat.ColourSamples(colours);
+        } else {
+            this._chat.Notice(NoticeTone.Info, $"Usage: {DebugCommand} colours #FF66CC #33DDAA (colour codes are # and six digits or letters A to F).");
+        }
     }
 
     private void OnSlotCommand(string command, string arguments) {

@@ -5,6 +5,7 @@ using Dalamud.Game.Gui.Dtr;
 using Dalamud.Game.Text.SeStringHandling;
 using Dalamud.Plugin.Services;
 using LookingGlass.Core.Client;
+using LookingGlass.Plugin.Ui;
 using Lumina.Excel.Sheets;
 
 namespace LookingGlass.Plugin;
@@ -44,7 +45,7 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
     // ChatTwo's label: set while talking in a channel (and sent again now and then), cleared as soon as it stops.
     private readonly LabelKeeper _chatTwoLabel = new(1000);
     // The tag and colour shown while talking in a channel, or null.
-    private (string Tag, ushort Colour)? _shown;
+    private (string Tag, ChannelColour Colour)? _shown;
     // The chat box state last written to the diagnostic log while talking in a channel.
     private ChatBoxState? _loggedChatBox;
     // The tag is held back from the game chat input's label (see OnChatLogPreDraw).
@@ -395,7 +396,7 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
     /// </summary>
     private void Ended(string channelId, StickyEnd why) {
         // As last shown: after a logout or a disconnect, the channel's number and nickname are no longer at hand.
-        var (tag, colour) = this._shown ?? (this.TagOf(channelId), this._sessions.ColourOf(channelId) ?? ChatOutput.TagColour);
+        var (tag, colour) = this._shown ?? (this.TagOf(channelId), this._sessions.ColourOf(channelId) ?? ColouredText.DefaultTag);
         Log(() => StickyDiagnostics.Ended(tag, why, ChatInterop.ReadChatBox()));
         this._loggedChatBox = null;
         this._labelHeldBack = false;
@@ -418,13 +419,13 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
     /// every start and end. The game chat input's own name is kept in step before each draw (<see cref="OnChatLogPreDraw"/>).
     /// </summary>
     private void SyncIndicators() {
-        (string Tag, ushort Colour)? wanted = this._state.ChannelId is { } channelId
-            ? (this.TagOf(channelId), this._sessions.ColourOf(channelId) ?? ChatOutput.TagColour)
+        (string Tag, ChannelColour Colour)? wanted = this._state.ChannelId is { } channelId
+            ? (this.TagOf(channelId), this._sessions.ColourOf(channelId) ?? ColouredText.DefaultTag)
             : null;
 
         try {
             if (this._chatTwoLabel.ShouldSend(wanted is { } key ? $"{key.Tag}\n{key.Colour}" : null, Environment.TickCount64)) {
-                this._chatTwo.SetChannelLabel(wanted is { } shown ? $"LookingGlass {shown.Tag}" : null, wanted is { } coloured ? RgbaOf(coloured.Colour) : White);
+                this._chatTwo.SetChannelLabel(wanted is { } shown ? $"LookingGlass {shown.Tag}" : null, wanted is { } coloured ? ChannelPalette.RgbaOf(coloured.Colour) ?? White : White);
             }
         } catch (Exception ex) {
             Services.Log.Warning(ex, "Couldn't update ChatTwo's channel name");
@@ -440,7 +441,8 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
         }
 
         if (wanted is { } bar) {
-            this._infoBar.Text = new SeStringBuilder().AddUiForeground($"LG {bar.Tag}", bar.Colour).Build();
+            // A custom colour layered over its closest game colour, as in chat (see ColouredText).
+            this._infoBar.Text = GameText.Build(ColouredText.InfoBar(bar.Tag, bar.Colour, GameText.Nearest));
             this._infoBar.Tooltip = $"What you type in chat goes to the LookingGlass channel {bar.Tag}, not to game chat. Click to stop.";
             this._infoBar.Shown = true;
         } else {
@@ -454,15 +456,6 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
         };
 
     private string TagOf(string channelId) => ChannelTag.For(this._sessions.SlotOf(channelId), this._sessions.NicknameOf(channelId), this._config.NicknameTags);
-
-    private static uint RgbaOf(ushort row) {
-        try {
-            return Services.Data.GetExcelSheet<UIColor>().GetRowOrDefault(row) is { } colour && colour.Dark != 0 ? colour.Dark : White;
-        } catch (Exception ex) {
-            Services.Log.Warning(ex, $"Couldn't read UIColor row {row}");
-            return White;
-        }
-    }
 
     /// <summary>Unloading: stops talking in the channel first (and says so), puts the chat input's name back, then removes the hooks.</summary>
     public void Dispose() {

@@ -650,7 +650,7 @@ public sealed class MainWindow : Window {
         var style = ImGui.GetStyle();
         var slot = this._sessions.SlotOf(channel.Id);
         var nickname = this._sessions.NicknameOf(channel.Id);
-        var colour = this._sessions.ColourOf(channel.Id) is { } row ? ChannelPalette.ColourOf(row) : null;
+        var colour = this._sessions.ColourOf(channel.Id) is { } own ? ChannelPalette.ColourOf(own) : null;
         var unread = this._sessions.Unread.CountOf(channel.Id);
         var attention = ChannelAttention.Of(channel, this._config.AdvancedMode);
         var displayName = channel.DisplayNameFor(this._config.AdvancedMode);

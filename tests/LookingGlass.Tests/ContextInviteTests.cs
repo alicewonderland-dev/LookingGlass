@@ -16,7 +16,7 @@ public sealed class ContextInviteTests {
 
     private static readonly Dictionary<string, int> NoSlots = new();
     private static readonly Dictionary<string, string> NoNicknames = new();
-    private static readonly Dictionary<string, ushort> NoColours = new();
+    private static readonly Dictionary<string, ChannelColour> NoColours = new();
 
     private static ChannelView Channel(string id, Rank myRank, string? name = "Tea party", bool oldKey = false, params MemberView[] others) {
         var members = ImmutableArray.Create(new MemberView(Me, myRank, null, false)).AddRange(others);
@@ -31,7 +31,7 @@ public sealed class ContextInviteTests {
     };
 
     private static IReadOnlyList<InviteOffer> Offers(SessionSnapshot snapshot, InviteTarget? target = null, Dictionary<string, int>? slots = null,
-        Dictionary<string, string>? nicknames = null, Dictionary<string, ushort>? colours = null, bool advanced = false) =>
+        Dictionary<string, string>? nicknames = null, Dictionary<string, ChannelColour>? colours = null, bool advanced = false) =>
         ContextInvites.Offers(snapshot, target ?? BobTarget, slots ?? NoSlots, nicknames ?? NoNicknames, colours ?? NoColours, nicknameTags: true, advanced);
 
     // ================================================================ which channels
@@ -172,16 +172,18 @@ public sealed class ContextInviteTests {
         var offers = Offers(snapshot,
             slots: new Dictionary<string, int> { ["sky"] = 3, ["fc"] = 4 },
             nicknames: new Dictionary<string, string> { ["sky"] = "sky" },
-            colours: new Dictionary<string, ushort> { ["sky"] = 45 }).ToDictionary(offer => offer.ChannelId);
+            colours: new Dictionary<string, ChannelColour> { ["sky"] = ChannelColour.OfRow(45), ["odd"] = ChannelColour.Custom(0x3FA7D6) }).ToDictionary(offer => offer.ChannelId);
 
         Assert.Equal("[sky]", offers["sky"].Tag);
-        Assert.Equal((ushort) 45, offers["sky"].Colour);
+        Assert.Equal(ChannelColour.OfRow(45), offers["sky"].Colour);
         Assert.Equal("[sky] Sky pirates", offers["sky"].Label);
         Assert.Equal(" Sky pirates", offers["sky"].Rest);
 
         Assert.Equal("[LGC4] Free company", offers["fc"].Label);
         Assert.Null(offers["fc"].Colour);
         Assert.Equal("[LGC] Odd one", offers["odd"].Label);
+        // A custom colour comes through as it is.
+        Assert.Equal(ChannelColour.Custom(0x3FA7D6), offers["odd"].Colour);
 
         // With nickname tags off, the number.
         var numbered = ContextInvites.Offers(snapshot, BobTarget, new Dictionary<string, int> { ["sky"] = 3 }, new Dictionary<string, string> { ["sky"] = "sky" },
@@ -238,7 +240,7 @@ public sealed class ContextInviteTests {
 
     // ================================================================ what is said
 
-    private static InviteOffer Sky => new("sky", "[sky]", 45, "Sky pirates", null);
+    private static InviteOffer Sky => new("sky", "[sky]", ChannelColour.OfRow(45), "Sky pirates", null);
 
     [Fact]
     public void SuccessNamesThePlayerAndTheChannelsTag() {
