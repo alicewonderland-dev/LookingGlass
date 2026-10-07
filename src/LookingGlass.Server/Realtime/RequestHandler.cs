@@ -1428,7 +1428,9 @@ public sealed class RequestHandler(
 
         var messages = options.Value.Messages;
         lock (this.RelayLock(channelId)) {
-            if (messages.Enabled) {
+            // Kept only if someone else could ever fetch it: a member (other than the sender) whose place can be used. One
+            // joining later gets nothing from before they joined.
+            if (messages.Enabled && db.GetMembers(channelId).Any(member => member.User.UserId != me.UserId && member is { Forgotten: false, CurrentKeys: true })) {
                 // Kept for members who are away, exactly as relayed, if the channel is still at that epoch (checked again
                 // as it is stored: a membership change may have landed since the checks above).
                 message.ServerId = db.StoreMessage(message, this._time.GetUtcNow().ToUnixTimeMilliseconds(), messages.MaxPerChannel)

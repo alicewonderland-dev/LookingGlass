@@ -439,6 +439,20 @@ public sealed class MessageStoreTests : IAsyncLifetime {
         Assert.Equal(0u, off.Limits.MaxStoredMessagesPerChannel);
     }
 
+    /// <summary>Nobody else could ever fetch what someone says alone in a channel (a member joining later gets nothing older), so it isn't kept.</summary>
+    [Fact]
+    public async Task WhatSomeoneSaysAloneIsntKept() {
+        var alice = await this._server.RegisterAsync("Alice Alone");
+        var bob = await this._server.RegisterAsync("Bob Joins Alice");
+        var channelId = await alice.Session.CreateChannelAsync("Alone Channel", Ct);
+        await alice.Session.SendTextAsync(channelId, "talking to myself", Ct);
+        Assert.Equal(0, this._server.Database.CountStoredMessages(channelId));
+
+        await AddMemberAsync(alice, channelId, bob);
+        await alice.Session.SendTextAsync(channelId, "hello bob", Ct);
+        Assert.Equal(1, this._server.Database.CountStoredMessages(channelId));
+    }
+
     [Fact]
     public async Task AServerKeepingNoMessagesStoresNoneAndRelaysAsBefore() {
         await using var server = new Harness(settings: ("LookingGlass:Messages:KeepDays", "0"));
@@ -470,6 +484,9 @@ public sealed class MessageStoreTests : IAsyncLifetime {
         Assert.Contains(withMessage, kept);
         // Of the others, only the newest few, as before.
         Assert.All(kept.Where(e => e != withMessage), e => Assert.True(e + 4 > epoch));
+        // A sweep while its message is kept leaves its key too.
+        this._server.Database.SweepMessages(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), 7, 5000);
+        Assert.Contains(withMessage, this._server.Database.StoredKeyEpochs(channelId));
 
         // Once the message goes, so does its key.
         this._server.ExecuteSql("UPDATE messages SET relayed_at = 0;");
