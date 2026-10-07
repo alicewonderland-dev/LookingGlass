@@ -171,8 +171,7 @@ public static class ContextInvites {
     /// its error code in simple mode, and without any registration code (see <see cref="LodestoneCode.Redact"/>).
     /// </summary>
     public static string NotInvited(InviteTarget target, InviteOffer offer, Exception ex, bool advanced) {
-        var why = !advanced && ex is ServerErrorException server ? server.ServerMessage : PlainMessages.MessageOf(ex, advanced);
-        return LodestoneCode.Redact(PlainMessages.Of($"Couldn't invite {target.Who} to {Place(offer)}: {why}", advanced));
+        return LodestoneCode.Redact(PlainMessages.Of($"Couldn't invite {target.Who} to {Place(offer)}: {PlainMessages.MessageOf(ex, advanced)}", advanced));
     }
 
     /// <summary>The channel's tag as it appears in <see cref="Invited"/> and <see cref="NotInvited"/>, to colour; null if it doesn't.</summary>

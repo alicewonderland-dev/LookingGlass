@@ -180,7 +180,8 @@ All of these are under `LookingGlass`.
 | `Database:CheckpointMinutes` | 0 | Minutes between explicit (PASSIVE) checkpoints of the write-ahead log; 0 leaves them to SQLite and Litestream: see [Litestream](#replicating-with-litestream) |
 | `Messages:KeepDays` | 7 | Days the server keeps each message it relays (encrypted, as relayed), so members who were away get it when they're back: see [Stored messages](#stored-messages). 0 to 365; 0 keeps none |
 | `Messages:MaxPerChannel` | 5000 | Messages kept per channel at most; past it the oldest go first. 0 to 100,000; 0 keeps none |
-| `Limits:RegistrationsPerHourPerIp` | 5 | Registrations started per IP address per hour |
+| `Limits:RegistrationsPerHourPerIp` | 10 | Registrations started per IP address (IPv6: per /56) per hour. One whose character the Lodestone doesn't list (or can't be asked about) doesn't count |
+| `Limits:RegistrationLookupFailuresPerHourPerIp` | 20 | Lodestone requests per IP address (IPv6: per /56) per hour made by registrations whose character the Lodestone doesn't list (a typo, a new character, a private profile) or that it couldn't answer; a search makes 1 or 2. Past it, nothing more is looked up for that address until the hour is up. 1 to 10,000 |
 | `Limits:RefusedRegistrationsPerHourPerIp` | 10 | Registrations refused for naming an address this server doesn't list, logged per IP per hour; refused silently past that |
 | `Limits:KeyLoginsPerHourPerIp` | 60 | Key login challenges per IP address per hour |
 | `Limits:KeyLoginFailuresPerHourPerIp` | 10 | Failed key logins after which an IP address gets no more challenges for the hour |
@@ -193,6 +194,19 @@ All of these are under `LookingGlass`.
 | `Limits:RequestBurstPerConnection` | 200 | Requests one connection may make at once before that applies |
 | `Limits:MaxIdentitiesPerRequest` | 500 | Users one identity lookup may ask for |
 | `Limits:SendQueueLength` | 256 | Events queued for one connection before it is dropped as too slow |
+| `Limits:InviteBurstPerInviter` | 60 | Invites one user may send at once, to anyone. 1 to 10,000 |
+| `Limits:InviteIntervalSecondsPerInviter` | 5 | Seconds between their invites once those are spent. 1 to 86,400 |
+| `Limits:InviteBurstPerInvitee` | 30 | Invites one user may be sent at once, by everyone together. 1 to 10,000 |
+| `Limits:InviteIntervalSecondsPerInvitee` | 10 | Seconds between invites to them once those are spent. 1 to 86,400 |
+| `Limits:InviteBurstPerPair` | 20 | Invites one user may send one other at once (one friend to 20 channels in a row). 1 to 10,000, and less than `InviteBurstPerInvitee` |
+| `Limits:InviteIntervalSecondsPerPair` | 60 | Seconds between their invites to that one once those are spent. 1 to 86,400, and more than `InviteIntervalSecondsPerInvitee` |
+| `Limits:MaxPendingInvitesPerUser` | 50 | Invites one user can have waiting at once, across all channels. 2 to 200 |
+| `Limits:MaxPendingInvitesFromOneInviter` | 25 | Of those, how many can be from any one inviter. 1 to one less than `MaxPendingInvitesPerUser` |
+| `Limits:LookupBurst` | 60 | Players one user may look up by name at once (each invite by name starts with one). 1 to 10,000 |
+| `Limits:LookupIntervalSeconds` | 1 | Seconds between their lookups once those are spent. 1 to 86,400 |
+
+The server won't start with an invite, lookup or registration lookup setting outside its range: see
+[Limits worth knowing](#limits-worth-knowing).
 
 The address the server listens on is the top-level `Urls` setting
 (`http://127.0.0.1:5180`), or `--urls` on the command line.
@@ -317,6 +331,24 @@ IPv6 clients are counted per /64.
   faster client is slowed down (its next request is read only when due), never
   refused. Every request type also has its own per-user limits, and a frame
   is at most 128 KiB.
+- **Invites.** Each user may send 60 at once, then one every 5 seconds
+  (`InviteBurstPerInviter`, `InviteIntervalSecondsPerInviter`); be sent 30
+  at once, by everyone together, then one every 10 seconds
+  (`InviteBurstPerInvitee`, `InviteIntervalSecondsPerInvitee`); and send any
+  one other user 20 at once, then one a minute (`InviteBurstPerPair`,
+  `InviteIntervalSecondsPerPair`), enough to invite a friend to all of
+  one's channels in one go. The last is checked first, and must stay smaller
+  and slower than what a user may be sent, so that one inviter (perhaps one
+  they blocked: the server doesn't know whom users block) can't use up all of
+  it; the server doesn't start otherwise. A user can have 50 invites waiting
+  (`MaxPendingInvitesPerUser`, as many as the channels they can be in), at
+  most 25 from any one inviter (`MaxPendingInvitesFromOneInviter`, which must
+  be less). A refused invite tells the inviter how long to wait, or that the
+  invitee must answer some invites first, and is logged (see [Logs](#logs)).
+  Each invite by name starts with a lookup of the player: 60 at once, then one
+  a second (`LookupBurst`, `LookupIntervalSeconds`), and the plugin reuses a
+  lookup for 10 minutes (until an invite with it fails), so inviting one
+  friend to many channels costs one.
 - **The web server** (Kestrel, under `Kestrel:Limits` in `appsettings.json`)
   takes at most 12,000 connections, 12,000 of them WebSockets
   (`MaxConcurrentConnections`, `MaxConcurrentUpgradedConnections`: above
@@ -501,7 +533,11 @@ Before giving the address to people you don't know:
 The server logs to the journal (`journalctl -u lookingglass`). It never logs
 messages or channel names (it can't read them), device tokens, keys,
 registration codes or key login signatures. User IDs (Lodestone character
-IDs) appear in lines about registrations, key logins and channel changes.
+IDs) appear in lines about registrations, key logins and channel changes,
+and in the Information line for an invite refused by one of the invite
+limits ("Invite from user 1 to user 2 refused by InviteBurstPerPair", named
+as its setting, or `MaxPendingInvitesPerChannel`), which is logged at most
+once a minute per inviter.
 Client addresses appear only in lines about registrations and key logins
 (refused ones, and key logins that add a device) and about closed connections
 (at Debug level only), for dealing with abuse.

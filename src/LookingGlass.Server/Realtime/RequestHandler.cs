@@ -9,6 +9,7 @@ using LookingGlass.Core.Membership;
 using LookingGlass.Core.Util;
 using LookingGlass.Protocol;
 using LookingGlass.Server.Data;
+using LookingGlass.Server.Hosting;
 using LookingGlass.Server.Services;
 
 namespace LookingGlass.Server.Realtime;
@@ -38,6 +39,10 @@ public sealed class RequestHandler(
 
     private static readonly TimeSpan VerifyCooldown = TimeSpan.FromSeconds(10);
     private const int MaxVerifyAttempts = 10;
+
+    // Verify attempts per challenge the Lodestone couldn't answer that aren't counted in MaxVerifyAttempts: each still took a turn of the
+    // shared Lodestone queue, so only the first few are free.
+    private const int MaxUncountedVerifyAttempts = 3;
 
     /// <summary>How long a key login challenge can be answered.</summary>
     internal static readonly TimeSpan KeyLoginChallengeLifetime = TimeSpan.FromSeconds(60);
@@ -79,20 +84,16 @@ public sealed class RequestHandler(
         "LookingGlass__PublicUrls__0=wss://chat.example.com/ws (LookingGlass__PublicUrls__1=... for the next one), or a \"PublicUrls\" list " +
         "under \"LookingGlass\" in appsettings.json. For a private test server, run in Development instead (ASPNETCORE_ENVIRONMENT=Development).";
 
-    /// <summary>Pending invites one user can have at once, across all channels.</summary>
-    public const int MaxPendingInvitesPerUser = 20;
-
-    /// <summary>
-    /// Pending invites one user can have from any one inviter, so a single inviter (with many channels) can't take all of
-    /// <see cref="MaxPendingInvitesPerUser"/>, whether or not the invitee blocked them.
-    /// </summary>
-    public const int MaxPendingInvitesFromOneInviter = 5;
-
     // Channel names are at most 64 UTF-8 bytes; sealing adds a 16-byte tag. The cap keeps
     // invites (which strangers can send) from bloating the invitee's channel list.
     private const int MaxSealedNameBytes = 128;
 
-    private readonly WindowCounter _registrations = new(options.Value.Limits.RegistrationsPerHourPerIp, TimeSpan.FromHours(1));
+    private readonly WindowCounter _registrations = new(options.Value.Limits.RegistrationsPerHourPerIp, TimeSpan.FromHours(1), time);
+    // Registrations whose character the Lodestone didn't list (a typo, a character too new, a private profile), or that it
+    // couldn't be asked about. Those cost no registration (the user fixes it and tries again), but each costs a request in
+    // the server-wide Lodestone queue, so they have their own, looser allowance; past it, nothing more is looked up.
+    private readonly WindowCounter _registrationLookupFailures = new(
+        Math.Clamp(options.Value.Limits.RegistrationLookupFailuresPerHourPerIp, 1, LimitOptions.MaxBurst), TimeSpan.FromHours(1), time);
     // Registrations refused for naming an address that isn't this server's, when starting or completing. They cost no
     // registration and no Lodestone request (the honest client that names one is misconfigured, and is told what to
     // set), but each logs a warning, so they are counted on their own; past the limit they are refused unlogged.
@@ -121,16 +122,23 @@ public sealed class RequestHandler(
     private readonly KeyLoginOrigins _keyLoginOrigins =ChooseKeyLoginOrigins(ParsePublicUrls(options.Value.PublicUrls), environment?.IsDevelopment() == true);
     private readonly TimeProvider _time = time ?? TimeProvider.System;
     private readonly UserRateLimits _rekeys = new(perSecond: 0.5, burst: 5);
-    private readonly UserRateLimits _lookups = new(perSecond: 0.5, burst: 10);
+    // Lookups by name: each invite by name starts with one (the plugin reuses them for a while). An operator setting.
+    private readonly UserRateLimits _lookups = new(PerSecond(options.Value.Limits.LookupIntervalSeconds), Burst(options.Value.Limits.LookupBurst), time);
     private readonly UserRateLimits _messages = new(ProtocolInfo.DefaultLimits().MessagesPerSecond, ProtocolInfo.DefaultLimits().MessageBurst);
-    // Invites are limited on both ends: an inviter can't spam many people, and many
-    // inviters (or invite, cancel, invite loops) can't flood one person.
-    private readonly UserRateLimits _invitesSent = new(perSecond: 1.0 / 15, burst: 20, time);
-    private readonly UserRateLimits _invitesReceived = new(perSecond: 1.0 / 30, burst: 10, time);
+    // Invites are limited on both ends: an inviter can't spam many people, and many inviters (or invite, cancel, invite
+    // loops) can't flood one person. Operator settings (LookingGlass:Limits:Invite...), checked at startup.
+    private readonly UserRateLimits _invitesSent = new(
+        PerSecond(options.Value.Limits.InviteIntervalSecondsPerInviter), Burst(options.Value.Limits.InviteBurstPerInviter), time);
+    private readonly UserRateLimits _invitesReceived = new(
+        PerSecond(options.Value.Limits.InviteIntervalSecondsPerInvitee), Burst(options.Value.Limits.InviteBurstPerInvitee), time);
     // And between each inviter and invitee, checked first, so one person can't use up someone's invites alone: not their
     // budget above (an inviter they blocked would otherwise keep it spent, as the server doesn't know whom they block, and
-    // their client declines such invites unseen), nor their pending invites (see MaxPendingInvitesFromOneInviter).
-    private readonly KeyedRateLimits<(long Inviter, long Invitee)> _invitesBetween = new(perSecond: 1.0 / 600, burst: 3, time);
+    // their client declines such invites unseen), nor their pending invites (see MaxPendingInvitesFromOneInviter). Smaller
+    // and slower than the invitee's budget (the startup check sees to it), so others always have some of it left.
+    private readonly KeyedRateLimits<(long Inviter, long Invitee)> _invitesBetween = new(
+        PerSecond(options.Value.Limits.InviteIntervalSecondsPerPair), Burst(options.Value.Limits.InviteBurstPerPair), time);
+    // Invites refused by a limit are logged (limit and user IDs only), at most one line a minute per inviter.
+    private readonly UserRateLimits _inviteRefusalLogs = new(perSecond: 1.0 / 60, burst: 1, time);
     private readonly UserRateLimits _creates = new(perSecond: 1.0 / 60, burst: 10);
     private readonly UserRateLimits _renames = new(perSecond: 0.1, burst: 10);
     private readonly UserRateLimits _disbands = new(perSecond: 1.0 / 60, burst: 5);
@@ -147,6 +155,16 @@ public sealed class RequestHandler(
     private readonly Lock[] _relayLocks = Enumerable.Range(0, 64).Select(_ => new Lock()).ToArray();
 
     public Limits Limits { get; } = BuildLimits(options.Value);
+
+    /// <summary>Pending invites one user can have at once, across all channels (LookingGlass:Limits:MaxPendingInvitesPerUser).</summary>
+    public int MaxPendingInvitesPerUser { get; } = PendingInvitesPerUser(options.Value.Limits);
+
+    /// <summary>
+    /// Pending invites one user can have from any one inviter, so a single inviter (with many channels) can't take all of
+    /// <see cref="MaxPendingInvitesPerUser"/>, whether or not the invitee blocked them (LookingGlass:Limits:MaxPendingInvitesFromOneInviter).
+    /// </summary>
+    public int MaxPendingInvitesFromOneInviter { get; } =
+        Math.Clamp(options.Value.Limits.MaxPendingInvitesFromOneInviter, 1, PendingInvitesPerUser(options.Value.Limits) - 1);
 
     /// <summary>
     /// Runs after a last member's leave has been checked and before their channel is deleted, so tests can
@@ -240,6 +258,41 @@ public sealed class RequestHandler(
         return limits;
     }
 
+    // The invite and lookup settings, kept in range even by a handler made without the startup check (see LimitOptions.Problem).
+    private static double Burst(int burst) => Math.Clamp(burst, 1, LimitOptions.MaxBurst);
+
+    private static double PerSecond(int intervalSeconds) => 1.0 / Math.Clamp(intervalSeconds, 1, LimitOptions.MaxIntervalSeconds);
+
+    private static int PendingInvitesPerUser(LimitOptions limits) => Math.Clamp(limits.MaxPendingInvitesPerUser, 2, LimitOptions.MaxMaxPendingInvitesPerUser);
+
+    /// <summary>
+    /// Roughly how long to wait, in words, for "try again in ...": "a few seconds", "about 10 seconds", "about a minute",
+    /// "about 3 minutes", "about an hour", "about 5 hours".
+    /// </summary>
+    internal static string AboutHowLong(TimeSpan wait) {
+        var seconds = Math.Max(1, Math.Ceiling(Math.Min(wait.TotalSeconds, TimeSpan.FromDays(365).TotalSeconds)));
+        return seconds switch {
+            <= 5 => "a few seconds",
+            < 50 => $"about {Math.Ceiling(seconds / 5) * 5:0} seconds",
+            < 90 => "about a minute",
+            < 50 * 60 => $"about {Math.Ceiling(seconds / 60):0} minutes",
+            < 90 * 60 => "about an hour",
+            _ => $"about {Math.Ceiling(seconds / 3600):0} hours",
+        };
+    }
+
+    /// <summary>
+    /// An invite refused by one of the invite limits (named as its setting): logged, with the user IDs only, so refusals can be
+    /// traced, though at most once a minute per inviter.
+    /// </summary>
+    private RequestException InviteRefused(ErrorCode code, string limit, long inviter, long invitee, string message) {
+        if (this._inviteRefusalLogs.TryTake(inviter)) {
+            logger.LogInformation("Invite from user {Inviter} to user {Invitee} refused by {Limit}", inviter, invitee, limit);
+        }
+
+        return new RequestException(code, message);
+    }
+
     // ================================================================ handshake and identity
 
     private Response Hello(ClientConnection connection, Hello hello) {
@@ -325,21 +378,58 @@ public sealed class RequestHandler(
         // NotThisServer accepted it, so it parses.
         var origin = ServerOrigin.FromUrl(request.ServerUrl)!;
 
-        if (!this._registrations.TryAdd(connection.RemoteAddress)) {
-            throw new RequestException(ErrorCode.RateLimited, "Too many registration attempts; try again later.");
+        // A name the game wouldn't allow would only cost a search of the shared Lodestone queue: refused first, at no cost.
+        if (!GameWorlds.IsCharacterName(name)) {
+            throw new RequestException(ErrorCode.RegistrationFailed,
+                $"\"{name}\" isn't a name the game allows: a first and last name, each 2 to 15 letters (apostrophes and hyphens are allowed). " +
+                "Check the spelling, then try again.");
         }
 
-        LodestoneCharacter? found;
+        // The world isn't checked: the plugin sends the game's own name for the character's home world, and a list here could
+        // lack a new one. One the list has is searched for as the game spells it.
+        worldName = GameWorlds.Find(worldName) ?? worldName;
+
+        // Per IPv6 /56, as connections are counted (the least an ISP commonly gives one customer), not per /64.
+        var address = ClientAddresses.WidenToConnectionKey(connection.RemoteAddress);
+        RequestException TooMany() => new(ErrorCode.RateLimited,
+            $"Too many registrations from your address; try again in {AboutHowLong(this._registrations.RetryAfter(address))}.");
+        if (this._registrations.IsFull(address)) {
+            throw TooMany();
+        }
+
+        // Checked before anything is counted or asked of the Lodestone.
+        if (this._registrationLookupFailures.IsFull(address)) {
+            throw new RequestException(ErrorCode.RateLimited, "Too many characters from your address couldn't be found on the Lodestone; check the name and " +
+                $"home world, and try again in {AboutHowLong(this._registrationLookupFailures.RetryAfter(address))}.");
+        }
+
+        if (!this._registrations.TryAdd(address)) {
+            throw TooMany();
+        }
+
+        // A lookup that fails costs no registration (the user fixes the name, or their profile, and tries again), but each
+        // request it made of the Lodestone counts against the address's failed lookups.
+        LodestoneSearch search;
         try {
-            found = await lodestone.FindCharacterAsync(name, worldName, ct);
-        } catch (LodestoneUnavailableException) {
+            search = await lodestone.SearchCharacterAsync(name, worldName, ct);
+        } catch (LodestoneUnavailableException ex) {
+            this._registrations.Refund(address);
+            this.CountFailedLookups(address, ex.Requests);
             throw new RequestException(ErrorCode.RegistrationFailed, "The Lodestone isn't responding right now; try again in a few minutes.");
         } catch (LodestoneBusyException) {
+            // Not this user's doing, and nothing was asked of the Lodestone.
+            this._registrations.Refund(address);
             throw new RequestException(ErrorCode.RateLimited, "The server is busy checking other characters; try again in a minute.");
         }
 
+        var found = search.Found;
         if (found == null) {
-            throw new RequestException(ErrorCode.RegistrationFailed, $"Couldn't find {name} on {worldName} in the Lodestone.");
+            this._registrations.Refund(address);
+            this.CountFailedLookups(address, search.Requests);
+            throw new RequestException(ErrorCode.RegistrationFailed,
+                $"Couldn't find {name} on {worldName} on the Lodestone. Check that the name and home world are spelled right. A new character can take " +
+                "a while to show up there, and one whose Lodestone profile is private may not show up at all: make it public in the character's " +
+                "privacy settings on the Lodestone, wait a moment, then try again.");
         }
 
         // Once the account is known (the lookup is cached, so asking again costs nothing).
@@ -352,6 +442,7 @@ public sealed class RequestHandler(
         connection.PendingRegistration = new PendingRegistration(
             found.Id, found.Name, character.WorldId, found.WorldName, request.Identity, code, DateTimeOffset.UtcNow.AddMinutes(minutes), false, nonce, origin);
         connection.VerifyAttempts = 0;
+        connection.UncountedVerifyAttempts = 0;
 
         return new Response {
             RegistrationChallenge = new RegistrationChallenge {
@@ -361,6 +452,13 @@ public sealed class RequestHandler(
                 Nonce = ByteString.CopyFrom(connection.PendingRegistration.Nonce),
             },
         };
+    }
+
+    /// <summary>Counts each request a failed registration lookup made of the Lodestone against the address (see <see cref="_registrationLookupFailures"/>).</summary>
+    private void CountFailedLookups(string address, int requests) {
+        for (var i = 0; i < requests; i++) {
+            this._registrationLookupFailures.TryAdd(address);
+        }
     }
 
     /// <summary>Counts a registration refused for its address (see <see cref="_refusedRegistrations"/>), before it is logged.</summary>
@@ -427,8 +525,22 @@ public sealed class RequestHandler(
             }
 
             switch (check) {
+                case ProfileCheck.LodestoneUnavailable:
+                    // Nor this, the first few times; but each took a turn of the shared queue, so past those it counts.
+                    if (connection.UncountedVerifyAttempts < MaxUncountedVerifyAttempts) {
+                        connection.UncountedVerifyAttempts++;
+                        connection.VerifyAttempts--;
+                    }
+
+                    throw new RequestException(ErrorCode.RegistrationFailed, "The Lodestone isn't responding right now; try again in a few minutes.");
+                case ProfileCheck.ProfilePrivate:
+                    throw new RequestException(ErrorCode.RegistrationFailed,
+                        "Your character's profile on the Lodestone is private, so the server can't see the code in it. Make it public in the character's " +
+                        "privacy settings on the Lodestone, wait a moment, then press Verify again.");
                 case ProfileCheck.ProfileUnavailable:
-                    throw new RequestException(ErrorCode.RegistrationFailed, "Couldn't read your Lodestone profile. Is it public?");
+                    throw new RequestException(ErrorCode.RegistrationFailed,
+                        "Couldn't read your character's profile on the Lodestone. Make sure it's public (in the character's privacy settings on the " +
+                        "Lodestone), wait a moment, then press Verify again.");
                 case ProfileCheck.CodeNotFound:
                     // Without the code: the client knows it, and shows no code a server writes into its words (see LodestoneCode.Redact).
                     throw new RequestException(ErrorCode.RegistrationFailed, "Your code isn't in your Lodestone profile yet. The Lodestone can take a minute to update.");
@@ -965,8 +1077,8 @@ public sealed class RequestHandler(
 
     private Response LookupUser(ClientConnection connection, LookupUser request) {
         var me = RequireUser(connection);
-        if (!this._lookups.TryTake(me.UserId)) {
-            throw new RequestException(ErrorCode.RateLimited, "Too many lookups; slow down.");
+        if (!this._lookups.TryTake(me.UserId, out var wait)) {
+            throw new RequestException(ErrorCode.RateLimited, $"You've looked up a lot of players recently; try again in {AboutHowLong(wait)}.");
         }
 
         var user = db.FindUser(request.Name, request.WorldName)
@@ -992,8 +1104,9 @@ public sealed class RequestHandler(
         }
 
         // Bounded, so nobody can make this response too big for a client to receive and lock
-        // them out: at most 50 channels of at most 500 members and 32 log entries, and 20 small
-        // invites (about 3 MB at worst, where clients accept 4 MB).
+        // them out: at most 50 channels of at most 500 members and 32 log entries, and at most
+        // MaxPendingInvitesPerUser small invites (50 by default, 200 at most, each under 1 KB):
+        // about 3 MB at worst, where clients accept 4 MB.
         var list = new ChannelList();
         list.Channels.AddRange(db.GetChannelsForUser(me.UserId, (int) this.Limits.MaxChannelsPerUser)
             .Select(channel => this.BuildChannelInfo(channel, me.UserId, known.TryGetValue(channel.ChannelId, out var next) ? next : 0)));
@@ -1057,8 +1170,10 @@ public sealed class RequestHandler(
         var me = RequireUser(connection);
         var channelId = RequireChannelId(request.ChannelId);
         this.RequireAllowed(channelId, me, ChannelAction.Invite);
-        if (!this._invitesSent.TryTake(me.UserId)) {
-            throw new RequestException(ErrorCode.RateLimited, "You're sending invites too quickly; try again later.");
+        if (!this._invitesSent.TryTake(me.UserId, out var sentWait)) {
+            // Checked before the entry is, so the invitee is only who the request names.
+            throw this.InviteRefused(ErrorCode.RateLimited, nameof(LimitOptions.InviteBurstPerInviter), me.UserId, request.Entry?.Subject?.UserId ?? 0,
+                $"You've sent a lot of invites recently; try again in {AboutHowLong(sentWait)}.");
         }
 
         var entry = RequireEntry(request.Entry, channelId, me, MembershipEntryKind.Invite);
@@ -1068,7 +1183,7 @@ public sealed class RequestHandler(
         }
 
         if (db.CountPendingInvites(channelId) >= this.Limits.MaxPendingInvitesPerChannel) {
-            throw new RequestException(ErrorCode.LimitReached, "Too many pending invites in this channel.");
+            throw this.InviteRefused(ErrorCode.LimitReached, "MaxPendingInvitesPerChannel", me.UserId, invitee.UserId, "Too many pending invites in this channel.");
         }
 
         if (db.CountMembers(channelId) + db.CountPendingInvites(channelId) >= this.Limits.MaxMembersPerChannel) {
@@ -1094,23 +1209,28 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.InvalidRequest, $"The invite isn't for {invitee.Name}'s current identity key.");
         }
 
-        if (db.CountInvitesForUser(invitee.UserId) >= MaxPendingInvitesPerUser) {
-            throw new RequestException(ErrorCode.LimitReached, $"{invitee.Name} has too many pending invites.");
+        // Who, as the plugin names players: "Bob Hatter@Lich".
+        var who = $"{invitee.Name}@{invitee.WorldName}";
+        if (db.CountInvitesForUser(invitee.UserId) >= this.MaxPendingInvitesPerUser) {
+            throw this.InviteRefused(ErrorCode.LimitReached, nameof(LimitOptions.MaxPendingInvitesPerUser), me.UserId, invitee.UserId,
+                $"{who} already has {this.MaxPendingInvitesPerUser} invites waiting, the most they can have; once they accept or decline some, they can be invited again.");
         }
 
-        if (db.CountInvitesForUser(invitee.UserId, from: me.UserId) >= MaxPendingInvitesFromOneInviter) {
-            throw new RequestException(ErrorCode.LimitReached,
-                $"{invitee.Name} already has {MaxPendingInvitesFromOneInviter} invites from you waiting; wait until they answer some.");
+        if (db.CountInvitesForUser(invitee.UserId, from: me.UserId) >= this.MaxPendingInvitesFromOneInviter) {
+            throw this.InviteRefused(ErrorCode.LimitReached, nameof(LimitOptions.MaxPendingInvitesFromOneInviter), me.UserId, invitee.UserId,
+                $"{who} already has {this.MaxPendingInvitesFromOneInviter} invites from you waiting; once they accept or decline some, you can invite them again.");
         }
 
         // Before the invitee's own budget, so invites past this pair's allowance don't spend it.
-        if (!this._invitesBetween.TryTake((me.UserId, invitee.UserId))) {
-            throw new RequestException(ErrorCode.RateLimited, $"You've invited {invitee.Name} too often recently; try again later.");
+        if (!this._invitesBetween.TryTake((me.UserId, invitee.UserId), out var pairWait)) {
+            throw this.InviteRefused(ErrorCode.RateLimited, nameof(LimitOptions.InviteBurstPerPair), me.UserId, invitee.UserId,
+                $"You've sent a lot of invites to {who} recently; try again in {AboutHowLong(pairWait)}.");
         }
 
-        if (!this._invitesReceived.TryTake(invitee.UserId)) {
+        if (!this._invitesReceived.TryTake(invitee.UserId, out var receivedWait)) {
             this._invitesBetween.Refund((me.UserId, invitee.UserId));
-            throw new RequestException(ErrorCode.RateLimited, $"{invitee.Name} has been sent too many invites recently; try again later.");
+            throw this.InviteRefused(ErrorCode.RateLimited, nameof(LimitOptions.InviteBurstPerInvitee), me.UserId, invitee.UserId,
+                $"{who} has been sent a lot of invites recently; try again in {AboutHowLong(receivedWait)}.");
         }
 
         try {

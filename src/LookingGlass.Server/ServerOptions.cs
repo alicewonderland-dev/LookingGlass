@@ -95,7 +95,18 @@ public sealed class DevOptions {
 }
 
 public sealed class LimitOptions {
-    public int RegistrationsPerHourPerIp { get; set; } = 5;
+    /// <summary>
+    /// Registrations one IP address may start in an hour (a household's players, and their alts). One whose character the
+    /// Lodestone doesn't list, or that the Lodestone can't be asked about, doesn't count: see <see cref="RegistrationLookupFailuresPerHourPerIp"/>.
+    /// </summary>
+    public int RegistrationsPerHourPerIp { get; set; } = 10;
+
+    /// <summary>
+    /// Registrations one IP address may start in an hour whose character the Lodestone doesn't list (a typo, a character too new,
+    /// a private profile), or that the Lodestone couldn't be asked about. Past it, no more are looked up for that address until
+    /// the hour is up, so names that aren't there can't take up the server-wide Lodestone queue. 1 to 10,000.
+    /// </summary>
+    public int RegistrationLookupFailuresPerHourPerIp { get; set; } = 20;
 
     /// <summary>
     /// Registrations one IP address may have refused in an hour for naming an address this server doesn't list (each is
@@ -140,6 +151,120 @@ public sealed class LimitOptions {
 
     /// <summary>Requests one connection may make at once before <see cref="RequestsPerSecondPerConnection"/> applies (a client connecting with 50 channels asks about 100).</summary>
     public int RequestBurstPerConnection { get; set; } = 200;
+
+    // ---------------------------------------------------------------- invites (see "Abuse limits" in docs/design.md)
+
+    /// <summary>
+    /// Invites one user may send at once, to anyone; past it, one more every <see cref="InviteIntervalSecondsPerInviter"/>.
+    /// </summary>
+    public int InviteBurstPerInviter { get; set; } = 60;
+
+    /// <summary>Seconds between invites one user may send once <see cref="InviteBurstPerInviter"/> is spent.</summary>
+    public int InviteIntervalSecondsPerInviter { get; set; } = 5;
+
+    /// <summary>
+    /// Invites one user may be sent at once, by everyone together; past it, one more every <see cref="InviteIntervalSecondsPerInvitee"/>.
+    /// </summary>
+    public int InviteBurstPerInvitee { get; set; } = 30;
+
+    /// <summary>Seconds between invites one user may be sent once <see cref="InviteBurstPerInvitee"/> is spent.</summary>
+    public int InviteIntervalSecondsPerInvitee { get; set; } = 10;
+
+    /// <summary>
+    /// Invites one user may send one other user at once (checked first, so they spend nothing of the invitee's allowance
+    /// past it); past it, one more every <see cref="InviteIntervalSecondsPerPair"/>. Less than <see cref="InviteBurstPerInvitee"/>,
+    /// so one inviter (perhaps one the invitee blocked, which the server doesn't know) can't use up all of it.
+    /// </summary>
+    public int InviteBurstPerPair { get; set; } = 20;
+
+    /// <summary>
+    /// Seconds between invites one user may send one other user once <see cref="InviteBurstPerPair"/> is spent. More than
+    /// <see cref="InviteIntervalSecondsPerInvitee"/>, for the same reason.
+    /// </summary>
+    public int InviteIntervalSecondsPerPair { get; set; } = 60;
+
+    /// <summary>Pending invites one user can have at once, across all channels (as many as the channels they can be in).</summary>
+    public int MaxPendingInvitesPerUser { get; set; } = 50;
+
+    /// <summary>
+    /// Pending invites one user can have from any one inviter. Less than <see cref="MaxPendingInvitesPerUser"/>, so a single
+    /// inviter (with many channels) can't take all of them, whether or not the invitee blocked them.
+    /// </summary>
+    public int MaxPendingInvitesFromOneInviter { get; set; } = 25;
+
+    /// <summary>
+    /// Players one user may look up by name at once (each invite by name starts with one; the plugin reuses a lookup for 10
+    /// minutes); past it, one more every <see cref="LookupIntervalSeconds"/>. As many as <see cref="InviteBurstPerInviter"/>.
+    /// </summary>
+    public int LookupBurst { get; set; } = 60;
+
+    /// <summary>Seconds between lookups one user may make once <see cref="LookupBurst"/> is spent.</summary>
+    public int LookupIntervalSeconds { get; set; } = 1;
+
+    /// <summary>The most a burst setting here can be.</summary>
+    public const int MaxBurst = 10_000;
+
+    /// <summary>The most an interval setting here can be, in seconds (a day).</summary>
+    public const int MaxIntervalSeconds = 86_400;
+
+    /// <summary>
+    /// The most <see cref="MaxPendingInvitesPerUser"/> can be: every pending invite is in the invitee's channel list, which
+    /// must stay well within what a client accepts in one response (each invite is under 1 KB).
+    /// </summary>
+    public const int MaxMaxPendingInvitesPerUser = 200;
+
+    /// <summary>Why the invite, lookup or registration lookup limits are out of range (the server doesn't start then), or null if they aren't.</summary>
+    public string? Problem() {
+        if (this.RegistrationLookupFailuresPerHourPerIp is < 1 or > MaxBurst) {
+            return $"LookingGlass:Limits:RegistrationLookupFailuresPerHourPerIp is {this.RegistrationLookupFailuresPerHourPerIp}, so the server won't start: it " +
+                   $"must be 1 to {MaxBurst} (registrations from one address whose character the Lodestone doesn't list, in an hour; 20 by default).";
+        }
+
+        foreach (var (name, value, what, fallback) in new[] {
+                     (nameof(this.InviteBurstPerInviter), this.InviteBurstPerInviter, "invites", 60),
+                     (nameof(this.InviteBurstPerInvitee), this.InviteBurstPerInvitee, "invites", 30),
+                     (nameof(this.InviteBurstPerPair), this.InviteBurstPerPair, "invites", 20),
+                     (nameof(this.LookupBurst), this.LookupBurst, "lookups", 60),
+                 }) {
+            if (value is < 1 or > MaxBurst) {
+                return $"LookingGlass:Limits:{name} is {value}, so the server won't start: it must be 1 to {MaxBurst} ({what} at once; {fallback} by default).";
+            }
+        }
+
+        foreach (var (name, value, what, fallback) in new[] {
+                     (nameof(this.InviteIntervalSecondsPerInviter), this.InviteIntervalSecondsPerInviter, "invites", 5),
+                     (nameof(this.InviteIntervalSecondsPerInvitee), this.InviteIntervalSecondsPerInvitee, "invites", 10),
+                     (nameof(this.InviteIntervalSecondsPerPair), this.InviteIntervalSecondsPerPair, "invites", 60),
+                     (nameof(this.LookupIntervalSeconds), this.LookupIntervalSeconds, "lookups", 1),
+                 }) {
+            if (value is < 1 or > MaxIntervalSeconds) {
+                return $"LookingGlass:Limits:{name} is {value}, so the server won't start: it must be 1 to {MaxIntervalSeconds} " +
+                       $"(seconds between {what} once the burst is spent; {fallback} by default).";
+            }
+        }
+
+        if (this.InviteBurstPerPair >= this.InviteBurstPerInvitee) {
+            return $"LookingGlass:Limits:InviteBurstPerPair ({this.InviteBurstPerPair}) must be less than InviteBurstPerInvitee " +
+                   $"({this.InviteBurstPerInvitee}), so the server won't start: otherwise one inviter could use up everything others can send the invitee.";
+        }
+
+        if (this.InviteIntervalSecondsPerPair <= this.InviteIntervalSecondsPerInvitee) {
+            return $"LookingGlass:Limits:InviteIntervalSecondsPerPair ({this.InviteIntervalSecondsPerPair}) must be more than InviteIntervalSecondsPerInvitee " +
+                   $"({this.InviteIntervalSecondsPerInvitee}), so the server won't start: otherwise one inviter could use up everything others can send the invitee.";
+        }
+
+        if (this.MaxPendingInvitesPerUser is < 2 or > MaxMaxPendingInvitesPerUser) {
+            return $"LookingGlass:Limits:MaxPendingInvitesPerUser is {this.MaxPendingInvitesPerUser}, so the server won't start: it must be 2 to " +
+                   $"{MaxMaxPendingInvitesPerUser} (pending invites one user can have; 50 by default).";
+        }
+
+        if (this.MaxPendingInvitesFromOneInviter < 1 || this.MaxPendingInvitesFromOneInviter >= this.MaxPendingInvitesPerUser) {
+            return $"LookingGlass:Limits:MaxPendingInvitesFromOneInviter is {this.MaxPendingInvitesFromOneInviter}, so the server won't start: it must be " +
+                   $"1 to {this.MaxPendingInvitesPerUser - 1}, less than MaxPendingInvitesPerUser, so one inviter can't fill them all (25 by default).";
+        }
+
+        return null;
+    }
 }
 
 public sealed class DatabaseOptions {

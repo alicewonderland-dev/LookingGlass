@@ -91,6 +91,9 @@ public sealed class ClientConnection {
 
     public PendingRegistration? PendingRegistration { get; set; }
     public int VerifyAttempts { get; set; }
+
+    /// <summary>Verify attempts of this challenge the Lodestone couldn't answer, and so weren't counted in <see cref="VerifyAttempts"/>.</summary>
+    public int UncountedVerifyAttempts { get; set; }
     public DateTimeOffset LastVerifyAttempt { get; set; } = DateTimeOffset.MinValue;
 
     /// <summary>

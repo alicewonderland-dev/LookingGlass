@@ -72,11 +72,14 @@ LookingGlass prints names anyone in `dalamud.log` (`/xllog`).
 - [ ] 16. Block B (from a channel's member menu, or decline an invite with
       **Block**), then right-click B: every channel shows "(you blocked them)",
       greyed out. Unblock B in Settings > Blocked users: back to normal.
-- [ ] 17. Invite several unregistered or different characters quickly (more
-      than the invite limits allow, see `docs/server.md`): the refusal is a
-      blue "Couldn't invite …: " line with the server's reason ("You're
-      sending invites too quickly; try again later."), without "(RateLimited)"
-      in simple mode, and with it in advanced mode.
+- [ ] 17. Go past an invite limit (see `docs/server.md`; on a test server,
+      start it with `LookingGlass__Limits__InviteBurstPerPair=2` and invite B
+      to three channels, cancelling in between if need be): the refusal is a
+      blue "Couldn't invite …: " line with the server's reason, saying how
+      long to wait ("You've sent a lot of invites to B@World recently; try
+      again in about a minute."), without "(RateLimited)" in simple mode, and
+      with it in advanced mode. The channel's **Invite** button says the same
+      after "Inviting … failed: ".
 - [ ] 18. The same from ChatTwo's menu: steps 12, 13 (greyed out entries can't
       be clicked) and 15 give the same lines.
 

@@ -102,6 +102,13 @@ if (options.Messages.Problem() is { } messageSettings) {
     return;
 }
 
+// The invite and lookup limits; the invite limits keep their protective shape: one inviter can't use up what others can send someone.
+if (options.Limits.Problem() is { } limitSettings) {
+    app.Logger.LogCritical("{Problem}", limitSettings);
+    Environment.ExitCode = 1;
+    return;
+}
+
 // Debug accounts let anyone who can reach the server register, or take over, any debug account (the echo bot needs them).
 // Outside Development that is almost certainly a mistake, such as a test server's settings copied to a public one.
 var debugSettings = new[] { (Name: "AllowDebugAccounts", On: options.Dev.AllowDebugAccounts), (Name: "HostEchoBot", On: options.Dev.HostEchoBot) }

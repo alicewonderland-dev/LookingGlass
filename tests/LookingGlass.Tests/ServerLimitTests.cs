@@ -114,13 +114,21 @@ public sealed class ServerLimitTests : IAsyncLifetime {
     public async Task PendingInvitesPerInviteeAreCapped() {
         var alice = await this._server.RegisterAsync("Alice Invite Cap");
         var bob = await this._server.RegisterAsync("Bob Invite Cap");
-        foreach (var seeded in this.SeedChannels(alice, RequestHandler.MaxPendingInvitesPerUser)) {
-            this.SeedInvite(alice, seeded, bob);
+        Assert.Equal(50, this._server.Handler.MaxPendingInvitesPerUser);
+        // 25 from each of two others (as many as one inviter may have waiting).
+        foreach (var name in new[] { "Carol Invite Cap", "Dave Invite Cap" }) {
+            var other = await this._server.RegisterAsync(name);
+            foreach (var seeded in this.SeedChannels(other, this._server.Handler.MaxPendingInvitesPerUser / 2)) {
+                this.SeedInvite(other, seeded, bob);
+            }
         }
 
         var channelId = await alice.Session.CreateChannelAsync("One Too Many", Ct);
         var error = await Assert.ThrowsAsync<ServerErrorException>(() => alice.Session.InviteAsync(channelId, bob.Name, ProtocolInfo.DebugWorldName, Ct));
         Assert.Equal(ErrorCode.LimitReached, error.Code);
+        Assert.Equal("Bob Invite Cap@Debug already has 50 invites waiting, the most they can have; once they accept or decline some, they can be invited again.",
+            error.ServerMessage);
+        PlainLanguage.AssertPlain(error.ServerMessage);
     }
 
     [Fact]
@@ -128,40 +136,88 @@ public sealed class ServerLimitTests : IAsyncLifetime {
         var alice = await this._server.RegisterAsync("Alice Many Invites");
         var bob = await this._server.RegisterAsync("Bob Many Invites");
         // Seeded straight into the database, past every cap, as an old or hostile server state.
-        foreach (var seeded in this.SeedChannels(alice, 30)) {
+        foreach (var seeded in this.SeedChannels(alice, 60)) {
             this.SeedInvite(alice, seeded, bob);
         }
 
         await bob.Session.RefreshAsync(Ct);
-        Assert.Equal(RequestHandler.MaxPendingInvitesPerUser, bob.Session.Snapshot.Invites.Length);
+        Assert.Equal(this._server.Handler.MaxPendingInvitesPerUser, bob.Session.Snapshot.Invites.Length);
     }
 
-    /// <summary>Many inviters together can't flood one person: 10 invites at once, then one every 30 seconds.</summary>
+    /// <summary>
+    /// Many inviters together can't flood one person: 30 invites at once, then one every 10 seconds; whoever is refused is told
+    /// how long to wait.
+    /// </summary>
     [Fact]
     public async Task InvitesToOnePersonAreRateLimited() {
+        var clock = await this.StopTheClockAsync();
         var bob = await this._server.RegisterAsync("Bob Invite Rate");
         var invitee = new Invitee(bob.UserId, bob.Keys());
         var sent = 0;
+        TestClient? last = null;
+        ServerErrorException? refused = null;
         foreach (var name in new[] { "Alice Invite Rate", "Carol Invite Rate", "Dave Invite Rate", "Erin Invite Rate" }) {
-            var inviter = await this._server.RegisterAsync(name);
-            var channels = this.SeedChannels(inviter, 3);
-            var accepted = await this.InviteUntilLimitedAsync(inviter, channels.Select(channelId => (channelId, invitee)).ToList());
+            last = await this._server.RegisterAsync(name);
+            var (accepted, limited) = await this.InviteUntilLimitedAsync(last, this.SeedChannels(last, 10).Select(channelId => (channelId, invitee)).ToList());
             sent += accepted;
-            if (accepted < channels.Count) {
+            if (limited != null) {
+                refused = limited;
                 break;
             }
         }
 
-        Assert.Equal(10, sent);
+        Assert.Equal(30, sent);
+        Assert.Equal("Bob Invite Rate@Debug has been sent a lot of invites recently; try again in about 10 seconds.", refused?.ServerMessage);
+        PlainLanguage.AssertPlain(refused!.ServerMessage);
+
+        // Ten seconds on, one more.
+        clock.Advance(TimeSpan.FromSeconds(10));
+        var (more, _) = await this.InviteUntilLimitedAsync(last!, this.SeedChannels(last!, 3).Select(channelId => (channelId, invitee)).ToList());
+        Assert.Equal(1, more);
+    }
+
+    /// <summary>
+    /// Someone bringing their channels over invites the same friend to each: 20 in a row go through, the 21st is told (in the
+    /// plugin, in plain words) to wait about a minute, and goes through a minute later.
+    /// </summary>
+    [Fact]
+    public async Task OneFriendCanBeInvitedToTwentyChannelsInARow() {
+        var clock = await this.StopTheClockAsync();
+        var alice = await this._server.RegisterAsync("Alice Moving In");
+        var bob = await this._server.RegisterAsync("Bob Moving In");
+        var invitee = new Invitee(bob.UserId, bob.Keys());
+        var channels = this.SeedChannels(alice, 21);
+        var (sent, refused) = await this.InviteUntilLimitedAsync(alice, channels.Take(20).Select(channelId => (channelId, invitee)).ToList());
+        Assert.Equal(20, sent);
+        Assert.Null(refused);
+
+        // The 21st, as the plugin sends it.
+        await alice.Session.RefreshAsync(Ct);
+        var last = channels[20];
+        var error = await Assert.ThrowsAsync<ServerErrorException>(() => alice.Session.InviteAsync(last, bob.Name, ProtocolInfo.DebugWorldName, Ct));
+        Assert.Equal(ErrorCode.RateLimited, error.Code);
+        Assert.Equal("You've sent a lot of invites to Bob Moving In@Debug recently; try again in about a minute.", error.ServerMessage);
+        var said = ContextInvites.NotInvited(new InviteTarget(bob.Name, ProtocolInfo.DebugWorldName), new InviteOffer(last, "[mv]", null, "Moving", null), error, advanced: false);
+        Assert.Equal("Couldn't invite Bob Moving In@Debug to [mv]: You've sent a lot of invites to Bob Moving In@Debug recently; try again in about a minute.", said);
+        PlainLanguage.AssertPlain(said);
+
+        clock.Advance(TimeSpan.FromSeconds(30));
+        error = await Assert.ThrowsAsync<ServerErrorException>(() => alice.Session.InviteAsync(last, bob.Name, ProtocolInfo.DebugWorldName, Ct));
+        Assert.EndsWith("recently; try again in about 30 seconds.", error.ServerMessage);
+
+        clock.Advance(TimeSpan.FromSeconds(30));
+        await alice.Session.InviteAsync(last, bob.Name, ProtocolInfo.DebugWorldName, Ct);
+        Assert.Equal(21, this._server.Database.CountInvitesForUser(bob.UserId));
     }
 
     /// <summary>
     /// One inviter can't use up someone's invites, whether or not that person blocked them (the server doesn't know: a
     /// blocked inviter's invites are declined unseen by the invitee's client). An invite, cancel, invite loop is stopped
-    /// after 3 invites to the same person (then one every 10 minutes), and spends nothing of what others can send them.
+    /// after 20 invites to the same person (then one a minute), and leaves the rest of what others can send them (10 of 30).
     /// </summary>
     [Fact]
     public async Task OnePersonCantUseUpAnothersInvites() {
+        await this.StopTheClockAsync();
         var mallory = await this._server.RegisterAsync("Mallory Invite Hog");
         var bob = await this._server.RegisterAsync("Bob Invite Hog");
         var alice = await this._server.RegisterAsync("Alice Invite Hog");
@@ -171,7 +227,7 @@ public sealed class ServerLimitTests : IAsyncLifetime {
 
         var sent = 0;
         ServerErrorException? limited = null;
-        for (var i = 0; i < 15 && limited == null; i++) {
+        for (var i = 0; i < 30 && limited == null; i++) {
             try {
                 await mallory.Session.SendRawAsync(this.Invite(channelId, mallory, bob.UserId, bob.Keys(),
                     at => ChannelCrypto.SealInvite("Hogging", channelId, at, bob.UserId, bobAgreement, malloryKeys, mallory.UserId)), Ct);
@@ -182,33 +238,36 @@ public sealed class ServerLimitTests : IAsyncLifetime {
             }
         }
 
-        Assert.Equal(3, sent);
+        Assert.Equal(20, sent);
         Assert.Equal(ErrorCode.RateLimited, limited?.Code);
-        Assert.Contains("You've invited Bob Invite Hog too often recently", limited!.Message);
+        Assert.Equal("You've sent a lot of invites to Bob Invite Hog@Debug recently; try again in about a minute.", limited!.ServerMessage);
 
         // Her further tries are refused before they spend anything of his: the pair's limit is checked first.
         for (var i = 0; i < 10; i++) {
             var refused = await Assert.ThrowsAsync<ServerErrorException>(() => mallory.Session.SendRawAsync(this.Invite(channelId, mallory, bob.UserId, bob.Keys(),
                 at => ChannelCrypto.SealInvite("Hogging", channelId, at, bob.UserId, bobAgreement, malloryKeys, mallory.UserId)), Ct));
-            Assert.Contains("too often recently", refused.Message);
+            Assert.StartsWith("You've sent a lot of invites to Bob Invite Hog@Debug recently", refused.ServerMessage);
         }
 
-        // Alice and Carol can still invite him: he has the rest of his budget (10) for everyone else.
+        // Alice and Carol can still invite him, with the rest of his budget (30): 10 between them.
         var carol = await this._server.RegisterAsync("Carol Invite Hog");
         var invitee = new Invitee(bob.UserId, bob.Keys());
-        foreach (var other in new[] { alice, carol }) {
-            var channels = this.SeedChannels(other, 4);
-            Assert.Equal(3, await this.InviteUntilLimitedAsync(other, channels.Select(id => (id, invitee)).ToList()));
-        }
+        var (fromAlice, aliceRefused) = await this.InviteUntilLimitedAsync(alice, this.SeedChannels(alice, 5).Select(id => (id, invitee)).ToList());
+        Assert.Equal(5, fromAlice);
+        Assert.Null(aliceRefused);
+        var (fromCarol, carolRefused) = await this.InviteUntilLimitedAsync(carol, this.SeedChannels(carol, 6).Select(id => (id, invitee)).ToList());
+        Assert.Equal(5, fromCarol);
+        Assert.Equal("Bob Invite Hog@Debug has been sent a lot of invites recently; try again in about 10 seconds.", carolRefused?.ServerMessage);
     }
 
     /// <summary>
     /// An invite the server refuses for its log entry (made before someone else's change landed: the client fetches the log
     /// and tries again) spends nothing: not the inviter's, the pair's or the invitee's allowance. Otherwise one invite,
-    /// retried, could use up all three of the pair's.
+    /// retried, could use up all of the pair's, and enough retries all of the inviter's and invitee's.
     /// </summary>
     [Fact]
     public async Task AnInviteRefusedForItsLogEntrySpendsNothing() {
+        await this.StopTheClockAsync();
         var mallory = await this._server.RegisterAsync("Mallory Invite Race");
         var bob = await this._server.RegisterAsync("Bob Invite Race");
         var carol = await this._server.RegisterAsync("Carol Invite Race");
@@ -218,8 +277,9 @@ public sealed class ServerLimitTests : IAsyncLifetime {
         using var malloryKeys = mallory.LoadIdentity();
         var bobAgreement = bob.LoadIdentity().AgreementPublicKey;
 
-        // Five tries with an entry made before Carol's invite: each refused as not the next one.
-        for (var i = 0; i < 5; i++) {
+        // Forty tries with an entry made before Carol's invite, each refused as not the next one: more than the pair's (20),
+        // Bob's (30) or what Mallory has left (59) would allow, if they were counted.
+        for (var i = 0; i < 40; i++) {
             var stale = this._server.ForgeEntry(channelId, mallory, MembershipEntryKind.Invite, bob.UserId, bob.Keys(), after: before);
             var (sealedName, signature) = ChannelCrypto.SealInvite("Race", channelId, MembershipEntries.PositionOf(stale), bob.UserId, bobAgreement, malloryKeys, mallory.UserId);
             var refused = await Assert.ThrowsAsync<ServerErrorException>(() => mallory.Session.SendRawAsync(new ClientFrame {
@@ -228,39 +288,70 @@ public sealed class ServerLimitTests : IAsyncLifetime {
             Assert.Equal(ErrorCode.Conflict, refused.Code);
         }
 
-        // The pair's three invites are all still there.
+        // The pair's 20 invites are all still there, and the 21st is refused by the pair's limit, not Bob's or Mallory's.
         var invitee = new Invitee(bob.UserId, bob.Keys());
-        Assert.Equal(3, await this.InviteUntilLimitedAsync(mallory, this.SeedChannels(mallory, 4).Select(id => (id, invitee)).ToList()));
+        var (sent, limited) = await this.InviteUntilLimitedAsync(mallory, this.SeedChannels(mallory, 21).Select(id => (id, invitee)).ToList());
+        Assert.Equal(20, sent);
+        Assert.StartsWith("You've sent a lot of invites to Bob Invite Race@Debug recently", limited?.ServerMessage);
     }
 
-    /// <summary>One inviter (with many channels) can't fill someone's pending invites: at most 5 from any one inviter wait at once.</summary>
+    /// <summary>
+    /// One inviter (with many channels) can't fill someone's pending invites: at most 25 from any one inviter wait at once,
+    /// of the 50 they can have.
+    /// </summary>
     [Fact]
     public async Task PendingInvitesFromOnePersonAreCapped() {
         var mallory = await this._server.RegisterAsync("Mallory Invite Pile");
         var bob = await this._server.RegisterAsync("Bob Invite Pile");
         var alice = await this._server.RegisterAsync("Alice Invite Pile");
-        foreach (var seeded in this.SeedChannels(mallory, RequestHandler.MaxPendingInvitesFromOneInviter)) {
+        Assert.Equal(25, this._server.Handler.MaxPendingInvitesFromOneInviter);
+        foreach (var seeded in this.SeedChannels(mallory, this._server.Handler.MaxPendingInvitesFromOneInviter)) {
             this.SeedInvite(mallory, seeded, bob);
         }
 
         var more = await mallory.Session.CreateChannelAsync("One More Pile", Ct);
         var error = await Assert.ThrowsAsync<ServerErrorException>(() => mallory.Session.InviteAsync(more, bob.Name, ProtocolInfo.DebugWorldName, Ct));
         Assert.Equal(ErrorCode.LimitReached, error.Code);
-        Assert.Equal(RequestHandler.MaxPendingInvitesFromOneInviter, this._server.Database.CountInvitesForUser(bob.UserId));
+        Assert.Equal("Bob Invite Pile@Debug already has 25 invites from you waiting; once they accept or decline some, you can invite them again.", error.ServerMessage);
+        PlainLanguage.AssertPlain(error.ServerMessage);
+        Assert.Equal(25, this._server.Database.CountInvitesForUser(bob.UserId));
 
         var aliceChannel = await alice.Session.CreateChannelAsync("Still Room", Ct);
         await alice.Session.InviteAsync(aliceChannel, bob.Name, ProtocolInfo.DebugWorldName, Ct);
-        Assert.Equal(RequestHandler.MaxPendingInvitesFromOneInviter + 1, this._server.Database.CountInvitesForUser(bob.UserId));
+        Assert.Equal(26, this._server.Database.CountInvitesForUser(bob.UserId));
+
+        // Others fill the rest, to 50, and then nobody can invite him until he answers some.
+        var carol = await this._server.RegisterAsync("Carol Invite Pile");
+        foreach (var seeded in this.SeedChannels(carol, 24)) {
+            this.SeedInvite(carol, seeded, bob);
+        }
+
+        var dave = await this._server.RegisterAsync("Dave Invite Pile");
+        var daveChannel = await dave.Session.CreateChannelAsync("No Room", Ct);
+        error = await Assert.ThrowsAsync<ServerErrorException>(() => dave.Session.InviteAsync(daveChannel, bob.Name, ProtocolInfo.DebugWorldName, Ct));
+        Assert.Equal(ErrorCode.LimitReached, error.Code);
+        Assert.StartsWith("Bob Invite Pile@Debug already has 50 invites waiting", error.ServerMessage);
+        Assert.Equal(50, this._server.Database.CountInvitesForUser(bob.UserId));
     }
 
+    /// <summary>One person can't spam many: 60 invites at once, then one every 5 seconds.</summary>
     [Fact]
     public async Task InvitesFromOnePersonAreRateLimited() {
+        var clock = await this.StopTheClockAsync();
         var alice = await this._server.RegisterAsync("Alice Invite Spam");
-        var channelId = await alice.Session.CreateChannelAsync("Spam", Ct);
-        var strangers = Enumerable.Range(0, 22).Select(i => this.SeedUser($"Stranger {i}")).ToList();
+        // Two channels, as one takes at most 50 pending invites.
+        var channels = this.SeedChannels(alice, 2);
+        var strangers = Enumerable.Range(0, 62).Select(i => this.SeedUser($"Stranger {i}")).ToList();
+        var invites = strangers.Select((stranger, i) => (channels[i % 2], stranger)).ToList();
 
-        var limited = await this.InviteUntilLimitedAsync(alice, strangers.Select(stranger => (channelId, stranger)).ToList());
-        Assert.Equal(20, limited);
+        var (sent, limited) = await this.InviteUntilLimitedAsync(alice, invites);
+        Assert.Equal(60, sent);
+        Assert.Equal("You've sent a lot of invites recently; try again in a few seconds.", limited?.ServerMessage);
+        PlainLanguage.AssertPlain(limited!.ServerMessage);
+
+        clock.Advance(TimeSpan.FromSeconds(5));
+        var (more, _) = await this.InviteUntilLimitedAsync(alice, invites.Skip(60).ToList());
+        Assert.Equal(1, more);
     }
 
     [Fact]
@@ -272,7 +363,7 @@ public sealed class ServerLimitTests : IAsyncLifetime {
         var bobAgreement = bob.LoadIdentity().AgreementPublicKey;
 
         ServerErrorException? limited = null;
-        for (var i = 0; i < 15 && limited == null; i++) {
+        for (var i = 0; i < 30 && limited == null; i++) {
             try {
                 await alice.Session.SendRawAsync(this.Invite(channelId, alice, bob.UserId, bob.Keys(), at => ChannelCrypto.SealInvite("Loop", channelId, at, bob.UserId, bobAgreement, aliceKeys, alice.UserId)), Ct);
             } catch (ServerErrorException ex) {
@@ -286,6 +377,224 @@ public sealed class ServerLimitTests : IAsyncLifetime {
         Assert.Equal(ErrorCode.RateLimited, limited?.Code);
         // Cancelling invites never needed a rekey.
         Assert.Equal(0UL, this._server.Database.GetChannel(channelId)!.Epoch);
+    }
+
+    /// <summary>
+    /// An invite refused by a limit is logged, so refusals can be traced: one Information line naming the limit (as its setting)
+    /// and the user IDs, never names, and at most one a minute per inviter. The limits are the operator's settings.
+    /// </summary>
+    [Fact]
+    public async Task InviteRefusalsAreLoggedByUserIdAtMostOnceAMinutePerInviter() {
+        var logs = new CapturingLoggerProvider();
+        var clock = await this.StopTheClockAsync(logs, ("LookingGlass:Limits:InviteBurstPerPair", "2"));
+        var mallory = await this._server.RegisterAsync("Mallory Refusal Log");
+        var bob = await this._server.RegisterAsync("Bob Refusal Log");
+        var invitee = new Invitee(bob.UserId, bob.Keys());
+        var channels = this.SeedChannels(mallory, 9);
+
+        // This server allows two at once between a pair: then six refusals, logged once.
+        var (sent, _) = await this.InviteUntilLimitedAsync(mallory, channels.Take(3).Select(id => (id, invitee)).ToList());
+        Assert.Equal(2, sent);
+        for (var i = 3; i < 8; i++) {
+            var (none, refused) = await this.InviteUntilLimitedAsync(mallory, [(channels[i], invitee)]);
+            Assert.Equal(0, none);
+            Assert.Equal(ErrorCode.RateLimited, refused?.Code);
+        }
+
+        var line = Assert.Single(RefusalLines(logs));
+        Assert.Equal($"Invite from user {mallory.UserId} to user {bob.UserId} refused by InviteBurstPerPair", line);
+
+        // A minute on, the pair has one more, and the next refusal is logged again.
+        clock.Advance(TimeSpan.FromSeconds(61));
+        Assert.Equal(1, (await this.InviteUntilLimitedAsync(mallory, channels.Skip(7).Select(id => (id, invitee)).ToList())).Sent);
+        Assert.Equal(2, RefusalLines(logs).Count);
+
+        static List<string> RefusalLines(CapturingLoggerProvider logs) => logs.Entries
+            .Where(entry => entry.Level == Microsoft.Extensions.Logging.LogLevel.Information && entry.Message.StartsWith("Invite from user ", StringComparison.Ordinal))
+            .Select(entry => entry.Message).ToList();
+    }
+
+    /// <summary>
+    /// Looking players up by name (each invite by name starts with one) allows as many at once as invites: 60, then one a
+    /// second; a refusal says how long to wait.
+    /// </summary>
+    [Fact]
+    public async Task LookupsAreRateLimitedAndSayHowLongToWait() {
+        var clock = await this.StopTheClockAsync();
+        var alice = await this._server.RegisterAsync("Alice Looking Up");
+        var bob = await this._server.RegisterAsync("Bob Looked Up");
+        var lookup = new ClientFrame { LookupUser = new LookupUser { Name = bob.Name, WorldName = ProtocolInfo.DebugWorldName } };
+        for (var i = 0; i < 60; i++) {
+            Assert.NotNull((await alice.Session.SendRawAsync(lookup, Ct)).Identities);
+        }
+
+        var refused = await Assert.ThrowsAsync<ServerErrorException>(() => alice.Session.SendRawAsync(lookup, Ct));
+        Assert.Equal(ErrorCode.RateLimited, refused.Code);
+        Assert.Equal("You've looked up a lot of players recently; try again in a few seconds.", refused.ServerMessage);
+        PlainLanguage.AssertPlain(refused.ServerMessage);
+
+        clock.Advance(TimeSpan.FromSeconds(1));
+        Assert.NotNull((await alice.Session.SendRawAsync(lookup, Ct)).Identities);
+        await Assert.ThrowsAsync<ServerErrorException>(() => alice.Session.SendRawAsync(lookup, Ct));
+    }
+
+    /// <summary>The lookup limits are the operator's settings (LookupBurst, LookupIntervalSeconds).</summary>
+    [Fact]
+    public async Task LookupLimitsAreSettings() {
+        await this.StopTheClockAsync(settings: [("LookingGlass:Limits:LookupBurst", "3"), ("LookingGlass:Limits:LookupIntervalSeconds", "120")]);
+        var alice = await this._server.RegisterAsync("Alice Few Lookups");
+        var lookup = new ClientFrame { LookupUser = new LookupUser { Name = alice.Name, WorldName = ProtocolInfo.DebugWorldName } };
+        for (var i = 0; i < 3; i++) {
+            await alice.Session.SendRawAsync(lookup, Ct);
+        }
+
+        var refused = await Assert.ThrowsAsync<ServerErrorException>(() => alice.Session.SendRawAsync(lookup, Ct));
+        Assert.Equal("You've looked up a lot of players recently; try again in about 2 minutes.", refused.ServerMessage);
+    }
+
+    /// <summary>
+    /// The plugin reuses a lookup by name for 10 minutes, so inviting one friend to many channels looks them up once; an
+    /// invite that fails forgets it (without looking them up again then, unless the failure was about their keys), so the
+    /// next one looks them up. (This server allows 2 lookups at once, then one every 10 minutes, and 3 invites at once
+    /// between two players, so whether the plugin looked someone up shows in whether the server lets the next lookup through.)
+    /// </summary>
+    [Fact]
+    public async Task InvitingOneFriendToManyChannelsLooksThemUpOnce() {
+        var clock = new ManualClock();
+        await this._server.DisposeAsync();
+        this._server = new Harness(serverTime: clock, settings: [
+            ("LookingGlass:Limits:LookupBurst", "2"), ("LookingGlass:Limits:LookupIntervalSeconds", "600"), ("LookingGlass:Limits:InviteBurstPerPair", "3"),
+        ]);
+        // Every clock here moves together.
+        var alice = await this._server.RegisterAsync("Alice Reusing", options: this._server.Options(time: clock));
+        var bob = await this._server.RegisterAsync("Bob Reused", options: this._server.Options(time: clock));
+        var channels = new List<string>();
+        for (var i = 0; i < 6; i++) {
+            channels.Add(await alice.Session.CreateChannelAsync($"Moved {i}", Ct));
+        }
+
+        Task Invite(int channel) => alice.Session.InviteAsync(channels[channel], bob.Name, ProtocolInfo.DebugWorldName, Ct);
+
+        // Three invites, one lookup.
+        for (var i = 0; i < 3; i++) {
+            await Invite(i);
+        }
+
+        // The fourth is refused (the pair's three are spent), with the lookup reused. That has nothing to do with his keys,
+        // so he isn't looked up again then: the server's second lookup is left (taken here).
+        var refused = await Assert.ThrowsAsync<ServerErrorException>(() => Invite(3));
+        Assert.StartsWith("You've sent a lot of invites to Bob Reused@Debug recently", refused.ServerMessage);
+        var lookup = new ClientFrame { LookupUser = new LookupUser { Name = bob.Name, WorldName = ProtocolInfo.DebugWorldName } };
+        Assert.NotNull((await alice.Session.SendRawAsync(lookup, Ct)).Identities);
+
+        // The refusal forgot the lookup, so the next try looks him up: refused by the server now, its lookups spent.
+        clock.Offset += TimeSpan.FromSeconds(61);
+        refused = await Assert.ThrowsAsync<ServerErrorException>(() => Invite(3));
+        Assert.Equal("You've looked up a lot of players recently; try again in about 9 minutes.", refused.ServerMessage);
+
+        // Once the server allows one, it goes, and the next invite reuses that lookup: the server would refuse another now.
+        clock.Offset += TimeSpan.FromMinutes(9);
+        await Invite(3);
+        await Invite(4);
+
+        // Ten minutes on, the plugin looks him up again, spending the one the server has allowed since.
+        clock.Offset += LookupMemory.ReusedFor;
+        await Invite(5);
+        Assert.Equal(ErrorCode.RateLimited, (await Assert.ThrowsAsync<ServerErrorException>(() => alice.Session.SendRawAsync(lookup, Ct))).Code);
+        Assert.Equal(6, this._server.Database.CountInvitesForUser(bob.UserId));
+    }
+
+    /// <summary>
+    /// An invite refused because the invitee has been sent too many gives back what it took of the inviter's allowance for
+    /// them, so the inviter is told about the invitee's allowance each time, never about their own. (Here: 2 between a pair,
+    /// 3 to anyone.)
+    /// </summary>
+    [Fact]
+    public async Task AnInviteRefusedForTheInviteesAllowanceGivesBackThePairs() {
+        await this.StopTheClockAsync(settings: [("LookingGlass:Limits:InviteBurstPerPair", "2"), ("LookingGlass:Limits:InviteBurstPerInvitee", "3")]);
+        var bob = await this._server.RegisterAsync("Bob Popular");
+        var invitee = new Invitee(bob.UserId, bob.Keys());
+        foreach (var (name, count) in new[] { ("Carol Popular", 2), ("Dave Popular", 1) }) {
+            var other = await this._server.RegisterAsync(name);
+            Assert.Equal((count, (ServerErrorException?) null), await this.InviteUntilLimitedAsync(other, this.SeedChannels(other, count).Select(id => (id, invitee)).ToList()));
+        }
+
+        var alice = await this._server.RegisterAsync("Alice Popular");
+        foreach (var channelId in this.SeedChannels(alice, 3)) {
+            var (sent, refused) = await this.InviteUntilLimitedAsync(alice, [(channelId, invitee)]);
+            Assert.Equal(0, sent);
+            Assert.StartsWith("Bob Popular@Debug has been sent a lot of invites recently", refused?.ServerMessage);
+        }
+    }
+
+    /// <summary>The invite and lookup settings are checked at startup, keeping one inviter from using up what others can send someone.</summary>
+    [Fact]
+    public void InviteAndLookupSettingsOutOfRangeAreRefused() {
+        Assert.Null(new LookingGlass.Server.LimitOptions().Problem());
+        Assert.Contains("InviteBurstPerInviter", new LookingGlass.Server.LimitOptions { InviteBurstPerInviter = 0 }.Problem());
+        Assert.Contains("InviteIntervalSecondsPerInvitee", new LookingGlass.Server.LimitOptions { InviteIntervalSecondsPerInvitee = 0 }.Problem());
+        Assert.Contains("InviteIntervalSecondsPerPair", new LookingGlass.Server.LimitOptions { InviteIntervalSecondsPerPair = 100_000 }.Problem());
+        // The pair's allowance must stay smaller and slower than the invitee's.
+        Assert.Contains("InviteBurstPerPair", new LookingGlass.Server.LimitOptions { InviteBurstPerPair = 30 }.Problem());
+        Assert.Contains("InviteIntervalSecondsPerPair", new LookingGlass.Server.LimitOptions { InviteIntervalSecondsPerPair = 10 }.Problem());
+        Assert.Null(new LookingGlass.Server.LimitOptions { InviteBurstPerPair = 29, InviteIntervalSecondsPerPair = 11 }.Problem());
+        // One inviter can't fill all of someone's pending invites.
+        Assert.Contains("MaxPendingInvitesFromOneInviter", new LookingGlass.Server.LimitOptions { MaxPendingInvitesFromOneInviter = 50 }.Problem());
+        Assert.Contains("MaxPendingInvitesPerUser", new LookingGlass.Server.LimitOptions { MaxPendingInvitesPerUser = 201 }.Problem());
+        Assert.Null(new LookingGlass.Server.LimitOptions { MaxPendingInvitesPerUser = 200, MaxPendingInvitesFromOneInviter = 199 }.Problem());
+        Assert.Contains("LookupBurst", new LookingGlass.Server.LimitOptions { LookupBurst = 0 }.Problem());
+        Assert.Contains("LookupIntervalSeconds", new LookingGlass.Server.LimitOptions { LookupIntervalSeconds = 86_401 }.Problem());
+        Assert.Contains("RegistrationLookupFailuresPerHourPerIp", new LookingGlass.Server.LimitOptions { RegistrationLookupFailuresPerHourPerIp = 0 }.Problem());
+    }
+
+    /// <summary>A server with an invite or lookup setting out of range doesn't start, and says why.</summary>
+    [Theory]
+    [InlineData("InviteBurstPerPair", "0")]
+    [InlineData("InviteBurstPerPair", "40")]
+    [InlineData("MaxPendingInvitesFromOneInviter", "60")]
+    [InlineData("LookupIntervalSeconds", "0")]
+    [InlineData("RegistrationLookupFailuresPerHourPerIp", "0")]
+    public async Task AServerWithInviteSettingsOutOfRangeDoesntStart(string setting, string value) {
+        var logs = new CapturingLoggerProvider();
+        await ExitCodeGate.WaitAsync(Ct);
+        var exitCode = Environment.ExitCode;
+        var directory = Path.Combine(Path.GetTempPath(), "lgt-" + Guid.NewGuid().ToString("N"));
+        try {
+            Exception? failed = null;
+            try {
+                await using var server = new Harness(directory, logs: logs, settings: ($"LookingGlass:Limits:{setting}", value));
+                await using var raw = await server.ConnectRawAsync();
+            } catch (Exception ex) {
+                failed = ex;
+            }
+
+            Assert.NotNull(failed);
+            var critical = Assert.Single(logs.AtLeast(Microsoft.Extensions.Logging.LogLevel.Critical));
+            Assert.Contains($"LookingGlass:Limits:{setting}", critical);
+            Assert.Contains("won't start", critical);
+            Assert.Equal(1, Environment.ExitCode);
+        } finally {
+            Environment.ExitCode = exitCode;
+            ExitCodeGate.Release();
+            DeleteDirectory(directory);
+        }
+    }
+
+    /// <summary>How long to wait, as the refusals say it.</summary>
+    [Theory]
+    [InlineData(0.2, "a few seconds")]
+    [InlineData(5, "a few seconds")]
+    [InlineData(5.1, "about 10 seconds")]
+    [InlineData(10, "about 10 seconds")]
+    [InlineData(30, "about 30 seconds")]
+    [InlineData(49, "about 50 seconds")]
+    [InlineData(58, "about a minute")]
+    [InlineData(60, "about a minute")]
+    [InlineData(150, "about 3 minutes")]
+    [InlineData(3600, "about an hour")]
+    [InlineData(4 * 3600, "about 4 hours")]
+    public void WaitsAreSaidRoughly(double seconds, string said) {
+        Assert.Equal(said, RequestHandler.AboutHowLong(TimeSpan.FromSeconds(seconds)));
     }
 
     [Fact]
@@ -369,8 +678,8 @@ public sealed class ServerLimitTests : IAsyncLifetime {
 
     private sealed record Invitee(long UserId, MemberKeys Keys);
 
-    /// <returns>How many invites succeeded before the server said RATE_LIMITED.</returns>
-    private async Task<int> InviteUntilLimitedAsync(TestClient inviter, List<(string ChannelId, Invitee Invitee)> invites) {
+    /// <returns>How many invites succeeded before the server said RATE_LIMITED, and what it said then (null if it never did).</returns>
+    private async Task<(int Sent, ServerErrorException? Refused)> InviteUntilLimitedAsync(TestClient inviter, List<(string ChannelId, Invitee Invitee)> invites) {
         using var keys = inviter.LoadIdentity();
         var sent = 0;
         foreach (var (channelId, invitee) in invites) {
@@ -378,13 +687,24 @@ public sealed class ServerLimitTests : IAsyncLifetime {
                 await inviter.Session.SendRawAsync(this.Invite(channelId, inviter, invitee.UserId, invitee.Keys,
                     at => ChannelCrypto.SealInvite("Seeded", channelId, at, invitee.UserId, invitee.Keys.AgreementPublicKey, keys, inviter.UserId)), Ct);
             } catch (ServerErrorException ex) when (ex.Code == ErrorCode.RateLimited) {
-                return sent;
+                return (sent, ex);
             }
 
             sent++;
         }
 
-        return sent;
+        return (sent, null);
+    }
+
+    /// <summary>
+    /// Replaces the test's server with one whose clock stands still until the test moves it, so what the invite limits
+    /// allow doesn't depend on how fast the test runs.
+    /// </summary>
+    private async Task<StoppedClock> StopTheClockAsync(CapturingLoggerProvider? logs = null, params (string Key, string Value)[] settings) {
+        var clock = new StoppedClock();
+        await this._server.DisposeAsync();
+        this._server = new Harness(serverTime: clock, logs: logs, settings: settings);
+        return clock;
     }
 
     /// <summary>Channels with <paramref name="admin"/> as admin, created in the database directly (no create limit).</summary>

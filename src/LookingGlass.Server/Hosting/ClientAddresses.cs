@@ -52,6 +52,16 @@ public static class ClientAddresses {
     }
 
     /// <summary>
+    /// The <see cref="ConnectionLimitKey"/> for a <see cref="LimitKey"/> (an IPv6 /64 widened to its /56; anything else as it
+    /// is), for limits that count per customer rather than per /64, such as registrations.
+    /// </summary>
+    public static string WidenToConnectionKey(string limitKey) {
+        return limitKey.EndsWith("/64", StringComparison.Ordinal) && IPAddress.TryParse(limitKey[..^3], out var prefix)
+            ? ConnectionLimitKey(prefix)
+            : limitKey;
+    }
+
+    /// <summary>
     /// The key connection limits count against: like <see cref="LimitKey"/>, but a whole IPv6 /56, the least an ISP commonly
     /// gives one customer (many give a /48), so holding connections open takes many customers' worth of addresses, not
     /// just many /64s of one.

@@ -135,6 +135,11 @@ public sealed class PlainLanguageTests {
         var other = new InvalidOperationException("That message is too long.");
         Assert.Equal("That message is too long.", PlainMessages.MessageOf(other, advanced: false));
         Assert.Equal(NoticeKind.General, PlainMessages.KindOf(other));
+
+        // What a server said, without its error code in simple mode (as the Invite button says why an invite failed).
+        var server = new ServerErrorException(LookingGlass.Protocol.ErrorCode.RateLimited, "You've sent a lot of invites recently; try again in a few seconds.");
+        Assert.Equal("You've sent a lot of invites recently; try again in a few seconds.", PlainMessages.MessageOf(server, advanced: false));
+        Assert.Equal("You've sent a lot of invites recently; try again in a few seconds. (RateLimited)", PlainMessages.MessageOf(server, advanced: true));
     }
 
     [Fact]

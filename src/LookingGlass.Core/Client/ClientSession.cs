@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.Net.WebSockets;
+using System.Runtime.ExceptionServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Channels;
@@ -52,6 +53,8 @@ public sealed partial class ClientSession : IAsyncDisposable {
     private readonly Lock _lock = new();
     private readonly Lock _saveLock = new();
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _channelLocks = new();
+    // Whom a "Name@World" was looked up as, so inviting one friend to many channels looks them up once.
+    private readonly LookupMemory _lookups;
     // One log sync per channel at a time, so entries are checked in order against one state.
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _logLocks = new();
     // Logging in (with the saved login or the identity key) and registering, one request at a time: a try of a saved
@@ -148,6 +151,7 @@ public sealed partial class ClientSession : IAsyncDisposable {
 
     public ClientSession(ClientSessionOptions options, ISecretStore store) {
         this._options = options;
+        this._lookups = new LookupMemory(options.TimeProvider);
         this._store = store;
         this._membership = options.Membership;
         this._groupKeys = options.GroupKeys;
@@ -610,28 +614,90 @@ public sealed partial class ClientSession : IAsyncDisposable {
         var channelName = this.Read(() => this._channels.GetValueOrDefault(channelId)?.Name)
             ?? throw new InvalidOperationException("The channel name isn't known yet, so it can't be shared with an invitee.");
 
+        var lookup = $"{name.Trim()}@{worldName.Trim()}";
+        var remembered = this._lookups.Recall(lookup, userId => this.Read(() => this._identities.GetValueOrDefault(userId)));
+        ExceptionDispatchInfo failure;
+        try {
+            await this.SendInviteAsync(channelId, channelName, remembered ?? await this.LookUpAsync(name.Trim(), worldName.Trim(), lookup, ct), identity, me, ct);
+            return;
+        } catch (Exception ex) when (ex is not OperationCanceledException) {
+            // Whatever went wrong, the next invite looks them up again.
+            this._lookups.Forget(lookup);
+            if (remembered == null || !AboutInviteesKeys(ex)) {
+                throw;
+            }
+
+            failure = ExceptionDispatchInfo.Capture(ex);
+        }
+
+        // Refused over their keys, with a remembered lookup: perhaps it is out of date (they registered again with new keys,
+        // say). Look them up afresh, and if they have other keys now, invite those, as a fresh lookup would have; if not, or
+        // the lookup fails, say why the invite was refused.
+        var fresh = await this.TryLookUpAsync(name.Trim(), worldName.Trim(), lookup, ct);
+        if (fresh == null || (fresh.User.UserId == remembered.User.UserId && MemberKeys.Of(fresh.Identity) == MemberKeys.Of(remembered.Identity))) {
+            failure.Throw();
+        }
+
+        try {
+            await this.SendInviteAsync(channelId, channelName, fresh, identity, me, ct);
+        } catch (Exception ex) when (ex is not OperationCanceledException) {
+            this._lookups.Forget(lookup);
+            throw;
+        }
+    }
+
+    // Marks an exception from SendInviteAsync as decided by the keys it was given for the invitee.
+    private const string InviteeKeysKey = "LookingGlass.InviteeKeys";
+
+    /// <summary>
+    /// Whether an invite was refused over the invitee's keys, which a fresh lookup may change: the server saying they aren't
+    /// the invitee's current ones, or this client finding them a member (under those keys, or others).
+    /// </summary>
+    private static bool AboutInviteesKeys(Exception ex) =>
+        ex.Data[InviteeKeysKey] is true
+        || (ex is ServerErrorException { Code: ErrorCode.InvalidRequest } server && server.ServerMessage.Contains("current identity key", StringComparison.Ordinal));
+
+    /// <summary><see cref="LookUpAsync"/>, or null if that fails (but not if it is cancelled).</summary>
+    private async Task<UserIdentity?> TryLookUpAsync(string name, string worldName, string lookup, CancellationToken ct) {
+        try {
+            return await this.LookUpAsync(name, worldName, lookup, ct);
+        } catch (Exception ex) when (ex is not OperationCanceledException) {
+            return null;
+        }
+    }
+
+    /// <summary>Asks the server who "Name@World" is, trusts their keys on first use, and remembers the answer (see <see cref="LookupMemory"/>).</summary>
+    private async Task<UserIdentity> LookUpAsync(string name, string worldName, string lookup, CancellationToken ct) {
         Response response;
         try {
             response = await this.RequestAsync(new ClientFrame {
-                LookupUser = new LookupUser { Name = name.Trim(), WorldName = worldName.Trim() },
+                LookupUser = new LookupUser { Name = name, WorldName = worldName },
             }, ct);
         } catch (ServerErrorException ex) when (ex.Code == ErrorCode.NotFound) {
             // The server knows nobody by that name: said the same way however it words it.
-            throw PlainMessages.Failure(PlainMessages.NotRegisteredHere($"{name.Trim()}@{worldName.Trim()}"), ex);
+            throw PlainMessages.Failure(PlainMessages.NotRegisteredHere(lookup), ex);
         }
 
-        var found = response.Identities?.Identities_.FirstOrDefault() ?? throw PlainMessages.Failure(PlainMessages.NotRegisteredHere($"{name.Trim()}@{worldName.Trim()}"));
+        var found = response.Identities?.Identities_.FirstOrDefault() ?? throw PlainMessages.Failure(PlainMessages.NotRegisteredHere(lookup));
         // Trusted on first use: the server says these are their keys (see "fingerprint not compared").
         var invitee = this.AcceptIdentities([found]).FirstOrDefault()
-            ?? throw PlainMessages.Failure(PlainMessages.InvalidKeys($"{name}@{worldName}"));
+            ?? throw PlainMessages.Failure(PlainMessages.InvalidKeys(lookup));
+        this._lookups.Remember(lookup, invitee.User.UserId);
+        return invitee;
+    }
+
+    /// <summary>Invites a player whose identity the session has (see <see cref="InviteAsync(string, string, string, CancellationToken)"/>).</summary>
+    private async Task SendInviteAsync(string channelId, string channelName, UserIdentity invitee, IdentityKeys identity, User me, CancellationToken ct) {
         var inviteeKeys = MemberKeys.Of(invitee.Identity);
         var who = $"{invitee.User.Name}@{invitee.User.WorldName}";
-
         await this.AppendEntryAsync(channelId, ct, membership => {
             if (membership.FindMember(invitee.User.UserId) is { } existing) {
-                throw existing.Keys == inviteeKeys
+                var refused = existing.Keys == inviteeKeys
                     ? new InvalidOperationException($"{who} is already a member.")
                     : PlainMessages.Failure(PlainMessages.MemberUnderOldKey(who));
+                // Decided by the keys given for them, which may be out of date (see AboutInviteesKeys).
+                refused.Data[InviteeKeysKey] = true;
+                throw refused;
             }
 
             var entry = membership.Create(MembershipEntryKind.Invite, invitee.User.UserId, identity, me.UserId, this.NowMs(), inviteeKeys);

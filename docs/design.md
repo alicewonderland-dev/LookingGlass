@@ -606,9 +606,45 @@ keeps one, moves with it (see
 ## Lodestone traffic
 
 - All Lodestone requests go through one worker, with a server-wide rate limit
-  and a result cache.
-- Registration is rate-limited per IP address, and verification attempts per
-  connection (once every 10 seconds, 10 per challenge).
+  (one every 2 seconds, at most 20 waiting) and a cache of the characters
+  found. A search that finds nobody isn't cached, so someone who fixes a
+  typo, or makes their profile public, is looked up again at once.
+- Nothing is asked of the Lodestone for a name the game wouldn't allow (a
+  first and last name, each 2 to 15 letters, apostrophes or hyphens): it is
+  refused at once, saying what to fix, and costs nothing. The world isn't
+  checked, as the plugin sends the game's own name for the character's home
+  world, and a list in the server could lack a new one; the server's list of
+  public worlds only spells a world on it as the game does. A search is for
+  the exact name on one world, and reads at most 2 pages of results, so a
+  world that doesn't exist costs at most that (counted as below).
+- Registration is rate-limited per address (`RegistrationsPerHourPerIp`, 10
+  an hour), and verification attempts per connection (once every 10 seconds,
+  10 per challenge). Each Verify reads the character's page afresh (asking
+  for no cached copy), in the same queue. Addresses here are IPv4 addresses
+  and IPv6 /56s, as for connections, so one customer's many /64s count once.
+- A registration whose character the Lodestone doesn't list, or that the
+  Lodestone can't be asked about (an error, or no answer within HttpClient's
+  20-second timeout), gives its registration back: the user fixes it and
+  tries again. Each request such a lookup made of the Lodestone counts per
+  address on its own (`RegistrationLookupFailuresPerHourPerIp`, 20 an hour,
+  so at least 10 lookups that fail), checked before anything is asked of the
+  Lodestone. So an address can make at most about 30 searches an hour of
+  the queue, and no one address can fill it. A refusal because the queue is
+  full costs nothing.
+- A Verify the Lodestone couldn't answer isn't counted against the
+  challenge, but only the first 3 times: past those it counts, so one
+  pending registration can't keep taking turns of the queue.
+- What the user is told says what to do. A character not listed: check the
+  name and home world; a new character can take a while to show up, and one
+  whose profile is private may not show up at all, so make it public in the
+  character's privacy settings on the Lodestone, wait a moment and try again.
+  A private profile when verifying: make it public, wait a moment, press
+  Verify again. A profile is taken as private when its page has no profile
+  text and says the profile is private ("profile" then "private" in one
+  clause). That is a guess at the real page, not yet checked against one;
+  any other page without profile text gets a general message that also says
+  to make the profile public. A limit reached says how long to wait ("Too
+  many registrations from your address; try again in about 40 minutes.").
 - A registration refused for naming an address that isn't the server's costs
   neither of those, but logs a warning. So those refusals are counted per IP
   on their own (`RefusedRegistrationsPerHourPerIp`, 10 an hour), and refused
@@ -1585,7 +1621,7 @@ again.
   several connections an address, or connecting again from one, pushes out
   their own first. Only once every such address holds one does the oldest go:
   that takes about as many addresses as the server's cap, 10,000, registering
-  at once (and registering is limited to 5 an hour per address). Only 10,000
+  at once (and registering is limited to 10 an hour per address). Only 10,000
   logged-in connections fill the server for good.
 - **Replays of your own messages** within 10 minutes of a restart, and up to 30
   seconds of replay timestamps lost in a crash (see
@@ -2701,7 +2737,8 @@ button (`ClientSession.InviteAsync`), and LookingGlass says how it went in
 LookingGlass blue, with the tag in the channel's colour: "Invited Bob
 Hatter@Lich to [sky]." or "Couldn't invite Bob Hatter@Lich to [sky]: " and
 why, in the mode's words (`PlainMessages.MessageOf`, as the Invite button
-shows it; what a server said comes without its error code in simple mode).
+shows it: what a server said comes without its error code in simple mode,
+there as everywhere).
 The invite runs off the game thread; the line is printed on it. Nothing is
 logged about whom.
 
@@ -2806,9 +2843,11 @@ one transaction for every multi-step change.
 - **Memory.** Nothing kept per address, user or name grows without bound.
   Per-address counters drop addresses whose window has passed, and keep at
   most 100,000 (past that, the least recently seen are forgotten and start
-  afresh). Per-user and per-pair rate limits drop keys unused for an hour.
-  Lodestone searches are cached for an hour (ten minutes if not found),
-  swept every ten minutes, and at most 10,000 are kept.
+  afresh). Per-user and per-pair rate limits drop keys unused for an hour
+  (or, for slower settings, for as long as their allowance takes to refill).
+  Characters found on the Lodestone are cached for an hour (searches that find
+  nobody aren't cached); the cache is swept every ten minutes, and at most
+  10,000 are kept.
 - **Errors.** Typed errors map to protocol error codes.
 - **Addresses.** The server refuses to start outside Development without
   `PublicUrls`, and with a `ChallengeMinutes` outside 1 to 60.
@@ -2824,11 +2863,13 @@ one transaction for every multi-step change.
 | Members per channel | 500, counting pending invites | Keeps rekey bundles small |
 | Channels per user | 50 | Bounds login and list cost |
 | Pending invites per channel | 50 | Stops invite spam |
-| Pending invites per user | 20, at most 5 of them from any one inviter | Stops one person being flooded, or one inviter filling them all |
-| Invites sent per user | 20 at once, then 1 every 15 seconds | Stops one person spamming many |
-| Invites received per user | 10 at once, then 1 every 30 seconds | Stops many inviters together flooding one person |
-| Invites from one person to another | 3 at once, then 1 every 10 minutes; checked first | One inviter (blocked or not) can't use up someone's invites |
-| Registration attempts | 5 per hour per IP; verify once per 10 seconds, 10 per challenge | Protects the Lodestone and the challenge flow |
+| Pending invites per user | 50 (as many as the channels they can be in), at most 25 of them from any one inviter | Stops one person being flooded, or one inviter filling them all; operator settings |
+| Invites sent per user | 60 at once, then 1 every 5 seconds | Stops one person spamming many; operator settings |
+| Invites received per user | 30 at once, then 1 every 10 seconds | Stops many inviters together flooding one person; operator settings |
+| Lookups by name per user | 60 at once, then 1 a second; the plugin reuses one for 10 minutes (until an invite with it fails) | Each invite by name starts with one, so inviting a friend to many channels isn't stopped here first; bounds enumerating players; operator settings |
+| Invites from one person to another | 20 at once, then 1 a minute; checked first | Someone can invite a friend to all their channels in one go, but one inviter (blocked or not) can't use up someone's invites; operator settings |
+| Registration attempts | 10 per hour per IP (IPv6 per /56; a household's players and alts); verify once per 10 seconds, 10 per challenge (3 more the Lodestone couldn't answer) | Protects the Lodestone and the challenge flow; operator setting |
+| Registrations whose character the Lodestone doesn't list (or can't be asked about) | Cost no registration; each Lodestone request they made counts, 20 per hour per IP (IPv6 per /56), past which nothing more is looked up for that address; a search reads at most 2 pages; names the game wouldn't allow are refused without asking | Someone fixing a typo or a private profile isn't locked out, while names that aren't there can't fill the server-wide Lodestone queue; operator settings |
 | Lodestone requests (server-wide) | 1 every 2 seconds, cached | Avoids being blocked by the Lodestone |
 | Connections per IP (IPv6 per /56) | 20 open, 60 new a minute, 4 not logged in; one not logged in closes after 3 minutes (registering: when its code expires); no answer to a ping within 60 seconds closes one | Bounds idle, unauthenticated and churning load |
 | Requests per connection | 200 at once, then 20 a second; faster ones are slowed, not refused | Bounds the work one connection makes |
@@ -2842,8 +2883,22 @@ Channel creation, renames, disbands, identity lookups and heavy reads have
 their own per-user rate limits. The server doesn't know whom a user blocked
 (their client declines those invites unseen), so the limits between one
 inviter and one invitee are what stop a blocked inviter using up the
-invitee's allowance. Several inviters together still can, up to the
-per-user limits. Key login limits
+invitee's allowance. They are checked first, so an invite past them spends
+nothing of the invitee's, and they are smaller and slower than the
+invitee's (20 at once and 1 a minute, against 30 and 1 every 10 seconds;
+the server doesn't start with settings that aren't), so one inviter always
+leaves some for everyone else, as the 25 pending invites one inviter may
+have leave 25 of the 50. Bringing channels over from elsewhere, someone
+inviting the same friend to each of 20 channels in a row is never stopped
+by these; the 21st waits about a minute. Several inviters together can
+still use up someone's allowance, up to the per-user limits. An invite the server
+refuses for its log entry (made before someone else's change landed, which
+the client fetches and tries again after) gives back what it took from
+every one of these. A refused invite says how long to wait ("You've sent a
+lot of invites to Bob Hatter@Lich recently; try again in about a minute."),
+or, at a cap on pending invites, that the invitee must answer some first;
+and the server logs it, with the limit and the user IDs, at most once a
+minute per inviter. Key login limits
 are under [Key login](#key-login). Operators can change some of these (see
 [server.md](server.md#settings)).
 
