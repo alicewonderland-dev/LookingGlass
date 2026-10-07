@@ -384,7 +384,8 @@ is kept. Follow the logs with `journalctl -u lookingglass -f`.
 - keeps the database in `/var/lib/lookingglass/lookingglass.db` (systemd's
   `StateDirectory`, mode 0700), readable only by the service user, with files
   private to it (`UMask=0077`). Root can still read it, so a backup or
-  replication tool running as root (Litestream, say) needs nothing more;
+  replication tool running as root needs nothing more (for one running as
+  another user, see [Litestream](#replicating-with-litestream));
 - restarts on failure, gives the server 30 seconds to stop, and runs with
   `NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome` and `PrivateTmp`.
 
@@ -542,8 +543,24 @@ dbs:
         # endpoint, region and credentials as for your other databases
 ```
 
-and restart Litestream. It runs as root, so the 0700 data folder is no
-obstacle. The backup timer isn't needed as well (it does no harm).
+and restart Litestream. If it runs as root, the 0700 data folder is no
+obstacle. If it runs as another user (check with `systemctl show litestream
+-p User`), share the folder with that user through the service's group: a
+drop-in such as `/etc/systemd/system/lookingglass.service.d/litestream-access.conf`
+with
+
+```ini
+[Service]
+StateDirectoryMode=0770
+UMask=0007
+```
+
+then `sudo usermod -aG lookingglass <litestream's user>`, `sudo systemctl
+daemon-reload`, stop the server, `sudo chmod 770 /var/lib/lookingglass` and
+`sudo chmod 660 /var/lib/lookingglass/lookingglass.db*`, start it, and restart
+Litestream (it picks up the new group when it starts). Litestream needs to
+write there too: it keeps its own folder, `.lookingglass.db-litestream`, next
+to the database. The backup timer isn't needed as well (it does no harm).
 
 To restore from the replica:
 

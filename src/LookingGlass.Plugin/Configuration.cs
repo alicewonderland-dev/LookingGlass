@@ -12,8 +12,11 @@ public sealed class Configuration : IPluginConfiguration {
 
     public int Version { get; set; } = 1;
 
-    /// <summary>WebSocket URL of the server, for example ws://my-vm.tailnet.ts.net:5180/ws.</summary>
-    public string ServerUrl { get; set; } = "ws://127.0.0.1:5180/ws";
+    /// <summary>WebSocket URL of the server. By default the project's own server.</summary>
+    public string ServerUrl { get; set; } = DefaultServerUrl;
+
+    /// <summary>The project's own server (Oracle Cloud, behind Tailscale Funnel on port 8443).</summary>
+    public const string DefaultServerUrl = "wss://windup-relay-oracle.ancon-universe.ts.net:8443/ws";
 
     public bool AutoConnect { get; set; } = true;
 

@@ -74,10 +74,13 @@ yet. While it's in testing, it is loaded as a dev plugin:
 
 ## Getting started
 
-1. **Set the server address.** Type `/lg`, then click the gear in the window's
-   title bar to open Settings. Under **Server URL**, enter the address the
-   server's operator gave you (it looks like `wss://chat.example.com/ws`) and
-   press **Apply**. The plugin connects whenever you log in.
+1. **The server.** LookingGlass connects to its own server whenever you log
+   in; there's nothing to set. To use another server, type `/lg`, click the
+   gear in the window's title bar to open Settings, enter its address under
+   **Server URL** (it looks like `wss://chat.example.com/ws`) and press
+   **Apply**. If you used the test server at `alicedev`, switch to the new
+   address the same way: the plugin offers to keep your identity, and your
+   channels come with you.
 2. **Register your character.** The main window walks you through it. Press
    **Get a code**, paste the code (it starts with `LGC-`) anywhere in your
    Lodestone character profile, save the profile, then press **Verify**. The
