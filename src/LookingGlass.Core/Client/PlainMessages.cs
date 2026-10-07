@@ -475,6 +475,11 @@ public static class PlainMessages {
         $"{who} has an invalid identity key.",
         $"{who}'s LookingGlass setup is broken, so they can't be invited.");
 
+    /// <summary>Someone being invited who has no account on this server (they may use LookingGlass on another one).</summary>
+    public static Wording NotRegisteredHere(string who) => Plainly(
+        $"{who} isn't registered with LookingGlass on this server.",
+        $"{who} isn't registered with LookingGlass on this server: they need to install it and register their character first.");
+
     /// <summary>What a session does in the background, for "... failed".</summary>
     public static readonly Wording Rekeying = Plainly("Rekeying a channel", "Updating a channel");
 

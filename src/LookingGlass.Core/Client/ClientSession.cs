@@ -610,11 +610,17 @@ public sealed partial class ClientSession : IAsyncDisposable {
         var channelName = this.Read(() => this._channels.GetValueOrDefault(channelId)?.Name)
             ?? throw new InvalidOperationException("The channel name isn't known yet, so it can't be shared with an invitee.");
 
-        var response = await this.RequestAsync(new ClientFrame {
-            LookupUser = new LookupUser { Name = name.Trim(), WorldName = worldName.Trim() },
-        }, ct);
+        Response response;
+        try {
+            response = await this.RequestAsync(new ClientFrame {
+                LookupUser = new LookupUser { Name = name.Trim(), WorldName = worldName.Trim() },
+            }, ct);
+        } catch (ServerErrorException ex) when (ex.Code == ErrorCode.NotFound) {
+            // The server knows nobody by that name: said the same way however it words it.
+            throw PlainMessages.Failure(PlainMessages.NotRegisteredHere($"{name.Trim()}@{worldName.Trim()}"), ex);
+        }
 
-        var found = response.Identities?.Identities_.FirstOrDefault() ?? throw new InvalidOperationException($"{name}@{worldName} isn't registered with LookingGlass.");
+        var found = response.Identities?.Identities_.FirstOrDefault() ?? throw PlainMessages.Failure(PlainMessages.NotRegisteredHere($"{name.Trim()}@{worldName.Trim()}"));
         // Trusted on first use: the server says these are their keys (see "fingerprint not compared").
         var invitee = this.AcceptIdentities([found]).FirstOrDefault()
             ?? throw PlainMessages.Failure(PlainMessages.InvalidKeys($"{name}@{worldName}"));
