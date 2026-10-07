@@ -390,6 +390,16 @@ public sealed class Database {
                 CREATE INDEX IF NOT EXISTS messages_by_age ON messages (relayed_at);
                 CREATE INDEX IF NOT EXISTS messages_by_epoch ON messages (channel_id, epoch);
                 """);
+            // When each epoch key's author says they made it, and their signature over that (SealedEpochKey.created_unix_ms),
+            // passed on to members as given. Absent (0, empty) for keys from before, and from older clients.
+            if (!HasColumn(connection, tx, "epoch_keys", "created_ms")) {
+                Execute(connection, tx, "ALTER TABLE epoch_keys ADD COLUMN created_ms INTEGER NOT NULL DEFAULT 0;");
+            }
+
+            if (!HasColumn(connection, tx, "epoch_keys", "created_signature")) {
+                Execute(connection, tx, "ALTER TABLE epoch_keys ADD COLUMN created_signature BLOB NOT NULL DEFAULT x'';");
+            }
+
             if (!HasColumn(connection, tx, "channels", "message_seq")) {
                 Execute(connection, tx, "ALTER TABLE channels ADD COLUMN message_seq INTEGER NOT NULL DEFAULT 0;");
             }
@@ -1356,7 +1366,7 @@ public sealed class Database {
     public List<EpochKeyForMe> GetEpochKeys(string channelId, long recipientId, ulong fromEpoch) {
         using var connection = this.Open();
         using var command = Command(connection, null, """
-            SELECT epoch, author_id, ephemeral, ciphertext, signature, key_commitment, log_seq, log_hash FROM epoch_keys
+            SELECT epoch, author_id, ephemeral, ciphertext, signature, key_commitment, log_seq, log_hash, created_ms, created_signature FROM epoch_keys
             WHERE channel_id = $channel AND recipient_id = $user AND epoch >= $from ORDER BY epoch;
             """, ("$channel", channelId), ("$user", recipientId), ("$from", (long) fromEpoch));
         using var reader = command.ExecuteReader();
@@ -1374,6 +1384,8 @@ public sealed class Database {
                     Signature = ByteString.CopyFrom((byte[]) reader[4]),
                     KeyCommitment = ByteString.CopyFrom((byte[]) reader[5]),
                     LogPosition = ReadPosition(reader, 6, 7),
+                    CreatedUnixMs = reader.GetInt64(8),
+                    CreatedSignature = ByteString.CopyFrom((byte[]) reader[9]),
                 },
             });
         }
@@ -1577,13 +1589,15 @@ public sealed class Database {
 
     private static void InsertEpochKey(SqliteConnection connection, SqliteTransaction tx, string channelId, ulong epoch, long authorId, SealedEpochKey key) {
         Execute(connection, tx, """
-            INSERT OR REPLACE INTO epoch_keys (channel_id, epoch, recipient_id, author_id, ephemeral, ciphertext, signature, key_commitment, log_seq, log_hash)
-            VALUES ($channel, $epoch, $recipient, $author, $ephemeral, $ciphertext, $signature, $commitment, $logSeq, $logHash);
+            INSERT OR REPLACE INTO epoch_keys (channel_id, epoch, recipient_id, author_id, ephemeral, ciphertext, signature, key_commitment, log_seq, log_hash,
+                                    created_ms, created_signature)
+            VALUES ($channel, $epoch, $recipient, $author, $ephemeral, $ciphertext, $signature, $commitment, $logSeq, $logHash, $createdMs, $createdSignature);
             """,
             ("$channel", channelId), ("$epoch", (long) epoch), ("$recipient", key.RecipientId), ("$author", authorId),
             ("$ephemeral", key.Box.EphemeralPublicKey.ToByteArray()), ("$ciphertext", key.Box.Ciphertext.ToByteArray()),
             ("$signature", key.Signature.ToByteArray()), ("$commitment", key.KeyCommitment.ToByteArray()),
-            ("$logSeq", (long) (key.LogPosition?.Seq ?? 0)), ("$logHash", key.LogPosition?.Hash.ToByteArray() ?? []));
+            ("$logSeq", (long) (key.LogPosition?.Seq ?? 0)), ("$logHash", key.LogPosition?.Hash.ToByteArray() ?? []),
+            ("$createdMs", key.CreatedUnixMs), ("$createdSignature", key.CreatedSignature.ToByteArray()));
     }
 
     /// <summary>A stored log position; an empty hash means none was stored.</summary>

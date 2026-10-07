@@ -46,7 +46,7 @@ public sealed partial class CatchUpTests {
         var epoch = alice.Session.Snapshot.FindChannel(channelId)!.Epoch;
         await bob.Session.DisposeAsync();
         await SayAsync(alice, channelId, "now");
-        var future = alice.ForgeMessage(channelId, epoch, "from the future", DateTimeOffset.UtcNow.AddMinutes(5));
+        var future = alice.ForgeMessage(channelId, epoch, "from the future", DateTimeOffset.UtcNow.AddMinutes(15));
 
         var back = await this.BackAsync(bob, this.Adding(null, future));
         Assert.Equal(["now"], back.Messages.Select(m => m.Text));

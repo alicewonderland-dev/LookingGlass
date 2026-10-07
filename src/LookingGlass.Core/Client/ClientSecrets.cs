@@ -206,14 +206,40 @@ public sealed class MembershipChanges {
     public ulong CompleteFrom { get; set; }
 }
 
-/// <param name="Seq">The entry's position in the log.</param>
-/// <param name="AtMs">Its time (Unix ms): as signed in it, but never later than when this client verified it.</param>
-public sealed record MembershipChange(ulong Seq, long AtMs);
+/// <summary>One membership change of a channel's log (see <see cref="ClientSecrets.MembershipChanges"/>).</summary>
+public sealed class MembershipChange {
+    /// <summary>The entry's position in the log.</summary>
+    public ulong Seq { get; set; }
+
+    /// <summary>Its time (Unix ms), as the entry says, but never later than when this client verified it.</summary>
+    public long AtMs { get; set; }
+
+    /// <summary>Whose place it changed.</summary>
+    public long SubjectId { get; set; }
+
+    /// <summary>A leave, a removal or a member's place moving to new keys: the keys the subject had stopped being a member's then.</summary>
+    public bool Exit { get; set; }
+
+    /// <summary>
+    /// A time by which it had happened that its subject and the server couldn't choose: its own, if someone else signed it (a
+    /// removal), or that of a later entry someone other than its subject signed. Null if there is none (yet).
+    /// </summary>
+    public long? TrustedAtMs { get; set; }
+
+    /// <summary>When this client verified it as it happened, connected (not on coming back): it had happened by then.</summary>
+    public long? SeenLiveAtMs { get; set; }
+}
 
 /// <summary>A membership log position, as saved with an epoch key.</summary>
 public sealed class KeyPosition {
     public ulong Seq { get; set; }
     public byte[] Hash { get; set; } = [];
+
+    /// <summary>When its author says, signed, they made the key (Unix ms; see SealedEpochKey.created_unix_ms), or 0 if the key doesn't say.</summary>
+    public long CreatedMs { get; set; }
+
+    /// <summary>Who made the key (its author), with <see cref="CreatedMs"/>.</summary>
+    public long CreatedBy { get; set; }
 }
 
 /// <summary>Orders channel names: a later epoch wins, then a higher revision within the epoch.</summary>

@@ -464,6 +464,8 @@ public sealed partial class CatchUpTests : IAsyncLifetime {
 
         var second = await this.BackAsync(first);
         Assert.Equal(["missed"], second.Messages.Select(m => m.Text));
+        // The gap is over: the position moves on with live messages again.
+        Assert.DoesNotContain(channelId, second.Store.Load().CatchUpGaps.Keys);
         // And once it is in, the position carries on as usual.
         await second.Session.DisposeAsync();
         var third = await this.BackAsync(second);

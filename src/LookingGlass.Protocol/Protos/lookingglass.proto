@@ -475,6 +475,14 @@ message SealedEpochKey {
   // The membership log position the key was made for: it is sealed to exactly
   // the members at that position. Signed.
   LogPosition log_position = 5;
+  // When the author made the key (Unix ms, by their clock), and their signature over it with the channel, epoch, author,
+  // key_commitment and log_position (see ChannelCrypto.KeyCreatedAt): the same in every copy. Message catch-up dates the
+  // end of the previous epoch by it: a message under that epoch dated after this key was made (give or take a little)
+  // isn't caught up, so keys someone held then can't speak after they left or their place moved. A separate signature,
+  // so older clients, which check `signature` alone, still accept the key. Absent from keys made by older clients. Added
+  // without a version change.
+  int64 created_unix_ms = 6;
+  bytes created_signature = 7;
 }
 
 // The channel name encrypted under an epoch key and signed by its author.

@@ -50,6 +50,8 @@ public enum NoticeKind {
     MessageReplayed,
     /// <summary>Some of the messages caught up from while the user was away didn't pass the checks (said once, with how many).</summary>
     MessagesNotCaughtUp,
+    /// <summary>A membership change was dated further ahead of the clock than a live message may be.</summary>
+    MembershipChangeDatedAhead,
 
     // ---- The user's own identity
     /// <summary>After registering, the account's channels and invites moved to the new keys.</summary>

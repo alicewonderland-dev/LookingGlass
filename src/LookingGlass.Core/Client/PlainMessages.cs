@@ -301,6 +301,17 @@ public static class PlainMessages {
             ? $"1 message from while you were away, in {channel}, isn't shown: it couldn't be checked as really from a member who could send it then."
             : $"{count} messages from while you were away, in {channel}, aren't shown: they couldn't be checked as really from members who could send them then.");
 
+    /// <summary>
+    /// A membership change verified as it happened is dated further ahead of this computer's clock than a live message may
+    /// be: whoever dated it (its signer, or the server for a re-verification) is misdating it, perhaps so that old keys seem
+    /// to be allowed to speak for longer. It is dated by when it was seen instead.
+    /// </summary>
+    public static Wording MembershipChangeDatedAhead(string channel) => new(NoticeKind.MembershipChangeDatedAhead,
+        $"A membership change in {channel} is dated in the future (its signer, or the server for a re-verification, misdated it). " +
+        "LookingGlass dates it by when you saw it, so it can't let a replaced key's messages from while you were away pass for longer.",
+        $"A change to who is in {channel} is dated in the future, which can't be right: it may be a mistake, or someone trying to make " +
+        "messages look older or newer than they are. LookingGlass goes by when you saw the change instead.");
+
     // ================================================================ servers
 
     /// <summary>A server that lists its own addresses, without the one this client uses.</summary>
@@ -553,6 +564,7 @@ public static class PlainMessages {
         yield return MessageClockSkew("Bob Hatter", "04/10/2026 12:00");
         yield return MessagesNotCaughtUp("Tea party", 1);
         yield return MessagesNotCaughtUp("Tea party", 12);
+        yield return MembershipChangeDatedAhead("Tea party");
         yield return MessageReplayed("Bob Hatter", "04/10/2026 12:00");
         yield return AddressNotListed("wss://chat.example.com/ws", "ws://203.0.113.5:5180/ws");
         yield return RelayedRegistrationCode;

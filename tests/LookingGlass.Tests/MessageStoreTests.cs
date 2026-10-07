@@ -494,6 +494,49 @@ public sealed class MessageStoreTests : IAsyncLifetime {
         Assert.DoesNotContain(withMessage, this._server.Database.StoredKeyEpochs(channelId));
     }
 
+    /// <summary>
+    /// A new key says when it was made, signed by its author, the same in every copy: the server keeps it and passes it on,
+    /// and refuses a rekey whose copies disagree on it or whose statement isn't the author's.
+    /// </summary>
+    [Fact]
+    public async Task AKeysCreationTimeIsKeptAndMustBeTheAuthors() {
+        var alice = await this._server.RegisterAsync("Alice Dates Keys");
+        var bob = await this._server.RegisterAsync("Bob Dates Keys");
+        var channelId = await ChannelWith(alice, "Dated Keys Channel", bob);
+        var epoch = this._server.Database.GetChannel(channelId)!.Epoch;
+        var kept = this._server.Database.GetEpochKeys(channelId, bob.UserId, epoch).Single(key => key.Epoch == epoch);
+        Assert.InRange(kept.Key.CreatedUnixMs, DateTimeOffset.UtcNow.AddMinutes(-1).ToUnixTimeMilliseconds(), DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        Assert.Equal(kept.Key.CreatedUnixMs, ChannelCrypto.KeyCreatedAt(kept.Key, channelId, epoch, alice.UserId, alice.Keys().SigningPublicKey));
+
+        using var aliceKeys = alice.LoadIdentity();
+        var membership = alice.Session.MembershipForTests(channelId);
+        SubmitRekey Rekey(Action<List<SealedEpochKey>> tamper) {
+            var key = ChannelCrypto.NewEpochKey();
+            var sealedKeys = SealedEpochKeyProvider.Instance.SealToMembers(key, channelId, epoch + 1, membership.Head!, membership.Members, aliceKeys, alice.UserId,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            var copies = sealedKeys.Keys.Select(copy => copy.Clone()).ToList();
+            tamper(copies);
+            var request = new SubmitRekey {
+                ChannelId = channelId, NewEpoch = epoch + 1, KeyCommitment = sealedKeys.KeyCommitment, LogPosition = membership.Head!.Clone(),
+                Name = ChannelCrypto.EncryptName("Dated Keys Channel", key, channelId, epoch + 1, membership.Head!, aliceKeys, alice.UserId),
+            };
+            request.Keys.AddRange(copies);
+            return request;
+        }
+
+        var disagree = Rekey(copies => copies[0].CreatedUnixMs += 1000);
+        var notSigned = Rekey(copies => copies.ForEach(copy => copy.CreatedUnixMs += 1000));
+        foreach (var refused in new[] { disagree, notSigned }) {
+            var error = await Assert.ThrowsAsync<ServerErrorException>(() => alice.Session.SendRawAsync(new ClientFrame { SubmitRekey = refused }, Ct));
+            Assert.Equal(ErrorCode.InvalidRequest, error.Code);
+        }
+
+        Assert.Equal(epoch, this._server.Database.GetChannel(channelId)!.Epoch);
+        // One from an older client, saying nothing of when it was made, is taken as before.
+        var older = Rekey(copies => copies.ForEach(copy => { copy.CreatedUnixMs = 0; copy.CreatedSignature = ByteString.Empty; }));
+        Assert.NotNull((await alice.Session.SendRawAsync(new ClientFrame { SubmitRekey = older }, Ct)).Ack);
+    }
+
     [Fact]
     public void SettingsOutOfRangeAreRefused() {
         Assert.Null(new LookingGlass.Server.MessageOptions().Problem());

@@ -255,6 +255,8 @@ public sealed class ServerHardeningTests {
                 DROP TABLE messages;
                 ALTER TABLE channels DROP COLUMN message_seq;
                 ALTER TABLE members DROP COLUMN first_epoch;
+                ALTER TABLE epoch_keys DROP COLUMN created_ms;
+                ALTER TABLE epoch_keys DROP COLUMN created_signature;
                 DELETE FROM schema_version WHERE version >= 9;
                 SELECT 0;
                 """);

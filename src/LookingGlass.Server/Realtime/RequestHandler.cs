@@ -1038,7 +1038,8 @@ public sealed class RequestHandler(
         if (request.CreatorKey == null || request.CreatorKey.RecipientId != me.UserId || request.CreatorKey.Box == null
             || request.CreatorKey.KeyCommitment.Length != ChannelCrypto.KeyCommitmentSize
             || !MembershipEntries.SamePosition(request.CreatorKey.LogPosition, position)
-            || !groupKeys.VerifyEpochKey(request.CreatorKey, channelId, 0, me.UserId, me.SigningKey)) {
+            || !groupKeys.VerifyEpochKey(request.CreatorKey, channelId, 0, me.UserId, me.SigningKey)
+            || (!request.CreatorKey.CreatedSignature.IsEmpty && groupKeys.KeyCreatedAt(request.CreatorKey, channelId, 0, me.UserId, me.SigningKey) == null)) {
             throw new RequestException(ErrorCode.InvalidRequest, "The creator's epoch key is missing or wrongly signed.");
         }
 
@@ -1341,6 +1342,13 @@ public sealed class RequestHandler(
             if (key.Box == null || !groupKeys.VerifyEpochKey(key, channelId, request.NewEpoch, me.UserId, me.SigningKey)) {
                 throw new RequestException(ErrorCode.InvalidRequest, "A key in the rekey is wrongly signed.");
             }
+        }
+
+        // When the key was made, if it says (older clients don't): the same, signed, in every copy.
+        var first = request.Keys[0];
+        if (request.Keys.Any(key => key.CreatedUnixMs != first.CreatedUnixMs || key.CreatedSignature != first.CreatedSignature)
+            || (!first.CreatedSignature.IsEmpty && groupKeys.KeyCreatedAt(first, channelId, request.NewEpoch, me.UserId, me.SigningKey) == null)) {
+            throw new RequestException(ErrorCode.InvalidRequest, "Every key in a rekey must say the same time it was made, signed by its author.");
         }
 
         this.ValidateName(request.Name, channelId, request.NewEpoch, me, request.LogPosition);

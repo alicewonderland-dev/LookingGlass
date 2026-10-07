@@ -57,6 +57,10 @@ public sealed partial class ClientSession {
     private readonly Dictionary<string, Dictionary<ulong, HeldKey>> _pastKeys = new();
     // A save of the message times and positions is due soon (see ScheduleReplaySave).
     private bool _replaySaveScheduled;
+    // When this client last began logging in (Unix ms): a key made after it says only when this client came back.
+    private long _loginStartedMs = long.MaxValue;
+    // Logging in, until the channel list and logs are in: what is verified meanwhile wasn't seen as it happened.
+    private bool _loginSyncing;
     // ----
 
     /// <summary>
@@ -68,8 +72,8 @@ public sealed partial class ClientSession {
     /// <summary>A server event, or work that must run in order with them (see <see cref="RunInInboxAsync"/>).</summary>
     private sealed record InboxItem(Event? Event, Func<CancellationToken, Task>? Work);
 
-    /// <summary>An epoch key, and the log position it was made for (if known).</summary>
-    private sealed record HeldKey(byte[] Key, LogPosition? Position);
+    /// <summary>an epoch key, the log position it was made for (if known), and when its author (<c>CreatedBy</c>) says they made it (0: not said).</summary>
+    private sealed record HeldKey(byte[] Key, LogPosition? Position, long CreatedMs, long CreatedBy);
 
     /// <summary>The live messages held back for one login's catch-up, and the channels done. Guarded by <see cref="_lock"/>.</summary>
     private sealed class CatchUpState(Connection connection) {
@@ -275,22 +279,35 @@ public sealed partial class ClientSession {
     private async Task TakeCaughtUpAsync(ChatMessage message, CatchUpBatch batch, CancellationToken ct) {
         var channelId = batch.ChannelId;
         var messageId = Convert.ToHexString(message.MessageId.Span);
-        var (member, skip) = this.Read(() => (this.IsMember(channelId), this.IsBlocked(message.SenderId) || this._seenMessages.Contains(messageId)));
+        var (member, skip) = this.Read(() => (this.IsMember(channelId),
+            this.IsBlocked(message.SenderId) || this._seenMessages.Contains(messageId)
+            || this.AlreadyHad(channelId, message.SenderId, message.TimestampUnixMs, messageId)));
         if (!member) {
             // No longer in it (removed meanwhile): nothing of it is shown any more.
             return;
         }
 
         if (skip) {
-            // From someone blocked (hidden, as live), or already had in this session.
+            // From someone blocked (hidden, as live), or had already (this session, or by its time and ID): before any other
+            // check, so what was received live before doesn't count as dropped.
             this.Noted(channelId, message);
             return;
         }
 
         var key = this.Read(() => this.KeyFor(channelId, message.Epoch));
-        if (key == null && batch.KeysLookedFor.Add(message.Epoch)) {
+        if (key == null && !batch.KeysLookedFor.Contains(message.Epoch)) {
             await this.FetchPastKeysAsync(batch.Connection, channelId, message.Epoch, ct);
+            // Only once fetched: a fetch that failed is made again when the catch-up is tried again.
+            batch.KeysLookedFor.Add(message.Epoch);
             key = this.Read(() => this.KeyFor(channelId, message.Epoch));
+        }
+
+        // The next epoch's key says, signed by whoever made it, when this one stopped being the channel's.
+        var next = message.Epoch + 1;
+        if (key != null && !batch.KeysLookedFor.Contains(next)
+            && this.Read(() => this.KeyEpochOf(channelId) is { } newest && newest >= next && this.KeyFor(channelId, next) == null)) {
+            await this.FetchPastKeysAsync(batch.Connection, channelId, next, ct);
+            batch.KeysLookedFor.Add(next);
         }
 
         // Signed by the keys the sender had when the key it is under was made (someone who left since, too, if it was made
@@ -298,14 +315,13 @@ public sealed partial class ClientSession {
         // the channel's, so keys someone held then can't speak after they left, or after their place moved to new keys.
         var (signer, until) = key == null
             ? (null, long.MinValue)
-            : this.Read(() => (this.SignerFor(channelId, message.SenderId, key.Position), this.UsableUntil(channelId, key.Position)));
+            : this.Read(() => (this.SignerFor(channelId, message.SenderId, key.Position), this.UsableUntil(channelId, message.Epoch, key.Position, message.SenderId)));
         var content = signer == null ? null : this._groupKeys.DecryptMessage(message, key!.Key, signer.SigningPublicKey);
         var now = this._options.TimeProvider.GetUtcNow();
         if (content == null || message.TimestampUnixMs > until
-            || message.TimestampUnixMs > (now + MessageReorderAllowance).ToUnixTimeMilliseconds()) {
+            || message.TimestampUnixMs > (now + MaxMessageClockSkew).ToUnixTimeMilliseconds()) {
             // Under a key this client never held (from before it joined, say), from someone who couldn't send it then, not
-            // really theirs, dated after its key was replaced, or dated in the future (which would hold back their later
-            // messages beyond what the live rules allow).
+            // really theirs, dated after its key was replaced, or dated further in the future than a live message may be.
             batch.Dropped++;
             this.Noted(channelId, message);
             return;
@@ -444,7 +460,8 @@ public sealed partial class ClientSession {
     /// <summary>The key of an epoch, held or fetched for reading a caught-up message. Call inside the lock.</summary>
     private HeldKey? KeyFor(string channelId, ulong epoch) {
         if (this.GetEpochKey(channelId, epoch) is { } key) {
-            return new HeldKey(key, this.KeyPositionOf(channelId, epoch));
+            var held = this._secrets.EpochKeyPositions.GetValueOrDefault(channelId)?.GetValueOrDefault(epoch);
+            return new HeldKey(key, this.KeyPositionOf(channelId, epoch), held?.CreatedMs ?? 0, held?.CreatedBy ?? 0);
         }
 
         return this._pastKeys.TryGetValue(channelId, out var past) ? past.GetValueOrDefault(epoch) : null;
@@ -468,25 +485,54 @@ public sealed partial class ClientSession {
     }
 
     /// <summary>
-    /// The latest a message under a key made at <paramref name="position"/> may be dated (Unix ms): while the membership it was
-    /// made for is today's, any time; once someone joined, left, was removed or moved to new keys after it (which an honest
-    /// server refuses messages under it from), the time of the first such change, plus the grace live messages under an
-    /// older key get. That bounds the keys someone had then (the old keys of a place that moved, someone who left) too.
+    /// The latest a message from <paramref name="senderId"/> under epoch <paramref name="epoch"/> (its key made at
+    /// <paramref name="position"/>) may be dated (Unix ms), give or take the grace live messages under an older key get.
+    /// An honest server takes messages under a key only until the next membership change, and the next key is made after it:
+    /// <list type="bullet">
+    /// <item>no later than when the next epoch's key was made, if it says (signed by whoever made it);</item>
+    /// <item>no later than the first membership change after <paramref name="position"/>, as this client dates it (see
+    /// <see cref="RecordMembershipChanges"/>), when it can tell;</item>
+    /// <item>and if the sender's own keys stopped after <paramref name="position"/> (they left, were removed, or their place
+    /// moved to new keys), no later than a time by then that neither they nor the server could choose: the next key's, if
+    /// someone else made it before this client came back; that of an entry someone else signed; or when this client saw the
+    /// change happen. Without one, it can't be told how long those keys spoke, and nothing of theirs passes.</item>
+    /// </list>
     /// Call inside the lock.
     /// </summary>
-    /// <returns><see cref="long.MinValue"/> if that can't be told (the changes since weren't recorded): nothing passes then.</returns>
-    private long UsableUntil(string channelId, LogPosition? position) {
+    /// <returns><see cref="long.MinValue"/> if it can't be told: nothing passes then.</returns>
+    private long UsableUntil(string channelId, ulong epoch, LogPosition? position, long senderId) {
+        var grace = (long) OldEpochGrace.TotalMilliseconds;
+        var next = this.KeyFor(channelId, epoch + 1) is { CreatedMs: > 0 } made ? made : null;
+        var byChange = this.ChangeBound(channelId, position, grace);
+        var until = next != null ? Math.Min(next.CreatedMs + grace, byChange ?? long.MaxValue) : byChange ?? long.MinValue;
+        if (position == null || this._secrets.MembershipChanges.GetValueOrDefault(channelId)?.Changes
+                .Where(change => change.Exit && change.SubjectId == senderId && change.Seq > position.Seq).MinBy(change => change.Seq) is not { } exit) {
+            return until;
+        }
+
+        var evidence = new[] {
+            exit.TrustedAtMs,
+            exit.SeenLiveAtMs,
+            next != null && next.CreatedBy != senderId && next.CreatedMs <= this._loginStartedMs ? next.CreatedMs : null,
+        }.Where(at => at != null).Select(at => at!.Value).DefaultIfEmpty(long.MinValue).Min();
+        return evidence == long.MinValue ? long.MinValue : Math.Min(until, evidence + grace);
+    }
+
+    /// <summary>
+    /// The first membership change after <paramref name="position"/>, plus <paramref name="grace"/>: <see cref="long.MaxValue"/>
+    /// if there was none (the membership is today's), null if it can't be told (the changes since weren't all recorded).
+    /// Call inside the lock.
+    /// </summary>
+    private long? ChangeBound(string channelId, LogPosition? position, long grace) {
         if (position == null || position.Seq >= this.MembershipOf(channelId).MembersChangedAt) {
             return long.MaxValue;
         }
 
         if (!this._secrets.MembershipChanges.TryGetValue(channelId, out var changes) || position.Seq + 1 < changes.CompleteFrom) {
-            return long.MinValue;
+            return null;
         }
 
-        return changes.Changes.Where(change => change.Seq > position.Seq).MinBy(change => change.Seq) is { } first
-            ? first.AtMs + (long) OldEpochGrace.TotalMilliseconds
-            : long.MinValue;
+        return changes.Changes.Where(change => change.Seq > position.Seq).MinBy(change => change.Seq) is { } first ? first.AtMs + grace : null;
     }
 
     /// <summary>
@@ -531,7 +577,8 @@ public sealed partial class ClientSession {
                     this._pastKeys[channelId] = past;
                 }
 
-                past[entry.Epoch] = new HeldKey(key, position);
+                past[entry.Epoch] = new HeldKey(key, position,
+                    this._groupKeys.KeyCreatedAt(entry.Key, channelId, entry.Epoch, entry.AuthorId, author.SigningPublicKey) ?? 0, entry.AuthorId);
                 foreach (var oldest in past.Keys.Order().Take(Math.Max(0, past.Count - MaxPastKeysPerChannel)).ToList()) {
                     past.Remove(oldest);
                 }
@@ -714,27 +761,51 @@ public sealed partial class ClientSession {
 
     /// <summary>
     /// Records the membership changes among entries just verified (joins, leaves, removals, members' places moving to new
-    /// keys), with their times (as signed, but never later than now: what the entry says can't move a bound past when this
-    /// client learnt of it), for <see cref="UsableUntil"/>. A log replayed from its start is recorded whole; one carried on
-    /// from a position verified before this was kept, from there. Call inside the lock.
+    /// keys), with their times, for <see cref="UsableUntil"/> where the next key doesn't say when it was made (one made by an
+    /// older client). An entry's time is never taken as later than when this client verified it. Some times can't be
+    /// trusted at all: a key recovered entry's is the server's (nothing signs it), and a leave's, an accept's or a decline's
+    /// is signed by its subject (who may be the one it would help). Any later entry signed by someone else dates every
+    /// change before it no later than its own time, since entries are made in order. A log replayed from its start is
+    /// recorded whole; one carried on from a position verified before this was kept, from its last membership change on.
+    /// Call inside the lock.
     /// </summary>
-    private void RecordMembershipChanges(string channelId, IChannelMembership before, IChannelMembership after, IReadOnlyList<MembershipEntry> applied) {
+    /// <param name="live">Verified as it happened, connected (not on coming back): each had happened by now.</param>
+    private void RecordMembershipChanges(string channelId, IChannelMembership before, IChannelMembership after, IReadOnlyList<MembershipEntry> applied, bool live) {
         if (applied.Count == 0) {
             return;
         }
 
         if (!this._secrets.MembershipChanges.TryGetValue(channelId, out var changes)) {
-            changes = new MembershipChanges { CompleteFrom = before.Head == null ? 0 : before.Head.Seq + 1 };
+            // Entries since the last membership change verified before (an invite, a rank) changed nothing to record.
+            changes = new MembershipChanges { CompleteFrom = before.Head == null ? 0 : before.MembersChangedAt + 1 };
             this._secrets.MembershipChanges[channelId] = changes;
         }
 
         var now = this.NowMs();
         foreach (var entry in applied) {
-            var change = entry.Kind is MembershipEntryKind.Accept or MembershipEntryKind.Leave or MembershipEntryKind.Remove
-                         || (entry.Kind == MembershipEntryKind.KeyRecovered && entry.Subject is { } subject
-                             && (before.FindMember(subject.UserId) != null || after.FindMember(subject.UserId) != null));
-            if (change && changes.Changes.All(known => known.Seq != entry.Seq)) {
-                changes.Changes.Add(new MembershipChange(entry.Seq, Math.Min(entry.TimestampUnixMs, now)));
+            var at = Math.Min(entry.TimestampUnixMs, now);
+            // Signed by someone other than its subject: its time is theirs, not the server's or the subject's.
+            var trusted = entry.Kind != MembershipEntryKind.KeyRecovered && entry.Subject != null && entry.ActorId != entry.Subject.UserId;
+            var memberMoved = entry.Kind == MembershipEntryKind.KeyRecovered && entry.Subject is { } subject
+                              && (before.FindMember(subject.UserId) != null || after.FindMember(subject.UserId) != null);
+            var change = entry.Kind is MembershipEntryKind.Accept or MembershipEntryKind.Leave or MembershipEntryKind.Remove || memberMoved;
+            if (change && entry.Subject != null && changes.Changes.All(known => known.Seq != entry.Seq)) {
+                changes.Changes.Add(new MembershipChange {
+                    Seq = entry.Seq,
+                    AtMs = at,
+                    SubjectId = entry.Subject.UserId,
+                    Exit = entry.Kind is MembershipEntryKind.Leave or MembershipEntryKind.Remove || memberMoved,
+                    TrustedAtMs = trusted ? at : null,
+                    SeenLiveAtMs = live ? now : null,
+                });
+            }
+
+            if (trusted) {
+                // Entries are made in order: whatever came before this one had happened by its time.
+                foreach (var earlier in changes.Changes.Where(known => known.Seq < entry.Seq)) {
+                    earlier.AtMs = Math.Min(earlier.AtMs, at);
+                    earlier.TrustedAtMs = Math.Min(earlier.TrustedAtMs ?? long.MaxValue, at);
+                }
             }
         }
 
@@ -748,4 +819,20 @@ public sealed partial class ClientSession {
 
         this._secretsVersion++;
     }
+
+    /// <summary>
+    /// Says (once per channel and session) when a membership change verified as it happened is dated further ahead of this
+    /// computer's clock than a live message may be: whoever dated it (its signer, or the server for a re-verification) is
+    /// misdating it, perhaps to widen when old keys may still speak. It is dated by when it was seen instead. Call inside the lock.
+    /// </summary>
+    private void FlagChangesDatedAhead(string channelId, IReadOnlyList<MembershipEntry> applied) {
+        var limit = this.NowMs() + (long) MaxMessageClockSkew.TotalMilliseconds;
+        if (applied.Any(entry => entry.TimestampUnixMs > limit) && this._flaggedDatedAhead.Add(channelId)) {
+            var name = this._channels.GetValueOrDefault(channelId)?.DisplayName ?? ChannelView.PlaceholderName(channelId);
+            this._pendingNotices.Add(SessionNotice.Of(NoticeLevel.Warning, PlainMessages.MembershipChangeDatedAhead(name), channelId));
+        }
+    }
+
+    // Channels whose membership changes dated ahead were said this session (see FlagChangesDatedAhead).
+    private readonly HashSet<string> _flaggedDatedAhead = new();
 }

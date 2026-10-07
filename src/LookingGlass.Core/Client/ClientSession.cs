@@ -575,7 +575,8 @@ public sealed partial class ClientSession : IAsyncDisposable {
         var membership = this._membership.Empty(channelId).Apply(genesis);
         var position = membership.Head!;
         var key = this._groupKeys.NewEpochKey();
-        var creatorKey = this._groupKeys.SealToMembers(key, channelId, 0, position, membership.Members, identity, me.UserId).Keys.Single();
+        var created = this.NowMs();
+        var creatorKey = this._groupKeys.SealToMembers(key, channelId, 0, position, membership.Members, identity, me.UserId, created).Keys.Single();
 
         var response = await this.RequestAsync(new ClientFrame {
             CreateChannel = new CreateChannel {
@@ -594,7 +595,7 @@ public sealed partial class ClientSession : IAsyncDisposable {
         lock (this._lock) {
             this.SetMembership(channelId, membership, []);
             var channel = this.ApplyChannelInfo(info);
-            this.StoreEpochKey(channelId, 0, key, position);
+            this.StoreEpochKey(channelId, 0, key, position, created, me.UserId);
             channel.Name = name;
             this.SetNameVersion(channelId, new NameVersion(0, 0));
         }
@@ -944,9 +945,13 @@ public sealed partial class ClientSession : IAsyncDisposable {
                 // A name known only from the invite has no version to name.
                 var source = nameVersion == null ? null : new NameSource { Epoch = nameVersion.Epoch, Revision = nameVersion.Revision };
 
+                // Stated, signed, in every copy: message catch-up dates the end of the epoch before by it.
+
+                var created = this.NowMs();
+
                 EpochRekey sealedKeys;
                 try {
-                    sealedKeys = this._groupKeys.SealToMembers(key, channelId, newEpoch, position, membership.Members, identity, me.UserId);
+                    sealedKeys = this._groupKeys.SealToMembers(key, channelId, newEpoch, position, membership.Members, identity, me.UserId, created);
                 } catch (SealingFailedException ex) {
                     // Name the member at fault: otherwise one bad key leaves everyone guessing why the channel is stuck.
                     var who = this.Read(() => this.UserOf(ex.Member.UserId));
@@ -972,7 +977,7 @@ public sealed partial class ClientSession : IAsyncDisposable {
                 }
 
                 lock (this._lock) {
-                    this.StoreEpochKey(channelId, newEpoch, key, position);
+                    this.StoreEpochKey(channelId, newEpoch, key, position, created, me.UserId);
                     if (this._channels.TryGetValue(channelId, out var channel)) {
                         channel.ServerEpoch = Math.Max(channel.ServerEpoch, newEpoch);
                         // Not a request made since at this epoch (a leave just after this rekey was applied, say), which
@@ -1454,11 +1459,20 @@ public sealed partial class ClientSession : IAsyncDisposable {
         // Live messages are held back from before the login (the server relays to a connection as soon as it is logged in)
         // until each channel's missed messages are in, so a channel's messages are taken in the server's order.
         var catchUp = this.HoldLiveMessages(connection);
+        lock (this._lock) {
+            this._loginStartedMs = this.NowMs();
+            this._loginSyncing = true;
+        }
+
         AuthenticateOk ok;
         try {
             var response = await this.RequestAsync(connection, new ClientFrame { Authenticate = new Authenticate { DeviceToken = token } }, ct);
             ok = response.AuthenticateOk ?? throw Unexpected(response);
         } catch {
+            lock (this._lock) {
+                this._loginSyncing = false;
+            }
+
             this.ReleaseLater(catchUp);
             throw;
         }
@@ -1483,6 +1497,10 @@ public sealed partial class ClientSession : IAsyncDisposable {
         } catch {
             this.ReleaseLater(catchUp);
             throw;
+        } finally {
+            lock (this._lock) {
+                this._loginSyncing = false;
+            }
         }
 
         // In the background: a long absence can take a while, and nothing else needs to wait for it.
@@ -2370,7 +2388,8 @@ public sealed partial class ClientSession : IAsyncDisposable {
 
             if (rejected == null) {
                 if (!alreadyHeld) {
-                    this.StoreEpochKey(advanced.ChannelId, advanced.Epoch, key!, position);
+                    this.StoreEpochKey(advanced.ChannelId, advanced.Epoch, key!, position,
+                        this._groupKeys.KeyCreatedAt(advanced.MyKey!, advanced.ChannelId, advanced.Epoch, advanced.AuthorId, authorKeys!.SigningPublicKey) ?? 0, advanced.AuthorId);
                 }
 
                 channel.ServerEpoch = Math.Max(channel.ServerEpoch, advanced.Epoch);
@@ -2707,7 +2726,8 @@ public sealed partial class ClientSession : IAsyncDisposable {
                 }
 
                 if (key != null) {
-                    this.StoreEpochKey(channelId, entry.Epoch, key, entry.Key.LogPosition);
+                    this.StoreEpochKey(channelId, entry.Epoch, key, entry.Key.LogPosition,
+                        this._groupKeys.KeyCreatedAt(entry.Key, channelId, entry.Epoch, entry.AuthorId, SignerKeys(membership, entry.AuthorId, entry.Key.LogPosition)!.SigningPublicKey) ?? 0, entry.AuthorId);
                 } else {
                     this.Log(NoticeLevel.Warning, $"Epoch {entry.Epoch} key for {channelId} failed verification ({check})");
                     bad ??= this.FlagBadEpochKey(channel, entry.Epoch, this.UserOf(entry.AuthorId), check);
@@ -3075,7 +3095,11 @@ public sealed partial class ClientSession : IAsyncDisposable {
             this.RememberFormerMember(channelId, entry);
         }
 
-        this.RecordMembershipChanges(channelId, before, membership, applied);
+        this.RecordMembershipChanges(channelId, before, membership, applied, live: followsOn && !this._loginSyncing);
+        if (followsOn) {
+            // Happening now, as far as this client knows: one dated far ahead is misdated.
+            this.FlagChangesDatedAhead(channelId, applied);
+        }
 
         foreach (var entry in applied.Where(entry => entry.Kind == MembershipEntryKind.KeyRecovered)) {
             if (entry.Subject.UserId != me) {
@@ -3318,7 +3342,8 @@ public sealed partial class ClientSession : IAsyncDisposable {
             : null;
     }
 
-    private void StoreEpochKey(string channelId, ulong epoch, byte[] key, LogPosition? position) {
+    /// <param name="createdMs">When its author says, signed, they made it; 0 if it doesn't say.</param>
+    private void StoreEpochKey(string channelId, ulong epoch, byte[] key, LogPosition? position, long createdMs = 0, long createdBy = 0) {
         if (!this._secrets.EpochKeys.TryGetValue(channelId, out var keys)) {
             keys = new Dictionary<ulong, byte[]>();
             this._secrets.EpochKeys[channelId] = keys;
@@ -3331,7 +3356,7 @@ public sealed partial class ClientSession : IAsyncDisposable {
 
         keys[epoch] = key;
         if (position != null) {
-            positions[epoch] = new KeyPosition { Seq = position.Seq, Hash = position.Hash.ToByteArray() };
+            positions[epoch] = new KeyPosition { Seq = position.Seq, Hash = position.Hash.ToByteArray(), CreatedMs = createdMs, CreatedBy = createdBy };
         }
 
         if (this._channels.TryGetValue(channelId, out var channel)) {
