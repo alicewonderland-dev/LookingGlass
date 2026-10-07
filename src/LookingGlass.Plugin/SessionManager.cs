@@ -86,15 +86,19 @@ public sealed class SessionManager : IDisposable {
     /// vouched for, which the user confirmed), first copies each of <paramref name="characters"/>' identity to the new
     /// address (see <see cref="ServerMove"/>), once the session has closed; any session started meanwhile waits for that.
     /// If closing took long enough for the check to go stale, the servers are asked again first, and nothing is copied
-    /// unless they still agree. The old address's files are left as they are, so switching back works. Call on the
+    /// unless they still agree. The old address's secrets files are left as they are, so switching back works; each carried
+    /// character's chat log moves with it (once its log has closed), so it goes on at the new address. Call on the
     /// framework thread; the returned task finishes the copying, and fails (having copied what it could) if any copy was refused.
     /// </summary>
     public Task ChangeServer(string newUrl, ServerMoveCheck? keepIdentity = null, IReadOnlyList<ulong>? characters = null) {
         var oldUrl = this._config.ServerUrl;
         this.Stop();
         var closing = this._closing ?? Task.CompletedTask;
+        // The chat log closes with the session (Stop): one carried over moves only once nothing writes to it.
+        var logsClosed = this._chatLogs.Settled;
         var copying = Task.Run(async () => {
             await closing;
+            await logsClosed;
             if (keepIdentity == null) {
                 return;
             }
@@ -105,6 +109,7 @@ public sealed class SessionManager : IDisposable {
                 try {
                     ServerMove.CopyIdentity(check, ProtectedSecretStore.For(contentId, oldUrl), ProtectedSecretStore.For(contentId, newUrl));
                     Services.Log.Information("Carried a character's LookingGlass identity over to the server's new address");
+                    MoveChatLog(contentId, oldUrl, newUrl);
                 } catch (Exception ex) {
                     refused.Add(ex.Message);
                 }
@@ -239,6 +244,20 @@ public sealed class SessionManager : IDisposable {
         }
 
         return replacing;
+    }
+
+    /// <summary>
+    /// A character's chat log goes with its identity to the server's new address (see <see cref="ChatLogFiles.MoveToAddress"/>):
+    /// a log already there is left as it is. A failure is only written to the diagnostic log: the identity still moved.
+    /// </summary>
+    private static void MoveChatLog(ulong contentId, string oldUrl, string newUrl) {
+        try {
+            if (ChatLogFiles.MoveToAddress(Services.PluginInterface.ConfigDirectory.FullName, contentId, oldUrl, newUrl)) {
+                Services.Log.Information("Moved a character's chat log to the server's new address");
+            }
+        } catch (Exception ex) {
+            Services.Log.Warning($"Couldn't move a character's chat log to the server's new address: {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     /// <summary>

@@ -19,7 +19,7 @@ public sealed class ProtectedSecretStore : IFileSecretStore {
     public ProtectedSecretStore(string path, string keyFilePath, Action<string>? tellUser = null) {
         this._path = path;
         // As it always was: DPAPI's entropy names the secrets, and the key file binds nothing after its magic.
-        this._protection = new LocalProtection(keyFilePath, "secrets file", "LookingGlass secrets v1", [], this.Warn);
+        this._protection = new LocalProtection(keyFilePath, "secrets file", "LookingGlass secrets v1", [], this.Warn, shown: true);
         this._tellUser = tellUser;
     }
 

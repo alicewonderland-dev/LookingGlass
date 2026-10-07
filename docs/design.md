@@ -586,7 +586,9 @@ registers with new keys.
 
 Either way, the identity for the old address is kept, so switching back
 works. Channel numbers, nicknames and colours belong to the character and the
-channels, so they follow along.
+channels, so they follow along. A carried identity's chat log, if the player
+keeps one, moves with it (see
+[Chat log on this computer](#chat-log-on-this-computer)).
 
 **Why both servers, and why only `wss://`.**
 
@@ -2515,9 +2517,12 @@ segments (`0000000001.lgl`, …). A segment is an 8-byte header (`LGCL`, a
 version) and records, each a 4-byte length, a 24-byte random nonce and the
 line's bytes sealed with XChaCha20-Poly1305 under the log's key, with the
 segment's number and the record's offset as associated data, so a record
-can't be moved or swapped unnoticed. Nothing else is written: no channel IDs,
-names, times or counts in the clear (the files' sizes and times show only
-how much was logged when).
+can't be moved (to another place or another segment) or swapped unnoticed,
+and every record has a nonce of its own. What is in the clear: the headers,
+each record's 4-byte length, and the files' sizes and times. So someone with
+the files can count the lines and tell roughly how long each is (a message
+from a notice, a short line from a long one), and when they were logged; not
+what they say, who said them, in which channel, or the channel's name.
 
 **Encryption at rest.** Each log has its own random 256-bit key, kept in
 `chatlog.key` protected exactly as the secrets file is (`LocalProtection`):
@@ -2526,15 +2531,23 @@ Proton), the same local key file (`local.key`), which guards against
 accidentally sharing the files rather than a local attacker. The chat log's
 key uses its own DPAPI entropy and associated data, so its protected bytes
 can't stand in for the secrets file's. A log whose key can't be unlocked here
-(copied from another computer or Windows account, its key file deleted) is
-**unreadable**: nothing is added to it, nothing of it is changed, and
-Settings says so and offers to delete it.
+(copied from another computer or Windows account, its key file deleted or
+damaged) is **unreadable**: nothing is added to it, nothing of it is changed,
+and Settings says so and offers to delete it. A key file that can't be read
+*just now* (in use, access denied) is not that: the log counts as failed, is
+tried again with the next line, and the key is never replaced.
 
 **Crash safety.** A record is appended in one write, and the writer hands
 each batch to the operating system, so a crash of the game loses at most the
 record being written. Opening a log cuts its last segment back to the end of
-its last whole record, so what is added afterwards can be read; a damaged
-record elsewhere fails its check and is skipped on its own.
+its last record that opens, so what is added afterwards can be read; only an
+unreadable tail goes. A damaged record (its length field too) fails its check
+and is skipped on its own: the reader looks for the next whole record after it,
+byte by byte (a record only opens at its own place). A last segment without
+its header is deleted. A segment is one of the log's only once its file holds
+its header, and a number whose file is already there (left by a deletion that
+failed) is skipped, so a file that couldn't be made, or wasn't deleted, never
+stops logging.
 
 **The size limit** counts every file in the folder. Segments are started once
 one reaches a sixteenth of the limit (at least 4 KiB, at most 16 MiB, so one
@@ -2561,8 +2574,11 @@ old ones (**New messages** takes it back down). Once the start is reached:
 "That's everything in your chat log for this channel." Opening a window
 reads nothing. **A message is shown once**: one the session holds too (caught
 up again, say) shows as the session's, and one the log holds twice (shown in
-two sessions) once. Older lines never count as unread. Windows show only the
-channels the player is in now.
+two sessions) once; so does an information line the session holds too (the
+same time and words: the log turned off and on again in one session). Messages
+from someone the player has blocked since aren't shown, as live ones aren't,
+and show again if they are unblocked. Older lines never count as unread.
+Windows show only the channels the player is in now.
 
 **Lifecycle.**
 
@@ -2583,6 +2599,12 @@ channels the player is in now.
 - **Reset my identity** keeps the log: it is the player's own record, under
   its own key, not the identity's.
 - **Another character or server** has its own log; logging out closes it.
+- **Moving to a new server address** with the identity (see
+  [Moving to a new server address](#moving-to-a-new-server-address)) moves
+  each carried character's log with it, once its log has closed: the folder is
+  renamed, so the log goes on at the new address. One the new address has
+  already is left as it is (never merged or written over), and the old
+  address's stays. Starting afresh at the new address moves nothing.
 
 **Left for later.** A channel with more than 500 lines in one session (the
 window's in-memory cap) shows the ones that fell out of memory only after the

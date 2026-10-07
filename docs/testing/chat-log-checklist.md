@@ -100,3 +100,16 @@ read back.
       opened there, nothing is added to it, and deleting it starts a new one.
 - [ ] 18. `/xllog`: no message text, names or channel names in any
       LookingGlass line about the chat log.
+
+## Blocking, turning it off and on, and a new address
+
+- [ ] 19. With B's older lines showing in `sky`, block B (a member's menu):
+      B's older messages disappear from the window. Unblock B: they show again.
+- [ ] 20. Untick and tick **Keep a chat history on this computer** in one
+      session, then **Show older messages**: nothing from this session shows
+      twice (not above and below "Since you logged in").
+- [ ] 21. Change the server address to another address of the same server and
+      choose **Keep my identity**: the character's `chatlog-…` folder is
+      renamed to the new address's, and after reconnecting, **Show older
+      messages** shows the lines from before. Choosing **Start afresh there**
+      moves nothing.

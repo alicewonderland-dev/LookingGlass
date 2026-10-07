@@ -359,7 +359,8 @@ public sealed class ChannelWindow : Window {
         var lines = this.Sessions.History.LinesOf(channelId);
         // Older lines from the chat log on this computer, if the player keeps one: a page at a time, above these.
         var earlier = this.Sessions.ChatLog?.Earlier(channelId);
-        var older = earlier?.ShownWith(lines) ?? ImmutableArray<HistoryLine>.Empty;
+        // Never from someone blocked since, as live messages from them aren't shown.
+        var older = earlier?.ShownWith(lines, this.Sessions.Snapshot.BlockedUsers) ?? ImmutableArray<HistoryLine>.Empty;
         var width = ImGui.GetContentRegionAvail().X;
         if (state.Advanced != advanced) {
             // Notices say other words now.

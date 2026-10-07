@@ -22,13 +22,16 @@ public sealed class LocalProtection : IAtRestProtection {
     private readonly byte[] _entropy;
     private readonly byte[] _associatedData;
     private readonly Action<string> _warn;
+    private readonly bool _shown;
 
     /// <param name="keyFilePath">The local key file, shared by every character and purpose.</param>
     /// <param name="what">What is protected, for errors ("secrets file").</param>
     /// <param name="entropy">DPAPI's optional entropy: the purpose.</param>
     /// <param name="associatedData">Bound under the key file, after its magic: the purpose (the secrets file's is empty, as it always was).</param>
     /// <param name="warn">Told when the key file had to be read from its backup.</param>
-    public LocalProtection(string keyFilePath, string what, string entropy, byte[] associatedData, Action<string> warn) {
+    /// <param name="shown">What Settings shows (<see cref="Protection"/>) says how this one protects: the secrets file's only.</param>
+    public LocalProtection(string keyFilePath, string what, string entropy, byte[] associatedData, Action<string> warn, bool shown = false) {
+        this._shown = shown;
         this._keyFilePath = keyFilePath;
         this._what = what;
         this._entropy = Encoding.UTF8.GetBytes(entropy);
@@ -36,19 +39,19 @@ public sealed class LocalProtection : IAtRestProtection {
         this._warn = warn;
     }
 
-    /// <summary>How the plugin's secrets are protected, for the settings UI: what was last used.</summary>
+    /// <summary>How the secrets file is protected, for the settings UI: what it last used.</summary>
     public static string Protection { get; private set; } = "not saved yet";
 
     public byte[] Protect(byte[] plaintext) {
         try {
             var output = (byte[]) [.. DpapiMagic, .. ProtectedData.Protect(plaintext, this._entropy, DataProtectionScope.CurrentUser)];
-            Protection = "Windows DPAPI";
+            this.Shown("Windows DPAPI");
             return output;
         } catch (Exception ex) when (ex is CryptographicException or PlatformNotSupportedException or EntryPointNotFoundException or DllNotFoundException) {
             using var key = this.LoadFileKey(create: true);
             var nonce = RandomNumberGenerator.GetBytes(Aead.NonceSize);
             var output = (byte[]) [.. KeyFileMagic, .. nonce, .. Aead.Encrypt(key, nonce, this._associatedData, plaintext)];
-            Protection = "local key file";
+            this.Shown("local key file");
             return output;
         }
     }
@@ -58,12 +61,12 @@ public sealed class LocalProtection : IAtRestProtection {
         var body = data.AsSpan(Math.Min(4, data.Length)).ToArray();
 
         if (magic.SequenceEqual(DpapiMagic)) {
-            Protection = "Windows DPAPI";
+            this.Shown("Windows DPAPI");
             return ProtectedData.Unprotect(body, this._entropy, DataProtectionScope.CurrentUser);
         }
 
         if (magic.SequenceEqual(KeyFileMagic)) {
-            Protection = "local key file";
+            this.Shown("local key file");
             if (body.Length < Aead.NonceSize) {
                 throw new CryptographicException($"The {this._what} is truncated.");
             }
@@ -76,6 +79,12 @@ public sealed class LocalProtection : IAtRestProtection {
         }
 
         throw new CryptographicException($"Unrecognised {this._what} format.");
+    }
+
+    private void Shown(string protection) {
+        if (this._shown) {
+            Protection = protection;
+        }
     }
 
     private Key LoadFileKey(bool create) {
