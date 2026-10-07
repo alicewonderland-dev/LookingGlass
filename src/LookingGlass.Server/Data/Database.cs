@@ -52,6 +52,12 @@ public sealed record MemberRow(UserRow User, Rank Rank, bool Forgotten = false, 
 public sealed record InviteRow(string ChannelId, UserRow Invitee, UserRow Inviter, SealedBox SealedName, byte[] Signature, long CreatedUnix, MembershipEntry? Entry,
     bool Forgotten = false);
 
+/// <summary>A page of a channel's stored messages (see <see cref="Database.ReadStoredMessages"/>).</summary>
+/// <param name="Messages">Oldest first, each with its <see cref="ChatMessage.ServerId"/>.</param>
+/// <param name="More">More follow the last one.</param>
+/// <param name="LatestId">The channel's newest message number, whoever may read it.</param>
+public sealed record StoredMessagePage(List<ChatMessage> Messages, bool More, ulong LatestId);
+
 public enum RekeyResult {
     Applied,
     EpochStale,
@@ -100,8 +106,16 @@ public sealed class UnsupportedDatabaseException(string message) : Exception(mes
 /// Methods are synchronous (SQLite is in-process) and short.
 /// </summary>
 public sealed class Database {
-    private const int SchemaVersion = 8;
+    private const int SchemaVersion = 9;
     private const int KeptEpochs = 4;
+
+    /// <summary>
+    /// How many of a channel's newest epochs stored messages (message catch-up) are kept for, with their sealed keys (a
+    /// member who was away needs the key of each epoch they missed). Messages under older epochs go, with their keys: a
+    /// channel rekeyed more often than this within <see cref="MessageOptions.KeepDays"/> keeps only its newest epochs'.
+    /// It bounds the keys kept per channel too (at most this many epochs, a copy per member each).
+    /// </summary>
+    public const int KeptEpochsForStoredMessages = 64;
 
     private readonly string _path;
     private readonly string _connectionString;
@@ -351,6 +365,43 @@ public sealed class Database {
             }
 
             Execute(connection, tx, "INSERT INTO schema_version (version) VALUES (8);");
+        }
+
+        if (current < 9) {
+            // Message catch-up: the messages the server relays, kept as it relays them (the ciphertext and signed envelope,
+            // which it can't read) under a number per channel, for members who were away. Each member's first epoch says
+            // from which epoch on they may fetch them: keys made since they joined (or since their place moved to new keys),
+            // which are the only ones sealed to them. Rows from before have been members since at least the channel's
+            // current epoch (the next one, while a rekey is pending), and nothing older is stored. (Checked, as tests of
+            // older schemas only remove the version rows.)
+            Execute(connection, tx, """
+                CREATE TABLE IF NOT EXISTS messages (
+                    channel_id TEXT    NOT NULL REFERENCES channels (channel_id) ON DELETE CASCADE,
+                    seq        INTEGER NOT NULL,
+                    epoch      INTEGER NOT NULL,
+                    sender_id  INTEGER NOT NULL,
+                    message_id BLOB    NOT NULL,
+                    sent_at    INTEGER NOT NULL,
+                    relayed_at INTEGER NOT NULL,
+                    ciphertext BLOB    NOT NULL,
+                    signature  BLOB    NOT NULL,
+                    PRIMARY KEY (channel_id, seq)
+                );
+                CREATE INDEX IF NOT EXISTS messages_by_age ON messages (relayed_at);
+                CREATE INDEX IF NOT EXISTS messages_by_epoch ON messages (channel_id, epoch);
+                """);
+            if (!HasColumn(connection, tx, "channels", "message_seq")) {
+                Execute(connection, tx, "ALTER TABLE channels ADD COLUMN message_seq INTEGER NOT NULL DEFAULT 0;");
+            }
+
+            if (!HasColumn(connection, tx, "members", "first_epoch")) {
+                Execute(connection, tx, """
+                    ALTER TABLE members ADD COLUMN first_epoch INTEGER NOT NULL DEFAULT 0;
+                    UPDATE members SET first_epoch = (SELECT c.epoch + c.rekey_pending FROM channels c WHERE c.channel_id = members.channel_id);
+                    """);
+            }
+
+            Execute(connection, tx, "INSERT INTO schema_version (version) VALUES (9);");
         }
 
         tx.Commit();
@@ -1100,10 +1151,12 @@ public sealed class Database {
             case MembershipEntryKind.Accept:
                 // An invite moved to new keys knows no name for the channel (it was sealed to the old ones), so its joiner
                 // can't rekey either (see MemberRow.AwaitingKey).
+                // Stored messages are theirs to fetch from the next epoch on: its key is the first sealed to them.
                 Execute(connection, tx, """
-                    INSERT OR REPLACE INTO members (channel_id, user_id, rank, joined_at, signing_key, agreement_key, awaiting_key)
+                    INSERT OR REPLACE INTO members (channel_id, user_id, rank, joined_at, signing_key, agreement_key, awaiting_key, first_epoch)
                     VALUES ($channel, $user, $rank, $now, $signing, $agreement,
-                            COALESCE((SELECT awaiting_key FROM invites WHERE channel_id = $channel AND user_id = $user), 0));
+                            COALESCE((SELECT awaiting_key FROM invites WHERE channel_id = $channel AND user_id = $user), 0),
+                            (SELECT epoch + 1 FROM channels WHERE channel_id = $channel));
                     """,
                     ("$channel", channelId), ("$user", subject.UserId), ("$rank", (long) Rank.Member), ("$now", Now()),
                     ("$signing", subject.SigningPublicKey.ToByteArray()), ("$agreement", subject.AgreementPublicKey.ToByteArray()));
@@ -1115,9 +1168,11 @@ public sealed class Database {
                     ("$channel", channelId), ("$user", subject.UserId),
                     ("$signing", entry.NewKeys.SigningPublicKey.ToByteArray()), ("$agreement", entry.NewKeys.AgreementPublicKey.ToByteArray()),
                 ];
-                // Rank, joined time, invite and whether it is forgotten stay: only the keys change.
+                // Rank, joined time, invite and whether it is forgotten stay: only the keys change. Stored messages are the new
+                // keys' to fetch from the next epoch on, the first whose key is sealed to them: nothing before was.
                 if (Execute(connection, tx, """
-                        UPDATE members SET signing_key = $signing, agreement_key = $agreement, awaiting_key = 1
+                        UPDATE members SET signing_key = $signing, agreement_key = $agreement, awaiting_key = 1,
+                            first_epoch = (SELECT epoch + 1 FROM channels WHERE channel_id = $channel)
                         WHERE channel_id = $channel AND user_id = $user;
                         """, keys) > 0) {
                     // Nothing sealed to the old keys is any use to the new ones, and the old ones mustn't read what comes next.
@@ -1286,8 +1341,14 @@ public sealed class Database {
         // Every member holds the channel's key now, places moved to new keys included.
         Execute(connection, tx, "UPDATE members SET awaiting_key = 0 WHERE channel_id = $id AND awaiting_key <> 0;", ("$id", channelId));
 
-        Execute(connection, tx, "DELETE FROM epoch_keys WHERE channel_id = $id AND epoch + $kept <= $epoch;",
-            ("$id", channelId), ("$kept", (long) KeptEpochs), ("$epoch", (long) newEpoch));
+        // Older keys go, but for those of epochs with stored messages, which a member who was away needs to read them (up to
+        // KeptEpochsForStoredMessages epochs back; messages under older ones go with their keys).
+        Execute(connection, tx, """
+            DELETE FROM messages WHERE channel_id = $id AND epoch + $keptForMessages <= $epoch;
+            DELETE FROM epoch_keys WHERE channel_id = $id AND epoch + $kept <= $epoch
+                AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.channel_id = $id AND m.epoch = epoch_keys.epoch);
+            """,
+            ("$id", channelId), ("$kept", (long) KeptEpochs), ("$keptForMessages", (long) KeptEpochsForStoredMessages), ("$epoch", (long) newEpoch));
         tx.Commit();
         return RekeyResult.Applied;
     }
@@ -1318,6 +1379,141 @@ public sealed class Database {
         }
 
         return keys;
+    }
+
+    // ================================================================ stored messages (message catch-up)
+
+    /// <summary>
+    /// Keeps a message the server is about to relay, exactly as relayed (the ciphertext and the envelope the server sees
+    /// anyway: channel, epoch, sender, message ID, the sender's signed time and signature), under the channel's next number,
+    /// if the channel is still at the message's epoch with no rekey pending (checked and stored in one transaction, so a
+    /// membership change landing meanwhile is seen). Beyond <paramref name="maxPerChannel"/>, the channel's oldest go.
+    /// </summary>
+    /// <param name="relayedAtMs">The server's time, which the age sweep goes by (never the sender's, which they choose).</param>
+    /// <returns>The number it was stored under (the channel's numbers only grow), or null if the channel moved on meanwhile.</returns>
+    public ulong? StoreMessage(ChatMessage message, long relayedAtMs, int maxPerChannel) {
+        using var connection = this.Open();
+        using var tx = connection.BeginTransaction();
+        var seq = Scalar(connection, tx, """
+            UPDATE channels SET message_seq = message_seq + 1 WHERE channel_id = $id AND epoch = $epoch AND rekey_pending = 0
+            RETURNING message_seq;
+            """, ("$id", message.ChannelId), ("$epoch", (long) message.Epoch));
+        if (seq == null) {
+            return null;
+        }
+
+        var number = Convert.ToInt64(seq);
+        Execute(connection, tx, """
+            INSERT INTO messages (channel_id, seq, epoch, sender_id, message_id, sent_at, relayed_at, ciphertext, signature)
+            VALUES ($id, $seq, $epoch, $sender, $messageId, $sentAt, $relayedAt, $ciphertext, $signature);
+            DELETE FROM messages WHERE channel_id = $id AND seq <= $seq - $max;
+            """,
+            ("$id", message.ChannelId), ("$seq", number), ("$epoch", (long) message.Epoch), ("$sender", message.SenderId),
+            ("$messageId", message.MessageId.ToByteArray()), ("$sentAt", message.TimestampUnixMs), ("$relayedAt", relayedAtMs),
+            ("$ciphertext", message.Ciphertext.ToByteArray()), ("$signature", message.Signature.ToByteArray()), ("$max", (long) Math.Max(1, maxPerChannel)));
+        tx.Commit();
+        return (ulong) number;
+    }
+
+    /// <summary>
+    /// A page of the channel's stored messages after <paramref name="afterSeq"/>, oldest first, that the user may read
+    /// (message catch-up): only through a member place (not an invite, not one removed from their list) under
+    /// <paramref name="keys"/> (the keys the asking session signed in with, which the caller checked are the account's
+    /// current ones), and of those only messages under the place's first epoch or later (see <see cref="MemberRow"/>: the
+    /// epochs whose keys were sealed to these keys while they were a member), never the user's own. All read in one
+    /// transaction, so the page and <see cref="StoredMessagePage.LatestId"/> agree.
+    /// </summary>
+    /// <param name="sinceMs">Only those the server stored since then (by its clock), or null for any.</param>
+    /// <param name="maxMessages">At most this many.</param>
+    /// <param name="maxBytes">And no more ciphertext than this, but at least one message if there is one.</param>
+    /// <returns>Null if the user has no such place.</returns>
+    public StoredMessagePage? ReadStoredMessages(string channelId, long userId, MemberKeys keys, ulong afterSeq, long? sinceMs, int maxMessages, int maxBytes) {
+        using var connection = this.Open();
+        using var tx = connection.BeginTransaction(deferred: true);
+        var firstEpoch = Scalar(connection, tx, """
+            SELECT first_epoch FROM members
+            WHERE channel_id = $channel AND user_id = $user AND forgotten = 0 AND signing_key = $signing AND agreement_key = $agreement;
+            """, ("$channel", channelId), ("$user", userId), ("$signing", keys.SigningKeyArray()), ("$agreement", keys.AgreementKeyArray()));
+        if (firstEpoch == null) {
+            return null;
+        }
+
+        var latest = (ulong) Convert.ToInt64(Scalar(connection, tx, "SELECT message_seq FROM channels WHERE channel_id = $id;", ("$id", channelId)) ?? 0L);
+        var messages = new List<ChatMessage>();
+        var bytes = 0;
+        var more = false;
+        using (var command = Command(connection, tx, """
+                   SELECT seq, epoch, sender_id, message_id, sent_at, ciphertext, signature FROM messages
+                   WHERE channel_id = $channel AND seq > $after AND epoch >= $firstEpoch AND sender_id <> $user AND relayed_at >= $since
+                   ORDER BY seq LIMIT $limit;
+                   """,
+                   ("$channel", channelId), ("$after", (long) Math.Min(afterSeq, long.MaxValue)), ("$firstEpoch", Convert.ToInt64(firstEpoch)),
+                   ("$user", userId), ("$since", sinceMs ?? long.MinValue), ("$limit", maxMessages + 1))) {
+            using var reader = command.ExecuteReader();
+            while (reader.Read()) {
+                var ciphertext = (byte[]) reader[5];
+                if (messages.Count == maxMessages || (messages.Count > 0 && bytes + ciphertext.Length > maxBytes)) {
+                    more = true;
+                    break;
+                }
+
+                bytes += ciphertext.Length;
+                messages.Add(new ChatMessage {
+                    ChannelId = channelId,
+                    ServerId = (ulong) reader.GetInt64(0),
+                    Epoch = (ulong) reader.GetInt64(1),
+                    SenderId = reader.GetInt64(2),
+                    MessageId = ByteString.CopyFrom((byte[]) reader[3]),
+                    TimestampUnixMs = reader.GetInt64(4),
+                    Ciphertext = ByteString.CopyFrom(ciphertext),
+                    Signature = ByteString.CopyFrom((byte[]) reader[6]),
+                });
+            }
+        }
+
+        return new StoredMessagePage(messages, more, latest);
+    }
+
+    /// <summary>
+    /// Deletes the stored messages that are due to go: relayed more than <paramref name="keepDays"/> days before
+    /// <paramref name="nowMs"/>, past <paramref name="maxPerChannel"/> in their channel (the oldest), or under an epoch more
+    /// than <see cref="KeptEpochsForStoredMessages"/> before their channel's; every one if either setting is 0 (keeping
+    /// messages is off). Then the sealed keys only kept for messages that went (see <see cref="ApplyRekey"/>). One transaction.
+    /// </summary>
+    /// <returns>How many messages went.</returns>
+    public int SweepMessages(long nowMs, int keepDays, int maxPerChannel) {
+        using var connection = this.Open();
+        using var tx = connection.BeginTransaction();
+        int deleted;
+        if (keepDays <= 0 || maxPerChannel <= 0) {
+            deleted = Execute(connection, tx, "DELETE FROM messages;");
+        } else {
+            deleted = Execute(connection, tx, "DELETE FROM messages WHERE relayed_at < $cutoff;", ("$cutoff", nowMs - keepDays * 86_400_000L));
+            deleted += Execute(connection, tx, """
+                DELETE FROM messages WHERE rowid IN (
+                    SELECT m.rowid FROM channels c JOIN messages m ON m.channel_id = c.channel_id
+                    WHERE m.seq <= c.message_seq - $max OR m.epoch + $keptForMessages <= c.epoch);
+                """, ("$max", (long) maxPerChannel), ("$keptForMessages", (long) KeptEpochsForStoredMessages));
+        }
+
+        Execute(connection, tx, """
+            DELETE FROM epoch_keys WHERE epoch + $kept <= (SELECT c.epoch FROM channels c WHERE c.channel_id = epoch_keys.channel_id)
+                AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.channel_id = epoch_keys.channel_id AND m.epoch = epoch_keys.epoch);
+            """, ("$kept", (long) KeptEpochs));
+        tx.Commit();
+        return deleted;
+    }
+
+    /// <summary>How many messages are stored for a channel, for tests and the operator's checks.</summary>
+    public int CountStoredMessages(string channelId) {
+        using var connection = this.Open();
+        return Convert.ToInt32(Scalar(connection, null, "SELECT COUNT(*) FROM messages WHERE channel_id = $id;", ("$id", channelId)));
+    }
+
+    /// <summary>The epochs whose keys are stored for a channel (any recipient), for tests.</summary>
+    internal List<ulong> StoredKeyEpochs(string channelId) {
+        using var connection = this.Open();
+        return Query(connection, null, "SELECT DISTINCT epoch FROM epoch_keys WHERE channel_id = $id ORDER BY epoch;", reader => (ulong) reader.GetInt64(0), ("$id", channelId));
     }
 
     // ================================================================ helpers

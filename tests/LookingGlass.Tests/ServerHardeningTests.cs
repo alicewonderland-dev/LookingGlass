@@ -129,7 +129,7 @@ public sealed class ServerHardeningTests {
             ReleaseConnections(directory);
 
             var migrated = new Database(path);
-            Assert.Equal(8L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
+            Assert.Equal(9L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
             Assert.NotNull(migrated.GetUser(user));
             var (channelId, _, _) = CreateChannel(migrated);
             Assert.Null(migrated.GetChannel(channelId)!.Name!.CarriedFrom);
@@ -154,7 +154,7 @@ public sealed class ServerHardeningTests {
             ReleaseConnections(directory);
 
             var migrated = new Database(path);
-            Assert.Equal(8L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
+            Assert.Equal(9L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
             Assert.NotNull(migrated.GetChannel(channelId));
             Assert.False(migrated.IsKeyRetired(admin, keys.SigningPublicKey));
 
@@ -182,7 +182,7 @@ public sealed class ServerHardeningTests {
             ReleaseConnections(directory);
 
             var migrated = new Database(path);
-            Assert.Equal(8L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
+            Assert.Equal(9L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
             Assert.Single(migrated.GetChannelsForUser(admin));
             Assert.False(Assert.Single(migrated.GetMembers(channelId)).Forgotten);
             Assert.Equal(ForgetResult.Current, migrated.ForgetStaleMembership(channelId, admin));
@@ -218,7 +218,7 @@ public sealed class ServerHardeningTests {
             ReleaseConnections(directory);
 
             var migrated = new Database(path);
-            Assert.Equal(8L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
+            Assert.Equal(9L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
             Assert.All(migrated.GetMembers(channelId), row => Assert.False(row.AwaitingKey));
             Assert.False(migrated.GetMembers(channelId).Single(row => row.User.UserId == member).CurrentKeys);
 
@@ -232,6 +232,46 @@ public sealed class ServerHardeningTests {
             Assert.True(place is { CurrentKeys: true, AwaitingKey: true, Rank: Rank.Member });
             Assert.True(migrated.GetChannel(channelId)!.RekeyPending);
             Assert.Equal(MemberKeys.Of(newest), Membership.Restore(migrated.GetMembershipCheckpoint(channelId)!).FindMember(member)!.Keys);
+        } finally {
+            ReleaseConnections(directory);
+            DeleteDirectory(directory);
+        }
+    }
+
+    /// <summary>
+    /// A database from before message catch-up (schema 8) is upgraded in place, channels and all, and opening it again
+    /// changes nothing more. Its members may fetch stored messages from the channel's current epoch on (the next one,
+    /// while a rekey is pending): nothing older is stored, and they held those keys.
+    /// </summary>
+    [Fact]
+    public void Schema8DatabaseGainsStoredMessages() {
+        var (db, directory) = NewDatabase();
+        try {
+            var path = Path.Combine(directory, "test.db");
+            var (channelId, admin, keys) = CreateChannel(db);
+            var (member, memberKeys) = RegisterUser(db, "Catch Up Member");
+            AddMember(db, channelId, admin, keys, member, memberKeys);
+            QueryLong(path, """
+                DROP TABLE messages;
+                ALTER TABLE channels DROP COLUMN message_seq;
+                ALTER TABLE members DROP COLUMN first_epoch;
+                DELETE FROM schema_version WHERE version >= 9;
+                SELECT 0;
+                """);
+            ReleaseConnections(directory);
+
+            var migrated = new Database(path);
+            Assert.Equal(9L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
+            // The join left a rekey pending, so both may read from epoch 1, the next one.
+            Assert.Equal(1L, QueryLong(path, $"SELECT MIN(first_epoch) FROM members WHERE channel_id = '{channelId}';"));
+            Assert.Equal(1L, QueryLong(path, $"SELECT MAX(first_epoch) FROM members WHERE channel_id = '{channelId}';"));
+            Assert.Equal(0, migrated.CountStoredMessages(channelId));
+            ReleaseConnections(directory);
+
+            // Opening it again finds nothing to do.
+            var again = new Database(path);
+            Assert.Equal(1L, QueryLong(path, "SELECT COUNT(*) FROM schema_version WHERE version = 9;"));
+            Assert.NotNull(again.GetChannel(channelId));
         } finally {
             ReleaseConnections(directory);
             DeleteDirectory(directory);
@@ -274,7 +314,7 @@ public sealed class ServerHardeningTests {
             }
 
             var migrated = new Database(path);
-            Assert.Equal(8L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
+            Assert.Equal(9L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
             Assert.Equal(2L, QueryLong(path, "SELECT COUNT(*) FROM retired_keys;"));
             Assert.True(migrated.IsKeyRetired(alice, replaced.SigningPublicKey));
             Assert.True(migrated.IsKeyRetired(mallory, aliceKeys.SigningPublicKey));
@@ -336,7 +376,7 @@ public sealed class ServerHardeningTests {
 
             using var logs = new CapturingLoggerProvider();
             _ = new Database(path, logs.CreateLogger("Database"));
-            Assert.Equal(8L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
+            Assert.Equal(9L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
             var warnings = logs.AtLeast(Microsoft.Extensions.Logging.LogLevel.Warning);
             Assert.Equal(schema == 5 ? 2 : 1, warnings.Count);
 
@@ -384,7 +424,7 @@ public sealed class ServerHardeningTests {
         try {
             var path = Path.Combine(directory, "test.db");
             var (channelId, _, _) = CreateChannel(db);
-            Assert.Equal(8L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
+            Assert.Equal(9L, QueryLong(path, "SELECT MAX(version) FROM schema_version;"));
 
             // As if the file were left over from the unreleased schema 1.
             QueryLong(path, "DELETE FROM schema_version WHERE version >= 2; SELECT 0;");

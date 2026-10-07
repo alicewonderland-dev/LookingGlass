@@ -137,6 +137,14 @@ public sealed class RequestHandler(
     // One budget for the requests that read a lot from the database. A client needs about
     // two per channel when it connects, so the burst covers a full channel list.
     private readonly UserRateLimits _reads = new(perSecond: 4, burst: 120);
+    // A budget of its own for pages of stored messages (message catch-up), each up to MaxStoredMessageBytesPerPage: a client
+    // coming back asks once per channel (more for channels that had a lot), so the burst covers a full channel list.
+    private readonly UserRateLimits _storedMessageReads = new(perSecond: 4, burst: 100, time);
+
+    // A message's number and its relaying happen under its channel's lock (one of these, by the channel's ID), so every
+    // member is sent a channel's messages in the order of their numbers: a client that saw one has seen every earlier one it
+    // may read, and carries on from it. Held only while storing and queueing, never across an await.
+    private readonly Lock[] _relayLocks = Enumerable.Range(0, 64).Select(_ => new Lock()).ToArray();
 
     public Limits Limits { get; } = BuildLimits(options.Value);
 
@@ -207,6 +215,7 @@ public sealed class RequestHandler(
                 ClientFrame.BodyOneofCase.SubmitRekey => this.SubmitRekey(connection, frame.SubmitRekey),
                 ClientFrame.BodyOneofCase.FetchEpochKeys => this.FetchEpochKeys(connection, frame.FetchEpochKeys),
                 ClientFrame.BodyOneofCase.SendMessage => this.SendMessage(connection, frame.SendMessage),
+                ClientFrame.BodyOneofCase.FetchMessages => this.FetchMessages(connection, frame.FetchMessages),
                 _ => throw new RequestException(ErrorCode.InvalidRequest, "Unknown request."),
             };
         } catch (RequestException ex) {
@@ -223,6 +232,11 @@ public sealed class RequestHandler(
         var limits = ProtocolInfo.DefaultLimits();
         // Advertised so clients split big identity lookups to fit, instead of failing on connect.
         limits.MaxIdentitiesPerRequest = (uint) Math.Max(0, options.Limits.MaxIdentitiesPerRequest);
+        if (options.Messages.Enabled) {
+            limits.MessageKeepDays = (uint) options.Messages.KeepDays;
+            limits.MaxStoredMessagesPerChannel = (uint) options.Messages.MaxPerChannel;
+        }
+
         return limits;
     }
 
@@ -241,7 +255,8 @@ public sealed class RequestHandler(
             Announcement = options.Value.Announcement ?? "",
             DebugAccountsEnabled = options.Value.Dev.AllowDebugAccounts,
         };
-        welcome.Capabilities.AddRange(hello.Capabilities.Where(capability => capability == ProtocolInfo.Capabilities.Chat));
+        welcome.Capabilities.AddRange(hello.Capabilities.Where(capability => capability == ProtocolInfo.Capabilities.Chat
+                                                                             || (capability == ProtocolInfo.Capabilities.History && options.Value.Messages.Enabled)).Distinct());
         // The operator's own addresses, which clients moving to one of them trust because this server, at the address
         // they already use, lists it. Never the Host-header fallback: that's whatever the connecting side said.
         welcome.PublicUrls.AddRange(this._advertisedUrls);
@@ -1406,14 +1421,64 @@ public sealed class RequestHandler(
             Signature = request.Signature,
         };
 
-        // Not needed for secrecy, but rejects garbage before it is fanned out.
+        // Not needed for secrecy, but rejects garbage before it is fanned out (or kept).
         if (!groupKeys.VerifyMessage(message, me.SigningKey)) {
             throw new RequestException(ErrorCode.InvalidRequest, "Message signature is invalid.");
         }
 
-        var members = this.Recipients(channelId);
-        registry.SendToAll(members, new Event { ChatMessage = message }, except: me.UserId);
+        var messages = options.Value.Messages;
+        lock (this.RelayLock(channelId)) {
+            if (messages.Enabled) {
+                // Kept for members who are away, exactly as relayed, if the channel is still at that epoch (checked again
+                // as it is stored: a membership change may have landed since the checks above).
+                message.ServerId = db.StoreMessage(message, this._time.GetUtcNow().ToUnixTimeMilliseconds(), messages.MaxPerChannel)
+                                   ?? throw (db.GetChannel(channelId) is { RekeyPending: false }
+                                       ? new RequestException(ErrorCode.EpochStale, "That epoch is no longer current.")
+                                       : new RequestException(ErrorCode.RekeyRequired, "Membership changed; rekey the channel before sending."));
+            }
+
+            registry.SendToAll(this.Recipients(channelId), new Event { ChatMessage = message }, except: me.UserId);
+        }
+
         return Ack();
+    }
+
+    /// <summary>The lock a channel's messages are numbered and relayed under (see <see cref="_relayLocks"/>).</summary>
+    private Lock RelayLock(string channelId) => this._relayLocks[(int) ((uint) StringComparer.Ordinal.GetHashCode(channelId) % (uint) this._relayLocks.Length)];
+
+    /// <summary>
+    /// Message catch-up: a page of the channel's stored messages after the one the client last had, that it may read (see
+    /// <see cref="Database.ReadStoredMessages"/>): a member, through a place under their current keys (as for every channel
+    /// request but reading the log), gets the messages sent under keys made since their place joined or last moved to new
+    /// keys, never their own. Without a position (a first login here, say), only what was stored in the last
+    /// <see cref="FetchMessages.WithinSeconds"/>. On a server that keeps no messages, an empty page.
+    /// </summary>
+    private Response FetchMessages(ClientConnection connection, FetchMessages request) {
+        var me = RequireUser(connection);
+        var channelId = RequireChannelId(request.ChannelId);
+        if (!this._storedMessageReads.TryTake(me.UserId)) {
+            throw new RequestException(ErrorCode.RateLimited, "Too many requests for missed messages; slow down.");
+        }
+
+        this.RequireAllowed(channelId, me, ChannelAction.FetchMessages);
+        var settings = options.Value.Messages;
+        var stored = new StoredMessages { ChannelId = channelId };
+        if (!settings.Enabled) {
+            return new Response { StoredMessages = stored };
+        }
+
+        long? since = null;
+        if (request.AfterId == 0) {
+            var seconds = Math.Min((long) request.WithinSeconds, settings.KeepDays * 86_400L);
+            since = this._time.GetUtcNow().ToUnixTimeMilliseconds() - seconds * 1000;
+        }
+
+        var page = db.ReadStoredMessages(channelId, me.UserId, me.Keys, request.AfterId, since, ProtocolInfo.MaxStoredMessagesPerPage, ProtocolInfo.MaxStoredMessageBytesPerPage)
+                   ?? throw new RequestException(ErrorCode.Forbidden, OldKeyPlace);
+        stored.Messages.AddRange(page.Messages);
+        stored.More = page.More;
+        stored.LatestId = page.LatestId;
+        return new Response { StoredMessages = stored };
     }
 
     // ================================================================ helpers

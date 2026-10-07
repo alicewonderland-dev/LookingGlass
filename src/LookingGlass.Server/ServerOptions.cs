@@ -25,6 +25,34 @@ public sealed class ServerOptions {
     public DevOptions Dev { get; set; } = new();
     public LimitOptions Limits { get; set; } = new();
     public DatabaseOptions Database { get; set; } = new();
+    public MessageOptions Messages { get; set; } = new();
+}
+
+/// <summary>
+/// Message catch-up: the messages the server relays are kept (as the ciphertext it relays, which it can't read) so that a
+/// member who was disconnected gets them when they come back. See "Message catch-up" in docs/design.md.
+/// </summary>
+public sealed class MessageOptions {
+    /// <summary>Days a relayed message is kept, 0 to 365. 0 keeps none (and deletes what was kept at the next sweep).</summary>
+    public int KeepDays { get; set; } = 7;
+
+    /// <summary>Messages kept per channel at most, 0 to 100,000; past it the oldest go first. 0 keeps none.</summary>
+    public int MaxPerChannel { get; set; } = 5000;
+
+    public const int MaxKeepDays = 365;
+    public const int MaxMaxPerChannel = 100_000;
+
+    /// <summary>Whether messages are kept at all.</summary>
+    public bool Enabled => this.KeepDays > 0 && this.MaxPerChannel > 0;
+
+    /// <summary>Why the settings are out of range (the server doesn't start then), or null if they aren't.</summary>
+    public string? Problem() {
+        return this.KeepDays is < 0 or > MaxKeepDays
+            ? $"LookingGlass:Messages:KeepDays is {this.KeepDays}, so the server won't start: it must be 0 to {MaxKeepDays} (days a relayed message is kept for members who were away; 7 by default, 0 keeps none)."
+            : this.MaxPerChannel is < 0 or > MaxMaxPerChannel
+                ? $"LookingGlass:Messages:MaxPerChannel is {this.MaxPerChannel}, so the server won't start: it must be 0 to {MaxMaxPerChannel} (messages kept per channel at most; 5000 by default, 0 keeps none)."
+                : null;
+    }
 }
 
 public sealed class LodestoneOptions {

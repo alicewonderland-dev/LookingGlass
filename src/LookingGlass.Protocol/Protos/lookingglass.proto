@@ -51,6 +51,7 @@ message ClientFrame {
     CompleteKeyLogin complete_key_login = 31;
     RetireIdentity retire_identity = 32;
     ForgetChannel forget_channel = 33;
+    FetchMessages fetch_messages = 34;
   }
 }
 
@@ -79,6 +80,7 @@ message Response {
     MembershipLog membership_log = 20;
     KeyLoginChallenge key_login_challenge = 21;
     KeyLoginComplete key_login_complete = 22;
+    StoredMessages stored_messages = 23;
   }
 }
 
@@ -149,6 +151,11 @@ message Limits {
   // The most user IDs one GetIdentities may ask for; clients split larger lookups.
   // 0 (an older server) means unknown.
   uint32 max_identities_per_request = 8;
+  // Message catch-up (capability "history.v1"): how many days the server keeps the messages it relays, and how many per
+  // channel at most (the oldest go first). 0 for both if it keeps none (an older server, or one whose operator turned it
+  // off). Added without a version change.
+  uint32 message_keep_days = 9;
+  uint32 max_stored_messages_per_channel = 10;
 }
 
 message Welcome {
@@ -712,6 +719,38 @@ message StatusLink {
   uint32 status_id = 1;
 }
 
+// ---------------------------------------------------------------- message catch-up
+//
+// Capability "history.v1" (ProtocolInfo.Capabilities.History). The server keeps the messages it relays, as the ciphertext
+// and signed envelope it relays (which it can't read), for a while, so that a member who was disconnected gets what they
+// missed when they come back. Clients check each one as they check a live message (sender, signature, key), and accept
+// each at most once (see the design doc, "Message catch-up"). A client only asks a server that agreed to the capability
+// in Welcome; an older server would answer "Unknown request.".
+
+// The channel's stored messages after after_id, oldest first, that the asker may read. Only a member gets any (not an
+// invitee, a place removed from the user's list, or one under keys the account no longer has), and only messages sent
+// under the keys of epochs made since their place last joined (or last moved to new keys), never their own. At most a
+// page (ProtocolInfo.MaxStoredMessagesPerPage messages and ProtocolInfo.MaxStoredMessageBytesPerPage of ciphertext); ask
+// again from the last one's server_id while StoredMessages.more is set. Each is charged to a per-user read budget.
+message FetchMessages {
+  string channel_id = 1;
+  // The newest ChatMessage.server_id the client has had from this channel; 0 for none.
+  uint64 after_id = 2;
+  // With after_id 0 only: just what the server stored in the last this many seconds (0: nothing; at most what it keeps).
+  uint32 within_seconds = 3;
+}
+
+message StoredMessages {
+  string channel_id = 1;
+  // Oldest first, each with its server_id, all after the one asked from.
+  repeated ChatMessage messages = 2;
+  // There are more: ask again from the last one's server_id.
+  bool more = 3;
+  // The newest server_id the channel had when this was answered, whether the asker may read that message or not. With
+  // nothing more to come, a client can carry on from it: what it skips is its own, or from before it joined.
+  uint64 latest_id = 4;
+}
+
 // ---------------------------------------------------------------- events
 
 message Announcement {
@@ -775,6 +814,12 @@ message ChatMessage {
   int64 timestamp_unix_ms = 5;
   bytes ciphertext = 6;
   bytes signature = 7;
+  // The number the server stored the message under in its channel (message catch-up, capability "history.v1"). Numbers
+  // only grow within a channel, in the order the server relayed the messages. A client remembers the newest it has had,
+  // and asks for what came after it when it connects again (FetchMessages). The server's word, like the order: clients
+  // never rely on it to tell messages apart (they go by message_id and the signed timestamp). 0 if the server didn't
+  // store it (an older server, or one keeping none). Added without a version change: older clients skip it.
+  uint64 server_id = 8;
 }
 
 message ChannelRenamed {

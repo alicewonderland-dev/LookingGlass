@@ -25,8 +25,23 @@ public static class ProtocolInfo {
     /// <summary>The most log entries a ChannelInfo carries; a client fetches the rest.</summary>
     public const int MaxLogEntriesInChannelInfo = 32;
 
+    /// <summary>The most stored messages one FetchMessages answer carries.</summary>
+    public const int MaxStoredMessagesPerPage = 200;
+
+    /// <summary>
+    /// The most ciphertext one FetchMessages answer carries (but a page always has at least one message, if there is one):
+    /// with each message's envelope (about 150 bytes), well under the 128 KiB frame limit.
+    /// </summary>
+    public const int MaxStoredMessageBytesPerPage = 96 * 1024;
+
     public static class Capabilities {
         public const string Chat = "chat.v1";
+
+        /// <summary>
+        /// Message catch-up: the server keeps the messages it relays for a while, and a member who reconnects asks for what
+        /// they missed (FetchMessages). Agreed only if both sides offer it and the server keeps messages.
+        /// </summary>
+        public const string History = "history.v1";
     }
 
     public static Limits DefaultLimits() => new() {

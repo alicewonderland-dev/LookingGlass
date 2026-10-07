@@ -15,6 +15,12 @@ public enum ChannelAction {
 
     /// <summary>Read the channel's membership log. Invitees may, to check an invite before answering it.</summary>
     FetchLog,
+
+    /// <summary>
+    /// Fetch the channel's stored messages (message catch-up). Members only, and the database further keeps each to the
+    /// messages sent under keys made since their place joined (see <see cref="Data.Database.ReadStoredMessages"/>).
+    /// </summary>
+    FetchMessages,
 }
 
 /// <summary>
@@ -28,7 +34,7 @@ public static class Policy {
         }
 
         return action switch {
-            ChannelAction.Send or ChannelAction.Rekey or ChannelAction.FetchKeys or ChannelAction.Leave => rank >= Rank.Member,
+            ChannelAction.Send or ChannelAction.Rekey or ChannelAction.FetchKeys or ChannelAction.Leave or ChannelAction.FetchMessages => rank >= Rank.Member,
             ChannelAction.Invite or ChannelAction.Kick => rank >= Rank.Moderator,
             ChannelAction.FetchLog => rank >= Rank.Invited,
             ChannelAction.SetRank or ChannelAction.Rename or ChannelAction.Disband => rank == Rank.Admin,
