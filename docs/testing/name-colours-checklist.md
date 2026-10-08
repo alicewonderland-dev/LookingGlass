@@ -105,5 +105,5 @@ person together with a colour.
       bot's key ends in `@` and the server's address. Change only the case of
       the server address's host in Settings (or add a trailing `/`): the echo
       bot keeps its colour.
-- [ ] 24. **(A and B)** If B can change their character's name (or a world
+- [ ] 24. **Not tested before public release (owner, 2026-10-08): a rename or world transfer costs real money; deal with it if it comes up.** **(A and B)** If B can change their character's name (or a world
       transfer is at hand): B's colour stays with B.

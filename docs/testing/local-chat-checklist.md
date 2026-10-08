@@ -154,6 +154,6 @@ Before anyone opens their Friends window this session.
       warning), and B's next `/lgl` shows.
 - [ ] 27. The same with B standing far from A (out of range), or with C
       (not a friend) having registered again: no line at all.
-- [ ] 28. If you can, rename B (or move B to another world) after A has had
+- [ ] 28. **Not tested before public release (owner, 2026-10-08): a rename or world transfer costs real money; deal with it if it comes up.** If you can, rename B (or move B to another world) after A has had
       a local message from B: B's next `/lgl` isn't shown, and one blue line
       says B may have changed their name or world. A's `/lgl` to B updates it.

@@ -131,7 +131,7 @@ with it on.
 - [ ] **Logs keep names out (player side)** ([local-chat](local-chat-checklist.md): step 25, players' part). After the tasks above, `/xllog` on A and on B: the local chat lines give counts only, never a name or a message. Needs: Dalamud's log open. The server log part is in the owner group.
 - [ ] **B resets their identity** ([local-chat](local-chat-checklist.md): step 26). B uses **Reset my identity** and registers again, then sends `/lgl hi` next to A → A doesn't see it and gets no key warning, but one blue line says B's local message couldn't be checked (B may have set up again, or someone may be using their name) and to check with them over /tell. B sends again → no second line. After checking over /tell, A sends `/lgl hi` → A gets the "B set up LookingGlass again" warning, and B's next `/lgl` shows. Needs: B willing to reset their LookingGlass identity (use a spare character).
 - [ ] **No line when out of range, or from a stranger** ([local-chat](local-chat-checklist.md): step 27). **Needs 3 players** for the C part. Same as the task above, but with B out of range, or with C (not a friend) having re-registered → no line at all. Needs: do right after "B resets their identity".
-- [ ] **Name or world change** ([local-chat](local-chat-checklist.md): step 28). Optional, only if a rename or world transfer is happening anyway. After A has had a local message from B, B is renamed or moved. B's next `/lgl` isn't shown, and one blue line says B may have changed name or world. A's `/lgl` to B then fixes it. Needs: a rename or world transfer.
+- [x] **Name or world change** ([local-chat](local-chat-checklist.md): step 28). **Not tested: a rename or world transfer costs real money, so this is left until it comes up after public release.** Optional, only if one is happening anyway. After A has had a local message from B, B is renamed or moved. B's next `/lgl` isn't shown, and one blue line says B may have changed name or world. A's `/lgl` to B then fixes it. Needs: a rename or world transfer.
 
 ### Windows only, needs 0.2.9 on A
 
@@ -153,7 +153,7 @@ Do the group 1 "Setting a colour" task first.
 - [ ] **Name colours in ChatTwo** ([name-colours](name-colours-checklist.md): steps 16–19). With ChatTwo on: B's name in its exact colour, the rest of the line teal, even after an item link, and nothing leaks into the next line. In `fc`, only the name is coloured. With the whole-line setting off, only the tag and name. Note any difference from the game's own chat. Needs: ChatTwo installed.
 - [ ] **Back to default** ([name-colours](name-colours-checklist.md): step 20). Right-click B > Name colour... > **Default** → B's name goes back to normal everywhere (chat, window, both member lists). B's next line looks exactly as before name colours existed. Needs: B sending one line.
 - [ ] **Leaving and rejoining** ([name-colours](name-colours-checklist.md): step 22). B leaves `fc` → B's colour stays in `sky`. A invites B back to `fc` → same colour there. Needs: A able to invite in `fc`.
-- [ ] **Name or world change** ([name-colours](name-colours-checklist.md): step 24). Optional, only if a rename or world transfer is happening anyway: B's colour stays with B.
+- [x] **Name or world change** ([name-colours](name-colours-checklist.md): step 24). **Not tested: a rename or world transfer costs real money, so this is left until it comes up after public release.** Optional, only if one is happening anyway: B's colour stays with B.
 
 ### Custom channel colours, needs 0.2.8 on A
 
