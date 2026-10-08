@@ -125,6 +125,9 @@ public sealed class RequestHandler(
     // Lookups by name: each invite by name starts with one (the plugin reuses them for a while). An operator setting.
     private readonly UserRateLimits _lookups = new(PerSecond(options.Value.Limits.LookupIntervalSeconds), Burst(options.Value.Limits.LookupBurst), time);
     private readonly UserRateLimits _messages = new(ProtocolInfo.DefaultLimits().MessagesPerSecond, ProtocolInfo.DefaultLimits().MessageBurst);
+    // Local messages, as channel messages are limited, but operator settings (LookingGlass:Limits:LocalMessage...).
+    private readonly UserRateLimits _localMessages = new(
+        PerSecond(options.Value.Limits.LocalMessageIntervalSeconds), Burst(options.Value.Limits.LocalMessageBurst), time);
     // Invites are limited on both ends: an inviter can't spam many people, and many inviters (or invite, cancel, invite
     // loops) can't flood one person. Operator settings (LookingGlass:Limits:Invite...), checked at startup.
     private readonly UserRateLimits _invitesSent = new(
@@ -234,6 +237,7 @@ public sealed class RequestHandler(
                 ClientFrame.BodyOneofCase.FetchEpochKeys => this.FetchEpochKeys(connection, frame.FetchEpochKeys),
                 ClientFrame.BodyOneofCase.SendMessage => this.SendMessage(connection, frame.SendMessage),
                 ClientFrame.BodyOneofCase.FetchMessages => this.FetchMessages(connection, frame.FetchMessages),
+                ClientFrame.BodyOneofCase.SendLocalMessage => this.SendLocalMessage(connection, frame.SendLocalMessage),
                 _ => throw new RequestException(ErrorCode.InvalidRequest, "Unknown request."),
             };
         } catch (RequestException ex) {
@@ -255,6 +259,8 @@ public sealed class RequestHandler(
             limits.MaxStoredMessagesPerChannel = (uint) options.Messages.MaxPerChannel;
         }
 
+        limits.MaxLocalRecipients = (uint) LocalRecipients(options.Limits);
+
         return limits;
     }
 
@@ -264,6 +270,9 @@ public sealed class RequestHandler(
     private static double PerSecond(int intervalSeconds) => 1.0 / Math.Clamp(intervalSeconds, 1, LimitOptions.MaxIntervalSeconds);
 
     private static int PendingInvitesPerUser(LimitOptions limits) => Math.Clamp(limits.MaxPendingInvitesPerUser, 2, LimitOptions.MaxMaxPendingInvitesPerUser);
+
+    // 0 turns local chat off.
+    private static int LocalRecipients(LimitOptions limits) => Math.Clamp(limits.MaxLocalRecipients, 0, LimitOptions.MaxMaxLocalRecipients);
 
     /// <summary>
     /// Roughly how long to wait, in words, for "try again in ...": "a few seconds", "about 10 seconds", "about a minute",
@@ -309,7 +318,10 @@ public sealed class RequestHandler(
             DebugAccountsEnabled = options.Value.Dev.AllowDebugAccounts,
         };
         welcome.Capabilities.AddRange(hello.Capabilities.Where(capability => capability == ProtocolInfo.Capabilities.Chat
-                                                                             || (capability == ProtocolInfo.Capabilities.History && options.Value.Messages.Enabled)).Distinct());
+                                                                             || (capability == ProtocolInfo.Capabilities.History && options.Value.Messages.Enabled)
+                                                                             || (capability == ProtocolInfo.Capabilities.Local && this.Limits.MaxLocalRecipients > 0)).Distinct());
+        // Local messages go only to connections that agreed, so an older plugin never sees one.
+        connection.LocalChatAgreed = welcome.Capabilities.Contains(ProtocolInfo.Capabilities.Local);
         // The operator's own addresses, which clients moving to one of them trust because this server, at the address
         // they already use, lists it. Never the Host-header fallback: that's whatever the connecting side said.
         welcome.PublicUrls.AddRange(this._advertisedUrls);
@@ -1574,6 +1586,74 @@ public sealed class RequestHandler(
             registry.SendToAll(this.Recipients(channelId), new Event { ChatMessage = message }, except: me.UserId);
         }
 
+        return Ack();
+    }
+
+    /// <summary>
+    /// Local chat (capability "local.v1"; see "Local chat (friends only)" in docs/design.md): passes each copy of a local
+    /// message to the user it names, if they are online on a connection that agreed to local chat, and keeps nothing. The
+    /// sender's plugin chose them (friends near them in the game); the server never knows where anyone is, and doesn't say
+    /// who got a copy, so naming user IDs can't be used to see who is online. Every copy must be signed by the sender for
+    /// its recipient, each recipient named once (never the sender), as many as the operator allows; the message as large as
+    /// a channel message. Rate limited as channel messages are. Logged with the sender's user ID and counts only.
+    /// </summary>
+    private Response SendLocalMessage(ClientConnection connection, SendLocalMessage request) {
+        var me = RequireUser(connection);
+        if (!connection.LocalChatAgreed) {
+            throw new RequestException(ErrorCode.InvalidRequest, "Local chat isn't available on this connection: offer it when connecting.");
+        }
+
+        if (!this._localMessages.TryTake(me.UserId, out var wait)) {
+            throw new RequestException(ErrorCode.RateLimited, $"You're sending local messages too quickly; try again in {AboutHowLong(wait)}.");
+        }
+
+        if (request.MessageId.Length != LocalCrypto.MessageIdSize) {
+            throw new RequestException(ErrorCode.InvalidRequest, "Malformed message ID.");
+        }
+
+        if (request.Ciphertext.Length > this.Limits.MaxMessageBytes) {
+            throw new RequestException(ErrorCode.TooLarge, "Message too large.");
+        }
+
+        if (request.Copies.Count == 0) {
+            throw new RequestException(ErrorCode.InvalidRequest, "A local message needs at least one recipient.");
+        }
+
+        if (request.Copies.Count > this.Limits.MaxLocalRecipients) {
+            throw new RequestException(ErrorCode.TooLarge, $"A local message can go to at most {this.Limits.MaxLocalRecipients} players.");
+        }
+
+        var recipients = new HashSet<long>();
+        foreach (var copy in request.Copies) {
+            if (copy.RecipientId == me.UserId || !recipients.Add(copy.RecipientId)) {
+                throw new RequestException(ErrorCode.InvalidRequest, "Each recipient of a local message must be someone else, named once.");
+            }
+
+            // Not needed for secrecy, but rejects garbage (and copies readdressed to someone else) before anything is passed on.
+            if (!LocalCrypto.VerifyCopy(me.UserId, request.MessageId.Span, request.TimestampUnixMs, request.Ciphertext.Span, copy, me.SigningKey)) {
+                throw new RequestException(ErrorCode.InvalidRequest, "Local message signature is invalid.");
+            }
+        }
+
+        var sender = me.ToIdentity();
+        var delivered = 0;
+        foreach (var copy in request.Copies) {
+            var ev = new Event {
+                LocalMessage = new LocalMessage {
+                    Sender = sender,
+                    MessageId = request.MessageId,
+                    TimestampUnixMs = request.TimestampUnixMs,
+                    Ciphertext = request.Ciphertext,
+                    SealedKey = copy.SealedKey,
+                    Signature = copy.Signature,
+                },
+            };
+            if (registry.SendLocal(copy.RecipientId, ev)) {
+                delivered++;
+            }
+        }
+
+        logger.LogDebug("Local message from user {Sender} to {Recipients} users ({Delivered} online)", me.UserId, request.Copies.Count, delivered);
         return Ack();
     }
 

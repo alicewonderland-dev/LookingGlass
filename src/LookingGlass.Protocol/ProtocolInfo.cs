@@ -42,6 +42,13 @@ public static class ProtocolInfo {
         /// they missed (FetchMessages). Agreed only if both sides offer it and the server keeps messages.
         /// </summary>
         public const string History = "history.v1";
+
+        /// <summary>
+        /// Local chat (friends only): a message sealed to each friend near the sender in the game, which the server passes on
+        /// to the users named and keeps nothing of (SendLocalMessage, LocalMessage). Agreed only if both sides offer it and the
+        /// server's operator didn't turn it off.
+        /// </summary>
+        public const string Local = "local.v1";
     }
 
     public static Limits DefaultLimits() => new() {

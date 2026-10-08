@@ -35,10 +35,51 @@ public sealed class LookupMemory(TimeProvider time) {
             }
         }
 
+        this._missing.TryRemove(lookup, out _);
         this._lookups[lookup] = (userId, now);
     }
 
-    public void Forget(string lookup) => this._lookups.TryRemove(lookup, out _);
+    public void Forget(string lookup) {
+        this._lookups.TryRemove(lookup, out _);
+        this._missing.TryRemove(lookup, out _);
+    }
+
+    // Names the server said nobody is registered as, and when: local chat doesn't look a friend who doesn't use LookingGlass
+    // up again with every message (see ClientSession.SendLocalAsync). Invites always look such a name up again.
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _missing = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Remembers that the server knows nobody by <paramref name="lookup"/> ("Name@World"), now.</summary>
+    public void RememberMissing(string lookup) {
+        var now = time.GetUtcNow();
+        if (this._missing.Count >= MaxRemembered && !this._missing.ContainsKey(lookup)) {
+            foreach (var (key, at) in this._missing) {
+                if (now - at >= ReusedFor) {
+                    this._missing.TryRemove(new KeyValuePair<string, DateTimeOffset>(key, at));
+                }
+            }
+
+            if (this._missing.Count >= MaxRemembered) {
+                this._missing.Clear();
+            }
+        }
+
+        this._lookups.TryRemove(lookup, out _);
+        this._missing[lookup] = now;
+    }
+
+    /// <summary>Whether the server said, within <see cref="ReusedFor"/>, that nobody is registered as <paramref name="lookup"/>.</summary>
+    public bool IsMissing(string lookup) {
+        if (!this._missing.TryGetValue(lookup, out var at)) {
+            return false;
+        }
+
+        if (time.GetUtcNow() - at < ReusedFor) {
+            return true;
+        }
+
+        this._missing.TryRemove(new KeyValuePair<string, DateTimeOffset>(lookup, at));
+        return false;
+    }
 
     /// <summary>
     /// The identity <paramref name="current"/> gives for whom <paramref name="lookup"/> was found to be within

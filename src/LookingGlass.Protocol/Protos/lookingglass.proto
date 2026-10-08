@@ -52,6 +52,7 @@ message ClientFrame {
     RetireIdentity retire_identity = 32;
     ForgetChannel forget_channel = 33;
     FetchMessages fetch_messages = 34;
+    SendLocalMessage send_local_message = 35;
   }
 }
 
@@ -102,6 +103,7 @@ message Event {
     InviteRevoked invite_revoked = 18;
     LogEntryAdded log_entry_added = 19;
     PresenceChanged presence_changed = 20;
+    LocalMessage local_message = 21;
   }
 }
 
@@ -156,6 +158,9 @@ message Limits {
   // off). Added without a version change.
   uint32 message_keep_days = 9;
   uint32 max_stored_messages_per_channel = 10;
+  // Local chat (capability "local.v1"): the most recipients one SendLocalMessage may name. 0 if the server doesn't offer
+  // local chat (an older server, or one whose operator turned it off). Added without a version change.
+  uint32 max_local_recipients = 11;
 }
 
 message Welcome {
@@ -757,6 +762,48 @@ message StoredMessages {
   // The newest server_id the channel had when this was answered, whether the asker may read that message or not. With
   // nothing more to come, a client can carry on from it: what it skips is its own, or from before it joined.
   uint64 latest_id = 4;
+}
+
+// ---------------------------------------------------------------- local chat
+//
+// Capability "local.v1" (ProtocolInfo.Capabilities.Local): a /say-like chat among friends who stand near each other in the
+// game (see the design doc, "Local chat (friends only)"). The sender's plugin picks the recipients (players near them on
+// their friends list, looked up by name), encrypts the message once under a fresh key, seals that key to each recipient's
+// identity key and signs each copy. The server only checks the request and passes each copy to the user it names, if they
+// are online and agreed to the capability: it stores nothing, and never learns where anyone is. A client only sends it to
+// a server that agreed to the capability, and the server only sends LocalMessage to connections that did.
+
+// One local message, and a copy of its key for each recipient.
+message SendLocalMessage {
+  // 16 random bytes chosen by the sender; used for de-duplication.
+  bytes message_id = 1;
+  int64 timestamp_unix_ms = 2;
+  // 24-byte nonce followed by the XChaCha20-Poly1305 ciphertext of Content, under a key made for this message alone (see
+  // LookingGlass.Core.Crypto.LocalCrypto). At most Limits.max_message_bytes, as a channel message.
+  bytes ciphertext = 3;
+  // One per recipient, each a different user (never the sender), at most Limits.max_local_recipients.
+  repeated LocalMessageCopy copies = 4;
+}
+
+message LocalMessageCopy {
+  int64 recipient_id = 1;
+  // The message's key, sealed to the recipient's identity agreement key, bound to the sender, recipient, message ID and time.
+  SealedBox sealed_key = 2;
+  // The sender's Ed25519 signature over the sender, recipient, message ID, time, the ciphertext's hash and sealed_key (see
+  // LocalCrypto), so each recipient checks its own copy without seeing who else got one.
+  bytes signature = 3;
+}
+
+// A local message for this recipient: their own copy of the key, and the sender's identity as the server has it. The
+// recipient checks the signature against the key it already holds for the sender (the server's only on first use), and
+// shows it only if the sender is near them in the game and on their friends list.
+message LocalMessage {
+  UserIdentity sender = 1;
+  bytes message_id = 2;
+  int64 timestamp_unix_ms = 3;
+  bytes ciphertext = 4;
+  SealedBox sealed_key = 5;
+  bytes signature = 6;
 }
 
 // ---------------------------------------------------------------- events

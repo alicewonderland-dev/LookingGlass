@@ -70,4 +70,6 @@ public static class Domains {
     public const string Registration = "lookingglass/registration/v1";
     public const string LodestoneCode = "lookingglass/lodestone-code/v1";
     public const string KeyRecovery = "lookingglass/key-recovery/v1";
+    public const string LocalMessage = "lookingglass/local-message/v1";
+    public const string LocalMessageKey = "lookingglass/local-message-key/v1";
 }

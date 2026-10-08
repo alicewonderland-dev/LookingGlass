@@ -1308,6 +1308,10 @@ public sealed partial class ClientSession : IAsyncDisposable {
             hello.Capabilities.Add(ProtocolInfo.Capabilities.History);
         }
 
+        if (this._options.OfferLocalChat) {
+            hello.Capabilities.Add(ProtocolInfo.Capabilities.Local);
+        }
+
         Response response;
         try {
             response = await this.RequestAsync(connection, new ClientFrame { Hello = hello }, ct);
@@ -1331,6 +1335,8 @@ public sealed partial class ClientSession : IAsyncDisposable {
             this._addressNotListed = addressNotListed;
             // Only a server that agreed is asked for missed messages: an older one doesn't know the request.
             this._catchUpAgreed = this._options.OfferMessageCatchUp && welcome.Capabilities.Contains(ProtocolInfo.Capabilities.History);
+            // Local chat likewise: a server that didn't agree is never sent a local message, and never sends one.
+            this._localAgreed = this._options.OfferLocalChat && welcome.Capabilities.Contains(ProtocolInfo.Capabilities.Local);
         }
 
         if (!string.IsNullOrWhiteSpace(welcome.Announcement)) {
@@ -2214,7 +2220,7 @@ public sealed partial class ClientSession : IAsyncDisposable {
             return;
         }
 
-        if (ev.KindCase != Event.KindOneofCase.Announcement && !IsValidChannelId(ChannelIdOf(ev))) {
+        if (ev.KindCase != Event.KindOneofCase.Announcement && ev.KindCase != Event.KindOneofCase.LocalMessage && !IsValidChannelId(ChannelIdOf(ev))) {
             this.Log(NoticeLevel.Debug, $"Ignored {ev.KindCase} with an invalid channel ID");
             return;
         }
@@ -2348,6 +2354,9 @@ public sealed partial class ClientSession : IAsyncDisposable {
             case Event.KindOneofCase.PresenceChanged:
                 // Already applied as it arrived (see OnEvent).
                 this.Publish();
+                break;
+            case Event.KindOneofCase.LocalMessage:
+                this.ProcessLocalMessage(ev.LocalMessage);
                 break;
         }
     }

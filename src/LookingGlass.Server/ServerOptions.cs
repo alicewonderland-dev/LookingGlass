@@ -201,6 +201,26 @@ public sealed class LimitOptions {
     /// <summary>Seconds between lookups one user may make once <see cref="LookupBurst"/> is spent.</summary>
     public int LookupIntervalSeconds { get; set; } = 1;
 
+    // ---------------------------------------------------------------- local chat (see "Local chat (friends only)" in docs/design.md)
+
+    /// <summary>
+    /// The most players one local message may be sent to, 0 to <see cref="MaxMaxLocalRecipients"/>; 0 turns local chat off
+    /// (the server doesn't agree to it, so plugins don't offer it). The plugin sends to the closest friends first.
+    /// </summary>
+    public int MaxLocalRecipients { get; set; } = 50;
+
+    /// <summary>Local messages one user may send at once; past it, one more every <see cref="LocalMessageIntervalSeconds"/>. As for channel messages.</summary>
+    public int LocalMessageBurst { get; set; } = 5;
+
+    /// <summary>Seconds between local messages one user may send once <see cref="LocalMessageBurst"/> is spent.</summary>
+    public int LocalMessageIntervalSeconds { get; set; } = 1;
+
+    /// <summary>
+    /// The most <see cref="MaxLocalRecipients"/> can be: each recipient's copy of the key, with its signature, is about 170
+    /// bytes, so this many and the longest message stay well within the 128 KiB frame a client may send.
+    /// </summary>
+    public const int MaxMaxLocalRecipients = 200;
+
     /// <summary>The most a burst setting here can be.</summary>
     public const int MaxBurst = 10_000;
 
@@ -213,7 +233,7 @@ public sealed class LimitOptions {
     /// </summary>
     public const int MaxMaxPendingInvitesPerUser = 200;
 
-    /// <summary>Why the invite, lookup or registration lookup limits are out of range (the server doesn't start then), or null if they aren't.</summary>
+    /// <summary>Why the invite, lookup, registration lookup or local chat limits are out of range (the server doesn't start then), or null if they aren't.</summary>
     public string? Problem() {
         if (this.RegistrationLookupFailuresPerHourPerIp is < 1 or > MaxBurst) {
             return $"LookingGlass:Limits:RegistrationLookupFailuresPerHourPerIp is {this.RegistrationLookupFailuresPerHourPerIp}, so the server won't start: it " +
@@ -225,6 +245,7 @@ public sealed class LimitOptions {
                      (nameof(this.InviteBurstPerInvitee), this.InviteBurstPerInvitee, "invites", 30),
                      (nameof(this.InviteBurstPerPair), this.InviteBurstPerPair, "invites", 20),
                      (nameof(this.LookupBurst), this.LookupBurst, "lookups", 60),
+                     (nameof(this.LocalMessageBurst), this.LocalMessageBurst, "local messages", 5),
                  }) {
             if (value is < 1 or > MaxBurst) {
                 return $"LookingGlass:Limits:{name} is {value}, so the server won't start: it must be 1 to {MaxBurst} ({what} at once; {fallback} by default).";
@@ -236,6 +257,7 @@ public sealed class LimitOptions {
                      (nameof(this.InviteIntervalSecondsPerInvitee), this.InviteIntervalSecondsPerInvitee, "invites", 10),
                      (nameof(this.InviteIntervalSecondsPerPair), this.InviteIntervalSecondsPerPair, "invites", 60),
                      (nameof(this.LookupIntervalSeconds), this.LookupIntervalSeconds, "lookups", 1),
+                     (nameof(this.LocalMessageIntervalSeconds), this.LocalMessageIntervalSeconds, "local messages", 1),
                  }) {
             if (value is < 1 or > MaxIntervalSeconds) {
                 return $"LookingGlass:Limits:{name} is {value}, so the server won't start: it must be 1 to {MaxIntervalSeconds} " +
@@ -256,6 +278,11 @@ public sealed class LimitOptions {
         if (this.MaxPendingInvitesPerUser is < 2 or > MaxMaxPendingInvitesPerUser) {
             return $"LookingGlass:Limits:MaxPendingInvitesPerUser is {this.MaxPendingInvitesPerUser}, so the server won't start: it must be 2 to " +
                    $"{MaxMaxPendingInvitesPerUser} (pending invites one user can have; 50 by default).";
+        }
+
+        if (this.MaxLocalRecipients is < 0 or > MaxMaxLocalRecipients) {
+            return $"LookingGlass:Limits:MaxLocalRecipients is {this.MaxLocalRecipients}, so the server won't start: it must be 0 to " +
+                   $"{MaxMaxLocalRecipients} (players one local message may go to; 50 by default, 0 turns local chat off).";
         }
 
         if (this.MaxPendingInvitesFromOneInviter < 1 || this.MaxPendingInvitesFromOneInviter >= this.MaxPendingInvitesPerUser) {

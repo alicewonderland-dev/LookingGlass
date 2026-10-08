@@ -167,9 +167,11 @@ public sealed class Harness : IAsyncDisposable {
     /// <param name="catchUpWithoutPosition">How far back a channel without a position catches up.</param>
     /// <param name="maxHeldLive">How many live messages are held back while catching up.</param>
     /// <param name="replaySaveDelay">How soon changed message times and positions are saved.</param>
+    /// <param name="offerLocalChat">Offer local chat in Hello; off plays a plugin from before it.</param>
     public ClientSessionOptions Options(bool autoRekey = true, Action<NoticeLevel, string>? log = null, TimeProvider? time = null, Func<CancellationToken, Task>? beforeConnect = null,
         uint protocolVersion = ProtocolInfo.CurrentVersion, Func<WebSocket, WebSocket>? wrap = null, TimeSpan? forkCheckInterval = null, TimeSpan? loginRetryDelay = null,
-        Uri? serverUri = null, bool offerCatchUp = true, TimeSpan? catchUpWithoutPosition = null, int maxHeldLive = 2000, TimeSpan? replaySaveDelay = null) => new() {
+        Uri? serverUri = null, bool offerCatchUp = true, TimeSpan? catchUpWithoutPosition = null, int maxHeldLive = 2000, TimeSpan? replaySaveDelay = null,
+        bool offerLocalChat = true) => new() {
         ServerUri = serverUri ?? new Uri(this.Factory.Server.BaseAddress, ProtocolInfo.WebSocketPath),
         Connect = async (uri, ct) => {
             if (beforeConnect != null) {
@@ -193,6 +195,7 @@ public sealed class Harness : IAsyncDisposable {
         // Soon, so a failed catch-up is tried again within a test.
         CatchUpRetryDelay = TimeSpan.FromMilliseconds(100),
         ReplayStateSaveDelay = replaySaveDelay ?? TimeSpan.FromSeconds(30),
+        OfferLocalChat = offerLocalChat,
     };
 
     /// <summary>Opens a WebSocket to this server, whatever address <paramref name="uri"/> names (as a client's Connect).</summary>
@@ -661,12 +664,14 @@ public sealed class TestClient {
     private readonly ConcurrentQueue<SessionNotice> _notices = new();
 
     private readonly ConcurrentQueue<CaughtUpMessages> _caughtUp = new();
+    private readonly ConcurrentQueue<IncomingLocalMessage> _localMessages = new();
 
     public TestClient(string name, ClientSession session, ISecretStore store) {
         this.Name = name;
         this.Session = session;
         this.Store = store;
         session.MessageReceived += this._messages.Enqueue;
+        session.LocalMessageReceived += this._localMessages.Enqueue;
         session.Notice += this._notices.Enqueue;
         // Caught-up messages are in Messages too (flagged CaughtUp), in the order they were raised.
         session.MessagesCaughtUp += batch => {
@@ -686,6 +691,9 @@ public sealed class TestClient {
     public long UserId => this.Session.Snapshot.Me!.UserId;
     public IReadOnlyCollection<IncomingMessage> Messages => this._messages.ToArray();
     public IReadOnlyCollection<SessionNotice> Notices => this._notices.ToArray();
+
+    /// <summary>Local chat messages the session passed on (its own included, flagged), in the order it raised them.</summary>
+    public IReadOnlyCollection<IncomingLocalMessage> LocalMessages => this._localMessages.ToArray();
 
     /// <summary>This client's private identity keys, read back from its secret store (as an attacker with the keys would have).</summary>
     public IdentityKeys LoadIdentity() {

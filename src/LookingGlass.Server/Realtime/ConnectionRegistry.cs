@@ -97,6 +97,20 @@ public sealed class ConnectionRegistry(Database db, ILogger<ConnectionRegistry> 
         }
     }
 
+    /// <summary>
+    /// Passes a local message to a user, if they are online on a connection that agreed to local chat; otherwise it goes
+    /// nowhere, as nothing is kept.
+    /// </summary>
+    /// <returns>Whether it was queued for them.</returns>
+    public bool SendLocal(long userId, Event ev) {
+        if (!this._online.TryGetValue(userId, out var connection) || !connection.LocalChatAgreed) {
+            return false;
+        }
+
+        connection.SendEvent(ev);
+        return true;
+    }
+
     public void SendToAll(IEnumerable<long> userIds, Event ev, long? except = null) {
         foreach (var userId in userIds) {
             if (userId != except) {
