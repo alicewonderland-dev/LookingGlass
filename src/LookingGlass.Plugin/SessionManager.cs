@@ -25,6 +25,10 @@ public sealed class SessionManager : IDisposable {
     private volatile ImmutableHashSet<string> _gameChatOff = ImmutableHashSet<string>.Empty;
     private volatile ImmutableDictionary<string, uint> _nameColours = ImmutableDictionary<string, uint>.Empty;
     private Task? _closing;
+    // Local chat, framework thread only: the player was told this session to open the friends list to see local messages,
+    // and how many local messages weren't shown, by why (for the diagnostic log).
+    private bool _toldOpenFriendsList;
+    private readonly Dictionary<LocalVerdict, int> _localNotShown = new();
     // Framework thread only. Bumped by every start and stop, so a start that was
     // waiting for the previous session to close is dropped if anything changed meanwhile.
     private int _generation;
@@ -502,6 +506,51 @@ public sealed class SessionManager : IDisposable {
         }
     }
 
+    /// <summary>
+    /// A local chat message (see <see cref="LocalChat"/>): the player's own is printed as it is; anyone else's only if, as the
+    /// game shows it now, the sender is near and on the friends list (<see cref="LocalChat.Judge"/>), and isn't blocked.
+    /// Otherwise it is dropped, only counted in the diagnostic log, but for once a session, when the friends list isn't
+    /// loaded, a line saying to open it. Always in game chat, whatever "Show LookingGlass messages only in windows" says:
+    /// no window shows local chat (see "Local chat (friends only)" in docs/design.md). From any thread.
+    /// </summary>
+    /// <param name="generation">The history's generation the session was started with: a message caught in a logout is dropped.</param>
+    private void DeliverLocal(IncomingLocalMessage message, int generation) {
+        _ = Services.Framework.RunOnFrameworkThread(() => {
+            if (generation != this.History.Generation) {
+                return;
+            }
+
+            if (!message.IsOwn) {
+                // The session drops a blocked sender's already; this is for someone blocked while it was on its way.
+                if (this.Snapshot.BlockedUsers.Any(user => user.UserId == message.Sender.UserId)) {
+                    return;
+                }
+
+                LocalVerdict verdict;
+                try {
+                    verdict = LocalChat.Judge(LocalChatGame.Read(), message.Sender.Name, message.Sender.WorldName);
+                } catch (Exception ex) {
+                    Services.Log.Error(ex, "Couldn't read who is near for a local message; it isn't shown");
+                    return;
+                }
+
+                if (verdict != LocalVerdict.Show) {
+                    // Counts only: never who, nor what.
+                    var count = this._localNotShown[verdict] = this._localNotShown.GetValueOrDefault(verdict) + 1;
+                    Services.Log.Debug($"Local message not shown ({verdict}); {count} so far this session");
+                    if (verdict == LocalVerdict.FriendsListNotLoaded && !this._toldOpenFriendsList) {
+                        this._toldOpenFriendsList = true;
+                        this.Tell(NoticeLevel.Info, LocalChatWords.OpenFriendsListToReceive);
+                    }
+
+                    return;
+                }
+            }
+
+            this._chat.LocalMessage(message, this._config.LocalChatColour(), this.NameColourOf(message.Sender));
+        });
+    }
+
     private void OnPlayerChanged(PlayerInfo? player) {
         if (player?.ContentId == this._sessionPlayer?.ContentId && this.Session != null) {
             return;
@@ -575,6 +624,11 @@ public sealed class SessionManager : IDisposable {
                 this.DeliverCaughtUp(caughtUp, history);
             }
         };
+        session.LocalMessageReceived += message => {
+            if (this.Session == session) {
+                this.DeliverLocal(message, history);
+            }
+        };
         session.Notice += notice => {
             if (this.Session == session) {
                 this.OnNotice(notice, history);
@@ -588,6 +642,8 @@ public sealed class SessionManager : IDisposable {
         });
 
         this._sessionPlayer = player;
+        this._toldOpenFriendsList = false;
+        this._localNotShown.Clear();
         this.RefreshCommandCache();
         // A new session (relog, another character or server) counts from zero; reconnects keep counting.
         this.Unread.Reset();

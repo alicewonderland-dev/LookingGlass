@@ -171,7 +171,7 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
         }
     }
 
-    /// <summary>The /lgc line being run now, as read at the gate, if its command is <paramref name="command"/> (see <see cref="ChatInterop.TypedCommandLine"/>).</summary>
+    /// <summary>The /lgc or /lgl line being run now, as read at the gate, if its command is <paramref name="command"/> (see <see cref="ChatInterop.TypedCommandLine"/>).</summary>
     internal TypedLine? TypedCommandLine(string command) => this._interop.TypedCommandLine(command);
 
     /// <inheritdoc/>

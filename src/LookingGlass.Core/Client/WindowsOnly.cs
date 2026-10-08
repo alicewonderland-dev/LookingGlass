@@ -40,7 +40,8 @@ public static class WindowsOnly {
         "On: no channel's messages, and none of its information lines (someone joined or left, an invite accepted), show in game chat, " +
         "whatever each channel's \"Show in game chat\" says. Your own messages show only in windows too. A channel that no window shows " +
         "opens in one, without taking the keyboard from the game: in combat, a cutscene or a loading screen, once it's over. " +
-        "Warnings, and answers to what you type in the chat box (a /lgc command, \"Now talking in\"), still show in game chat.";
+        "Warnings, and answers to what you type in the chat box (a /lgc command, \"Now talking in\"), still show in game chat. " +
+        "So does local chat with friends near you (/lgl), which no window shows.";
 
     /// <summary>The tooltip of a channel's "Show in game chat" while this is on, and the item can't be changed.</summary>
     public const string GameChatItemTooltip =

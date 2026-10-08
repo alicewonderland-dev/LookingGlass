@@ -90,6 +90,13 @@ public static class LocalChat {
     }
 
     /// <summary>
+    /// Local chat's colour from its two settings, as a channel's is kept: a custom colour (0xRRGGBB) wins over a UIColor row
+    /// (row 0 is none); neither is the default, which colours only the tag, in LookingGlass blue.
+    /// </summary>
+    public static ChannelColour? ColourOf(ushort row, uint? custom) =>
+        custom is { } rgb ? ChannelColour.Custom(rgb) : row != 0 ? ChannelColour.OfRow(row) : null;
+
+    /// <summary>
     /// Why there is nobody to send to, or null if there is someone (see <see cref="Recipients"/>): nobody near, nobody near
     /// on the friends list, or, with the friends list not loaded and only players not marked as friends near, to open it once.
     /// </summary>

@@ -373,6 +373,8 @@ public sealed class WindowsOnlyTests {
         PlainLanguage.AssertPlain(WindowsOnly.GameChatItemTooltip);
         Assert.Contains("Settings", WindowsOnly.GameChatItemTooltip);
         Assert.Contains(WindowsOnly.SettingName, WindowsOnly.GameChatItemTooltip);
+        // No window shows local chat, so it stays in game chat, and the setting says so.
+        Assert.Contains(LocalChat.Command, WindowsOnly.SettingTooltip);
         foreach (var how in Enum.GetValues<WindowOpening>()) {
             PlainLanguage.AssertPlain(WindowsOnly.NameOf(how));
             PlainLanguage.AssertPlain(WindowsOnly.TooltipOf(how));

@@ -114,6 +114,17 @@ public sealed class LocalChatTests {
         Assert.Null(LocalChat.NobodyToSendTo(Around(true, Player("Near Friend", 3, true))));
     }
 
+    // ================================================================ colour
+
+    [Fact]
+    public void ItsColourIsARowOrACustomColourOrTheDefault() {
+        Assert.Null(LocalChat.ColourOf(0, null));
+        Assert.Equal(ChannelColour.OfRow(45), LocalChat.ColourOf(45, null));
+        // A custom colour wins over a row (a hand-edited file with both), as for channels.
+        Assert.Equal(ChannelColour.Custom(0x33DDAA), LocalChat.ColourOf(45, 0x33DDAA));
+        Assert.Equal(ChannelColour.Custom(0x33DDAA), LocalChat.ColourOf(0, 0xFF33DDAA));
+    }
+
     // ================================================================ words
 
     public static TheoryData<string, string> Words() {
