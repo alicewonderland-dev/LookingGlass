@@ -48,7 +48,7 @@ The current version is 0.2. It has registration, key login, identity recovery,
 channels, invites, ranks, automatic rekeys, encrypted messages, the signed
 membership log, online indicators, blocking, channel windows (pop-out chat),
 message catch-up (what was sent while you were away), an opt-in chat log on the
-player's computer and debug tooling. ChatTwo
+player's computer, flags for abuse and the operator's bans, and debug tooling. ChatTwo
 integration and the import wizard come next. Local chat and a move to MLS are
 planned (see [Planned features](#planned-features)).
 
@@ -1645,8 +1645,9 @@ again.
   login or a registration.
 - **Requests and events.** Every request has an ID and a timeout, and ends in
   a result or a typed error. Errors never close the connection; only protocol
-  violations and failed authentication do. Server events carry a
-  per-connection sequence number.
+  violations, failed authentication and a block by the operator (see
+  [Spotting abuse, and banning](#spotting-abuse-and-banning)) do. Server
+  events carry a per-connection sequence number.
 
 ### Versions
 
@@ -1672,6 +1673,9 @@ Some additions needed no new version:
   doesn't know it.
 - Signed registrations, the registration client nonce and signed URLs. Older
   plugins are refused with a request to update.
+- Blocks: `ERROR_CODE_BLOCKED`, and `Error.block` (the operator's reason, when
+  it ends, and whether it is on the address). An older plugin shows the
+  server's message, which says it all, as a failed connection.
 
 ### Adding features
 
@@ -3028,7 +3032,8 @@ one transaction for every multi-step change.
   gives it the channel's key, unless nobody else holds it.
 - **Storage.** SQLite in WAL mode. Conditional updates (on epoch and rank)
   guard against races. The schema is upgraded in place at startup; the
-  current schema version is 9 (stored messages for catch-up).
+  current schema version is 10 (bans and flags; 9 brought stored messages for
+  catch-up).
 - **Stored messages.** Kept as relayed, numbered per channel, swept at startup
   and every ten minutes (see [Message catch-up](#message-catch-up)).
 - **Memory.** Nothing kept per address, user or name grows without bound.
@@ -3038,7 +3043,8 @@ one transaction for every multi-step change.
   (or, for slower settings, for as long as their allowance takes to refill).
   Characters found on the Lodestone are cached for an hour (searches that find
   nobody aren't cached); the cache is swept every ten minutes, and at most
-  10,000 are kept.
+  10,000 are kept. Refusals counted towards flagging keep at most 100,000
+  accounts and addresses (see [Noticing](#noticing)).
 - **Errors.** Typed errors map to protocol error codes.
 - **Addresses.** The server refuses to start outside Development without
   `PublicUrls`, and with a `ChallengeMinutes` outside 1 to 60.
@@ -3091,7 +3097,110 @@ or, at a cap on pending invites, that the invitee must answer some first;
 and the server logs it, with the limit and the user IDs, at most once a
 minute per inviter. Key login limits
 are under [Key login](#key-login). Operators can change some of these (see
-[server.md](server.md#settings)).
+[server.md](server.md#settings)). Every refusal by a limit is also counted
+towards flagging (see [Spotting abuse, and banning](#spotting-abuse-and-banning)).
+
+## Spotting abuse, and banning
+
+Rate limits stop one burst of abuse, but someone who keeps hitting them, hour
+after hour, is unlikely to be doing so by accident. The server notices that,
+tells the operator, and lets the operator ban them from connecting. The owner
+made this a requirement before public release (2026-10-07); it was built the
+same day, with the defaults below for the owner to confirm. How an operator
+uses it is in [server.md](server.md#flags-and-bans).
+
+### Noticing
+
+- **What counts.** Every refusal by a limit: invites, messages, lookups,
+  registrations, key logins, connections (too many new, open, or not logged
+  in, from one address), and the other per-user limits. A refusal that isn't
+  the client's doing (the server-wide Lodestone queue is busy, the server is
+  full) doesn't count. It counts for the account, if the connection is logged
+  in (never an account a request only names, as a key login does), and for
+  the address: an IPv4 address, and an IPv6 /64 and its /56 each.
+- **Flagged.** Over a sliding window of 60 minutes, an account or address
+  refused in at least 30 different minutes, or by at least 4 different limits
+  within 10 minutes, is flagged: one warning in the server's log (the limits'
+  names and the user ID or address, never a name or anything said), and an
+  entry in the database that `--bans` lists. Being refused in most minutes of
+  an hour is what a script or a determined person does. A household behind
+  one address, or a plugin with a bug, is refused now and then: a plugin
+  retrying a login the server lost is refused every third minute at most.
+  Many different limits at once is someone trying them out.
+- **Expiry.** A flag expires by itself 24 hours after the last refusal. A
+  server started again meanwhile doesn't announce one still in force again.
+- **Memory.** At most 100,000 accounts and addresses are counted at once, each
+  with a count per minute of the window and when each limit last refused it;
+  past that the least recently refused are forgotten (their flags stay in the
+  database). The thresholds, the window, the expiry and the cap are operator
+  settings.
+
+### Banning is the operator's decision
+
+- **No automatic permanent ban.** A ban is made from the server's command
+  line (the server runs as a service, and has no admin interface yet), safely
+  while the service runs, as `--backup` is: `--ban <name@world | user ID |
+  address or prefix> [--days N] [--reason "..."]`, `--unban <the same>`, and
+  `--bans`, which lists the bans in force, the flags, and the bans lifted or
+  ended lately.
+- **Kept in the database**, so bans survive restarts and backups (restoring
+  an older backup brings back its bans, and loses later ones).
+- **Picked up while running.** The server reads the bans every 30 seconds
+  (and at once when it starts), so one made from the command line applies
+  within that, without a restart: it closes the connections it covers, and
+  refuses them from then on.
+- **On the character, not the keys.** A ban on an account is on the
+  character's user ID (its Lodestone ID), so registering again with new keys
+  doesn't get round it, and a character can be banned before it ever
+  registers (by its ID). A ban on an address covers an IPv4 address or
+  network (a /16 at the widest), or an IPv6 prefix from a /64 (an address
+  alone stands for its /64, as one client usually has a whole /64) to a /32.
+- **An optional automatic temporary block**, off by default: an address
+  refused 1,000 times within the window is blocked for the minutes the
+  operator sets, to blunt a flood until the operator looks. Only addresses,
+  never accounts, and never over a ban already covering the address.
+
+### What a ban does
+
+- **No way in.** A banned account can't sign in: its saved logins and a key
+  login are refused (no new login is made), and so is registering the
+  character again, with any keys. A banned address can't connect: the first
+  request on a connection from it is refused. Each refusal says it is a
+  block, with the operator's reason if they gave one and when it ends, and the
+  server then closes the connection. Only someone who proves they are the
+  character (its login, its key, or the Lodestone) learns of its ban: asking
+  for a key login challenge, which anyone can do for any account, tells
+  nothing.
+- **Told plainly.** The plugin tells the player once that the server's
+  operator has blocked them (or their internet address, which others may
+  share), why if a reason was given, and until when; shows it as the
+  connection's status; and tries again only every 5 minutes (or once the block
+  ends, if sooner; **Try again now** at once), not every 30 seconds.
+- **Older plugins** show the server's message ("This server's operator has
+  blocked this character, so you can't use it. The reason they gave: ...") as
+  a failed connection, and reconnect as after any failure.
+- **Places stay.** A banned player's places in channels stay (admins can
+  remove them as usual); while banned they can't send or receive, as they
+  can't connect, and the other members see them offline. Admins aren't told:
+  bans are the operator's matter.
+- **History.** A ban lifted or ended is kept 90 days (listed by `--bans`),
+  then deleted.
+
+### Chosen defaults (owner to confirm)
+
+- Window 60 minutes; flagged if refused by limits in at least 30 different
+  minutes of it, or by at least 4 different limits within 10 minutes.
+- Flags expire after 24 hours without new refusals.
+- Channel admins aren't told a member was banned; members just see them
+  offline.
+- Ban history: a lifted or ended ban is kept 90 days, then deleted.
+- Flags are listed by `--bans`, with the bans, rather than by a separate
+  `--flags`.
+- The automatic temporary block is off by default (when turned on, an address
+  refused 1,000 times within the window is blocked).
+- A blocked plugin tries again every 5 minutes, or once the block ends if
+  that is sooner.
+- Address bans cover an IPv4 /16 to /32, or an IPv6 /32 to /64.
 
 ## Operations
 
@@ -3134,7 +3243,8 @@ How to build, configure, deploy, back up and restore a server is in
 - **Automated tests.** Cryptography, the policy table, the membership log and
   its rules, key login, recovery, identity resets, server moves, secrets
   files, limits, message catch-up (storage, sweeps, who may fetch what, paging,
-  and a server that repeats, reorders or forges what it sends back),
+  and a server that repeats, reorders or forges what it sends back), flags and
+  bans (the thresholds, the commands, and what a ban refuses),
   end-to-end flows, and malicious-server and malicious-member suites that
   inject forged and replayed events.
 
@@ -3260,46 +3370,6 @@ already, `TextCommands.Split`), so links keep their places. If the gate fails,
 or GagSpeak is gone, the message is sent as typed (it is cosmetic), with a
 warning in the log that never holds the text. The same words in simple and
 advanced mode.
-
-### Spotting abuse, and banning
-
-Status: planned, **required before public release** (owner, 2026-10-07).
-
-Rate limits stop one burst of abuse, but someone who keeps hitting them, hour
-after hour, is unlikely to be doing so by accident. The server should notice
-that, tell the operator, and let the operator ban them from connecting.
-
-- **Noticing.** The server already refuses requests over a limit (and, from
-  the invite-limit change on, logs a short line with the limit's name and user
-  IDs, never names or content). It counts refusals per account and per address
-  (IPv4, and IPv6 per /64 and /56) over a sliding window, across all limits
-  (invites, messages, lookups, registrations, key logins, connections). Past a
-  threshold (for example, refused by limits in most minutes of an hour, or by
-  several different limits), the account or address is **flagged**: one
-  warning line in the server log, and an entry in a list the operator can
-  read. Thresholds are settings, and generous: a shared address (a household,
-  a carrier's NAT) or a buggy plugin must not get an innocent player flagged
-  often.
-- **Banning is the operator's decision.** No automatic permanent ban. A ban
-  is made from the server's command line (the server runs as a service, and
-  has no admin interface yet), for example `LookingGlass.Server --ban
-  <name@world | user id | address> [--days N] [--reason "..."]`, `--unban`
-  and `--bans` (list, with flags). Optionally, an automatic **temporary**
-  block (minutes, not days) for an address far past the threshold, to blunt a
-  flood until the operator looks.
-- **What a ban does.** A banned account can't sign in (key login and saved
-  logins refused) and its character can't register again: the ban is on the
-  Lodestone character, not the keys, so new keys don't get round it. A banned
-  address can't open connections. The banned player is told plainly that the
-  server's operator has blocked them, and why if a reason was given. Their
-  places in channels stay (admins can remove them as usual); while banned they
-  can't send or receive.
-- **To decide when it's built:** the exact thresholds and window; whether
-  flags expire on their own; whether a channel's admins are told a member was
-  banned; whether bans are kept in the database (so they survive restarts and
-  backups: yes, probably) and how long a ban's history is kept; and a way to
-  review flags without reading logs (a `--flags` command, or a small
-  operator-only page later).
 
 ### A chat history kept unencrypted
 
@@ -3446,6 +3516,12 @@ The owner's decisions, and why.
   in the window used last, or a new window, as a second setting says, without
   taking the keyboard; in combat, a cutscene or a loading screen it waits
   until that is over. See [Windows only, never game chat](#windows-only-never-game-chat).
+- **Spotting abuse, and banning (2026-10-07).** Required before public
+  release. The server flags accounts and addresses that limits refuse again and
+  again; banning is the operator's decision, from the command line, never an
+  automatic permanent ban; a ban is on the character, not its keys. Built with
+  defaults for the owner to confirm (see
+  [Chosen defaults](#chosen-defaults-owner-to-confirm)).
 - **Friends-only local chat (2026-10-05).** No party or Free Company option,
   since those can include people a player doesn't trust.
 - **Key-change policy for re-verified keys.** Keys re-verified through the
