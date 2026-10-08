@@ -21,11 +21,87 @@ public sealed class ServerOptions {
     /// </summary>
     public string[] PublicUrls { get; set; } = [];
 
+    /// <summary>
+    /// Proxies, besides this machine, whose X-Forwarded-For is believed: addresses or CIDR networks (see
+    /// <see cref="Hosting.ClientAddresses.AddTrustedProxies"/>). Their addresses, like this machine's, are never banned (unless
+    /// forced), flagged or blocked: every player's connections come from there if the forwarded address goes missing.
+    /// </summary>
+    public string[] TrustedProxies { get; set; } = [];
+
     public LodestoneOptions Lodestone { get; set; } = new();
     public DevOptions Dev { get; set; } = new();
     public LimitOptions Limits { get; set; } = new();
     public DatabaseOptions Database { get; set; } = new();
     public MessageOptions Messages { get; set; } = new();
+    public AbuseOptions Abuse { get; set; } = new();
+}
+
+/// <summary>
+/// Spotting abuse, and bans: when an account or address refused by limits again and again is flagged for the operator,
+/// how bans made with <c>--ban</c> are picked up, and an optional automatic block. See "Spotting abuse, and banning" in
+/// docs/design.md. The defaults are generous: a household behind one address, or a plugin with a bug, shouldn't get an
+/// innocent player flagged.
+/// </summary>
+public sealed class AbuseOptions {
+    /// <summary>Minutes of refusals looked at (the window slides), 10 to 1440.</summary>
+    public int WindowMinutes { get; set; } = 60;
+
+    /// <summary>Flagged once refused by limits in at least this many different minutes of the window, 1 to <see cref="WindowMinutes"/>.</summary>
+    public int FlagAfterMinutesRefused { get; set; } = 30;
+
+    /// <summary>Flagged once refused by at least this many different limits within <see cref="FlagLimitsWithinMinutes"/>, 2 to 100.</summary>
+    public int FlagAfterLimits { get; set; } = 4;
+
+    /// <summary>The minutes <see cref="FlagAfterLimits"/> counts over, 1 to <see cref="WindowMinutes"/>.</summary>
+    public int FlagLimitsWithinMinutes { get; set; } = 10;
+
+    /// <summary>Hours a flag lasts after its last refusal, 1 to 8760; then it expires by itself.</summary>
+    public int FlagExpiresAfterHours { get; set; } = 24;
+
+    /// <summary>Accounts and addresses counted at once, at most, 1,000 to 10,000,000; past it the least recently refused are forgotten.</summary>
+    public int MaxTrackedKeys { get; set; } = 100_000;
+
+    /// <summary>
+    /// Minutes an address is blocked by itself once refused <see cref="AutoBlockAfterRefusals"/> times within the window, 0 to
+    /// 1440; 0 (the default) never blocks anything by itself. Only addresses, never accounts.
+    /// </summary>
+    public int AutoBlockMinutes { get; set; }
+
+    /// <summary>Refusals within the window that block an address when <see cref="AutoBlockMinutes"/> is set, 100 to 1,000,000.</summary>
+    public int AutoBlockAfterRefusals { get; set; } = 1000;
+
+    /// <summary>
+    /// Seconds between the server's reads of the bans in the database, 1 to 60: a ban made with <c>--ban</c> (another process)
+    /// applies within this, and drops the player's connections.
+    /// </summary>
+    public int BanCheckSeconds { get; set; } = 30;
+
+    /// <summary>Days a lifted or ended ban is kept (listed by <c>--bans</c>) before it is deleted, 1 to 3650.</summary>
+    public int BanHistoryDays { get; set; } = 90;
+
+    /// <summary>Why the settings are out of range (the server doesn't start then), or null if they aren't.</summary>
+    public string? Problem() {
+        foreach (var (name, value, min, max, what) in new[] {
+                     (nameof(this.WindowMinutes), this.WindowMinutes, 10, 1440, "minutes of refusals looked at; 60 by default"),
+                     (nameof(this.FlagAfterMinutesRefused), this.FlagAfterMinutesRefused, 1, Math.Clamp(this.WindowMinutes, 10, 1440),
+                         "different minutes of the window refused in, to be flagged; 30 by default, at most WindowMinutes"),
+                     (nameof(this.FlagAfterLimits), this.FlagAfterLimits, 2, 100, "different limits refused by, to be flagged; 4 by default"),
+                     (nameof(this.FlagLimitsWithinMinutes), this.FlagLimitsWithinMinutes, 1, Math.Clamp(this.WindowMinutes, 10, 1440),
+                         "the minutes FlagAfterLimits counts over; 10 by default, at most WindowMinutes"),
+                     (nameof(this.FlagExpiresAfterHours), this.FlagExpiresAfterHours, 1, 8760, "hours a flag lasts after its last refusal; 24 by default"),
+                     (nameof(this.MaxTrackedKeys), this.MaxTrackedKeys, 1000, 10_000_000, "accounts and addresses counted at once; 100000 by default"),
+                     (nameof(this.AutoBlockMinutes), this.AutoBlockMinutes, 0, 1440, "minutes an address is blocked by itself; 0, never, by default"),
+                     (nameof(this.AutoBlockAfterRefusals), this.AutoBlockAfterRefusals, 100, 1_000_000, "refusals within the window that block an address; 1000 by default"),
+                     (nameof(this.BanCheckSeconds), this.BanCheckSeconds, 1, 60, "seconds between reads of the bans; 30 by default"),
+                     (nameof(this.BanHistoryDays), this.BanHistoryDays, 1, 3650, "days a lifted or ended ban is kept; 90 by default"),
+                 }) {
+            if (value < min || value > max) {
+                return $"LookingGlass:Abuse:{name} is {value}, so the server won't start: it must be {min} to {max} ({what}).";
+            }
+        }
+
+        return null;
+    }
 }
 
 /// <summary>

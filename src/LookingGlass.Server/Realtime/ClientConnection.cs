@@ -112,6 +112,8 @@ public sealed class ClientConnection {
     /// <see cref="ConnectionRegistry"/>, which fills in presence on the way.</param>
     public async Task RunAsync(Func<ClientConnection, ClientFrame, CancellationToken, Task<Response>> handle,
         Action<ClientConnection, Response>? respond = null) {
+        // Debug only, as closing is: for an operator checking the server sees each client's own address, not its proxy's.
+        this._logger.LogDebug("Connection from {Address}", this.RemoteAddress);
         var sendLoop = Task.Run(this.SendLoop);
         // Disposed when the connection ends, so a closed connection isn't kept alive for the full lifetime. Started only once
         // assigned: a callback running before that (a thread held up past a short lifetime) couldn't put itself off for a
@@ -175,6 +177,13 @@ public sealed class ClientConnection {
                 } else {
                     this.SendResponse(response);
                 }
+
+                if (Volatile.Read(ref this._closeAfterResponse) is { } reason) {
+                    // Nothing more is read; what was queued goes out first (see below), then the close.
+                    Interlocked.CompareExchange(ref this._abortReason, reason, null);
+                    this._abortStatus = WebSocketCloseStatus.PolicyViolation;
+                    break;
+                }
             }
         } catch (Exception ex) when (ex is OperationCanceledException or WebSocketException or IOException) {
             // Client went away (a socket torn down mid-receive can say so with an IOException) or we aborted.
@@ -219,6 +228,14 @@ public sealed class ClientConnection {
         copy.Seq = (ulong) Interlocked.Increment(ref this._eventSeq);
         this.Enqueue(new ServerFrame { Event = copy });
     }
+
+    /// <summary>
+    /// Closes the connection once the request being handled is answered, rather than at once: the answer (a refusal saying
+    /// why, say) still reaches the client. Nothing more is read from it.
+    /// </summary>
+    public void CloseAfterResponse(string reason) => Interlocked.CompareExchange(ref this._closeAfterResponse, reason, null);
+
+    private string? _closeAfterResponse;
 
     public void Abort(string reason, WebSocketCloseStatus status = WebSocketCloseStatus.PolicyViolation) {
         if (Interlocked.CompareExchange(ref this._abortReason, reason, null) != null) {

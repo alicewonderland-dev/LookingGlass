@@ -98,6 +98,8 @@ public enum NoticeKind {
     ServerRefusesKey,
     /// <summary>A removal (or leave) hasn't taken effect for the other members: its rekey wasn't taken.</summary>
     RemovalNotInEffect,
+    /// <summary>The server's operator blocked this character, or the address this computer connects from.</summary>
+    Blocked,
 
     // ---- Channel keys, in the normal run of things
     /// <summary>Just joined; the channel's key comes from another member, or this client makes it.</summary>

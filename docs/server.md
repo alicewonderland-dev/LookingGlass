@@ -175,7 +175,7 @@ All of these are under `LookingGlass`.
 | `DataDirectory` | `data` | Folder for the database (`lookingglass.db`) and the hosted echo bot's keys |
 | `Announcement` | empty | Shown to every client when it connects |
 | `PublicUrls` | empty | Every address clients connect to. Required outside Development: see below |
-| `TrustedProxies` | empty | Proxies, besides this machine, whose `X-Forwarded-For` is believed: see below |
+| `TrustedProxies` | empty | Proxies, besides this machine, whose `X-Forwarded-For` is believed: see below. Like this machine's, their addresses are never flagged or blocked, and banned only with `--force` |
 | `Lodestone:BaseUrl` | `https://na.finalfantasyxiv.com` | Where characters are looked up |
 | `Lodestone:MinDelaySeconds` | 2 | Least time between Lodestone requests, server-wide |
 | `Lodestone:ChallengeMinutes` | 15 | How long a registration code can be used, 1 to 60. The server won't start with anything else |
@@ -211,6 +211,7 @@ All of these are under `LookingGlass`.
 | `Limits:MaxPendingInvitesFromOneInviter` | 25 | Of those, how many can be from any one inviter. 1 to one less than `MaxPendingInvitesPerUser` |
 | `Limits:LookupBurst` | 60 | Players one user may look up by name at once (each invite by name starts with one). 1 to 10,000 |
 | `Limits:LookupIntervalSeconds` | 1 | Seconds between their lookups once those are spent. 1 to 86,400 |
+| `Abuse:...` | | When an account or address refused by limits again and again is flagged, how bans are picked up, and automatic blocks (off): see [Flags and bans](#flags-and-bans) |
 
 The server won't start with an invite, lookup or registration lookup setting outside its range: see
 [Limits worth knowing](#limits-worth-knowing).
@@ -367,6 +368,9 @@ IPv6 clients are counted per /64.
   count the proxy's connections.
 - **Memory.** Per-address counters keep at most 100,000 addresses, and the
   Lodestone cache 10,000 searches (see [design.md](design.md#server-design)).
+- **Repeated refusals.** Every refusal by one of these limits is counted, and
+  an account or address refused again and again is flagged for you: see
+  [Flags and bans](#flags-and-bans).
 - **Stored messages** take disk space: see below.
 - The full list of protocol limits is in
   [design.md](design.md#abuse-limits).
@@ -544,10 +548,168 @@ IDs) appear in lines about registrations, key logins and channel changes,
 and in the Information line for an invite refused by one of the invite
 limits ("Invite from user 1 to user 2 refused by InviteBurstPerPair", named
 as its setting, or `MaxPendingInvitesPerChannel`), which is logged at most
-once a minute per inviter.
+once a minute per inviter. An account or address refused by limits again and
+again is flagged with a Warning line (see [Flags and bans](#flags-and-bans)).
 Client addresses appear only in lines about registrations and key logins
-(refused ones, and key logins that add a device) and about closed connections
-(at Debug level only), for dealing with abuse.
+(refused ones, and key logins that add a device), flags, bans (a banned
+account refused, a banned connection closed, an address blocked
+automatically) and opened and closed connections (at Debug level only), for
+dealing with abuse.
+
+### Flags and bans
+
+Rate limits stop one burst of abuse; the server also notices someone who keeps
+hitting them, and the operator can ban them. The design and its reasoning are
+in [design.md](design.md#spotting-abuse-and-banning).
+
+**How flags show up.** Every refusal by a limit (invites, messages, lookups,
+registrations, key logins, new or open connections from one address, and the
+rest) is counted for the account, if it is logged in, and for its address (an
+IPv4 address, or an IPv6 /64 and its /56 each). One refused in at least 30
+different minutes of the last hour, or by at least 4 different limits within
+10 minutes, is flagged, once, with a warning in the log:
+
+```text
+Flagged user 31337: refused by limits in 30 of the last 60 minutes, by InviteBurstPerPair, LookupBurst. Repeated refusals by limits
+like these are unlikely to be by accident; see it with --bans, and ban it with --ban 31337 if it is abuse. The flag expires 24 hours
+after the last refusal.
+```
+
+To find them in the journal: `journalctl -u lookingglass | grep Flagged`. A
+flag lasts until 24 hours have passed without a refusal; nothing is banned
+for it. The limits are named as their settings are (or as the request, for
+limits that have no setting; the requests that read a lot share one budget,
+`ReadBudget`), and the line holds no names and nothing anyone said. Limits
+that others filled (an invitee sent too many invites by everyone together, a
+channel's pending invites, unless they sent most of those themselves) don't
+count against the one refused. A flagged address may be shared (a household,
+a mobile carrier's NAT), and a plugin with a bug can hit a limit too: look
+before banning.
+
+**The proxy's address is never flagged.** Refusals from this machine's own
+address (127.0.0.1, ::1), the unspecified address, or one of
+`TrustedProxies` mean the proxy isn't passing the client's address on
+(`X-Forwarded-For`), so every player seems to come from there. That address is
+never flagged or blocked; instead the log says:
+
+```text
+Refusals by limits from address 127.0.0.1 would flag it (...), but this is the proxy's address: the forwarded client address is
+missing, so every player's connections seem to come from there. Check that the proxy passes the client's address on ...
+```
+
+Fix the proxy (see [Behind a reverse proxy](#behind-a-reverse-proxy)) rather
+than banning anything. Accounts are still counted and flagged as usual.
+
+**Check the address the server sees** before banning any address: turn on
+Debug logging for a moment (add `Environment=Logging__LogLevel__LookingGlass=Debug`
+in a drop-in, `sudo systemctl edit lookingglass`, and restart), connect, and
+look for `journalctl -u lookingglass | grep "Connection from"`. It must show
+your public address (an IPv6 one as its /64), not 127.0.0.1, ::1, the
+server's own address, or a 100.x Tailscale address. Take the line out again
+afterwards.
+
+**The commands.** Run them as the service's user, with the service's
+settings (as for `--backup`), while the server runs or not. They start no
+server, and the running one picks up a change within 30 seconds
+(`Abuse:BanCheckSeconds`), without a restart. The service's settings are the
+`Environment=` lines of its unit and drop-ins (the data folder, and any
+`LookingGlass__Abuse__...` or `LookingGlass__TrustedProxies__...` you added),
+and `appsettings.json` beside the binary, which the commands read anyway.
+This shell function (bash) runs a command with the unit's own: `systemctl
+show` gives every `Environment=` of the unit and its drop-ins, and only those
+the commands use are passed on (so a value with spaces elsewhere, such as an
+announcement, does no harm). It doesn't pick up settings from an
+`EnvironmentFile=` (the installed unit has none) or from an
+environment-specific `appsettings.<Environment>.json` (the commands run in
+Production): pass those on the command line, as `--LookingGlass:Abuse:...=`,
+if you use them.
+
+```sh
+LG() {
+    local settings
+    mapfile -t settings < <(systemctl show lookingglass -p Environment --value | tr ' ' '\n' |
+        grep -E '^LookingGlass__(DataDirectory|Abuse__|TrustedProxies__)')
+    sudo -u lookingglass env "${settings[@]}" /opt/lookingglass/LookingGlass.Server "$@"
+}
+
+LG --bans                                                  # bans in force, flags, and recent history
+LG --ban "Bob Hatter@Lich" --reason "Spamming invites"      # a registered character, until lifted
+LG --ban 31337 --days 7                                     # any character by user ID (its Lodestone ID), for 7 days
+LG --ban 203.0.113.5                                        # an IPv4 address
+LG --ban 203.0.113.0/24 --days 1 --reason "Flooding"        # an IPv4 network, a /16 at the widest
+LG --ban 2001:db8:1:2::/64                                  # an IPv6 prefix, /32 to /64 (an address alone means its /64)
+LG --unban "Bob Hatter@Lich"                                # lift a ban (an address exactly as --bans lists it)
+```
+
+Run them as `lookingglass`, not as root: SQLite may create the database's
+`-wal` and `-shm` files, which the service must be able to open. A user ID is
+the number in the character's Lodestone address
+(`https://na.finalfantasyxiv.com/lodestone/character/31337/`); `--bans` and
+the flag lines give it too. `--ban` on someone banned already replaces their
+ban. The reason is shown to the player, so write it for them: one line, at
+most 300 characters. `--ban` refuses this machine's own address, the
+unspecified address, a trusted proxy's, or a prefix holding one: when the
+forwarded address is missing that is every player, so it says so and bans
+nothing (add `--force` if you really mean it). Exit codes: 0 done, 1 not done
+(no such character, no ban to lift, the proxy's address, no database), 2 the
+command line was wrong.
+
+`--bans` lists, with names for registered characters:
+
+```text
+Bans in force (2):
+  user 31337 (Bob Hatter@Lich): since 2026-10-07 12:00 UTC, until lifted. Reason: Spamming invites
+  address 203.0.113.0/24: since 2026-10-07 12:05 UTC, until 2026-10-08 12:05 UTC (1 day). Reason: Flooding
+
+Flagged in the last 24 hours (1):
+  user 4242 (Carol Queen@Odin): refused by 4 different limits within 10 minutes; flagged 2026-10-07 11:00 UTC, last refused 2026-10-07 11:55 UTC; limits: CreateChannel, InviteBurstPerInviter, LookupBurst, SendMessage
+
+No bans lifted or ended in the last 90 days.
+```
+
+**What a ban does.** A banned character can't sign in (its saved logins and
+its identity key are refused, and no new login is made) or register again,
+with any keys. A banned address can't connect. Their open connections are
+closed within 30 seconds. The plugin tells the player the server's operator
+blocked them, with the reason and the end if there is one, and tries again
+every 5 minutes; a plugin from before bans shows the server's message as a
+failed connection and reconnects every 30 seconds at most. Their places in
+channels stay, and the other members see them offline; channel admins aren't
+told. Banning an address bans everyone behind it.
+
+**History.** Lifted and ended bans are listed for 90 days
+(`Abuse:BanHistoryDays`), then deleted. Bans are in the database, so backups
+hold them: restoring an older backup brings back its bans and loses later
+ones.
+
+**Automatic blocks** are off by default. With `Abuse:AutoBlockMinutes` set
+(say 15), an address refused `Abuse:AutoBlockAfterRefusals` times (1,000)
+within the window is blocked for that long by itself, with a warning in the
+log ("Blocked address ... automatically"), to blunt a flood until you look.
+Its connections are refused (HTTP 429) before anything else, rather than let
+in to be told why as with your bans. It never blocks an account or the
+proxy's address, never lasts longer than those minutes, and never replaces a
+ban you made; `--bans` lists it as made automatically, and
+`--unban` lifts it early.
+
+**Settings** (under `LookingGlass:Abuse`; the server won't start with one out
+of range):
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `WindowMinutes` | 60 | Minutes of refusals looked at, 10 to 1440 |
+| `FlagAfterMinutesRefused` | 30 | Flagged once refused in this many different minutes of the window, 1 to `WindowMinutes` |
+| `FlagAfterLimits` | 4 | Flagged once refused by this many different limits within `FlagLimitsWithinMinutes`, 2 to 100 |
+| `FlagLimitsWithinMinutes` | 10 | The minutes `FlagAfterLimits` counts over, 1 to `WindowMinutes` |
+| `FlagExpiresAfterHours` | 24 | Hours a flag lasts after its last refusal, 1 to 8760 |
+| `MaxTrackedKeys` | 100000 | Accounts and addresses counted at once, at most (the least recently refused are forgotten past it), 1,000 to 10,000,000 |
+| `AutoBlockMinutes` | 0 | Minutes an address is blocked by itself once far past the threshold; 0 never, up to 1440 |
+| `AutoBlockAfterRefusals` | 1000 | Refusals within the window that block an address, when `AutoBlockMinutes` is set, 100 to 1,000,000 |
+| `BanCheckSeconds` | 30 | Seconds between the server's reads of the bans, 1 to 60: a ban from the command line applies within this |
+| `BanHistoryDays` | 90 | Days a lifted or ended ban is kept, 1 to 3650 |
+
+Raise `FlagAfterMinutesRefused` or `FlagAfterLimits` if innocent players get
+flagged (behind a large shared NAT, say); lower them to hear sooner.
 
 ### Stopping and restarting
 
@@ -717,6 +879,18 @@ table for stored messages; nothing else changes. Messages are kept from the
 upgrade on. Plugins from before (0.2.5) keep working: they just don't ask for
 what they missed. A plugin with catch-up connecting to an older server doesn't
 ask either.
+
+**From a server without bans (schema 9).** The database gains two tables,
+for bans and flags; nothing else changes. The new settings (`Abuse:...`, see
+[Flags and bans](#flags-and-bans)) all have defaults, and automatic blocks are
+off, so nothing needs setting. Restart the service after updating before
+using `--ban`: the server running the old version doesn't read bans. Plugins
+from before bans keep working; a banned one shows the server's message as a
+failed connection.
+
+**Going back to an older version** works with a schema 10 database (an older
+server opens it, and ignores the two tables), but an older server doesn't
+read bans: everyone banned gets back in until the new version runs again.
 
 ## Loading a development build of the plugin
 
