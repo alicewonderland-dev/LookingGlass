@@ -16,6 +16,8 @@ public sealed class SettingsWindow : Window {
     private readonly Configuration _config;
     private readonly SessionManager _sessions;
     private readonly UiActions _actions;
+    // Opens what local chat tells the server (LocalChatPrivacyWindow).
+    private readonly Action _reviewLocalPrivacy;
     private readonly Modals _modals;
     private string _serverUrl;
 
@@ -41,10 +43,11 @@ public sealed class SettingsWindow : Window {
     private bool _localCustomOpen;
     private readonly ColourWheel _localWheel = new();
 
-    public SettingsWindow(Configuration config, SessionManager sessions, UiActions actions) : base("LookingGlass settings###lookingglass-settings") {
+    public SettingsWindow(Configuration config, SessionManager sessions, UiActions actions, Action reviewLocalPrivacy) : base("LookingGlass settings###lookingglass-settings") {
         this._config = config;
         this._sessions = sessions;
         this._actions = actions;
+        this._reviewLocalPrivacy = reviewLocalPrivacy;
         this._modals = new Modals(actions, () => config.AdvancedMode);
         this._serverUrl = config.ServerUrl;
         this.Size = new Vector2(440, 520);
@@ -358,6 +361,25 @@ public sealed class SettingsWindow : Window {
         ImGui.TextColored(Widgets.Muted, LocalChatWords.Usage.For(this._config.AdvancedMode));
         ImGui.PopTextWrapPos();
         this.DrawLocalColourPopup(current);
+
+        // What sending tells the server, accepted before the first /lgl; withdrawn here (then /lgl asks again).
+        var accepted = this._config.LocalChatPrivacyAccepted;
+        ImGui.AlignTextToFramePadding();
+        ImGui.TextColored(Widgets.Muted, accepted
+            ? "You've accepted what local chat tells the server."
+            : "Local chat asks you to accept what it tells the server before you first send.");
+        ImGui.SameLine();
+        if (Widgets.GhostButton("What it tells the server", "Which names the LookingGlass server learns when you use /lgl, and what it never sees.")) {
+            this._reviewLocalPrivacy();
+        }
+
+        if (accepted) {
+            ImGui.SameLine();
+            if (Widgets.GhostButton("Withdraw", "Stop sending local messages until you accept again. Receiving them doesn't need it.")) {
+                this._config.LocalChatPrivacyAccepted = false;
+                this._config.Save();
+            }
+        }
     }
 
     private void DrawLocalColourPopup(ChannelColour? current) {

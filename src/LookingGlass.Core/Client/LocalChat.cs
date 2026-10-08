@@ -46,6 +46,12 @@ public static class LocalChat {
     /// <summary>The tag in front of local chat's lines in game chat.</summary>
     public const string Tag = "[Local]";
 
+    /// <summary>
+    /// What /lgl does first: until the player has accepted what local chat tells the server (see
+    /// <see cref="LocalChatWords.PrivacyNotice"/>), ask, and look nobody up; once accepted, send.
+    /// </summary>
+    public static LocalChatStep FirstStep(bool privacyAccepted) => privacyAccepted ? LocalChatStep.Send : LocalChatStep.AskFirst;
+
     /// <summary>How far a message reaches, in yalms: about as far as the game's /say (to be checked in game).</summary>
     public const float SayRange = 20f;
 
@@ -187,8 +193,49 @@ public sealed class LocalHints {
 /// What local chat says, in both modes' words (see <see cref="Wording"/>). Nothing in it is technical, so each is the same in
 /// both. Everything is information (LookingGlass blue): nothing went anywhere it shouldn't.
 /// </summary>
+/// <summary>See <see cref="LocalChat.FirstStep"/>.</summary>
+public enum LocalChatStep {
+    /// <summary>Show the privacy notice, and send nothing.</summary>
+    AskFirst,
+
+    /// <summary>Look the friends near up and send.</summary>
+    Send,
+}
+
 public static class LocalChatWords {
     private const string Range = "about 20 yalms, as far as /say";
+
+    /// <summary>The privacy notice's title (see <see cref="PrivacyNotice"/>).</summary>
+    public const string PrivacyTitle = "Local chat: what the server learns";
+
+    /// <summary>
+    /// Shown once, before the first /lgl looks anyone up, to accept or not (owner decision, 2026-10-08): to find which
+    /// friends near the player use LookingGlass, the server is asked about them by name, so it learns who was near, friends
+    /// who don't use LookingGlass too. Paragraphs are separated by a blank line.
+    /// </summary>
+    public static readonly Wording PrivacyNotice = new(
+        NoticeKind.General,
+        Technical: $"To find which of your friends near you use LookingGlass, {LocalChat.Command} asks the LookingGlass server " +
+                   "about them by name (each friend at most once every 10 minutes), and fetches the identity keys of those who do.\n\n" +
+                   "So the server learns the names of friends near you when you use it, including friends who don't use " +
+                   "LookingGlass, and who you send local messages to and when.\n\n" +
+                   "It never sees what you say: each message is encrypted for each friend. LookingGlass's server keeps no record " +
+                   "of these lookups, but whoever runs a server could change that.\n\n" +
+                   "Receiving local messages from friends needs none of this.",
+        Plain: $"To find which of your friends near you use LookingGlass, {LocalChat.Command} asks the LookingGlass server " +
+               "about them by name (each friend at most once every 10 minutes).\n\n" +
+               "So the server learns the names of friends near you when you use it, including friends who don't use " +
+               "LookingGlass, and who you send local messages to and when.\n\n" +
+               "It never sees what you say: only your friends can read it. LookingGlass's server keeps no record of these " +
+               "lookups, but whoever runs a server could change that.\n\n" +
+               "Receiving local messages from friends needs none of this.");
+
+    /// <summary>Said where /lgl was typed while the privacy notice hasn't been accepted: nothing was sent.</summary>
+    public static readonly Wording PrivacyAsked = Wording.Same(
+        "Not sent: local chat first asks you to accept what it tells the LookingGlass server. See the window that opened.");
+
+    /// <summary>Said once the privacy notice is accepted: the message typed before wasn't kept, so it is sent again.</summary>
+    public static readonly Wording PrivacyAccepted = Wording.Same($"Local chat is on. Send your message again with {LocalChat.Command}.");
 
     private const string OpenItOnce = "open your friends list once (Social menu, Friend List)";
 

@@ -226,4 +226,36 @@ public sealed class LocalChatTests {
         Assert.Contains("friends list", LocalChatWords.Usage.Plain);
         Assert.Contains("20 yalms", LocalChatWords.Usage.Plain);
     }
+
+    [Fact]
+    public void ThePrivacyNoticeSaysWhatTheServerLearnsAndWhatItDoesnt() {
+        // Asked once, before the first /lgl looks anyone up: the server learns the names of friends near (those who don't
+        // use LookingGlass too) and who was sent to when; never what was said; receiving needs none of it.
+        foreach (var advanced in new[] { false, true }) {
+            var notice = LocalChatWords.PrivacyNotice.For(advanced);
+            Assert.Contains("server", notice);
+            Assert.Contains("names", notice);
+            Assert.Contains("friends near you", notice);
+            Assert.Contains("don't use LookingGlass", notice);
+            Assert.Contains("who you send", notice);
+            Assert.Contains("what you say", notice);
+            Assert.Contains("10 minutes", notice);
+            Assert.Contains("Receiving", notice);
+            Assert.Contains(LocalChat.Command, notice);
+        }
+
+        PlainLanguage.AssertPlain(LocalChatWords.PrivacyNotice.Plain);
+        PlainLanguage.AssertPlain(LocalChatWords.PrivacyAsked.Plain);
+        PlainLanguage.AssertPlain(LocalChatWords.PrivacyAccepted.Plain);
+        Assert.Contains("encrypted", LocalChatWords.PrivacyNotice.Technical);
+    }
+
+    [Fact]
+    public void BeforeThePrivacyNoticeIsAcceptedNothingIsLookedUp() {
+        // The gate: until accepted, /lgl asks first (and says so where it was typed); once accepted, it sends.
+        Assert.Equal(LocalChatStep.AskFirst, LocalChat.FirstStep(privacyAccepted: false));
+        Assert.Equal(LocalChatStep.Send, LocalChat.FirstStep(privacyAccepted: true));
+        Assert.Contains("window", LocalChatWords.PrivacyAsked.Plain);
+        Assert.Contains("again", LocalChatWords.PrivacyAccepted.Plain);
+    }
 }

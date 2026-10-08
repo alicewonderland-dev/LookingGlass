@@ -26,6 +26,24 @@ lines. Do it once with ChatTwo off and once with ChatTwo on, on A.
 - [ ] 3. Settings, under **Chat**: **Local chat colour ([Local])** with a
       swatch, and under it the same line as 2.
 
+## Asking first (each of A, B and C, once)
+
+- [ ] 3a. With a friend near, type `/lgl hello`. Nothing is sent (the friend
+      sees nothing); game chat says, in blue, "Not sent: local chat first asks
+      you to accept…", and a window opens: **Local chat: what the server
+      learns**. It says the server learns the names of friends near you, those
+      who don't use LookingGlass too, and who you send to and when; that it
+      never sees what you say; and that receiving needs none of it. In simple
+      mode it has no technical words.
+- [ ] 3b. **Not now**: the window closes; `/lgl hello` again asks again.
+- [ ] 3c. **Accept and use local chat**: the window closes, and game chat says
+      "Local chat is on. Send your message again with /lgl." `/lgl hello` now
+      sends. Settings, under Chat, says you've accepted, with **What it tells
+      the server** (opens the window, with just **Close**) and **Withdraw**
+      (then `/lgl` asks again). Accept again before going on.
+- [ ] 3d. Before accepting, local messages from a friend who has accepted are
+      still shown (receiving doesn't need it).
+
 ## Friends list not loaded yet
 
 Before anyone opens their Friends window this session.

@@ -29,14 +29,15 @@ public sealed class Plugin : IDalamudPlugin {
         this._player = new PlayerTracker();
         this._sessions = new SessionManager(this._config, this._player, chat);
         var sender = new ChannelSender(this._sessions, chat);
-        var local = new LocalSender(this._sessions, chat);
+        var localPrivacy = new LocalChatPrivacyWindow(this._config, chat);
+        var local = new LocalSender(this._sessions, chat, () => this._config.LocalChatPrivacyAccepted, () => localPrivacy.Ask(fromCommand: true));
         this._sticky = new StickyMode(this._config, this._player, this._sessions, chat, sender);
 
         // One action runner for both windows, so the main window's status line shows what Settings started too.
         var actions = new UiActions(() => this._sessions.Snapshot.PendingChallenge?.Code, () => this._config.AdvancedMode);
         this._fonts = new UiFonts(pluginInterface.UiBuilder);
         this._channelWindows = new ChannelWindows(this._windows, this._config, this._sessions, sender, chat);
-        this._settingsWindow = new SettingsWindow(this._config, this._sessions, actions);
+        this._settingsWindow = new SettingsWindow(this._config, this._sessions, actions, () => localPrivacy.Ask(fromCommand: false));
         this._mainWindow = new MainWindow(this._config, this._sessions, actions, this._fonts, this._channelWindows, this._settingsWindow.Toggle, () => {
             this._settingsWindow.IsOpen = true;
             this._settingsWindow.BringToFront();
@@ -45,6 +46,7 @@ public sealed class Plugin : IDalamudPlugin {
         this._windows.AddWindow(this._mainWindow);
         this._windows.AddWindow(this._settingsWindow);
         this._windows.AddWindow(this._debugWindow);
+        this._windows.AddWindow(localPrivacy);
 
         this._commands = new Commands(this._sessions, chat, sender, local, this._sticky, this._mainWindow.Toggle, this._debugWindow.Toggle);
 

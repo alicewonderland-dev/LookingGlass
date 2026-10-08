@@ -45,8 +45,11 @@ early testing (version 0.2).
 - **Local chat with friends.** `/lgl <message>` talks to the friends standing
   near you (about `/say` range) who use LookingGlass, tagged `[Local]` in its
   own colour. Only players on your friends list get it, and only they can
-  read it. If it says nobody near is a friend, open your friends list once
-  (Social menu, Friend List) so the game loads it.
+  read it. To find which friends near you use LookingGlass, it asks the
+  server about them by name, so the server learns which friends were near you
+  (never what you say); the first `/lgl` explains this and asks you to accept.
+  If it says nobody near is a friend, open your friends list once (Social
+  menu, Friend List) so the game loads it.
 - **Who's online.** Each member's icon is green while they're connected.
 - **Blocking.** Hide someone's messages and silently decline their invites.
 - **Privacy.** Only the members of a channel can read its name and messages.
