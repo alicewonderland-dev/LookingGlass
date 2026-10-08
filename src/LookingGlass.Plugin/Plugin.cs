@@ -1,5 +1,6 @@
 using Dalamud.Interface.Windowing;
 using Dalamud.Plugin;
+using LookingGlass.Core.Client;
 using LookingGlass.Plugin.Ui;
 
 namespace LookingGlass.Plugin;
@@ -29,15 +30,17 @@ public sealed class Plugin : IDalamudPlugin {
         this._player = new PlayerTracker();
         this._sessions = new SessionManager(this._config, this._player, chat);
         var sender = new ChannelSender(this._sessions, chat);
-        var localPrivacy = new LocalChatPrivacyWindow(this._config, chat);
-        var local = new LocalSender(this._sessions, chat, () => this._config.LocalChatPrivacyAccepted, () => localPrivacy.Ask(fromCommand: true));
+        // Asked once accepted (the sticky mode made below by then) whether talking in local chat, so what it says then never
+        // tells the player to type /lgl again.
+        var localPrivacy = new LocalChatPrivacyWindow(this._config, chat, () => this._sticky?.TalkingInLocal ?? false);
+        var local = new LocalSender(this._sessions, chat, () => this._config.LocalChatPrivacyAccepted, localPrivacy.Ask);
         this._sticky = new StickyMode(this._config, this._player, this._sessions, chat, sender, local);
 
         // One action runner for both windows, so the main window's status line shows what Settings started too.
         var actions = new UiActions(() => this._sessions.Snapshot.PendingChallenge?.Code, () => this._config.AdvancedMode);
         this._fonts = new UiFonts(pluginInterface.UiBuilder);
         this._channelWindows = new ChannelWindows(this._windows, this._config, this._sessions, sender, chat);
-        this._settingsWindow = new SettingsWindow(this._config, this._sessions, actions, () => localPrivacy.Ask(fromCommand: false));
+        this._settingsWindow = new SettingsWindow(this._config, this._sessions, actions, () => localPrivacy.Ask(LocalPrivacyAsked.FromSettings));
         this._mainWindow = new MainWindow(this._config, this._sessions, actions, this._fonts, this._channelWindows, this._settingsWindow.Toggle, () => {
             this._settingsWindow.IsOpen = true;
             this._settingsWindow.BringToFront();

@@ -9,11 +9,22 @@ namespace LookingGlass.Core.Client;
 public static class ChannelNicknames {
     public const int MaxLength = 16;
 
-    /// <summary>Checks the form of a nickname: 1 to 16 ASCII letters, digits, - or _, and not only digits.</summary>
+    /// <summary>The nickname no channel may have: its tag would be [Local], local chat's (see <see cref="LocalChat.Tag"/>).</summary>
+    public const string Reserved = "Local";
+
+    /// <summary>
+    /// Checks the form of a nickname: 1 to 16 ASCII letters, digits, - or _, not only digits, and not "Local" (in any case,
+    /// with or without spaces around it). A tag is only made from a nickname that passes (see <see cref="ChannelTag.For"/>),
+    /// so one saved as "Local" before it was reserved shows as the channel's number.
+    /// </summary>
     /// <returns>Why it isn't valid, or null if it is.</returns>
     public static string? Validate(string nickname) {
         if (nickname.Length == 0) {
             return "A nickname needs at least one character.";
+        }
+
+        if (string.Equals(nickname.Trim(), Reserved, StringComparison.OrdinalIgnoreCase)) {
+            return $"{Reserved} is used by local chat; choose another nickname.";
         }
 
         if (nickname.Length > MaxLength) {

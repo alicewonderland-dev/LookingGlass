@@ -7,23 +7,27 @@ namespace LookingGlass.Plugin.Ui;
 
 /// <summary>
 /// What local chat tells the server (see <see cref="LocalChatWords.PrivacyNotice"/>), to accept or not: opened by the first
-/// /lgl (which sends nothing), and from Settings. Accepting is saved for every character; Settings can withdraw it.
+/// /lgl (which sends nothing, and doesn't start talking in local chat), and from Settings. Accepting is saved for every
+/// character; Settings can withdraw it, which ends talking in local chat (see <see cref="StickyMode"/>).
 /// </summary>
 public sealed class LocalChatPrivacyWindow : Window {
     private readonly Configuration _config;
     private readonly ChatOutput _chat;
-    // Opened by /lgl: say in game chat, once accepted, to send the message again (it wasn't kept).
-    private bool _fromCommand;
+    private readonly Func<bool> _talkingInLocal;
+    // What opened it: once accepted, game chat says what to type again (see LocalChatWords.PrivacyAcceptedFor).
+    private LocalPrivacyAsked _asked = LocalPrivacyAsked.FromSettings;
 
-    public LocalChatPrivacyWindow(Configuration config, ChatOutput chat) : base($"{LocalChatWords.PrivacyTitle}###lookingglass-local-privacy") {
+    /// <param name="talkingInLocal">Talking in local chat now: then, once accepted, it never says to type /lgl.</param>
+    public LocalChatPrivacyWindow(Configuration config, ChatOutput chat, Func<bool> talkingInLocal) : base($"{LocalChatWords.PrivacyTitle}###lookingglass-local-privacy") {
         this._config = config;
         this._chat = chat;
+        this._talkingInLocal = talkingInLocal;
         this.Flags = ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoCollapse;
     }
 
-    /// <summary>Opens it in front, from /lgl (<paramref name="fromCommand"/>) or from Settings.</summary>
-    public void Ask(bool fromCommand) {
-        this._fromCommand = fromCommand;
+    /// <summary>Opens it in front: from /lgl with a message or alone, or from Settings (<paramref name="why"/>).</summary>
+    public void Ask(LocalPrivacyAsked why) {
+        this._asked = why;
         this.IsOpen = true;
         this.BringToFront();
     }
@@ -40,7 +44,7 @@ public sealed class LocalChatPrivacyWindow : Window {
         ImGui.Spacing();
         if (this._config.LocalChatPrivacyAccepted) {
             ImGui.PushTextWrapPos(ImGui.GetFontSize() * 30);
-            ImGui.TextColored(Widgets.Muted, "You've accepted this. Withdraw it to stop sending local messages until you accept again " +
+            ImGui.TextColored(Widgets.Muted, "You've accepted this. Withdraw it to stop sending local messages (and talking in local chat) until you accept again " +
                                              "(also in Settings, under Chat).");
             ImGui.PopTextWrapPos();
             if (ImGui.Button("Withdraw")) {
@@ -61,8 +65,8 @@ public sealed class LocalChatPrivacyWindow : Window {
             this._config.LocalChatPrivacyAccepted = true;
             this._config.Save();
             this.IsOpen = false;
-            if (this._fromCommand) {
-                this._chat.Notice(NoticeTone.Info, LocalChatWords.PrivacyAccepted.For(advanced));
+            if (LocalChatWords.PrivacyAcceptedFor(this._asked, this._talkingInLocal()) is { } said) {
+                this._chat.Notice(NoticeTone.Info, said.For(advanced));
             }
         }
 
@@ -74,5 +78,5 @@ public sealed class LocalChatPrivacyWindow : Window {
         ImGui.TextColored(Widgets.Muted, "Until you accept, /lgl sends nothing and asks nobody about your friends.");
     }
 
-    public override void OnClose() => this._fromCommand = false;
+    public override void OnClose() => this._asked = LocalPrivacyAsked.FromSettings;
 }

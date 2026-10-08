@@ -88,6 +88,9 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
     /// <inheritdoc/>
     bool IChatBoxListener.Active => this._state.ChannelId != null;
 
+    /// <summary>Talking in local chat now (<see cref="StickyChannel.LocalId"/>).</summary>
+    internal bool TalkingInLocal => StickyChannel.IsLocal(this._state.ChannelId);
+
     /// <summary>/lgl with no message: talks in local chat, as <see cref="Enter"/> in a channel. Call on the framework thread.</summary>
     public void EnterLocal() => this.Enter(StickyChannel.LocalId);
 
@@ -100,8 +103,8 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
         var chatTwoTell = chatTwo && this._chatTwo.InputChannel() == ChatChannelPrefixes.ChatTwoTell;
         var world = this.World();
         if (local) {
-            // Read only here: what local chat needs to start.
-            world = world with { LocalChatAvailable = this._sessions.Session?.LocalChatAvailable ?? false, LocalPrivacyAccepted = this._local.PrivacyAccepted };
+            // Read only here: the server offers local chat (the privacy notice is read every frame, see World).
+            world = world with { LocalChatAvailable = this._sessions.Session?.LocalChatAvailable ?? false };
         }
 
         var start = this._state.Enter(channelId, tag, world, this._interop.InputHooked, chatTwo, chatTwoTell);
@@ -109,7 +112,7 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
             Log(() => StickyDiagnostics.Refused(start.Text, chatTwo, world.Channel));
             this._chat.Notice(NoticeTone.Info, start.Text);
             if (start.AskPrivacy) {
-                this._local.AskPrivacy();
+                this._local.AskPrivacy(LocalPrivacyAsked.ByTalking);
             }
 
             return;
@@ -194,10 +197,27 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
     /// </summary>
     private void SendTyped(StickyRoute.ToChannel send, ChatBoxLine line, string tag) {
         var typed = line.Typed.WithText(send.Text);
-        var sent = StickyChannel.IsLocal(send.ChannelId) ? this._local.Send(typed, tag) : this._sender.Send(send.ChannelId, typed, tag);
+        var sent = StickyTarget.SendTo(send.ChannelId, this._local.PrivacyAccepted) switch {
+            StickySendTo.Channel => this._sender.Send(send.ChannelId, typed, tag),
+            StickySendTo.Local => this._local.Send(typed, tag),
+            // Withdrawn this frame, before the frame's check ended it: refused, it ends now, and the notice is asked once.
+            _ => this.RefusedForPrivacy(tag),
+        };
         if (sent is var (message, leftOut, textCommands)) {
             Log(() => StickyDiagnostics.Sent(tag, line.Raw.Length, message, leftOut, textCommands));
         }
+    }
+
+    /// <summary>
+    /// A line typed while talking in local chat, with its privacy notice no longer accepted: not sent (and said so, as for
+    /// a channel), talking in local chat ends (saying why), and the notice opens. Ending it means it is asked once, not
+    /// for every line. Nothing is sent.
+    /// </summary>
+    private (LinkedText, bool, int)? RefusedForPrivacy(string tag) {
+        this._chat.Notice(NoticeTone.Info, LocalChatWords.Refusal(LocalChatWords.PrivacyAsked, tag).For(this._config.AdvancedMode));
+        this.Leave(StickyEnd.PrivacyWithdrawn);
+        this._local.AskPrivacy(LocalPrivacyAsked.ByTalking);
+        return null;
     }
 
     /// <summary>The /lgc or /lgl line being run now, as read at the gate, if its command is <paramref name="command"/> (see <see cref="ChatInterop.TypedCommandLine"/>).</summary>
@@ -518,17 +538,16 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
     private StickyWorld World() =>
         new(this._sessions.Session, this._player.Current?.ContentId ?? 0, this._sessions.Snapshot, ChatInterop.CurrentChannel()) {
             ChatBox = ChatInterop.ReadChatBox(),
+            // A setting: withdrawn while talking in local chat, it ends (StickyEnd.PrivacyWithdrawn).
+            LocalPrivacyAccepted = this._local.PrivacyAccepted,
         };
 
     /// <summary>The tag shown while talking in the channel: [Local] for local chat, never looked up as a channel.</summary>
-    private string TagOf(string channelId) => StickyChannel.IsLocal(channelId)
-        ? LocalChat.Tag
-        : ChannelTag.For(this._sessions.SlotOf(channelId), this._sessions.NicknameOf(channelId), this._config.NicknameTags);
+    private string TagOf(string channelId) =>
+        StickyTarget.Tag(channelId, id => ChannelTag.For(this._sessions.SlotOf(id), this._sessions.NicknameOf(id), this._config.NicknameTags));
 
     /// <summary>The channel's colour, or local chat's own (a setting), or null for the default.</summary>
-    private ChannelColour? ColourOf(string channelId) => StickyChannel.IsLocal(channelId)
-        ? this._config.LocalChatColour()
-        : this._sessions.ColourOf(channelId);
+    private ChannelColour? ColourOf(string channelId) => StickyTarget.Colour(channelId, this._config.LocalChatColour(), this._sessions.ColourOf);
 
     /// <summary>Unloading: stops talking in the channel first (and says so), puts the chat input's name back, then removes the hooks.</summary>
     public void Dispose() {

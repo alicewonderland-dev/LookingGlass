@@ -208,6 +208,18 @@ public enum LocalChatStep {
     Send,
 }
 
+/// <summary>What opened local chat's privacy notice: what to say once it is accepted (see <see cref="LocalChatWords.PrivacyAcceptedFor"/>).</summary>
+public enum LocalPrivacyAsked {
+    /// <summary>Settings (What it tells the server): nothing was typed.</summary>
+    FromSettings,
+
+    /// <summary>/lgl &lt;message&gt;: the message wasn't sent.</summary>
+    BySending,
+
+    /// <summary>/lgl alone (talking in local chat didn't start), or a line typed as it was withdrawn (which ended it).</summary>
+    ByTalking,
+}
+
 public static class LocalChatWords {
     private const string Range = "about 20 yalms, as far as /say";
 
@@ -247,12 +259,20 @@ public static class LocalChatWords {
     public static readonly Wording PrivacyAskedToTalk = Wording.Same(
         $"Local chat first asks you to accept what it tells the LookingGlass server. See the window that opened, then type {LocalChat.Command} again.");
 
+    /// <summary>Said once the privacy notice is accepted, asked by /lgl with a message: it wasn't kept, so it is sent again.</summary>
+    public static readonly Wording PrivacyAccepted = Wording.Same($"Local chat is on. Send your message again with {LocalChat.Command} <message>.");
+
     /// <summary>
-    /// Said once the privacy notice is accepted, asked by /lgl with a message (which wasn't kept, so it is sent again) or
-    /// by /lgl alone (which didn't start talking in local chat).
+    /// What to say in game chat once the privacy notice is accepted, or null (opened from Settings: nothing was typed). Asked
+    /// by /lgl alone, or by a line typed as it was withdrawn (which ended talking in local chat): to start again. Already
+    /// talking in local chat, however it was asked: only to type the message again, never /lgl.
     /// </summary>
-    public static readonly Wording PrivacyAccepted = Wording.Same(
-        $"Local chat is on. Type {LocalChat.Command} <message> again to send your message, or {LocalChat.Command} alone to talk in local chat.");
+    public static Wording? PrivacyAcceptedFor(LocalPrivacyAsked why, bool talkingInLocal) => why switch {
+        LocalPrivacyAsked.FromSettings => null,
+        _ when talkingInLocal => Wording.Same("Local chat is on. Type your message again."),
+        LocalPrivacyAsked.ByTalking => Wording.Same($"Local chat is on. Type {LocalChat.Command} again to talk in local chat."),
+        _ => PrivacyAccepted,
+    };
 
     private const string OpenItOnce = "open your friends list once (Social menu, Friend List)";
 
@@ -289,6 +309,34 @@ public static class LocalChatWords {
 
     public static readonly Wording NotOnThisServer = Wording.Same(
         "Local chat isn't available on this server: it may be an older version, or its operator turned it off.");
+
+    /// <summary><see cref="NotOnThisServer"/>, for a message that wasn't sent because of it.</summary>
+    public static readonly Wording NotOnThisServerNotSent = Wording.Same(
+        "Not sent: local chat isn't available on this server. It may be an older version, or its operator turned it off.");
+
+    public static readonly Wording CouldntSeeWhoIsNear = Wording.Same("Not sent: LookingGlass couldn't see who is near you.");
+
+    private const string NotSentPrefix = "Not sent: ";
+
+    /// <summary>
+    /// A refusal (it starts "Not sent: ") as said where it was typed: as it is after /lgl &lt;message&gt;, or, typed while
+    /// talking in local chat (<paramref name="stickyTag"/>, [Local]), "Not sent to [Local] or game chat: …", as for a channel,
+    /// so the player knows it didn't go to game chat either.
+    /// </summary>
+    public static Wording Refusal(Wording refusal, string? stickyTag) =>
+        stickyTag == null ? refusal : refusal.Map(text => StickyMessages.NotSent(stickyTag, text.StartsWith(NotSentPrefix, StringComparison.Ordinal) ? text[NotSentPrefix.Length..] : text));
+
+    /// <summary>Every refusal of a local message, for the checks that each says "Not sent".</summary>
+    internal static IEnumerable<Wording> Refusals() {
+        yield return PrivacyAsked;
+        yield return NotOnThisServerNotSent;
+        yield return CouldntSeeWhoIsNear;
+        yield return NobodyNear;
+        yield return NoFriendsNear;
+        yield return OpenFriendsList;
+        yield return NobodyUsesIt;
+        yield return Sent(new LocalSendResult(0, 0, 3))!;
+    }
 
     /// <summary>What to say once a message has gone to the server, if anything: null when every friend near got it.</summary>
     public static Wording? Sent(LocalSendResult result) => result switch {
@@ -334,6 +382,8 @@ public static class LocalChatWords {
         yield return OpenFriendsListToReceive;
         yield return NobodyUsesIt;
         yield return NotOnThisServer;
+        yield return NotOnThisServerNotSent;
+        yield return CouldntSeeWhoIsNear;
         yield return Sent(new LocalSendResult(0, 0, 3))!;
         yield return Sent(new LocalSendResult(2, 0, 1))!;
         foreach (var reason in Enum.GetValues<LocalUncheckedReason>()) {

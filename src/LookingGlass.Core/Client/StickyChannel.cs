@@ -357,6 +357,12 @@ public enum StickyEnd {
 
     /// <summary>LookingGlass is being turned off or updated.</summary>
     Unloading,
+
+    /// <summary>
+    /// Talking in local chat, its privacy notice was withdrawn (in Settings, or in its window): nothing may be looked up
+    /// until it is accepted again.
+    /// </summary>
+    PrivacyWithdrawn,
 }
 
 /// <summary>What sticky mode sees of the world, once a frame and when asked to start.</summary>
@@ -370,7 +376,7 @@ public sealed record StickyWorld(object? Session, ulong ContentId, SessionSnapsh
     /// <summary>The server offers local chat on this connection. Only read when starting to talk in local chat.</summary>
     public bool LocalChatAvailable { get; init; }
 
-    /// <summary>The player accepted what local chat tells the server. Only read when starting to talk in local chat.</summary>
+    /// <summary>The player accepted what local chat tells the server. Read while talking in local chat too: withdrawn, it ends.</summary>
     public bool LocalPrivacyAccepted { get; init; }
 }
 
@@ -452,6 +458,7 @@ public sealed class StickyChannel {
         StickyEnd? end = world.ContentId != this._contentId ? StickyEnd.LoggedOut
             : world.Session == null ? StickyEnd.Disconnected
             : !ReferenceEquals(world.Session, this._session) ? StickyEnd.SessionEnded
+            : IsLocal(channelId) && !world.LocalPrivacyAccepted ? StickyEnd.PrivacyWithdrawn
             // Local chat is in no channel list, and is never looked for there.
             : !IsLocal(channelId) && world.Snapshot is { State: ConnectionState.Ready, ChannelsLoaded: true } && MembershipRefusal(world.Snapshot, channelId, "") != null ? StickyEnd.NotInChannel
             : world.Channel == null ? StickyEnd.ChannelUnknown
@@ -537,6 +544,41 @@ public sealed class StickyChannel {
         : null;
 }
 
+/// <summary>Where a line kept for the channel being talked in is sent (see <see cref="StickyTarget.SendTo"/>).</summary>
+public enum StickySendTo {
+    /// <summary>To the channel, as /lgc3 &lt;message&gt; would send it.</summary>
+    Channel,
+
+    /// <summary>To the friends near, as /lgl &lt;message&gt; would send it.</summary>
+    Local,
+
+    /// <summary>
+    /// Nowhere: talking in local chat, its privacy notice isn't accepted (withdrawn this very frame, before the frame's
+    /// check ended it). Refused, saying so, and talking in local chat ends.
+    /// </summary>
+    LocalNotAccepted,
+}
+
+/// <summary>
+/// The one place sticky mode tells local chat (<see cref="StickyChannel.LocalId"/>) from a channel: where a line goes, and
+/// which tag and colour are shown. Local chat's ID is never handed to a channel's sender or looked up as a channel.
+/// </summary>
+public static class StickyTarget {
+    /// <summary>Where a line for <paramref name="channelId"/> is sent.</summary>
+    public static StickySendTo SendTo(string channelId, bool localPrivacyAccepted) =>
+        !StickyChannel.IsLocal(channelId) ? StickySendTo.Channel
+        : localPrivacyAccepted ? StickySendTo.Local
+        : StickySendTo.LocalNotAccepted;
+
+    /// <summary>The tag shown: [Local] for local chat, or the channel's (<paramref name="channelTag"/>, asked only for a channel).</summary>
+    public static string Tag(string channelId, Func<string, string> channelTag) =>
+        StickyChannel.IsLocal(channelId) ? LocalChat.Tag : channelTag(channelId);
+
+    /// <summary>The colour shown: local chat's own setting, or the channel's (<paramref name="channelColour"/>, asked only for a channel).</summary>
+    public static ChannelColour? Colour(string channelId, ChannelColour? localColour, Func<string, ChannelColour?> channelColour) =>
+        StickyChannel.IsLocal(channelId) ? localColour : channelColour(channelId);
+}
+
 /// <summary>
 /// What sticky mode tells the player. Plain words, short, shown in both modes. "Now talking in", and "Stopped talking
 /// in" when the player chose it, only with verbose channel messages on (<see cref="SayEntered"/>, <see cref="SayEnded"/>).
@@ -581,6 +623,7 @@ public static class StickyMessages {
         StickyEnd.SessionEnded => $"Stopped talking in {tag}: the connection started over.",
         StickyEnd.NotInChannel => $"Stopped talking in {tag}: you're no longer in it.",
         StickyEnd.Unloading => $"Stopped talking in {tag}: LookingGlass was turned off.",
+        StickyEnd.PrivacyWithdrawn => $"Stopped talking in {tag}: you withdrew the privacy notice.",
         _ => $"Stopped talking in {tag}.",
     };
 
@@ -593,7 +636,7 @@ public static class StickyMessages {
     public static bool ChosenByThePlayer(StickyEnd why) => why switch {
         StickyEnd.ChannelSwitched or StickyEnd.ChatBoxSwitched or StickyEnd.Stopped => true,
         StickyEnd.LoggedOut or StickyEnd.Disconnected or StickyEnd.SessionEnded or StickyEnd.NotInChannel
-            or StickyEnd.ChannelUnknown or StickyEnd.Unloading => false,
+            or StickyEnd.ChannelUnknown or StickyEnd.Unloading or StickyEnd.PrivacyWithdrawn => false,
         _ => false,
     };
 

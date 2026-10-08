@@ -283,9 +283,125 @@ public sealed class StickyLocalChatTests {
         Assert.Contains("window", LocalChatWords.PrivacyAskedToTalk.Plain);
         Assert.Contains(LocalChat.Command, LocalChatWords.PrivacyAskedToTalk.Plain);
         Assert.DoesNotContain("Not sent", LocalChatWords.PrivacyAskedToTalk.Plain);
-        // Once accepted, either way it was asked.
-        Assert.Contains($"{LocalChat.Command} <message>", LocalChatWords.PrivacyAccepted.Plain);
-        Assert.Contains($"{LocalChat.Command} alone", LocalChatWords.PrivacyAccepted.Plain);
+    }
+
+    [Fact]
+    public void OnceAcceptedItSaysWhatToTypeForTheWayItWasAsked() {
+        // Asked by /lgl <message>: that message wasn't kept.
+        var sending = LocalChatWords.PrivacyAcceptedFor(LocalPrivacyAsked.BySending, talkingInLocal: false)!.Plain;
+        Assert.Equal(LocalChatWords.PrivacyAccepted.Plain, sending);
+        Assert.Contains($"{LocalChat.Command} <message>", sending);
+        Assert.Contains("again", sending);
+        Assert.DoesNotContain("alone", sending);
+
+        // Asked by /lgl alone (or a line typed as the notice was withdrawn, which ended talking in local chat): to start it.
+        var talking = LocalChatWords.PrivacyAcceptedFor(LocalPrivacyAsked.ByTalking, talkingInLocal: false)!.Plain;
+        Assert.Contains($"{LocalChat.Command} again", talking);
+        Assert.Contains("talk in local chat", talking);
+        Assert.DoesNotContain("<message>", talking);
+
+        // Already talking in local chat, however it was asked: never to type /lgl.
+        foreach (var why in new[] { LocalPrivacyAsked.BySending, LocalPrivacyAsked.ByTalking }) {
+            var text = LocalChatWords.PrivacyAcceptedFor(why, talkingInLocal: true)!.Plain;
+            Assert.DoesNotContain(LocalChat.Command, text);
+            Assert.Contains("again", text);
+        }
+
+        // Opened from Settings: nothing to say in game chat.
+        Assert.Null(LocalChatWords.PrivacyAcceptedFor(LocalPrivacyAsked.FromSettings, talkingInLocal: false));
+        Assert.Null(LocalChatWords.PrivacyAcceptedFor(LocalPrivacyAsked.FromSettings, talkingInLocal: true));
+        Assert.All(new[] { sending, talking, LocalChatWords.PrivacyAcceptedFor(LocalPrivacyAsked.BySending, true)!.Plain }, PlainLanguage.AssertPlain);
+    }
+
+    // ---------------------------------------------------------------- the privacy notice withdrawn
+
+    [Fact]
+    public void WithdrawingThePrivacyNoticeEndsItAndSaysSo() {
+        var session = new object();
+        var sticky = Started(session);
+        Assert.Null(sticky.Check(World(session)));
+
+        Assert.Equal(StickyEnd.PrivacyWithdrawn, sticky.Check(World(session) with { LocalPrivacyAccepted = false }));
+        Assert.Null(sticky.ChannelId);
+        Assert.Equal(StickyRoute.Game, StickyRoute.For(sticky.ChannelId, Tag, "hello", NoPrefixes));
+
+        // Not the player's choice of a channel command: always said, verbose or not.
+        Assert.Equal("Stopped talking in [Local]: you withdrew the privacy notice.", StickyMessages.Ended(Tag, StickyEnd.PrivacyWithdrawn));
+        Assert.False(StickyMessages.ChosenByThePlayer(StickyEnd.PrivacyWithdrawn));
+        Assert.True(StickyMessages.SayEnded(StickyEnd.PrivacyWithdrawn, verbose: false));
+        PlainLanguage.AssertPlain(StickyMessages.Ended(Tag, StickyEnd.PrivacyWithdrawn));
+    }
+
+    [Fact]
+    public void AChannelDoesntCareAboutLocalChatsPrivacyNotice() {
+        var session = new object();
+        var world = World(session, Snapshot(ConnectionState.Ready, true, Member("aaa")));
+        var sticky = new StickyChannel();
+        Assert.True(sticky.Enter("aaa", "[sky]", world, true, false, false).Entered);
+        Assert.Null(sticky.Check(world with { LocalPrivacyAccepted = false }));
+        Assert.Equal("aaa", sticky.ChannelId);
+    }
+
+    [Fact]
+    public void ARealChannelIsStillEndedWhenNoLongerInIt() {
+        // The local chat guard on membership must never spare a real channel, even one moved to from local chat.
+        var session = new object();
+        var both = Snapshot(ConnectionState.Ready, true, Member("aaa"));
+        var sticky = Started(session, both);
+        Assert.True(sticky.Enter("aaa", "[sky]", World(session, both), true, false, false).Entered);
+        Assert.Equal(StickyEnd.NotInChannel, sticky.Check(World(session, Snapshot(ConnectionState.Ready, true, Member("bbb")))));
+        Assert.Null(sticky.ChannelId);
+    }
+
+    // ---------------------------------------------------------------- refusals while talking in local chat
+
+    [Fact]
+    public void EveryRefusalSaysItDidntGoToGameChatEither() {
+        foreach (var refusal in LocalChatWords.Refusals()) {
+            Assert.StartsWith("Not sent: ", refusal.Plain);
+            Assert.StartsWith("Not sent: ", refusal.Technical);
+
+            // /lgl <message>: as it is.
+            Assert.Same(refusal, LocalChatWords.Refusal(refusal, stickyTag: null));
+
+            // Typed while talking in local chat: as for a channel.
+            var sticky = LocalChatWords.Refusal(refusal, Tag);
+            Assert.StartsWith("Not sent to [Local] or game chat: ", sticky.Plain);
+            Assert.StartsWith("Not sent to [Local] or game chat: ", sticky.Technical);
+            Assert.EndsWith(refusal.Plain["Not sent: ".Length..], sticky.Plain);
+            PlainLanguage.AssertPlain(sticky.Plain);
+        }
+
+        Assert.Equal("Not sent to [Local] or game chat: nobody is near enough to hear you (about 20 yalms, as far as /say).",
+            LocalChatWords.Refusal(LocalChatWords.NobodyNear, Tag).Plain);
+        Assert.Equal("Not sent to [Local] or game chat: local chat isn't available on this server. It may be an older version, or its operator turned it off.",
+            LocalChatWords.Refusal(LocalChatWords.NotOnThisServerNotSent, Tag).Plain);
+        Assert.Equal("Not sent to [Local] or game chat: LookingGlass couldn't see who is near you.",
+            LocalChatWords.Refusal(LocalChatWords.CouldntSeeWhoIsNear, Tag).Plain);
+        Assert.Contains(LocalChatWords.PrivacyAsked, LocalChatWords.Refusals());
+        Assert.Contains(LocalChatWords.NobodyUsesIt, LocalChatWords.Refusals());
+        Assert.Contains(LocalChatWords.Sent(new LocalSendResult(0, 0, 3))!, LocalChatWords.Refusals());
+    }
+
+    // ---------------------------------------------------------------- local chat or a channel: one decision
+
+    [Fact]
+    public void ALineForLocalChatIsNeverSentAsAChannels() {
+        Assert.Equal(StickySendTo.Local, StickyTarget.SendTo(Local, localPrivacyAccepted: true));
+        Assert.Equal(StickySendTo.LocalNotAccepted, StickyTarget.SendTo(Local, localPrivacyAccepted: false));
+        Assert.Equal(StickySendTo.Channel, StickyTarget.SendTo("aaa", localPrivacyAccepted: true));
+        Assert.Equal(StickySendTo.Channel, StickyTarget.SendTo("aaa", localPrivacyAccepted: false));
+    }
+
+    [Fact]
+    public void LocalChatsTagAndColourAreNeverLookedUpAsAChannels() {
+        var local = ChannelColour.OfRow(45);
+        var sky = ChannelColour.Custom(0x33DDAA);
+        Assert.Equal(Tag, StickyTarget.Tag(Local, _ => throw new InvalidOperationException("looked up as a channel")));
+        Assert.Equal("[sky]", StickyTarget.Tag("aaa", id => id == "aaa" ? "[sky]" : "?"));
+        Assert.Equal(local, StickyTarget.Colour(Local, local, _ => throw new InvalidOperationException("looked up as a channel")));
+        Assert.Null(StickyTarget.Colour(Local, null, _ => sky));
+        Assert.Equal(sky, StickyTarget.Colour("aaa", local, _ => sky));
     }
 
     [Fact]
