@@ -3287,7 +3287,8 @@ of it, with **Accept and use local chat** and **Not now**. The message typed
 isn't kept: once accepted, game chat says to send it again. The choice is one
 setting for every character (`LocalChatPrivacyAccepted`, off by default, also
 for settings saved before it), shown in Settings under Chat with **What it
-tells the server** and **Withdraw** (then `/lgl` asks again).
+tells the server** and **Withdraw** under it (then `/lgl` asks again; the
+window has a **Withdraw** too, once accepted).
 
 **What is checked in game** (the checklist has it): that `/lgl` is free (no
 game command and no common plugin uses it); that 20 yalms is about `/say`'s

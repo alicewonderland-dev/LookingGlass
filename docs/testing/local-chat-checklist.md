@@ -38,9 +38,12 @@ lines. Do it once with ChatTwo off and once with ChatTwo on, on A.
 - [ ] 3b. **Not now**: the window closes; `/lgl hello` again asks again.
 - [ ] 3c. **Accept and use local chat**: the window closes, and game chat says
       "Local chat is on. Send your message again with /lgl." `/lgl hello` now
-      sends. Settings, under Chat, says you've accepted, with **What it tells
-      the server** (opens the window, with just **Close**) and **Withdraw**
-      (then `/lgl` asks again). Accept again before going on.
+      sends. Settings, under Chat, says you've accepted (on a line of its
+      own), with **What it tells the server** and **Withdraw** under it, both
+      visible at the window's usual width (beside each other, or one under the
+      other if the window is narrow). **What it tells the server** opens the
+      window with **Withdraw** and **Close**. Either **Withdraw** makes `/lgl`
+      ask again. Accept again before going on.
 - [ ] 3d. Before accepting, local messages from a friend who has accepted are
       still shown (receiving doesn't need it).
 
