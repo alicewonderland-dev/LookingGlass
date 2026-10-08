@@ -31,7 +31,7 @@ public sealed class Plugin : IDalamudPlugin {
         var sender = new ChannelSender(this._sessions, chat);
         var localPrivacy = new LocalChatPrivacyWindow(this._config, chat);
         var local = new LocalSender(this._sessions, chat, () => this._config.LocalChatPrivacyAccepted, () => localPrivacy.Ask(fromCommand: true));
-        this._sticky = new StickyMode(this._config, this._player, this._sessions, chat, sender);
+        this._sticky = new StickyMode(this._config, this._player, this._sessions, chat, sender, local);
 
         // One action runner for both windows, so the main window's status line shows what Settings started too.
         var actions = new UiActions(() => this._sessions.Snapshot.PendingChallenge?.Code, () => this._config.AdvancedMode);

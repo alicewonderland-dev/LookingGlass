@@ -5,8 +5,8 @@ namespace LookingGlass.Plugin;
 
 /// <summary>
 /// /lgc1 to /lgc50 and /lgc &lt;nickname&gt; send to a channel, or with no message, talk in it from now on (see
-/// <see cref="StickyMode"/>); /lgl &lt;message&gt; talks to the friends near the player (see <see cref="LocalSender"/>);
-/// /lookingglass (or /lg) and /lgdebug open the windows. Handlers run on the framework thread; they read only the session
+/// <see cref="StickyMode"/>); /lgl &lt;message&gt; talks to the friends near the player (see <see cref="LocalSender"/>), or
+/// with no message, talks in local chat from now on; /lookingglass (or /lg) and /lgdebug open the windows. Handlers run on the framework thread; they read only the session
 /// manager's immutable copies of the slots and nicknames, and send in the background.
 /// </summary>
 public sealed class Commands : IDisposable {
@@ -88,8 +88,19 @@ public sealed class Commands : IDisposable {
         this.Run(ChannelCommand.ForSlot(this._sessions.Slots, slot, typed.Text), typed);
     }
 
-    /// <summary>/lgl &lt;message&gt;: local chat, to the friends near the player (see <see cref="LocalSender"/>); alone, how to use it.</summary>
-    private void OnLocalCommand(string command, string arguments) => this._local.Send(this.Typed(command, arguments));
+    /// <summary>
+    /// /lgl &lt;message&gt;: local chat, to the friends near the player (see <see cref="LocalSender"/>); alone, talk in local
+    /// chat from now on, as /lgc3 alone in a channel (see <see cref="StickyMode"/>, which checks the privacy notice, the
+    /// connection and the server itself, and says why not).
+    /// </summary>
+    private void OnLocalCommand(string command, string arguments) {
+        var typed = this.Typed(command, arguments);
+        if (LocalChat.StartsTalking(typed.Text)) {
+            this._sticky.EnterLocal();
+        } else {
+            this._local.Send(typed);
+        }
+    }
 
     private void OnNicknameCommand(string command, string arguments) {
         var typed = this.Typed(command, arguments);

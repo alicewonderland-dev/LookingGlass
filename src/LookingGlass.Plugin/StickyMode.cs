@@ -16,6 +16,8 @@ namespace LookingGlass.Plugin;
 /// session ends or they're no longer in the channel (see <see cref="StickyChannel"/>, which holds the rules).
 /// Shows the channel's tag where the chat input names its channel, in ChatTwo's input, and in the server info bar, and
 /// keeps all three in step with the state once a frame, whatever ended it.
+/// /lgl with no message talks in local chat the same way: the state holds it as <see cref="StickyChannel.LocalId"/>,
+/// tagged [Local] in local chat's colour, and its lines are sent by <see cref="LocalSender"/>, never as a channel's.
 /// Everything runs on the game thread: the hooks' detours, commands, Framework.Update and the addon listener.
 /// </summary>
 public sealed class StickyMode : IChatBoxListener, IDisposable {
@@ -35,6 +37,7 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
     private readonly SessionManager _sessions;
     private readonly ChatOutput _chat;
     private readonly ChannelSender _sender;
+    private readonly LocalSender _local;
     private readonly StickyChannel _state = new();
     private readonly ChatInterop _interop;
     private readonly ChatTwoIpc _chatTwo = new();
@@ -46,6 +49,8 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
     private readonly LabelKeeper _chatTwoLabel = new(1000);
     // The tag and colour shown while talking in a channel, or null.
     private (string Tag, ChannelColour Colour)? _shown;
+    // What is shown is local chat's.
+    private bool _shownLocal;
     // The chat box state last written to the diagnostic log while talking in a channel.
     private ChatBoxState? _loggedChatBox;
     // The tag is held back from the game chat input's label (see OnChatLogPreDraw).
@@ -57,12 +62,13 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
     private long _extraChatLookedAt;
     private bool _disposed;
 
-    internal StickyMode(Configuration config, PlayerTracker player, SessionManager sessions, ChatOutput chat, ChannelSender sender) {
+    internal StickyMode(Configuration config, PlayerTracker player, SessionManager sessions, ChatOutput chat, ChannelSender sender, LocalSender local) {
         this._config = config;
         this._player = player;
         this._sessions = sessions;
         this._chat = chat;
         this._sender = sender;
+        this._local = local;
         this._switches = ChatChannelPrefixes.SwitchesWith(GameChannelCommandNames());
         this._replies = NestedLines.RepliesWith(GameReplyCommandNames());
         this._interop = new ChatInterop(this);
@@ -82,28 +88,48 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
     /// <inheritdoc/>
     bool IChatBoxListener.Active => this._state.ChannelId != null;
 
-    /// <summary>/lgc3 or /lgc sky with no message. Call on the framework thread.</summary>
+    /// <summary>/lgl with no message: talks in local chat, as <see cref="Enter"/> in a channel. Call on the framework thread.</summary>
+    public void EnterLocal() => this.Enter(StickyChannel.LocalId);
+
+    /// <summary>/lgc3 or /lgc sky with no message (or /lgl, <see cref="StickyChannel.LocalId"/>). Call on the framework thread.</summary>
     public void Enter(string channelId) {
+        var local = StickyChannel.IsLocal(channelId);
         var tag = this.TagOf(channelId);
         var wasOn = this._state.ChannelId != null;
         var chatTwo = this._chatTwo.Loaded;
         var chatTwoTell = chatTwo && this._chatTwo.InputChannel() == ChatChannelPrefixes.ChatTwoTell;
         var world = this.World();
+        if (local) {
+            // Read only here: what local chat needs to start.
+            world = world with { LocalChatAvailable = this._sessions.Session?.LocalChatAvailable ?? false, LocalPrivacyAccepted = this._local.PrivacyAccepted };
+        }
+
         var start = this._state.Enter(channelId, tag, world, this._interop.InputHooked, chatTwo, chatTwoTell);
         if (!start.Entered) {
             Log(() => StickyDiagnostics.Refused(start.Text, chatTwo, world.Channel));
             this._chat.Notice(NoticeTone.Info, start.Text);
+            if (start.AskPrivacy) {
+                this._local.AskPrivacy();
+            }
+
             return;
         }
 
         this._loggedChatBox = world.ChatBox;
         Log(() => StickyDiagnostics.Started(tag, chatTwo, world.Channel, wasOn, world.ChatBox));
         if (StickyMessages.SayEntered(this._config.VerboseChannelMessages)) {
-            this._chat.ChannelNotice(start.Text, tag, this._sessions.ColourOf(channelId));
+            this._chat.ChannelNotice(start.Text, tag, this.ColourOf(channelId));
+        }
+
+        // /lgl alone used to say how to use it: the first time it talks in local chat instead, where typing goes and how to stop.
+        if (local && LocalChatWords.TalkingNoteFor(this._config.LocalChatTalkNoteShown) is { } localNote) {
+            this._chat.Notice(NoticeTone.Info, localNote.For(this._config.AdvancedMode), tag, this.ColourOf(channelId));
+            this._config.LocalChatTalkNoteShown = true;
+            this._config.Save();
         }
 
         if (StickyMessages.ChatTwoNoteFor(tag, chatTwo, this._config.ChatTwoLabelNoteShown) is { } note) {
-            this._chat.Notice(NoticeTone.Info, note, tag, this._sessions.ColourOf(channelId));
+            this._chat.Notice(NoticeTone.Info, note, tag, this.ColourOf(channelId));
             this._config.ChatTwoLabelNoteShown = true;
             this._config.Save();
         }
@@ -163,10 +189,13 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
 
     /// <summary>
     /// Sends what was typed to the channel, with its links (the line's own link bytes, and the chat box's &lt;item&gt;
-    /// and the like, read now): see <see cref="ChannelSender.Send"/>. The diagnostic log gets sizes and counts only.
+    /// and the like, read now): see <see cref="ChannelSender.Send"/>; or, talking in local chat, to the friends near, as
+    /// /lgl &lt;message&gt; would (see <see cref="LocalSender.Send"/>). The diagnostic log gets sizes and counts only.
     /// </summary>
     private void SendTyped(StickyRoute.ToChannel send, ChatBoxLine line, string tag) {
-        if (this._sender.Send(send.ChannelId, line.Typed.WithText(send.Text), tag) is var (message, leftOut, textCommands)) {
+        var typed = line.Typed.WithText(send.Text);
+        var sent = StickyChannel.IsLocal(send.ChannelId) ? this._local.Send(typed, tag) : this._sender.Send(send.ChannelId, typed, tag);
+        if (sent is var (message, leftOut, textCommands)) {
             Log(() => StickyDiagnostics.Sent(tag, line.Raw.Length, message, leftOut, textCommands));
         }
     }
@@ -429,7 +458,7 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
     /// </summary>
     private void Ended(string channelId, StickyEnd why) {
         // As last shown: after a logout or a disconnect, the channel's number and nickname are no longer at hand.
-        var (tag, colour) = this._shown ?? (this.TagOf(channelId), this._sessions.ColourOf(channelId) ?? ColouredText.DefaultTag);
+        var (tag, colour) = this._shown ?? (this.TagOf(channelId), this.ColourOf(channelId) ?? ColouredText.DefaultTag);
         Log(() => StickyDiagnostics.Ended(tag, why, ChatInterop.ReadChatBox()));
         this._loggedChatBox = null;
         this._labelHeldBack = false;
@@ -453,7 +482,7 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
     /// </summary>
     private void SyncIndicators() {
         (string Tag, ChannelColour Colour)? wanted = this._state.ChannelId is { } channelId
-            ? (this.TagOf(channelId), this._sessions.ColourOf(channelId) ?? ColouredText.DefaultTag)
+            ? (this.TagOf(channelId), this.ColourOf(channelId) ?? ColouredText.DefaultTag)
             : null;
 
         try {
@@ -464,11 +493,14 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
             Services.Log.Warning(ex, "Couldn't update ChatTwo's channel name");
         }
 
-        if (wanted == this._shown) {
+        // Local chat too: a channel nicknamed "Local" has the same tag, but not the same tooltip.
+        var local = StickyChannel.IsLocal(this._state.ChannelId);
+        if (wanted == this._shown && local == this._shownLocal) {
             return;
         }
 
         this._shown = wanted;
+        this._shownLocal = local;
         if (this._infoBar == null) {
             return;
         }
@@ -476,7 +508,7 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
         if (wanted is { } bar) {
             // A custom colour layered over its closest game colour, as in chat (see ColouredText).
             this._infoBar.Text = GameText.Build(ColouredText.InfoBar(bar.Tag, bar.Colour, GameText.Nearest));
-            this._infoBar.Tooltip = $"What you type in chat goes to the LookingGlass channel {bar.Tag}, not to game chat. Click to stop.";
+            this._infoBar.Tooltip = StickyMessages.InfoBarTooltip(bar.Tag, local);
             this._infoBar.Shown = true;
         } else {
             this._infoBar.Shown = false;
@@ -488,7 +520,15 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
             ChatBox = ChatInterop.ReadChatBox(),
         };
 
-    private string TagOf(string channelId) => ChannelTag.For(this._sessions.SlotOf(channelId), this._sessions.NicknameOf(channelId), this._config.NicknameTags);
+    /// <summary>The tag shown while talking in the channel: [Local] for local chat, never looked up as a channel.</summary>
+    private string TagOf(string channelId) => StickyChannel.IsLocal(channelId)
+        ? LocalChat.Tag
+        : ChannelTag.For(this._sessions.SlotOf(channelId), this._sessions.NicknameOf(channelId), this._config.NicknameTags);
+
+    /// <summary>The channel's colour, or local chat's own (a setting), or null for the default.</summary>
+    private ChannelColour? ColourOf(string channelId) => StickyChannel.IsLocal(channelId)
+        ? this._config.LocalChatColour()
+        : this._sessions.ColourOf(channelId);
 
     /// <summary>Unloading: stops talking in the channel first (and says so), puts the chat input's name back, then removes the hooks.</summary>
     public void Dispose() {

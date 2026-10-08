@@ -247,7 +247,8 @@ public abstract record StickyRoute {
         For(channelId, tag, ChatBoxLine.Plain(input), sentAs);
 
     private static StickyRoute ToChannelOrDropped(string channelId, string tag, string text) =>
-        ChatBoxLine.HasSomethingToSend(text) ? new ToChannel(channelId, text) : new Dropped(StickyMessages.NotSent(tag, StickyMessages.NoTextReason));
+        ChatBoxLine.HasSomethingToSend(text) ? new ToChannel(channelId, text)
+            : new Dropped(StickyMessages.NotSent(tag, StickyChannel.IsLocal(channelId) ? StickyMessages.LocalNoTextReason : StickyMessages.NoTextReason));
 
     /// <summary>The text after the command: the line's text starts with it (the command is plain text in the line).</summary>
     private static string TextAfter(string text, string command) {
@@ -365,37 +366,67 @@ public enum StickyEnd {
 public sealed record StickyWorld(object? Session, ulong ContentId, SessionSnapshot Snapshot, GameChannel? Channel) {
     /// <summary>The game chat box's own state (the channel saved for a one-off switch), or null if it can't be read.</summary>
     public ChatBoxState? ChatBox { get; init; }
+
+    /// <summary>The server offers local chat on this connection. Only read when starting to talk in local chat.</summary>
+    public bool LocalChatAvailable { get; init; }
+
+    /// <summary>The player accepted what local chat tells the server. Only read when starting to talk in local chat.</summary>
+    public bool LocalPrivacyAccepted { get; init; }
 }
 
 /// <summary>The outcome of asking to talk in a channel.</summary>
 /// <param name="Entered">True if now talking in it.</param>
 /// <param name="Text">What to tell the player either way.</param>
-public readonly record struct StickyStart(bool Entered, string Text);
+public readonly record struct StickyStart(bool Entered, string Text) {
+    /// <summary>Local chat's privacy notice must be accepted first: open it (nothing started).</summary>
+    public bool AskPrivacy { get; init; }
+}
 
 /// <summary>
 /// Sticky mode's state: the channel that plain text typed in the chat box goes to (/lgc3 or /lgc sky with no message),
 /// and the session, character and game chat channel it was started in. Leaves when any of them changes. Kept free of game
 /// types so it can be tested; the plugin calls it on the game thread only.
+/// <para>
+/// Local chat (/lgl with no message) is held here as one more channel, <see cref="LocalId"/>, so it starts, ends and
+/// routes exactly as a channel does. Only what it needs to start differs: the privacy notice accepted and a server that
+/// offers local chat, not membership. The plugin sends its lines with local chat's sender, never a channel's.
+/// </para>
 /// </summary>
 public sealed class StickyChannel {
+    /// <summary>
+    /// The channel ID held while talking in local chat: one no channel can have (theirs are 32 hex digits). It never
+    /// leaves sticky mode: nothing that holds channels (windows, unread counts, the chat log) is ever given it.
+    /// </summary>
+    public const string LocalId = "local";
+
     private object? _session;
     private ulong _contentId;
     private GameChannel _gameChannel;
     private ChatBoxState? _chatBox;
 
-    /// <summary>The channel being talked in, or null.</summary>
+    /// <summary>The channel being talked in (<see cref="LocalId"/> for local chat), or null.</summary>
     public string? ChannelId { get; private set; }
 
-    /// <summary>Starts (or moves) talking in a channel, or says why not.</summary>
-    /// <param name="tag">The channel's tag, as in [sky] or [LGC3].</param>
+    /// <summary>Whether <paramref name="channelId"/> is local chat's (<see cref="LocalId"/>).</summary>
+    public static bool IsLocal(string? channelId) => channelId == LocalId;
+
+    /// <summary>Starts (or moves) talking in a channel, or in local chat (<see cref="LocalId"/>), or says why not.</summary>
+    /// <param name="tag">The channel's tag, as in [sky] or [LGC3]; [Local] for local chat.</param>
     /// <param name="inputHooked">The chat box hooks are in place: without them typing can't be kept from game chat.</param>
     /// <param name="chatTwo">ChatTwo is in use: its tells skip the chat box (see <see cref="StickyMessages.NoTellsWithChatTwo"/>).</param>
     /// <param name="chatTwoTell">ChatTwo's input is on a /tell.</param>
     public StickyStart Enter(string channelId, string tag, StickyWorld world, bool inputHooked, bool chatTwo, bool chatTwoTell) {
-        var refusal = !inputHooked ? StickyMessages.Unavailable
+        var local = IsLocal(channelId);
+        var unavailable = local ? StickyMessages.LocalUnavailable : StickyMessages.Unavailable;
+        // As /lgl <message>: until the privacy notice is accepted, ask, before anything else is looked at.
+        if (inputHooked && local && LocalChat.FirstStep(world.LocalPrivacyAccepted) == LocalChatStep.AskFirst) {
+            return new StickyStart(false, LocalChatWords.PrivacyAskedToTalk.Plain) { AskPrivacy = true };
+        }
+
+        var refusal = !inputHooked ? unavailable
             : world.ContentId == 0 || world.Session == null ? StickyMessages.NotConnected(tag)
-            : MembershipRefusal(world.Snapshot, channelId, tag)
-            ?? (world.Channel == null ? StickyMessages.Unavailable
+            : (local ? LocalRefusal(world, tag) : MembershipRefusal(world.Snapshot, channelId, tag))
+            ?? (world.Channel == null ? unavailable
                 : chatTwo && (world.Channel.Value.IsTell || chatTwoTell) ? StickyMessages.NoTellsWithChatTwo : null);
         if (refusal != null) {
             return new StickyStart(false, refusal);
@@ -421,7 +452,8 @@ public sealed class StickyChannel {
         StickyEnd? end = world.ContentId != this._contentId ? StickyEnd.LoggedOut
             : world.Session == null ? StickyEnd.Disconnected
             : !ReferenceEquals(world.Session, this._session) ? StickyEnd.SessionEnded
-            : world.Snapshot is { State: ConnectionState.Ready, ChannelsLoaded: true } && MembershipRefusal(world.Snapshot, channelId, "") != null ? StickyEnd.NotInChannel
+            // Local chat is in no channel list, and is never looked for there.
+            : !IsLocal(channelId) && world.Snapshot is { State: ConnectionState.Ready, ChannelsLoaded: true } && MembershipRefusal(world.Snapshot, channelId, "") != null ? StickyEnd.NotInChannel
             : world.Channel == null ? StickyEnd.ChannelUnknown
             : world.Channel != this._gameChannel ? StickyEnd.ChannelSwitched
             : ChatBoxState.Switched(this._chatBox, world.ChatBox) ? StickyEnd.ChatBoxSwitched
@@ -497,6 +529,12 @@ public sealed class StickyChannel {
             ? null
             : StickyMessages.NotAMember(tag);
     }
+
+    /// <summary>Why local chat can't be talked in now, or null if it can: connected, to a server that offers it. Channels don't matter.</summary>
+    private static string? LocalRefusal(StickyWorld world, string tag) =>
+        world.Snapshot.State != ConnectionState.Ready ? StickyMessages.NotConnected(tag)
+        : !world.LocalChatAvailable ? LocalChatWords.NotOnThisServer.Plain
+        : null;
 }
 
 /// <summary>
@@ -506,6 +544,10 @@ public sealed class StickyChannel {
 public static class StickyMessages {
     public const string Unavailable =
         "Talking in a channel without /lgc doesn't work in this game version yet. Use /lgc3 <message> instead.";
+
+    /// <summary><see cref="Unavailable"/>, for local chat.</summary>
+    public const string LocalUnavailable =
+        $"Talking in local chat without {LocalChat.Command} doesn't work in this game version yet. Use {LocalChat.Command} <message> instead.";
 
     public const string StillLoading = "Your LookingGlass channels are still loading. Try again in a moment.";
 
@@ -581,6 +623,14 @@ public static class StickyMessages {
 
     /// <summary>A line with nothing LookingGlass can send: no text, and no link it can read.</summary>
     public const string NoTextReason = "nothing in it can be sent to a channel.";
+
+    /// <summary><see cref="NoTextReason"/>, for local chat.</summary>
+    public const string LocalNoTextReason = "nothing in it can be sent.";
+
+    /// <summary>The server info bar entry's tooltip while talking in a channel, or in local chat.</summary>
+    public static string InfoBarTooltip(string tag, bool local) => local
+        ? $"What you type in chat goes to {tag}, your friends near you who use LookingGlass, not to game chat. Click to stop."
+        : $"What you type in chat goes to the LookingGlass channel {tag}, not to game chat. Click to stop.";
 
     /// <summary>A line whose only links the game said nothing about (not even their names): nothing was left to send.</summary>
     public const string LinkUnreadableReason = "the link couldn't be read.";

@@ -5,7 +5,7 @@ namespace LookingGlass.Core.Client;
 /// <summary>
 /// The diagnostic log lines sticky mode writes (to Dalamud's log, at Information level, while talking in a channel), so
 /// an in-game test can be read back afterwards from dalamud.log. Built only from what is safe to keep in a log file: the
-/// channel's tag, a known command's name, sizes, yes/no flags, chat type numbers and fixed words. Never what was typed,
+/// channel's tag ([Local] for local chat), a known command's name, sizes, yes/no flags, chat type numbers and fixed words. Never what was typed,
 /// a link's contents, or a command nobody knows (it could be a message typed after a "/" by mistake).
 /// </summary>
 public static partial class StickyDiagnostics {
@@ -13,7 +13,7 @@ public static partial class StickyDiagnostics {
     public const string Prefix = "[sticky]";
 
     private static readonly IReadOnlyCollection<string> OtherKnownCommands = new[] {
-            "/t", "/tell", "/r", "/reply", "/e", "/echo", "/em", "/emote", "/lg", "/lookingglass", "/lgdebug",
+            "/t", "/tell", "/r", "/reply", "/e", "/echo", "/em", "/emote", "/lg", "/lookingglass", "/lgdebug", LocalChat.Command,
         }
         .Concat(Enumerable.Range(1, 8).Select(i => $"/ecl{i}"))
         .ToHashSet(StringComparer.OrdinalIgnoreCase);
