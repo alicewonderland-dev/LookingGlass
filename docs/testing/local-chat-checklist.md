@@ -45,6 +45,15 @@ Before anyone opens their Friends window this session.
 - [ ] 7. A types `/lgl hello again`: B sees `[Local] <A@World> hello again`,
       the tag in LookingGlass blue. A sees its own line the same way.
 
+- [ ] 7a. **A partly loaded friends list.** On a character with many friends
+      (more than one page of the Friends window), log in afresh, stand next
+      to a friend from near the end of the list, open the Friends window and
+      at once (before scrolling) close it, then `/lgl test`. Record whether the
+      friend gets it, and whether it does after scrolling through the whole
+      list or waiting a few seconds. (The plugin counts the list as loaded as
+      soon as it holds anyone, so a list the game fills a page at a time could
+      miss friends further down.)
+
 ## Friends in range and out of range
 
 - [ ] 8. B replies with `/lgl hi`: A sees it. A link (`/lgl look <item>` with
@@ -110,3 +119,11 @@ Before anyone opens their Friends window this session.
 - [ ] 25. `/xllog` on A and B, and the server's log: lines about local chat
       give counts only (how many friends near, sent, dropped and why), never
       a name or what was said.
+
+## Keys
+
+- [ ] 26. B uses **Reset my identity** and registers again. B sends `/lgl hi`
+      next to A: A sees nothing, and no warning (a local message never
+      changes the keys A holds for B). After 10 minutes A sends `/lgl hi` to B
+      (or they share a channel): A is told B set up LookingGlass again, and
+      B's next `/lgl` shows.

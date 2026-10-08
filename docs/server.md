@@ -214,6 +214,8 @@ All of these are under `LookingGlass`.
 | `Limits:MaxLocalRecipients` | 50 | Players one local chat message may go to (the sender's plugin picks the closest friends). 0 to 200; 0 turns local chat off: see [Local chat](#local-chat) |
 | `Limits:LocalMessageBurst` | 5 | Local chat messages one user may send at once, as for channel messages. 1 to 10,000 |
 | `Limits:LocalMessageIntervalSeconds` | 1 | Seconds between their local chat messages once those are spent. 1 to 86,400 |
+| `Limits:LocalMessagesReceivedBurst` | 60 | Local chat messages one user may be sent at once, by everyone together; past it their copies are dropped (the senders aren't told). 1 to 10,000 |
+| `Limits:LocalMessagesReceivedIntervalSeconds` | 1 | Seconds between local chat messages one user may be sent once those are spent. 1 to 86,400 |
 
 The server won't start with an invite, lookup, registration lookup or local chat setting outside its range: see
 [Limits worth knowing](#limits-worth-knowing).
@@ -361,7 +363,11 @@ IPv6 clients are counted per /64.
   friend to many channels costs one.
 - **Local chat.** A local message goes to at most 50 players
   (`MaxLocalRecipients`), and each user may send 5 at once, then one a second
-  (`LocalMessageBurst`, `LocalMessageIntervalSeconds`), as channel messages.
+  (`LocalMessageBurst`, `LocalMessageIntervalSeconds`), as channel messages;
+  each user may be sent 60 at once, by everyone together, then one a second
+  (`LocalMessagesReceivedBurst`, `LocalMessagesReceivedIntervalSeconds`), and
+  past that, or while their connection's queue is half full, their copies are
+  dropped rather than the connection closed.
   Its friends are looked up by name with the lookup limits above (the plugin
   reuses a lookup, and the answer that someone isn't registered, for 10
   minutes). See [Local chat](#local-chat).
@@ -385,14 +391,19 @@ IPv6 clients are counted per /64.
 Local chat (`/lgl` in the plugin) is a `/say`-like chat among friends who
 stand near each other in the game (see
 [design.md](design.md#local-chat-friends-only)). It is the server capability
-`local.v1`, on by default. The server keeps nothing of it and never learns
-where anyone is: the sender's plugin names the user IDs of the friends near
-it, and the server checks the request (each copy signed by the sender for its
+`local.v1`, on by default. The server keeps nothing of it and holds no
+locations: the sender's plugin names the user IDs of the friends near it, and the server checks the request (each copy signed by the sender for its
 recipient, each recipient once, at most `Limits:MaxLocalRecipients`, the
 message at most 4 KiB) and passes each copy to its recipient if they are
 online with a plugin that knows local chat. Nothing is stored for anyone
 offline, so it needs no disk and no database change. It does see who sent to
-whom and when, as it sees who is in which channel.
+whom and when, as it sees who is in which channel. And it learns who was
+near whom: before sending, the plugin looks up each friend near the sender by
+name (each at most once in 10 minutes), so the server sees which friends were
+near the sender, and when, even friends who don't use LookingGlass (an open
+decision of the owner's: see [design.md](design.md#local-chat-friends-only)).
+What one user may be sent by everyone together is limited too, and a
+recipient whose connection is slow loses local messages, not the connection.
 
 To turn it off, set `LookingGlass:Limits:MaxLocalRecipients` to 0
 (`LookingGlass__Limits__MaxLocalRecipients=0`): the server then doesn't agree
@@ -574,7 +585,8 @@ limits ("Invite from user 1 to user 2 refused by InviteBurstPerPair", named
 as its setting, or `MaxPendingInvitesPerChannel`), which is logged at most
 once a minute per inviter.
 At Debug level only, each local chat message is logged with the sender's user
-ID and how many copies there were and how many recipients were online; never
+ID and how many copies there were, were delivered and were over their
+recipient's limit; never
 who they were, nor what was said.
 Client addresses appear only in lines about registrations and key logins
 (refused ones, and key logins that add a device) and about closed connections
