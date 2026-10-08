@@ -123,7 +123,14 @@ Before anyone opens their Friends window this session.
 ## Keys
 
 - [ ] 26. B uses **Reset my identity** and registers again. B sends `/lgl hi`
-      next to A: A sees nothing, and no warning (a local message never
-      changes the keys A holds for B). After 10 minutes A sends `/lgl hi` to B
-      (or they share a channel): A is told B set up LookingGlass again, and
-      B's next `/lgl` shows.
+      next to A: A doesn't see the message, and no key warning (a local
+      message never changes the keys A holds for B), but one blue line says B
+      sent a local message that couldn't be checked, that B may have set up
+      LookingGlass again, and to talk to them with /lgl. B sends again: no
+      second line this session. A sends `/lgl hi` to B: A is told B set up
+      LookingGlass again (the key warning), and B's next `/lgl` shows.
+- [ ] 27. The same with B standing far from A (out of range), or with C
+      (not a friend) having registered again: no line at all.
+- [ ] 28. If you can, rename B (or move B to another world) after A has had
+      a local message from B: B's next `/lgl` isn't shown, and one blue line
+      says B may have changed their name or world. A's `/lgl` to B updates it.

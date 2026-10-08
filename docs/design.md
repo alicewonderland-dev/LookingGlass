@@ -3107,29 +3107,54 @@ anyone they blocked, and only if:
   malicious server swap any pinned user's keys (and clear "compared" in
   advanced mode) just by sending a local message, so the next `/lgl` was
   sealed to its key.
-- **A sender whose keys are held is named as held**, by the name and world
-  pinned with the keys, not as the server says, so a server can't pass one
-  friend's message off as another's (or as from someone standing near).
+- **A held sender under another name isn't shown.** If the sender's keys are
+  held under another name or world than the server gives now (a rename or a
+  world transfer, or a server passing one friend off as another, or as someone
+  standing near), the message is shown under neither name.
 - it is dated within 10 minutes of the player's clock, and isn't one already
   had: not in the seen-set channel messages use (apart from them), nor more
-  than 2 minutes older than the newest had from that sender, nor one of the
-  newest had (same time and ID). The newest times and IDs are kept with the
+  than 2 minutes older than the newest shown from that sender, nor one of the
+  newest shown (same time and ID). The newest times and IDs are kept with the
   channels' (`NewestMessageTimes`, under the key `local`, which no channel ID
-  can be) and saved with them, so a replay after a restart is refused too.
+  can be) and saved with them, so a replay after a restart is refused too. Only
+  messages shown are recorded there, so strangers' messages (never shown)
+  can't make the saved file grow.
 
 Then the plugin, on the game thread, as the game shows things when it
 arrives (`LocalChat.Judge`): the sender (by the name and home world the
 session gives) must be within `LocalChat.ReceiveRange`, 30 yalms (a little
 more than the sender's 20, as either may have moved while it travelled), and a
-friend, as above. Only once it passes is a sender seen for the first time
-pinned (`ClientSession.ConfirmLocalSender`), so the keys of someone who isn't
-near or isn't a friend are never kept; if other keys were pinned for them
-meanwhile (another first message, shown first), it isn't shown. Anything that
-fails is dropped silently: the diagnostic log counts drops by reason, never
-who or what. One exception: if the sender was near but not marked as a friend
-and the friends list is empty, one line a session says that a player near
-sent a local message and to open the friends list once to see local messages
-from friends.
+friend, as above. Only once it passes does the plugin ask the session
+(`ClientSession.ConfirmLocalSender`), which records the message against
+replays and pins a sender seen for the first time, so the keys of someone who
+isn't near or isn't a friend are never kept. It refuses (the message isn't
+shown) if it was shown already, if other keys were pinned for the sender
+meanwhile (another first message, shown first), or if **another account is
+held under the name it gives**: a malicious server could otherwise send from a
+new account named as a held friend, and if that friend stood near, the message
+would show as theirs (pinning would only have warned that the name now belongs
+to another account). Nothing is pinned then. Anything that fails is dropped
+silently: the diagnostic log counts drops by reason, never who or what.
+
+**Hints, for a friend near.** A message under other keys than those held, from
+a held sender under another name, or refused for a name held by another
+account, never shows and changes nothing, but it isn't dropped without a word
+if it may well be a friend's: the session passes it on without its content
+(`LocalMessageUnchecked`: who the server says sent it, and why), and if, as
+the game shows it, that sender is near and a friend, one information line (in
+LookingGlass blue, once a session per sender; `LocalHints`,
+`LocalChatWords.Unchecked`) says what may have happened and what to do: "Bob
+sent you a local message that couldn't be checked: they may have set up
+LookingGlass again. Talk to them with /lgl, or share a channel, to update it."
+(or "they may have changed their name or world"; or, for a name held by
+another account, that LookingGlass knows someone else by that name, and to
+check with them over /tell). Strangers, and anyone not near, get nothing.
+Sending them a `/lgl` then looks them up afresh (after a message under other
+keys, what was looked up for that name is forgotten), which updates their keys
+or name with the usual warning. The other exception: if the sender was near but not marked as a
+friend and the friends list is empty, one line a session says that a player
+near sent a local message and to open the friends list once to see local
+messages from friends.
 
 **Shown in game chat** as a channel's message is (`ChatOutput.LocalMessage`):
 the tag `[Local]`, then `<Name@World>` and the message, sanitised, with links
@@ -3169,9 +3194,13 @@ before anything is passed on). Local messages are rate limited per sender as
 channel messages are (`Limits:LocalMessageBurst`, 5 at once, then one every
 `Limits:LocalMessageIntervalSeconds`, 1), and per recipient, by everyone
 together, so many senders can't flood one person
-(`Limits:LocalMessagesReceivedBurst`, 60 at once, then one every
-`Limits:LocalMessagesReceivedIntervalSeconds`, 1; spent only by copies that
-would reach them). Each copy goes to its recipient if they are online on a
+(`Limits:LocalMessagesReceivedBurst`, 120 at once, then one every
+`Limits:LocalMessagesReceivedIntervalSeconds`, 1), and per sender and
+recipient, checked first and smaller, so a couple of accounts can't use that up
+and silence someone's friends (`Limits:LocalMessagesBetweenBurst`, 10 at once,
+then one every `Limits:LocalMessagesBetweenIntervalSeconds`, 5; the server
+doesn't start unless they are smaller and slower). Both are spent only by
+copies that would reach them. Each copy goes to its recipient if they are online on a
 connection that agreed, with the sender's identity; nothing is stored, and a
 recipient who is offline never gets it. A copy past the recipient's limit, or
 for a connection whose queue is half full or more, is dropped rather than
@@ -3209,7 +3238,8 @@ And, found while building it:
 - **A friend who registered again** with new keys isn't shown in local chat
   until this player's keys for them are refreshed by a lookup (sending them a
   `/lgl` after the 10 minutes a lookup is reused, or inviting them) or a
-  channel, with the usual warning; their messages meanwhile are dropped.
+  channel, with the usual warning; their messages meanwhile aren't shown, but
+  the player is told once a session (see *Hints, for a friend near*).
 
 **Open decision (owner): what the lookups tell the server.** Today every
 `/lgl` looks up the friends near the sender (each at most once in 10
@@ -3323,7 +3353,7 @@ one transaction for every multi-step change.
 | Outbound queue per connection | 256 events | A slow client is disconnected, not waited on |
 | Stored messages (catch-up) | 7 days, 5,000 per channel; the oldest go first | Bounds the disk a channel can take (about 22 MB at worst); operator settings |
 | Pages of stored messages | 200 messages or 96 KiB each; 100 pages per user at once, then 4 a second | A returning client asks once per channel; within the frame limit |
-| Local messages | 50 recipients each (0 to 200, 0 turns local chat off); 5 per user at once, then 1 a second; 60 to one user at once, by everyone together, then 1 a second (past it, and to a connection whose queue is half full, dropped); the message as large as a channel message | Crowds of friends stay cheap and within the frame limit; floods are stopped as in channels; operator settings |
+| Local messages | 50 recipients each (0 to 200, 0 turns local chat off); 5 per user at once, then 1 a second; 120 to one user at once, by everyone together, then 1 a second, and 10 from one sender to one user, then 1 every 5 seconds (past either, and to a connection whose queue is half full, dropped); the message as large as a channel message | Crowds of friends stay cheap and within the frame limit; floods are stopped as in channels; operator settings |
 | Devices per user | 20 most recently used | Bounds stored logins |
 
 Channel creation, renames, disbands, identity lookups and heavy reads have
