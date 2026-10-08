@@ -508,13 +508,13 @@ public sealed class SessionManager : IDisposable {
 
     /// <summary>
     /// A local chat message (see <see cref="LocalChat"/>): the player's own is printed as it is; anyone else's only if, as the
-    /// game shows it now, the sender is near and on the friends list (<see cref="LocalChat.Judge"/>), and isn't blocked.
-    /// Otherwise it is dropped, only counted in the diagnostic log, but for once a session, when the friends list isn't
+    /// game shows it now, the sender is near and on the friends list (<see cref="LocalChat.Judge"/>), and isn't blocked; only
+    /// then is a sender seen for the first time held (<see cref="ClientSession.ConfirmLocalSender"/>). Otherwise it is dropped, only counted in the diagnostic log, but for once a session, when the friends list isn't
     /// loaded, a line saying to open it. Always in game chat, whatever "Show LookingGlass messages only in windows" says:
     /// no window shows local chat (see "Local chat (friends only)" in docs/design.md). From any thread.
     /// </summary>
     /// <param name="generation">The history's generation the session was started with: a message caught in a logout is dropped.</param>
-    private void DeliverLocal(IncomingLocalMessage message, int generation) {
+    private void DeliverLocal(ClientSession session, IncomingLocalMessage message, int generation) {
         _ = Services.Framework.RunOnFrameworkThread(() => {
             if (generation != this.History.Generation) {
                 return;
@@ -543,6 +543,12 @@ public sealed class SessionManager : IDisposable {
                         this.Tell(NoticeLevel.Info, LocalChatWords.OpenFriendsListToReceive);
                     }
 
+                    return;
+                }
+
+                // Shown: a sender seen for the first time is held from now on (and one whose other keys were held meanwhile isn't shown).
+                if (!session.ConfirmLocalSender(message)) {
+                    Services.Log.Debug("Local message not shown (other keys held for its sender meanwhile)");
                     return;
                 }
             }
@@ -626,7 +632,7 @@ public sealed class SessionManager : IDisposable {
         };
         session.LocalMessageReceived += message => {
             if (this.Session == session) {
-                this.DeliverLocal(message, history);
+                this.DeliverLocal(session, message, history);
             }
         };
         session.Notice += notice => {

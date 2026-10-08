@@ -216,6 +216,16 @@ public sealed class LimitOptions {
     public int LocalMessageIntervalSeconds { get; set; } = 1;
 
     /// <summary>
+    /// Local messages one user may be sent at once, by everyone together; past it, one more every
+    /// <see cref="LocalMessagesReceivedIntervalSeconds"/>, and the rest are dropped (their senders aren't told). So many senders
+    /// together can't flood one person.
+    /// </summary>
+    public int LocalMessagesReceivedBurst { get; set; } = 60;
+
+    /// <summary>Seconds between local messages one user may be sent once <see cref="LocalMessagesReceivedBurst"/> is spent.</summary>
+    public int LocalMessagesReceivedIntervalSeconds { get; set; } = 1;
+
+    /// <summary>
     /// The most <see cref="MaxLocalRecipients"/> can be: each recipient's copy of the key, with its signature, is about 170
     /// bytes, so this many and the longest message stay well within the 128 KiB frame a client may send.
     /// </summary>
@@ -246,6 +256,7 @@ public sealed class LimitOptions {
                      (nameof(this.InviteBurstPerPair), this.InviteBurstPerPair, "invites", 20),
                      (nameof(this.LookupBurst), this.LookupBurst, "lookups", 60),
                      (nameof(this.LocalMessageBurst), this.LocalMessageBurst, "local messages", 5),
+                     (nameof(this.LocalMessagesReceivedBurst), this.LocalMessagesReceivedBurst, "local messages one user is sent", 60),
                  }) {
             if (value is < 1 or > MaxBurst) {
                 return $"LookingGlass:Limits:{name} is {value}, so the server won't start: it must be 1 to {MaxBurst} ({what} at once; {fallback} by default).";
@@ -258,6 +269,7 @@ public sealed class LimitOptions {
                      (nameof(this.InviteIntervalSecondsPerPair), this.InviteIntervalSecondsPerPair, "invites", 60),
                      (nameof(this.LookupIntervalSeconds), this.LookupIntervalSeconds, "lookups", 1),
                      (nameof(this.LocalMessageIntervalSeconds), this.LocalMessageIntervalSeconds, "local messages", 1),
+                     (nameof(this.LocalMessagesReceivedIntervalSeconds), this.LocalMessagesReceivedIntervalSeconds, "local messages one user is sent", 1),
                  }) {
             if (value is < 1 or > MaxIntervalSeconds) {
                 return $"LookingGlass:Limits:{name} is {value}, so the server won't start: it must be 1 to {MaxIntervalSeconds} " +

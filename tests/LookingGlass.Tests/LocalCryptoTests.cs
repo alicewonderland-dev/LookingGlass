@@ -32,6 +32,7 @@ public sealed class LocalCryptoTests {
             MessageId = sent.MessageId,
             TimestampUnixMs = sent.TimestampUnixMs,
             Ciphertext = sent.Ciphertext,
+            KeyCommitment = sent.KeyCommitment,
             SealedKey = copy.SealedKey,
             Signature = copy.Signature,
         };
@@ -119,15 +120,70 @@ public sealed class LocalCryptoTests {
         using var someoneElse = IdentityKeys.Generate();
 
         foreach (var copy in sent.Copies) {
-            Assert.True(LocalCrypto.VerifyCopy(SenderId, sent.MessageId.Span, sent.TimestampUnixMs, sent.Ciphertext.Span, copy, sender.SigningPublicKey));
-            Assert.False(LocalCrypto.VerifyCopy(SenderId, sent.MessageId.Span, sent.TimestampUnixMs, sent.Ciphertext.Span, copy, someoneElse.SigningPublicKey));
-            Assert.False(LocalCrypto.VerifyCopy(SenderId + 1, sent.MessageId.Span, sent.TimestampUnixMs, sent.Ciphertext.Span, copy, sender.SigningPublicKey));
+            Assert.True(LocalCrypto.VerifyCopy(sent, copy, SenderId, sender.SigningPublicKey));
+            Assert.False(LocalCrypto.VerifyCopy(sent, copy, SenderId, someoneElse.SigningPublicKey));
+            Assert.False(LocalCrypto.VerifyCopy(sent, copy, SenderId + 1, sender.SigningPublicKey));
         }
 
         // Bob's copy readdressed to Carol.
         var readdressed = sent.Copies[0].Clone();
         readdressed.RecipientId = CarolId;
-        Assert.False(LocalCrypto.VerifyCopy(SenderId, sent.MessageId.Span, sent.TimestampUnixMs, sent.Ciphertext.Span, readdressed, sender.SigningPublicKey));
+        Assert.False(LocalCrypto.VerifyCopy(sent, readdressed, SenderId, sender.SigningPublicKey));
+    }
+
+    [Fact]
+    public void TheMessagesKeyIsCommittedToAndChecked() {
+        var (sent, sender, bob, _) = SealToBobAndCarol();
+        Assert.Equal(32, sent.KeyCommitment.Length);
+
+        // Another commitment than the one signed: the signature fails.
+        var swapped = Delivered(sent, BobId);
+        swapped.KeyCommitment = ByteString.CopyFrom(new byte[32]);
+        Assert.Null(LocalCrypto.Open(swapped, bob, BobId, sender.SigningPublicKey));
+
+        // A sender who signs a commitment that isn't to the key they sealed (to give recipients different keys, or a
+        // ciphertext that opens two ways): the copy verifies, but doesn't open.
+        var lying = LocalCrypto.Seal(Text("two ways"), sender, SenderId, [(BobId, bob.AgreementPublicKey)], 1_700_000_000_000,
+            forgedCommitment: new byte[32]);
+        Assert.True(LocalCrypto.VerifyCopy(lying, lying.Copies[0], SenderId, sender.SigningPublicKey));
+        Assert.Null(LocalCrypto.Open(Delivered(lying, BobId), bob, BobId, sender.SigningPublicKey));
+    }
+
+    [Fact]
+    public void ALocalSealedKeyIsNoChannelKeyAndALocalSignatureNoChannelMessages() {
+        var (sent, sender, bob, _) = SealToBobAndCarol();
+        var copy = sent.Copies.Single(c => c.RecipientId == BobId);
+
+        // Bob's copy of the message's key offered as a channel's epoch key from the sender.
+        var asEpochKey = new SealedEpochKey { RecipientId = BobId, Box = copy.SealedKey, Signature = copy.Signature, KeyCommitment = sent.KeyCommitment };
+        Assert.NotEqual(EpochKeyCheck.Valid, ChannelCrypto.TryOpenEpochKey(asEpochKey, "", 0, SenderId, sender.SigningPublicKey, bob, BobId, out _));
+
+        // The copy's signature offered as a channel message's.
+        var asChannelMessage = new ChatMessage {
+            SenderId = SenderId, MessageId = sent.MessageId, TimestampUnixMs = sent.TimestampUnixMs, Ciphertext = sent.Ciphertext, Signature = copy.Signature,
+        };
+        Assert.False(ChannelCrypto.VerifyMessage(asChannelMessage, sender.SigningPublicKey));
+
+        // And a channel message's signature offered as a local copy's.
+        var channelMessage = ChannelCrypto.EncryptMessage(Text("in a channel"), ChannelCrypto.NewEpochKey(), "", 0, sender, SenderId, sent.TimestampUnixMs);
+        var asLocalCopy = Delivered(sent, BobId);
+        asLocalCopy.Signature = channelMessage.Signature;
+        Assert.Null(LocalCrypto.Open(asLocalCopy, bob, BobId, sender.SigningPublicKey));
+    }
+
+    [Fact]
+    public void TheMostRecipientsAServerAllowsFitInOneFrame() {
+        using var sender = IdentityKeys.Generate();
+        var recipients = Enumerable.Range(1, 200).Select(i => {
+            using var keys = IdentityKeys.Generate();
+            return ((long) i * 1_000_000_007, keys.AgreementPublicKey.ToArray());
+        }).ToList();
+        // As long as a message may be.
+        var sent = LocalCrypto.Seal(Text(new string('x', 4000)), sender, SenderId, recipients, 1_700_000_000_000);
+
+        var frame = new ClientFrame { RequestId = uint.MaxValue, SendLocalMessage = sent };
+        Assert.True(frame.CalculateSize() < ProtocolInfo.DefaultLimits().MaxFrameBytes, $"{frame.CalculateSize()} bytes");
+        Assert.Equal(200, LookingGlass.Server.LimitOptions.MaxMaxLocalRecipients);
     }
 
     [Fact]

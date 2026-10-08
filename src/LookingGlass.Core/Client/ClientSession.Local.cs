@@ -11,25 +11,24 @@ namespace LookingGlass.Core.Client;
 /// check: the session never knows.
 /// </summary>
 public sealed partial class ClientSession {
-    // How often one sender's keys may be taken again from a local message that came with others than those held: each time
-    // the user is warned, so a server switching someone's keys back and forth can't flood them with warnings.
-    private static readonly TimeSpan LocalKeyChangeInterval = TimeSpan.FromMinutes(1);
+    /// <summary>
+    /// Where local chat's replay state is kept with the channels' (<see cref="ClientSecrets.NewestMessageTimes"/>, by sender):
+    /// a key no channel ID can be (those are 32 hex digits), so it is saved, and survives a restart, with theirs.
+    /// </summary>
+    internal const string LocalReplayKey = "local";
 
     // ---- state guarded by _lock
     // The server agreed to local chat on the current connection (capability "local.v1").
     private bool _localAgreed;
-    // The newest local message time accepted from each sender this session: one more than MessageReorderAllowance older is a replay.
-    private readonly Dictionary<long, long> _localNewest = new();
-    // When each sender's keys were last taken from a local message (see LocalKeyChangeInterval).
-    private readonly Dictionary<long, DateTimeOffset> _localKeysTakenAt = new();
     // Local messages dropped this session, by reason, for the diagnostic log (counts only).
     private readonly Dictionary<string, int> _localDropped = new();
     // ----
 
     /// <summary>
-    /// Raised on a background thread for every local message that opened and was signed by the key held for its sender (not
-    /// from anyone blocked), and for the player's own once the server took it. The plugin shows one from someone else only
-    /// if they are near and a friend (<see cref="LocalChat.Judge"/>).
+    /// Raised on a background thread for every local message that opened and was signed by the key held for its sender (or,
+    /// with none held, the keys it came with), not from anyone blocked, and for the player's own once the server took it.
+    /// The plugin shows one from someone else only if they are near and a friend (<see cref="LocalChat.Judge"/>), and
+    /// <see cref="ConfirmLocalSender"/> says so.
     /// </summary>
     public event Action<IncomingLocalMessage>? LocalMessageReceived;
 
@@ -124,12 +123,14 @@ public sealed partial class ClientSession {
     private static string LocalSeenId(Google.Protobuf.ByteString messageId) => "local:" + Convert.ToHexString(messageId.Span);
 
     /// <summary>
-    /// A local message from the server: shown (passed on to the plugin) only if the server agreed to local chat with this
-    /// connection, it isn't from the player themselves or anyone blocked, it opens for this player, it is signed by the key
-    /// held for the sender (the one the server sends with it only if none is held yet: trust on first use, as for a lookup,
-    /// pinned once the message checks out), and it is recent and new. Keys other than those held are taken, with the usual
-    /// warning that the sender's keys changed, but the message that brought them is dropped. Anything dropped is only
-    /// counted, in the diagnostic log.
+    /// A local message from the server: passed on to the plugin only if the server agreed to local chat with this connection,
+    /// it isn't from the player themselves or anyone blocked, it opens for this player, it is signed by the key held for the
+    /// sender, and it is recent and new (by the newest times had from each sender, saved with the channels', so a replay
+    /// after a restart is refused too). The sender's identity that comes with it is used only if no key is held for them yet,
+    /// and nothing is pinned here: <see cref="ConfirmLocalSender"/> pins it once the plugin shows the message (the sender is
+    /// near and a friend). A message under other keys than those held is dropped, and changes nothing: the keys held for
+    /// someone change only through lookups and channels, with their warnings, never from a local message. A sender whose
+    /// keys are held is named as held, not as the server says. Anything dropped is only counted, in the diagnostic log.
     /// </summary>
     private void ProcessLocalMessage(LocalMessage message) {
         var sender = message.Sender?.User;
@@ -151,16 +152,10 @@ public sealed partial class ClientSession {
 
         var offered = MemberKeys.Of(message.Sender.Identity);
         var now = this._options.TimeProvider.GetUtcNow();
-        var held = this.Read(() => this._secrets.PinnedIdentities.GetValueOrDefault(sender.UserId) is { } pinned
-            ? new MemberKeys(pinned.SigningPublicKey, pinned.AgreementPublicKey)
+        var pinned = this.Read(() => this._secrets.PinnedIdentities.GetValueOrDefault(sender.UserId) is { } held
+            ? new HeldSender(new MemberKeys(held.SigningPublicKey, held.AgreementPublicKey), held.Name, held.WorldName)
             : null);
-        if (held != null && held != offered) {
-            // Other keys than those held: taken as any identity from the server is, with the warning that their keys changed
-            // (at most once a minute per sender), but this message isn't shown.
-            if (this.Read(() => this.TakeLocalKeysNow(sender.UserId, now))) {
-                this.AcceptIdentities([message.Sender]);
-            }
-
+        if (pinned != null && pinned.Keys != offered) {
             this.DropLocal("keys other than those held");
             return;
         }
@@ -177,16 +172,20 @@ public sealed partial class ClientSession {
             return;
         }
 
+        var messageId = Convert.ToHexString(message.MessageId.Span);
         var replayed = this.Read(() => {
-            if (this._localNewest.TryGetValue(sender.UserId, out var newest) && message.TimestampUnixMs < newest - (long) MessageReorderAllowance.TotalMilliseconds) {
+            if (this._secrets.NewestMessageTimes.GetValueOrDefault(LocalReplayKey) is { } times && times.TryGetValue(sender.UserId, out var newest)
+                && message.TimestampUnixMs < newest - (long) MessageReorderAllowance.TotalMilliseconds) {
                 return "older than one already had";
             }
 
-            if (!this.MarkSeen(LocalSeenId(message.MessageId))) {
+            // The newest had from them, sent again after a restart (when the seen-set is empty): had already.
+            if (this.IsNewestHad(LocalReplayKey, sender.UserId, message.TimestampUnixMs, messageId) || !this.MarkSeen(LocalSeenId(message.MessageId))) {
                 return "had already";
             }
 
-            this._localNewest[sender.UserId] = Math.Max(newest, message.TimestampUnixMs);
+            // Saved soon, with the channels' message times.
+            this.SetNewestMessage(LocalReplayKey, sender.UserId, message.TimestampUnixMs, messageId);
             return null;
         });
 
@@ -195,27 +194,51 @@ public sealed partial class ClientSession {
             return;
         }
 
-        // Only now, once it checked out, are the sender's keys pinned (trust on first use, as for a lookup) and their name
-        // and world kept up to date (warned about if they moved to another account): a message that fails pins nobody.
-        this.AcceptIdentities([message.Sender]);
-        var user = this.Read(() => this.UserOf(sender.UserId));
+        // Named as held, if their keys are: a server can't pass one friend's message off as another's (or as someone near).
+        var user = pinned is { Name.Length: > 0 }
+            ? new User { UserId = sender.UserId, Name = pinned.Name, WorldName = pinned.WorldName }
+            : sender;
         // Links only as the checks in MessageContent leave them, as for a channel's message.
-        this.InvokeSafely(this.LocalMessageReceived, MessageContent.Decode(content) is { } text
+        var incoming = MessageContent.Decode(content) is { } text
             ? new IncomingLocalMessage(Shown(user), false, text.Text, false, timestamp) { Links = text.Links }
-            : new IncomingLocalMessage(Shown(user), false, null, true, timestamp));
+            : new IncomingLocalMessage(Shown(user), false, null, true, timestamp);
+        this.InvokeSafely(this.LocalMessageReceived, pinned == null ? incoming with { FirstSeen = message.Sender.Clone() } : incoming);
     }
 
-    /// <summary>Whether a sender's other keys may be taken from a local message now (see <see cref="LocalKeyChangeInterval"/>). Call inside the lock.</summary>
-    private bool TakeLocalKeysNow(long senderId, DateTimeOffset now) {
-        if (this._localKeysTakenAt.TryGetValue(senderId, out var last) && now - last < LocalKeyChangeInterval) {
-            return false;
+    /// <summary>The keys held for a local message's sender, and the name and world held with them.</summary>
+    private sealed record HeldSender(MemberKeys Keys, string Name, string WorldName);
+
+    /// <summary>
+    /// The plugin is showing a local message from someone else (they are near and a friend; see <see cref="LocalChat.Judge"/>):
+    /// if no key was held for them when it arrived, the keys it came with are pinned now (trust on first use, as for a
+    /// lookup). Call before showing it, and show it only if this says so.
+    /// </summary>
+    /// <returns>
+    /// Whether it may be shown: false only if other keys than the ones it was checked against are held for the sender by
+    /// now (another first message, under other keys, was shown meanwhile).
+    /// </returns>
+    public bool ConfirmLocalSender(IncomingLocalMessage message) {
+        if (message.IsOwn || message.FirstSeen is not { User: { } user, Identity: { } bundle } first) {
+            return true;
         }
 
-        foreach (var expired in this._localKeysTakenAt.Where(entry => now - entry.Value >= LocalKeyChangeInterval).Select(entry => entry.Key).ToList()) {
-            this._localKeysTakenAt.Remove(expired);
+        var keys = MemberKeys.Of(bundle);
+        Wording? warning;
+        lock (this._lock) {
+            if (this._secrets.PinnedIdentities.TryGetValue(user.UserId, out var held)) {
+                return new MemberKeys(held.SigningPublicKey, held.AgreementPublicKey) == keys;
+            }
+
+            warning = this.Pin(user.UserId, keys, user, first.KeyVersion);
+            this._identities[user.UserId] = first;
+            this._users[user.UserId] = user;
         }
 
-        this._localKeysTakenAt[senderId] = now;
+        this.SaveSecrets();
+        if (warning != null) {
+            this.RaiseNotice(NoticeLevel.Warning, warning);
+        }
+
         return true;
     }
 

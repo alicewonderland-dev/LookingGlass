@@ -50,6 +50,7 @@ public sealed class LocalChatEndToEndTests : IAsyncLifetime {
                 MessageId = sent.MessageId,
                 TimestampUnixMs = sent.TimestampUnixMs,
                 Ciphertext = sent.Ciphertext,
+                KeyCommitment = sent.KeyCommitment,
                 SealedKey = copy.SealedKey,
                 Signature = copy.Signature,
             },
@@ -177,15 +178,54 @@ public sealed class LocalChatEndToEndTests : IAsyncLifetime {
     // ================================================================ what the receiving session checks
 
     [Fact]
-    public async Task TheSendersKeysAreTrustedOnFirstUseAndHeldFromThen() {
+    public async Task TheSendersKeysAreHeldOnlyOnceTheMessageIsShown() {
         var alice = await this._server.RegisterAsync("Alice First Use");
         var bob = await this._server.RegisterAsync("Bob First Use");
         Assert.False(bob.Store.Load().PinnedIdentities.ContainsKey(alice.UserId));
 
         await this._server.SendAndSettleAsync(bob, Forge(alice, bob, "first"));
 
-        Assert.Equal("first", Assert.Single(bob.LocalMessages).Text);
+        // Opened and checked against the keys that came with it, but not held yet: the plugin hasn't said the sender is
+        // near and a friend, so the message may never be shown.
+        var first = Assert.Single(bob.LocalMessages);
+        Assert.Equal("first", first.Text);
+        Assert.False(bob.Store.Load().PinnedIdentities.ContainsKey(alice.UserId));
+
+        // Shown: held from now on (trust on first use).
+        Assert.True(bob.Session.ConfirmLocalSender(first));
         Assert.Equal(alice.Keys().SigningKeyArray(), bob.Store.Load().PinnedIdentities[alice.UserId].SigningPublicKey);
+        Assert.True(bob.Session.ConfirmLocalSender(first));
+    }
+
+    [Fact]
+    public async Task AMessageUnderFirstSeenKeysIsntShownIfOtherKeysWereHeldMeanwhile() {
+        var alice = await this._server.RegisterAsync("Alice Raced Local");
+        var bob = await this._server.RegisterAsync("Bob Raced Local");
+        using var mallory = IdentityKeys.Generate();
+
+        // Two first messages, before either is shown: the server's keys for Alice, and other ones.
+        await this._server.SendAndSettleAsync(bob, Forge(alice, bob, "genuine"), Forge(alice, bob, "other keys", signWith: mallory, claim: mallory.ToBundle()));
+        var (genuine, other) = (bob.LocalMessages.First(), bob.LocalMessages.Last());
+
+        Assert.True(bob.Session.ConfirmLocalSender(genuine));
+        Assert.False(bob.Session.ConfirmLocalSender(other));
+        Assert.Equal(alice.Keys().SigningKeyArray(), bob.Store.Load().PinnedIdentities[alice.UserId].SigningPublicKey);
+        Assert.DoesNotContain(bob.Notices, notice => notice.Kind == NoticeKind.KeyChanged);
+    }
+
+    [Fact]
+    public async Task ASenderWhoseKeysAreHeldIsShownByTheNameHeldNotTheOneTheServerSends() {
+        var alice = await this._server.RegisterAsync("Alice Named Local");
+        var bob = await this._server.RegisterAsync("Bob Named Local");
+        await this._server.SendAndSettleAsync(bob, Forge(alice, bob, "hello"));
+        Assert.True(bob.Session.ConfirmLocalSender(bob.LocalMessages.Single()));
+
+        // The server says Alice is someone else (perhaps a friend standing near Bob), with Alice's own keys.
+        var renamed = Forge(alice, bob, "who am I");
+        renamed.LocalMessage.Sender.User.Name = "Carol Somebody Else";
+        await this._server.SendAndSettleAsync(bob, renamed);
+
+        Assert.Equal(alice.Name, bob.LocalMessages.Last().Sender.Name);
     }
 
     [Fact]
@@ -193,6 +233,7 @@ public sealed class LocalChatEndToEndTests : IAsyncLifetime {
         var alice = await this._server.RegisterAsync("Alice Forged Local");
         var bob = await this._server.RegisterAsync("Bob Forged Local");
         await this._server.SendAndSettleAsync(bob, Forge(alice, bob, "genuine"));
+        Assert.True(bob.Session.ConfirmLocalSender(bob.LocalMessages.Single()));
         using var mallory = IdentityKeys.Generate();
 
         // Signed by someone else, claiming Alice's own keys.
@@ -203,20 +244,49 @@ public sealed class LocalChatEndToEndTests : IAsyncLifetime {
     }
 
     [Fact]
-    public async Task OneUnderKeysOtherThanThoseHeldIsDroppedAndTheChangeIsNeverSilent() {
+    public async Task OneUnderKeysOtherThanThoseHeldIsDroppedAndChangesNothing() {
         var alice = await this._server.RegisterAsync("Alice Swapped Local");
         var bob = await this._server.RegisterAsync("Bob Swapped Local");
         await this._server.SendAndSettleAsync(bob, Forge(alice, bob, "genuine"));
+        Assert.True(bob.Session.ConfirmLocalSender(bob.LocalMessages.Single()));
+        // Bob compared fingerprints with Alice.
+        bob.Session.AcknowledgeKeyChange(alice.UserId, alice.Keys().Fingerprint, compared: true);
         using var mallory = IdentityKeys.Generate();
 
         // The server claims Alice has other keys now, and a message signed with them.
         await this._server.SendAndSettleAsync(bob, Forge(alice, bob, "swapped", signWith: mallory, claim: mallory.ToBundle()));
 
         Assert.Equal(["genuine"], bob.LocalMessages.Select(m => m.Text));
-        // Told, as for any other change of someone's keys; held from now on, with the warning.
-        var warning = Assert.Single(bob.Notices, notice => notice.Kind == NoticeKind.KeyChanged);
-        Assert.Contains(alice.Name, warning.Text);
-        Assert.True(bob.Store.Load().PinnedIdentities[alice.UserId].KeyChangeUnacknowledged);
+        // A local message never changes the keys held for anyone: changes come through lookups and channels, with their warnings.
+        var pinned = bob.Store.Load().PinnedIdentities[alice.UserId];
+        Assert.Equal(alice.Keys().SigningKeyArray(), pinned.SigningPublicKey);
+        Assert.True(pinned.Compared);
+        Assert.False(pinned.KeyChangeUnacknowledged);
+        Assert.DoesNotContain(bob.Notices, notice => notice.Kind == NoticeKind.KeyChanged);
+
+        // So Bob's next local message is still sealed to Alice's own keys.
+        Assert.Equal(1, (await bob.Session.SendLocalAsync([Near(alice)], Say("still you?"), Ct)).Sent);
+        Assert.Equal("still you?", (await WaitFor(() => alice.LocalMessages.FirstOrDefault())).Text);
+    }
+
+    [Fact]
+    public async Task KeyChangesFromManySendersChangeNothingEither() {
+        var bob = await this._server.RegisterAsync("Bob Many Senders");
+        var senders = new List<TestClient>();
+        foreach (var name in new[] { "Alice Many Senders", "Carol Many Senders", "Dave Many Senders", "Erin Many Senders" }) {
+            var sender = await this._server.RegisterAsync(name);
+            await this._server.SendAndSettleAsync(bob, Forge(sender, bob, "genuine"));
+            Assert.True(bob.Session.ConfirmLocalSender(bob.LocalMessages.Last()));
+            senders.Add(sender);
+        }
+
+        using var mallory = IdentityKeys.Generate();
+        await this._server.SendAndSettleAsync(bob, senders.Select(sender => Forge(sender, bob, "swapped", signWith: mallory, claim: mallory.ToBundle())).ToArray());
+
+        Assert.Equal(senders.Count, bob.LocalMessages.Count);
+        var pinned = bob.Store.Load().PinnedIdentities;
+        Assert.All(senders, sender => Assert.Equal(sender.Keys().SigningKeyArray(), pinned[sender.UserId].SigningPublicKey));
+        Assert.DoesNotContain(bob.Notices, notice => notice.Kind == NoticeKind.KeyChanged);
     }
 
     [Fact]
@@ -243,6 +313,25 @@ public sealed class LocalChatEndToEndTests : IAsyncLifetime {
         await this._server.SendAndSettleAsync(bob, Forge(alice, bob, "from the future", DateTimeOffset.UtcNow.AddHours(1)));
 
         Assert.Equal(["once"], bob.LocalMessages.Select(m => m.Text));
+    }
+
+    [Fact]
+    public async Task AReplayAfterARestartIsDroppedToo() {
+        var alice = await this._server.RegisterAsync("Alice Restart Local");
+        var bob = await this._server.RegisterAsync("Bob Restart Local");
+        var once = Forge(alice, bob, "once");
+        var older = Forge(alice, bob, "three minutes before", DateTimeOffset.UtcNow.AddMinutes(-3));
+        await this._server.SendAndSettleAsync(bob, once);
+        Assert.True(bob.Session.ConfirmLocalSender(bob.LocalMessages.Single()));
+
+        // Within 10 minutes, after Bob's plugin restarted (the in-memory seen-set is gone, the newest times aren't).
+        await bob.Session.DisposeAsync();
+        var restarted = await this._server.RestartAsync(bob);
+        await this._server.SendAndSettleAsync(restarted, once.Clone(), older);
+        Assert.Empty(restarted.LocalMessages);
+
+        await this._server.SendAndSettleAsync(restarted, Forge(alice, bob, "new"));
+        Assert.Equal(["new"], restarted.LocalMessages.Select(m => m.Text));
     }
 
     [Fact]
@@ -366,6 +455,79 @@ public sealed class LocalChatEndToEndTests : IAsyncLifetime {
         PlainLanguage.AssertPlain(refused.ServerMessage);
     }
 
+    /// <summary>
+    /// What one player may be sent, by everyone together (LocalMessagesReceivedBurst, LocalMessagesReceivedIntervalSeconds):
+    /// past it their copies are dropped, and the senders aren't told (that would say who is online).
+    /// </summary>
+    [Fact]
+    public async Task WhatOnePlayerIsSentIsLimitedBySettings() {
+        await using var server = new Harness(settings: [("LookingGlass:Limits:LocalMessagesReceivedBurst", "3"), ("LookingGlass:Limits:LocalMessagesReceivedIntervalSeconds", "600")]);
+        var bob = await server.RegisterAsync("Bob Flooded Local");
+        var carol = await server.RegisterAsync("Carol Bystander Local");
+        var senders = new List<TestClient>();
+        foreach (var name in new[] { "Alice Flooding Local", "Dave Flooding Local" }) {
+            senders.Add(await server.RegisterAsync(name));
+        }
+
+        foreach (var sender in senders) {
+            for (var i = 0; i < 2; i++) {
+                // Each sender within its own allowance: every one is taken.
+                Assert.Equal(1, (await sender.Session.SendLocalAsync([Near(bob)], Say($"{sender.Name} {i}"), Ct)).Sent);
+            }
+        }
+
+        // Someone else's allowance is their own.
+        await senders[0].Session.SendLocalAsync([Near(carol)], Say("for carol"), Ct);
+        await WaitFor(() => carol.LocalMessages.FirstOrDefault());
+        // Everything the server passed on to Bob has been handled once this has.
+        await server.SendAndSettleAsync(bob);
+        Assert.Equal(3, bob.LocalMessages.Count);
+    }
+
+    /// <summary>
+    /// A player whose connection is slow to take what it is sent loses local messages rather than the connection: a local
+    /// message is only queued while the queue is less than half full, so it can't fill the room channel events need either.
+    /// </summary>
+    [Fact]
+    public void ASlowConnectionDropsLocalMessagesInsteadOfBeingClosed() {
+        var connection = new LookingGlass.Server.Realtime.ClientConnection(new UnusedWebSocket(), "203.0.113.7", 128 * 1024, 4,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
+        var local = new Event { LocalMessage = new LocalMessage { MessageId = ByteString.CopyFrom(new byte[16]) } };
+
+        Assert.Equal([true, true, false, false, false], Enumerable.Range(0, 5).Select(_ => connection.TrySendDroppable(local)).ToList());
+        Assert.False(connection.Aborted.IsCancellationRequested);
+
+        // Channel events still fit, and the connection is closed only when they don't, as before.
+        connection.SendEvent(new Event { Announcement = new Announcement { Text = "a" } });
+        connection.SendEvent(new Event { Announcement = new Announcement { Text = "b" } });
+        Assert.False(connection.Aborted.IsCancellationRequested);
+        connection.SendEvent(new Event { Announcement = new Announcement { Text = "c" } });
+        Assert.True(connection.Aborted.IsCancellationRequested);
+    }
+
+    /// <summary>A socket for a connection that is never run (nothing is sent or received on it).</summary>
+    private sealed class UnusedWebSocket : System.Net.WebSockets.WebSocket {
+        public override System.Net.WebSockets.WebSocketCloseStatus? CloseStatus => null;
+        public override string? CloseStatusDescription => null;
+        public override System.Net.WebSockets.WebSocketState State => System.Net.WebSockets.WebSocketState.Open;
+        public override string? SubProtocol => null;
+
+        public override void Abort() {
+        }
+
+        public override Task CloseAsync(System.Net.WebSockets.WebSocketCloseStatus closeStatus, string? statusDescription, CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public override Task CloseOutputAsync(System.Net.WebSockets.WebSocketCloseStatus closeStatus, string? statusDescription, CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public override void Dispose() {
+        }
+
+        public override Task<System.Net.WebSockets.WebSocketReceiveResult> ReceiveAsync(ArraySegment<byte> buffer, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public override Task SendAsync(ArraySegment<byte> buffer, System.Net.WebSockets.WebSocketMessageType messageType, bool endOfMessage, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+    }
+
     [Fact]
     public async Task LocalSettingsOutOfRangeAreRefused() {
         Assert.Null(new LookingGlass.Server.LimitOptions().Problem());
@@ -375,6 +537,8 @@ public sealed class LocalChatEndToEndTests : IAsyncLifetime {
         Assert.Contains("MaxLocalRecipients", new LookingGlass.Server.LimitOptions { MaxLocalRecipients = -1 }.Problem());
         Assert.Contains("LocalMessageBurst", new LookingGlass.Server.LimitOptions { LocalMessageBurst = 0 }.Problem());
         Assert.Contains("LocalMessageIntervalSeconds", new LookingGlass.Server.LimitOptions { LocalMessageIntervalSeconds = 0 }.Problem());
+        Assert.Contains("LocalMessagesReceivedBurst", new LookingGlass.Server.LimitOptions { LocalMessagesReceivedBurst = 0 }.Problem());
+        Assert.Contains("LocalMessagesReceivedIntervalSeconds", new LookingGlass.Server.LimitOptions { LocalMessagesReceivedIntervalSeconds = 86_401 }.Problem());
 
         var logs = new CapturingLoggerProvider();
         await ExitCodeGate.WaitAsync(Ct);

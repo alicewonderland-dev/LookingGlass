@@ -783,20 +783,24 @@ message SendLocalMessage {
   bytes ciphertext = 3;
   // One per recipient, each a different user (never the sender), at most Limits.max_local_recipients.
   repeated LocalMessageCopy copies = 4;
+  // SHA-256 commitment to the message's key, bound to the sender and message ID (see LocalCrypto.KeyCommitment), signed in
+  // every copy: a recipient whose key doesn't match it drops the message, so a sender can't give recipients different keys.
+  bytes key_commitment = 5;
 }
 
 message LocalMessageCopy {
   int64 recipient_id = 1;
   // The message's key, sealed to the recipient's identity agreement key, bound to the sender, recipient, message ID and time.
   SealedBox sealed_key = 2;
-  // The sender's Ed25519 signature over the sender, recipient, message ID, time, the ciphertext's hash and sealed_key (see
-  // LocalCrypto), so each recipient checks its own copy without seeing who else got one.
+  // The sender's Ed25519 signature over the sender, recipient, message ID, time, the ciphertext's hash, the key commitment
+  // and sealed_key (see LocalCrypto), so each recipient checks its own copy without seeing who else got one.
   bytes signature = 3;
 }
 
 // A local message for this recipient: their own copy of the key, and the sender's identity as the server has it. The
 // recipient checks the signature against the key it already holds for the sender (the server's only on first use), and
-// shows it only if the sender is near them in the game and on their friends list.
+// shows it only if the sender is near them in the game and on their friends list. A local message never changes the key
+// held for anyone.
 message LocalMessage {
   UserIdentity sender = 1;
   bytes message_id = 2;
@@ -804,6 +808,7 @@ message LocalMessage {
   bytes ciphertext = 4;
   SealedBox sealed_key = 5;
   bytes signature = 6;
+  bytes key_commitment = 7;
 }
 
 // ---------------------------------------------------------------- events

@@ -232,6 +232,12 @@ public sealed record IncomingLocalMessage(User Sender, bool IsOwn, string? Text,
 
     /// <summary>The text and its links (see <see cref="LinkedText.Parts"/>).</summary>
     public LinkedText Linked => new(this.Text ?? "", this.Links);
+
+    /// <summary>
+    /// The sender's identity as the server sent it, when no key was held for them as it arrived: it was checked against
+    /// these, which <see cref="ClientSession.ConfirmLocalSender"/> pins once it is shown. Null if their keys were held.
+    /// </summary>
+    internal UserIdentity? FirstSeen { get; init; }
 }
 
 /// <summary>

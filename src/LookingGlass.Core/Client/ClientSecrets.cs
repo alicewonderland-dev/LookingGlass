@@ -42,7 +42,8 @@ public sealed class ClientSecrets {
     /// <summary>
     /// Channel ID → sender → timestamp (Unix ms) of the newest message accepted
     /// from them. Messages much older than this are replays; unlike the in-memory
-    /// seen-set, this survives restarts. Saved along with other changes, not per message.
+    /// seen-set, this survives restarts. Saved along with other changes, not per message. Local chat's senders are
+    /// kept here too, under <see cref="ClientSession.LocalReplayKey"/> ("local", which no channel ID can be).
     /// </summary>
     public Dictionary<string, Dictionary<long, long>> NewestMessageTimes { get; set; } = new();
 
