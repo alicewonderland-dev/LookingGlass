@@ -48,9 +48,9 @@ The current version is 0.2. It has registration, key login, identity recovery,
 channels, invites, ranks, automatic rekeys, encrypted messages, the signed
 membership log, online indicators, blocking, channel windows (pop-out chat),
 message catch-up (what was sent while you were away), an opt-in chat log on the
-player's computer and debug tooling. ChatTwo
-integration and the import wizard come next. Local chat and a move to MLS are
-planned (see [Planned features](#planned-features)).
+player's computer, local chat with friends near you (`/lgl`) and debug tooling.
+ChatTwo integration and the import wizard come next. A move to MLS is planned
+(see [Planned features](#planned-features)).
 
 ## Glossary
 
@@ -1630,6 +1630,11 @@ again.
   can reach it, channels and all.
 - **The local key file** used where DPAPI is unavailable guards only against
   accidental sharing.
+- **Local chat trusts keys on first use and shows metadata.** A friend's key
+  comes from the server the first time (a lookup, or with their first local
+  message), as for invites; a later change is warned about. The server sees
+  who sent local messages to whom and when, which says they were together.
+  See [Local chat (friends only)](#local-chat-friends-only).
 
 ## Protocol and extensibility
 
@@ -1672,6 +1677,11 @@ Some additions needed no new version:
   doesn't know it.
 - Signed registrations, the registration client nonce and signed URLs. Older
   plugins are refused with a request to update.
+- Local chat: the capability `local.v1`, `SendLocalMessage` and the
+  `LocalMessage` event, and `Limits.max_local_recipients` (see
+  [Local chat (friends only)](#local-chat-friends-only)). A server agrees to it
+  only with a client that offers it, and sends `LocalMessage` only to such a
+  connection, so an older plugin never sees one; an older server never agrees.
 
 ### Adding features
 
@@ -1705,6 +1715,8 @@ Dalamud dependency.
   [Talking in a channel without /lgc](#talking-in-a-channel-without-lgc)), or
   a channel window's own input box (see [Channel windows](#channel-windows)).
   Sending fails closed: an error never falls through to ordinary game chat.
+  `/lgl <message>` talks to the friends near the player (see
+  [Local chat (friends only)](#local-chat-friends-only)).
 - **Game interop.** Signatures live in one module (`ChatInterop`), and come
   from FFXIVClientStructs. A missing one disables only its feature.
 - **ChatTwo.** ChatTwo's input sends through the same game function the chat
@@ -2980,6 +2992,190 @@ ChatTwo (re)loaded, which forgets every ID, so LookingGlass registers again
 The item shows only on a name (the payload right-clicked is a `PlayerPayload`),
 for that player, as an ImGui submenu with each channel in its colour.
 
+### Local chat (friends only)
+
+Built at the owner's request (decided 2026-10-05, built 2026-10-07): a
+`/say`-like chat for players who stand near each other and both use the
+plugin. Nobody without the plugin sees it, and only players on the sender's
+in-game friends list can read it. `/lgl <message>` sends it; it shows in game
+chat tagged `[Local]`. The rules are in the core library (`LocalChat`,
+`LocalChatWords`, `LocalCrypto`, `ClientSession.SendLocalAsync`) and unit
+tested; the plugin's `LocalChatGame` reads the game and `LocalSender` sends.
+The checks to make in game are in
+[docs/testing/local-chat-checklist.md](testing/local-chat-checklist.md).
+
+**The idea.** The sender's plugin picks the recipients and the receiving
+plugin checks again, so the server can't add anyone and can't forge a
+message:
+
+- **The sender's plugin picks the recipients.** It takes the players near the
+  sender in the game (the object table, within 20 yalms, about `/say` range),
+  keeps those on the sender's friends list, and looks up their LookingGlass
+  keys (the same lookup as inviting by name, using pinned keys). It encrypts
+  the message to each of them, signs each copy with the sender's identity
+  key, and asks the server to deliver the copies to those accounts.
+- **The receiving plugin checks too.** It shows a message only if it opens,
+  its signature is the sender's known key, the sender is on this player's
+  friends list, and the sender's character is near them. FFXIV friendships are
+  mutual, and both checks run in the players' own plugins.
+- **The server never learns locations.** It holds no zones, instances or
+  rooms. It only delivers sealed copies to the user IDs the sender named, and
+  stores nothing.
+- **A new server capability**, `local.v1`, with its own message types. It
+  doesn't touch channels, the membership log or epochs, and an old client
+  never sees it.
+
+**Sending.** `/lgl <message>` (`/lgl` alone says how to use it):
+
+- **Who is near and a friend**, read in the frame the line was typed, on the
+  game thread: every player in the object table (`IObjectTable.PlayerObjects`)
+  within `LocalChat.SayRange`, 20 yalms of the player (straight-line distance),
+  who is a friend. A player is a friend if the game marks them so (Dalamud's
+  `StatusFlags.Friend` on the character) or the game's friends list
+  (`InfoProxyFriendList`, FFXIVClientStructs) has them, by content ID or by name
+  and home world; a friend request still waiting for an answer doesn't count.
+  Closest first, each name and world once, at most 50 (`LocalChat.MaxRecipients`,
+  and no more than the server allows).
+- **Nobody to send to** is said plainly, in LookingGlass blue: nobody near
+  enough; nobody near on the friends list; or, when only players not marked as
+  friends are near and the friends list is empty, that the game may not have
+  loaded it yet, and to open it once (Social menu, Friend List). The game may
+  only fill the list once the Friends window has been opened in a session; the
+  plugin can't tell an empty list from one not filled in yet, so it says "may".
+- **Looking them up.** Each friend is looked up by name and home world with
+  the lookup an invite uses (`LookupUser`), and trusted on first use and
+  pinned as any lookup is (a change of keys is warned about). A lookup is
+  reused for 10 minutes (`LookupMemory`), and so is the answer that nobody is
+  registered by that name, so a friend who doesn't use LookingGlass isn't
+  looked up again with every message. The lookups' rate limit applies (60 at
+  once, then one a second); a friend who can't be looked up just now is left
+  out of this message, and the player is told how many. The player themselves
+  and anyone they blocked are left out. If none of them uses LookingGlass on
+  this server, nothing is sent, and the player is told.
+- **Links and text commands** work as in a channel message: the gate reads a
+  `/lgl` line's links as it reads `/lgc`'s, and `<t>`, `<me>` and the like are
+  replaced as the game would, as plain text.
+- **Sealing.** The content (the same `Content` as a channel message, links
+  and all) is encrypted once with XChaCha20-Poly1305 under a random 256-bit key
+  made for this message alone; that key is sealed to each recipient's identity
+  agreement key (an X25519 sealed box, as epoch keys are sealed to members),
+  and each copy is signed with the sender's identity key over the sender, the
+  recipient, the message ID, the time, a hash of the ciphertext and the sealed
+  key. The design first said "encrypt the message separately to each
+  recipient"; sealing one key per recipient instead keeps that property (each
+  copy is for one recipient's identity key, and signed for them alone) at a
+  fraction of the cost: a copy is about 170 bytes, so fifty copies of the
+  longest message are about 10 KB, well within the 128 KiB frame, where fifty
+  whole copies would not fit. A recipient learns nothing of the others: its
+  copy's signature names only it. The associated data and contexts bind the
+  sender, message ID and time, so nothing can be moved between messages,
+  recipients or senders, and a recipient (who holds the message's key) can't
+  make a copy for anyone else, as only the sender can sign one.
+- **The sender's own line** is printed once the server takes it, as in a
+  channel. The server never says who got a copy (see below), so the line
+  doesn't mean anyone read it.
+
+**Receiving.** The session opens a `LocalMessage` only from a server that
+agreed to `local.v1` on this connection, never from the player themselves or
+anyone they blocked, and only if:
+
+- its copy opens with the player's identity key and is signed for them by the
+  key held for the sender. The server sends the sender's identity with each
+  message; it is used only if no key is held for them yet (trust on first use,
+  as for a lookup) and pinned. If it differs from the key held, the new key is
+  taken (pinned, with the usual warning that their keys changed, at most once
+  a minute per sender) and the message that brought it is dropped; their next
+  one, under the new key, shows. So a key change is never silent;
+- it is dated within 10 minutes of the player's clock, and isn't one already
+  had (the seen-set channel messages use, apart from them) or more than 2
+  minutes older than the newest from that sender this session.
+
+Then the plugin, on the game thread, as the game shows things when it
+arrives (`LocalChat.Judge`): the sender (by the name and home world the
+session holds for them) must be within `LocalChat.ReceiveRange`, 30 yalms (a
+little more than the sender's 20, as either may have moved while it
+travelled), and a friend, as above. Anything that fails is dropped silently:
+the diagnostic log counts drops by reason, never who or what. One exception: if
+the sender was near but not marked as a friend and the friends list is empty,
+one line a session says that a player near sent a local message and to open
+the friends list once to see local messages from friends.
+
+**Shown in game chat** as a channel's message is (`ChatOutput.LocalMessage`):
+the tag `[Local]`, then `<Name@World>` and the message, sanitised, with links
+rebuilt from the player's own game data; the sender's name colour if they have
+one. Its colour is a setting of its own (Settings, under Chat, **Local chat
+colour**: the channel colour menu's swatches, **Default** and **Custom...**;
+`LocalChatColourRow` and `LocalChatCustomColour`, none by default, also for
+settings saved before; one for every character), used for the tag, or the
+whole line as **Colour the whole line in a channel's colour** says. It goes to
+the chat channel chosen in Settings, like every LookingGlass line.
+
+**What it doesn't do (choices made when building it):**
+
+- **Not in channel windows, and always in game chat.** It isn't a channel, so
+  no channel window shows it, and **Show LookingGlass messages only in
+  windows** doesn't move it: like the other lines no window could show, it
+  stays in game chat (the setting's tooltip says so). There is no "Show in
+  game chat" for it. A tab for local chat could come later.
+- **No sticky mode.** `/lgl` with no message explains itself rather than
+  starting to talk in local chat. Sticky mode is built around channels (their
+  membership, tags, the ChatTwo label and the server info bar), and local
+  chat's recipients are decided per line from who is near, so it was left for
+  later rather than bent to fit.
+- **Not kept.** Not in the chat log on this computer, not caught up (the
+  server stores nothing), not counted as unread.
+
+**The server** (`RequestHandler.SendLocalMessage`) agrees to `local.v1` only
+if the client offers it and local chat isn't turned off, and only such a
+connection may send one or is sent one. It checks the message ID (16 bytes),
+the ciphertext (at most `Limits.max_message_bytes`, as a channel message),
+at least one and at most `Limits:MaxLocalRecipients` copies (50; 0 turns local
+chat off; at most 200, so a request fits in a frame), each recipient named once
+and never the sender, and every copy's signature against the sender's
+registered key (garbage, or a copy readdressed to someone else, is refused
+before anything is passed on). Local messages are rate limited per user as
+channel messages are (`Limits:LocalMessageBurst`, 5 at once, then one every
+`Limits:LocalMessageIntervalSeconds`, 1). Each copy goes to its recipient if
+they are online on a connection that agreed, with the sender's identity;
+nothing is stored, and a recipient who is offline never gets it. The answer is
+the same whoever got a copy, so naming user IDs can't be used to see who is
+online (presence is otherwise only shown to people who share a channel). It
+logs, at debug level, the sender's user ID and how many copies there were and
+how many were online: never names, never content.
+
+What it costs, all accepted by the owner:
+
+- **No meeting strangers.** It is chat among friends who use the plugin. An
+  open, signed-only local chat is out of scope.
+- **Metadata.** The server sees who sent to whom and when, which implies those
+  players were together.
+- **The friends list must be loaded.** The game may only fill it in once the
+  Friends window has been opened in a session. If so, the plugin says plainly
+  to open it once. Check in game.
+- **Crowds.** One sealed key per recipient is fine for a crowd of friends.
+  Recipients per message are capped (50), and messages rate limited like
+  channel messages.
+
+And, found while building it:
+
+- **Lookups show who uses LookingGlass.** Looking a friend up by name tells the
+  sender whether that friend is registered on the server, as an invite by name
+  always has.
+- **Keys are trusted on first use**, from the server, as for invites: a server
+  could hand out its own key for someone neither side has seen before. A later
+  change is always warned about.
+- **A replay within 10 minutes of a restart** could show a message again, but
+  only if its sender is near and a friend at the time (the seen-set is in
+  memory).
+
+**What is checked in game** (the checklist has it): that `/lgl` is free (no
+game command and no common plugin uses it); that 20 yalms is about `/say`'s
+reach; that `StatusFlags.Friend` is set for friends near the player before the
+friends list is loaded (if so, a friend near is found without opening it);
+that `InfoProxyFriendList` holds nobody until the Friends window is opened,
+and its content IDs and home worlds match the characters'; and that the names
+and home worlds the game shows match what the server has (the Lodestone's).
+
 ### Simple and advanced mode
 
 Most players don't want to think about keys, so the plugin starts in **simple
@@ -3068,6 +3264,7 @@ one transaction for every multi-step change.
 | Outbound queue per connection | 256 events | A slow client is disconnected, not waited on |
 | Stored messages (catch-up) | 7 days, 5,000 per channel; the oldest go first | Bounds the disk a channel can take (about 22 MB at worst); operator settings |
 | Pages of stored messages | 200 messages or 96 KiB each; 100 pages per user at once, then 4 a second | A returning client asks once per channel; within the frame limit |
+| Local messages | 50 recipients each (0 to 200, 0 turns local chat off); 5 per user at once, then 1 a second; the message as large as a channel message | Crowds of friends stay cheap and within the frame limit; floods are stopped as in channels; operator settings |
 | Devices per user | 20 most recently used | Bounds stored logins |
 
 Channel creation, renames, disbands, identity lookups and heavy reads have
@@ -3135,7 +3332,8 @@ How to build, configure, deploy, back up and restore a server is in
   its rules, key login, recovery, identity resets, server moves, secrets
   files, limits, message catch-up (storage, sweeps, who may fetch what, paging,
   and a server that repeats, reorders or forges what it sends back),
-  end-to-end flows, and malicious-server and malicious-member suites that
+  end-to-end flows, local chat (who gets it, what the server checks and what
+  a receiver shows), and malicious-server and malicious-member suites that
   inject forged and replayed events.
 
 Acceptance tests for the membership log:
@@ -3157,47 +3355,6 @@ channels are rebuilt through a planned import wizard. It has its own internal
 name and `/lgc` commands, so it can be installed beside ExtraChat.
 
 ## Planned features
-
-### Local chat (friends only)
-
-Status: planned, not started.
-
-A `/say`-like chat for players who stand near each other and both use the
-plugin. Nobody without the plugin sees it, and only players on the sender's
-in-game friends list can read it.
-
-- **The sender's plugin picks the recipients.** It takes the players near the
-  sender in the game (the object table, at about `/say` range), keeps those on
-  the sender's friends list, and looks up their LookingGlass keys (the same
-  lookup as inviting by name, using pinned keys). It encrypts the message
-  separately to each recipient's identity key, as epoch keys are sealed today,
-  signs it with the sender's identity key, and asks the server to deliver the
-  copies to those accounts.
-- **The receiving plugin checks too.** It shows a message only if it decrypts,
-  its signature is the sender's known key, the sender is on this player's
-  friends list, and the sender's character is near them. FFXIV friendships are
-  mutual, and both checks run in the players' own plugins, so the server can't
-  add anyone and can't forge a message.
-- **The server never learns locations.** It holds no zones, instances or
-  rooms. It only delivers sealed copies to the user IDs the sender named, and
-  stores nothing.
-- **Shown in game chat** with its own tag, command (for example `/lgl`; check
-  in game that it's free) and colour, like a channel.
-- **A new server capability** (`local`) with its own message types. It
-  doesn't touch channels, the membership log or epochs, and an old client
-  never sees it.
-
-What it costs, all accepted:
-
-- **No meeting strangers.** It is chat among friends who use the plugin. An
-  open, signed-only local chat is out of scope.
-- **Metadata.** The server sees who sent to whom and when, which implies those
-  players were together.
-- **The friends list must be loaded.** The game may only fill it in once the
-  Friends window has been opened in a session. If so, the plugin says plainly
-  to open it once. Check in game.
-- **Crowds.** One copy per recipient is fine for a handful of friends nearby.
-  Cap recipients per message (about 50), and rate-limit like channel messages.
 
 ### Garbled speech with GagSpeak
 
@@ -3447,7 +3604,9 @@ The owner's decisions, and why.
   taking the keyboard; in combat, a cutscene or a loading screen it waits
   until that is over. See [Windows only, never game chat](#windows-only-never-game-chat).
 - **Friends-only local chat (2026-10-05).** No party or Free Company option,
-  since those can include people a player doesn't trust.
+  since those can include people a player doesn't trust. Built 2026-10-07, with
+  every cost the design listed accepted; see
+  [Local chat (friends only)](#local-chat-friends-only).
 - **Key-change policy for re-verified keys.** Keys re-verified through the
   Lodestone take over the user's places, and members are told. Other key
   changes warn and continue (still open, below).
