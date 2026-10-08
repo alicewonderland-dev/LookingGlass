@@ -310,6 +310,23 @@ public sealed class BanEnforcementTests {
     }
 
     /// <summary>
+    /// If the bans can't be read (the database fails), a new connection isn't answered with an error: it goes on as usual,
+    /// and the operator is told in the log.
+    /// </summary>
+    [Fact]
+    public async Task ConnectionsGoOnWhenTheBansCantBeRead() {
+        var logs = new CapturingLoggerProvider();
+        await using var server = new Harness(logs: logs, settings: CheckEverySecond);
+        await server.ConnectRawAsync(remoteAddress: "203.0.113.80", hello: false);
+        server.ExecuteSql("DROP TABLE bans;");
+        await Task.Delay(TimeSpan.FromSeconds(1.2), Ct);
+
+        await server.ConnectRawAsync(remoteAddress: "203.0.113.81", hello: false);
+        await server.ConnectRawAsync(remoteAddress: "203.0.113.82", hello: false);
+        Assert.Single(logs.AtLeast(LogLevel.Warning), warning => warning.StartsWith("Couldn't check the address of a new connection against the bans"));
+    }
+
+    /// <summary>
     /// Behind a proxy on the same machine, bans and flags go by the client address it forwards, never the proxy's; and a
     /// forwarded address from a peer that isn't a trusted proxy is ignored, so it can't put a ban on someone else, or dodge one.
     /// </summary>

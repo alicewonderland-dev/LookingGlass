@@ -1287,9 +1287,13 @@ public sealed class Database {
 
     // ================================================================ invites and membership
 
-    public int CountPendingInvites(string channelId) {
+    /// <param name="from">Only those this inviter sent.</param>
+    public int CountPendingInvites(string channelId, long? from = null) {
         using var connection = this.Open();
-        return Convert.ToInt32(Scalar(connection, null, "SELECT COUNT(*) FROM invites WHERE channel_id = $id;", ("$id", channelId)));
+        return from is { } inviter
+            ? Convert.ToInt32(Scalar(connection, null, "SELECT COUNT(*) FROM invites WHERE channel_id = $id AND inviter_id = $from;",
+                ("$id", channelId), ("$from", inviter)))
+            : Convert.ToInt32(Scalar(connection, null, "SELECT COUNT(*) FROM invites WHERE channel_id = $id;", ("$id", channelId)));
     }
 
     public int CountMembers(string channelId) {

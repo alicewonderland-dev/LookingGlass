@@ -371,6 +371,11 @@ public sealed class BanTests : IDisposable {
             RunServer("--unban", "31337", $"--LookingGlass:DataDirectory={this._directory}");
             Assert.Equal(0, Environment.ExitCode);
             Assert.Empty(this._db.GetActiveBans(DateTimeOffset.UtcNow.ToUnixTimeSeconds()));
+
+            // --force, like --bans, has no value: the setting after it is still read as a setting.
+            RunServer("--ban", "127.0.0.1", "--force", $"--LookingGlass:DataDirectory={this._directory}");
+            Assert.Equal(0, Environment.ExitCode);
+            Assert.Equal("127.0.0.1", Assert.Single(this._db.GetActiveBans(DateTimeOffset.UtcNow.ToUnixTimeSeconds())).Address);
         } finally {
             Environment.ExitCode = exitCode;
             ExitCodeGate.Release();

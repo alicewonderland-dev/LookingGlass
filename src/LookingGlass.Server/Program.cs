@@ -16,8 +16,8 @@ using LookingGlass.Server.Services;
 // (systemd, Windows service, Docker, or by hand).
 var builder = WebApplication.CreateBuilder(new WebApplicationOptions {
     // Settings can be given on the command line too (--LookingGlass:DataDirectory=...), where a switch without "=" takes the
-    // next argument as its value: "--bans", which has none, would take the setting after it.
-    Args = args.Where(arg => arg != "--bans").ToArray(),
+    // next argument as its value: "--bans" and "--force", which have none, would take the setting after them.
+    Args = args.Where(arg => arg is not ("--bans" or "--force")).ToArray(),
     ContentRootPath = AppContext.BaseDirectory,
 });
 
@@ -231,6 +231,24 @@ var gate = new ConnectionGate(options.Limits.MaxConnections, options.Limits.Conn
 var acceptor = new WebSocketAcceptor(app.Services.GetRequiredService<ILoggerFactory>().CreateLogger<WebSocketAcceptor>());
 var abuse = app.Services.GetRequiredService<AbuseMonitor>();
 var bans = app.Services.GetRequiredService<BanList>();
+// When the server last warned that it couldn't read the bans for a new connection (UTC ticks): once a minute at most.
+long bansUnreadableWarned = 0;
+
+// Whether an address is blocked automatically (a flood). If the bans can't be read (the database fails), the connection
+// goes on to the usual path, which checks again and answers an error as any request's, rather than failing here with a 500.
+bool BlockedAutomatically(string limitKey) {
+    try {
+        return bans.ForAddress(limitKey) is { Automatic: true };
+    } catch (Exception ex) {
+        var now = DateTime.UtcNow.Ticks;
+        var last = Interlocked.Read(ref bansUnreadableWarned);
+        if (now - last >= TimeSpan.TicksPerMinute && Interlocked.CompareExchange(ref bansUnreadableWarned, now, last) == last) {
+            app.Logger.LogWarning(ex, "Couldn't check the address of a new connection against the bans, so it was let through (said once a minute at most)");
+        }
+
+        return false;
+    }
+}
 
 // Whether the server is up, and its version: nothing about who uses it.
 app.MapGet("/health", () => Results.Ok(new { status = "ok", version = RequestHandler.ServerVersion }));
@@ -244,7 +262,7 @@ app.Map(ProtocolInfo.WebSocketPath, async (HttpContext context, RequestHandler h
 
     // An address blocked automatically is flooding: refused before anything else, not even let in to be told why (the
     // operator's own bans let it say hello, and answer that).
-    if (bans.ForAddress(ClientAddresses.LimitKey(context.Connection.RemoteIpAddress)) is { Automatic: true }) {
+    if (BlockedAutomatically(ClientAddresses.LimitKey(context.Connection.RemoteIpAddress))) {
         context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
         return;
     }

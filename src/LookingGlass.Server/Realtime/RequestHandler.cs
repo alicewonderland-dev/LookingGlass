@@ -311,19 +311,21 @@ public sealed class RequestHandler(
     /// <summary>
     /// An invite refused by one of the invite limits (named as its setting): logged, with the user IDs only, so refusals can be
     /// traced, though at most once a minute per inviter; and counted towards flagging the inviter (see <see cref="AbuseMonitor"/>),
-    /// every time, unless it is one of <see cref="NotTheInvitersDoing"/>.
+    /// every time, unless it is one of <see cref="NotTheInvitersDoing"/> (or <paramref name="theirDoing"/> says otherwise).
     /// </summary>
-    private RequestException InviteRefused(ErrorCode code, string limit, long inviter, long invitee, string message) {
+    /// <param name="theirDoing">Whether the inviter filled the limit themselves, where that depends on more than the limit.</param>
+    private RequestException InviteRefused(ErrorCode code, string limit, long inviter, long invitee, string message, bool? theirDoing = null) {
         if (this._inviteRefusalLogs.TryTake(inviter)) {
             logger.LogInformation("Invite from user {Inviter} to user {Invitee} refused by {Limit}", inviter, invitee, limit);
         }
 
-        return new RequestException(code, message) { Limit = limit, NotTheirDoing = NotTheInvitersDoing.Contains(limit) };
+        return new RequestException(code, message) { Limit = limit, NotTheirDoing = !(theirDoing ?? !NotTheInvitersDoing.Contains(limit)) };
     }
 
     /// <summary>
     /// The invite limits that are full because of what others did (everyone inviting the invitee, or the channel's pending
-    /// invites), not this inviter: refusals by them aren't counted towards flagging the inviter.
+    /// invites), not this inviter: refusals by them aren't counted towards flagging the inviter. A channel's pending invites
+    /// are, though, when the inviter sent most of them.
     /// </summary>
     private static readonly HashSet<string> NotTheInvitersDoing = [
         nameof(LimitOptions.MaxPendingInvitesPerUser), nameof(LimitOptions.InviteBurstPerInvitee), "MaxPendingInvitesPerChannel",
@@ -1285,8 +1287,11 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.Conflict, $"{invitee.Name} is already a member or invited.");
         }
 
-        if (db.CountPendingInvites(channelId) >= this.Limits.MaxPendingInvitesPerChannel) {
-            throw this.InviteRefused(ErrorCode.LimitReached, "MaxPendingInvitesPerChannel", me.UserId, invitee.UserId, "Too many pending invites in this channel.");
+        var pending = db.CountPendingInvites(channelId);
+        if (pending >= this.Limits.MaxPendingInvitesPerChannel) {
+            // Counted against the inviter only if they sent most of them: a moderator can't help what the admin filled.
+            throw this.InviteRefused(ErrorCode.LimitReached, "MaxPendingInvitesPerChannel", me.UserId, invitee.UserId, "Too many pending invites in this channel.",
+                theirDoing: db.CountPendingInvites(channelId, from: me.UserId) * 2 > pending);
         }
 
         if (db.CountMembers(channelId) + db.CountPendingInvites(channelId) >= this.Limits.MaxMembersPerChannel) {
