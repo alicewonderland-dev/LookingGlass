@@ -350,6 +350,36 @@ public static class PlainMessages {
         "so registering, signing back in and \"Reset my identity\" won't work through it. " +
         "Set the server address in Settings to one of those (ask the server's operator if none works for you).");
 
+    /// <summary>
+    /// The server's operator blocked this character, or the address this computer connects from (a ban): told once, and the
+    /// session's status while it lasts. The reason is the operator's own words, cleaned and in quotes; the end, if the block
+    /// has one, in this computer's time.
+    /// </summary>
+    /// <param name="retry">How often LookingGlass tries again meanwhile (see <see cref="ClientSessionOptions.BlockedRetryDelay"/>).</param>
+    public static Wording Blocked(Protocol.Block block, TimeSpan retry) {
+        var until = block.UntilUnix > 0
+            ? " until " + DateTimeOffset.FromUnixTimeSeconds(block.UntilUnix).ToLocalTime().ToString("g", System.Globalization.CultureInfo.CurrentCulture)
+            : "";
+        var reason = Util.TextSanitizer.Clean(block.Reason, 300).Replace('"', '\'');
+        var why = reason.Length > 0 ? $" The reason they gave: \"{reason}\"." : "";
+        var every = retry >= TimeSpan.FromMinutes(1.5) ? $"every {Math.Round(retry.TotalMinutes):0} minutes" : "every minute or so";
+        return block.Address
+            ? new Wording(NoticeKind.Blocked,
+                $"This server's operator has blocked connections from your internet address{until} (everyone who shares it, such as a household or " +
+                $"a shared network), so LookingGlass can't connect to it.{why} Your places in your channels stay. LookingGlass tries again {every}, " +
+                "or now with Reconnect. If you think it's a mistake, ask whoever runs the server.",
+                $"The people who run this LookingGlass server have blocked your internet connection{until} (everyone on it, such as your household), " +
+                $"so you can't chat in your LookingGlass channels here for now.{why} You keep your places in your channels. LookingGlass tries " +
+                $"again {every}. If you think it's a mistake, ask the people who run the server.")
+            : new Wording(NoticeKind.Blocked,
+                $"This server's operator has blocked this character{until}, so it can't sign in, and you can't chat in your channels here or be " +
+                $"reached in them.{why} Your places in your channels stay. LookingGlass tries again {every}, or now with Reconnect. If you think " +
+                "it's a mistake, ask whoever runs the server.",
+                $"The people who run this LookingGlass server have blocked this character from it{until}, so you can't chat in your LookingGlass " +
+                $"channels here for now.{why} You keep your places in your channels. LookingGlass tries again {every}. If you think it's a " +
+                "mistake, ask the people who run the server.");
+    }
+
     /// <summary>A server that sent another server's registration code (see <see cref="RelayedRegistrationCodeException"/>). Plain words already.</summary>
     public static readonly Wording RelayedRegistrationCode = Wording.Same(
         "This server sent a registration code that doesn't belong to it. It may be passing on another server's code. " +
@@ -610,6 +640,9 @@ public static class PlainMessages {
         yield return MessagesNotConfirmed("Tea party", [("Carol Queen@Odin", Protocol.MembershipEntryKind.Leave), ("Bob Hatter@Lich", Protocol.MembershipEntryKind.KeyRecovered)]);
         yield return MessageReplayed("Bob Hatter", "04/10/2026 12:00");
         yield return AddressNotListed("wss://chat.example.com/ws", "ws://203.0.113.5:5180/ws");
+        yield return Blocked(new Protocol.Block(), TimeSpan.FromMinutes(5));
+        yield return Blocked(new Protocol.Block { Reason = "Spamming invites", UntilUnix = 1_791_000_000 }, TimeSpan.FromMinutes(5));
+        yield return Blocked(new Protocol.Block { Reason = "Flooding", Address = true }, TimeSpan.FromSeconds(30));
         yield return RelayedRegistrationCode;
         yield return IdentitiesMissing;
         yield return MembershipHidden.Format(channel);

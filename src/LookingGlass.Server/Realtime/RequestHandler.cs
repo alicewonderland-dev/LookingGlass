@@ -17,6 +17,19 @@ namespace LookingGlass.Server.Realtime;
 /// <summary>A request failed in a way the client should be told about.</summary>
 public sealed class RequestException(ErrorCode code, string message) : Exception(message) {
     public ErrorCode Code { get; } = code;
+
+    /// <summary>
+    /// The limit that refused the request, as its setting is named, for <see cref="AbuseMonitor"/>. Every refusal with
+    /// <see cref="ErrorCode.RateLimited"/> counts (named by the request's kind if this is null), unless it is
+    /// <see cref="NotTheirDoing"/>; one with another code counts only if this names a limit.
+    /// </summary>
+    public string? Limit { get; init; }
+
+    /// <summary>Refused for something that isn't the client's doing (the shared Lodestone queue is busy, say): not counted.</summary>
+    public bool NotTheirDoing { get; init; }
+
+    /// <summary>With <see cref="ErrorCode.Blocked"/>: the operator's block, for the client to say why.</summary>
+    public Block? Block { get; init; }
 }
 
 /// <summary>
@@ -33,7 +46,9 @@ public sealed class RequestHandler(
     IMembershipProvider membership,
     IGroupKeyProvider groupKeys,
     IHostEnvironment? environment = null,
-    TimeProvider? time = null) {
+    TimeProvider? time = null,
+    AbuseMonitor? abuse = null,
+    BanList? bans = null) {
     /// <summary>This server's version, as Welcome and /health give it.</summary>
     public static readonly string ServerVersion = typeof(RequestHandler).Assembly.GetName().Version?.ToString(3) ?? "0.1.0";
 
@@ -199,6 +214,11 @@ public sealed class RequestHandler(
 
     public async Task<Response> HandleAsync(ClientConnection connection, ClientFrame frame, CancellationToken ct) {
         try {
+            // A banned address gets nothing but the block, in answer to its first request, and is closed.
+            if (!connection.HelloDone && bans?.ForAddress(connection.RemoteAddress) is { } addressBan) {
+                throw Blocked(connection, addressBan, address: true);
+            }
+
             if (!connection.HelloDone && frame.BodyCase != ClientFrame.BodyOneofCase.Hello) {
                 throw new RequestException(ErrorCode.InvalidRequest, "Send Hello first.");
             }
@@ -237,7 +257,14 @@ public sealed class RequestHandler(
                 _ => throw new RequestException(ErrorCode.InvalidRequest, "Unknown request."),
             };
         } catch (RequestException ex) {
-            return Error(ex.Code, ex.Message);
+            if (abuse != null && !ex.NotTheirDoing && (ex.Limit != null || ex.Code == ErrorCode.RateLimited)) {
+                // Only an account the connection logged in as: a request can name any (a key login, say).
+                abuse.Refused(ex.Limit ?? frame.BodyCase.ToString(), connection.User?.UserId, connection.RemoteAddress);
+            }
+
+            var error = Error(ex.Code, ex.Message);
+            error.Error.Block = ex.Block;
+            return error;
         } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
             throw;
         } catch (Exception ex) {
@@ -283,14 +310,43 @@ public sealed class RequestHandler(
 
     /// <summary>
     /// An invite refused by one of the invite limits (named as its setting): logged, with the user IDs only, so refusals can be
-    /// traced, though at most once a minute per inviter.
+    /// traced, though at most once a minute per inviter; and counted towards flagging (see <see cref="AbuseMonitor"/>), every time.
     /// </summary>
     private RequestException InviteRefused(ErrorCode code, string limit, long inviter, long invitee, string message) {
         if (this._inviteRefusalLogs.TryTake(inviter)) {
             logger.LogInformation("Invite from user {Inviter} to user {Invitee} refused by {Limit}", inviter, invitee, limit);
         }
 
-        return new RequestException(code, message);
+        return new RequestException(code, message) { Limit = limit };
+    }
+
+    /// <summary>
+    /// Refuses a connection the operator banned (its account, or its address), and has it closed once that is answered. The
+    /// message says it all, for a plugin from before bans; a newer one says it in its own words from <see cref="Block"/>.
+    /// Not counted as a refusal by a limit.
+    /// </summary>
+    private static RequestException Blocked(ClientConnection connection, BanRow ban, bool address) {
+        connection.CloseAfterResponse("Blocked by the server's operator");
+        var until = ban.ExpiresAt is { } expires
+            ? $" until {DateTimeOffset.FromUnixTimeSeconds(expires).UtcDateTime.ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture)} UTC"
+            : "";
+        var what = address ? "connections from your internet address" : "this character";
+        var why = string.IsNullOrWhiteSpace(ban.Reason) ? "" : $" The reason they gave: {ban.Reason}";
+        return new RequestException(ErrorCode.Blocked, $"This server's operator has blocked {what}{until}, so you can't use it.{why}") {
+            Block = new Block { Reason = ban.Reason, UntilUnix = ban.ExpiresAt ?? 0, Address = address },
+        };
+    }
+
+    /// <summary>Refuses the account if the operator banned it (see <see cref="Blocked"/>).</summary>
+    private void RefuseIfBanned(ClientConnection connection, long userId) {
+        if (bans?.ForUser(userId) is { } ban) {
+            throw this.BlockedAccount(connection, userId, ban);
+        }
+    }
+
+    private RequestException BlockedAccount(ClientConnection connection, long userId, BanRow ban) {
+        logger.LogInformation("User {User} is banned: refused, and the connection from {Address} closed", userId, connection.RemoteAddress);
+        return Blocked(connection, ban, address: false);
     }
 
     // ================================================================ handshake and identity
@@ -392,7 +448,9 @@ public sealed class RequestHandler(
         // Per IPv6 /56, as connections are counted (the least an ISP commonly gives one customer), not per /64.
         var address = ClientAddresses.WidenToConnectionKey(connection.RemoteAddress);
         RequestException TooMany() => new(ErrorCode.RateLimited,
-            $"Too many registrations from your address; try again in {AboutHowLong(this._registrations.RetryAfter(address))}.");
+            $"Too many registrations from your address; try again in {AboutHowLong(this._registrations.RetryAfter(address))}.") {
+            Limit = nameof(LimitOptions.RegistrationsPerHourPerIp),
+        };
         if (this._registrations.IsFull(address)) {
             throw TooMany();
         }
@@ -400,7 +458,9 @@ public sealed class RequestHandler(
         // Checked before anything is counted or asked of the Lodestone.
         if (this._registrationLookupFailures.IsFull(address)) {
             throw new RequestException(ErrorCode.RateLimited, "Too many characters from your address couldn't be found on the Lodestone; check the name and " +
-                $"home world, and try again in {AboutHowLong(this._registrationLookupFailures.RetryAfter(address))}.");
+                $"home world, and try again in {AboutHowLong(this._registrationLookupFailures.RetryAfter(address))}.") {
+                Limit = nameof(LimitOptions.RegistrationLookupFailuresPerHourPerIp),
+            };
         }
 
         if (!this._registrations.TryAdd(address)) {
@@ -419,7 +479,9 @@ public sealed class RequestHandler(
         } catch (LodestoneBusyException) {
             // Not this user's doing, and nothing was asked of the Lodestone.
             this._registrations.Refund(address);
-            throw new RequestException(ErrorCode.RateLimited, "The server is busy checking other characters; try again in a minute.");
+            throw new RequestException(ErrorCode.RateLimited, "The server is busy checking other characters; try again in a minute.") {
+                NotTheirDoing = true,
+            };
         }
 
         var found = search.Found;
@@ -466,7 +528,9 @@ public sealed class RequestHandler(
     private void CountRefusedRegistration(ClientConnection connection) {
         if (!this._refusedRegistrations.TryAdd(connection.RemoteAddress)) {
             throw new RequestException(ErrorCode.RateLimited,
-                "Too many registration attempts for addresses this server doesn't accept; set the server address in Settings to one it accepts, and try again later.");
+                "Too many registration attempts for addresses this server doesn't accept; set the server address in Settings to one it accepts, and try again later.") {
+                Limit = nameof(LimitOptions.RefusedRegistrationsPerHourPerIp),
+            };
         }
     }
 
@@ -521,7 +585,9 @@ public sealed class RequestHandler(
             } catch (LodestoneBusyException) {
                 // Not the user's fault: don't count the attempt.
                 connection.VerifyAttempts--;
-                throw new RequestException(ErrorCode.RateLimited, "The server is busy checking other characters; try again in a minute.");
+                throw new RequestException(ErrorCode.RateLimited, "The server is busy checking other characters; try again in a minute.") {
+                    NotTheirDoing = true,
+                };
             }
 
             switch (check) {
@@ -548,6 +614,10 @@ public sealed class RequestHandler(
         }
 
         connection.PendingRegistration = null;
+        // A banned character can't register again, with these keys or any: the ban is on the character. Checked once the
+        // Lodestone says this is its owner, so nobody else learns of the ban, and before anything is stored or moved.
+        this.RefuseIfBanned(connection, pending.UserId);
+
         // The Lodestone (or, for a debug account, nothing at all: anyone may register any of those) says this is the
         // account's owner: their places move to the keys registered, with a key recovered entry in each channel's log.
         Registration registration;
@@ -681,6 +751,8 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.NotAuthenticated, "Debug accounts are disabled on this server.");
         }
 
+        // Only someone holding the account's login learns that it is banned, and why.
+        this.RefuseIfBanned(connection, user.UserId);
         connection.User = user;
         connection.DeviceTokenHash = tokenHash;
         registry.SetOnline(user.UserId, connection);
@@ -725,14 +797,18 @@ public sealed class RequestHandler(
         var address = connection.RemoteAddress;
         if (this._keyLoginFailuresPerIp.IsFull(address) || this._keyLoginsPerIp.IsFull(address)) {
             logger.LogDebug("Key login from {Address} refused: too many from this address", address);
-            throw new RequestException(ErrorCode.RateLimited, "Too many key login attempts; try again later.");
+            throw new RequestException(ErrorCode.RateLimited, "Too many key login attempts; try again later.") {
+                Limit = nameof(LimitOptions.KeyLoginsPerHourPerIp),
+            };
         }
 
         // Checked, not counted: only a failed answer uses up this address's allowance for the account.
         var accountFailures = this._keyLoginFailuresPerAccountAndIp.Count(AccountAndAddress(request.UserId, address));
         if (accountFailures >= this._keyLoginFailuresPerAccountAndIp.Limit) {
             logger.LogDebug("Key login for {User} from {Address} refused: too many failures for this account from this address", request.UserId, address);
-            throw new RequestException(ErrorCode.RateLimited, "Too many failed key logins for this account from your address; try again later.");
+            throw new RequestException(ErrorCode.RateLimited, "Too many failed key logins for this account from your address; try again later.") {
+                Limit = nameof(LimitOptions.KeyLoginFailuresPerHourPerIp),
+            };
         }
 
         // The challenge, and (until it is answered correctly) a failure. Both checked above, but a request on another
@@ -744,12 +820,16 @@ public sealed class RequestHandler(
         var askedBefore = this._keyLoginsPerAccountAndIp.Count(accountKey) > 0;
         if (!this._keyLoginsPerAccountAndIp.TryAdd(accountKey)) {
             logger.LogDebug("Key login for {User} from {Address} refused: too many challenges for this account from this address", request.UserId, address);
-            throw new RequestException(ErrorCode.RateLimited, "Too many key login attempts for this account from your address; try again later.");
+            throw new RequestException(ErrorCode.RateLimited, "Too many key login attempts for this account from your address; try again later.") {
+                Limit = nameof(LimitOptions.KeyLoginsPerHourPerIp),
+            };
         }
 
         if (!askedBefore && !this._keyLoginsPerIp.TryAdd(address)) {
             this._keyLoginsPerAccountAndIp.Refund(accountKey);
-            throw new RequestException(ErrorCode.RateLimited, "Too many key login attempts; try again later.");
+            throw new RequestException(ErrorCode.RateLimited, "Too many key login attempts; try again later.") {
+                Limit = nameof(LimitOptions.KeyLoginsPerHourPerIp),
+            };
         }
 
         var countedForAddress = accountFailures == 0;
@@ -759,7 +839,9 @@ public sealed class RequestHandler(
                 this._keyLoginsPerIp.Refund(address);
             }
 
-            throw new RequestException(ErrorCode.RateLimited, "Too many key login attempts; try again later.");
+            throw new RequestException(ErrorCode.RateLimited, "Too many key login attempts; try again later.") {
+                Limit = nameof(LimitOptions.KeyLoginFailuresPerHourPerIp),
+            };
         }
 
         // A challenge this one replaces stays counted as a failure for the address: it was never answered.
@@ -789,6 +871,16 @@ public sealed class RequestHandler(
 
         var refusal = this.CheckKeyLogin(connection, pending, request, out var user, out var wrongAddress);
         string? token = null;
+        if (refusal == null && bans?.ForUser(user!.UserId) is { } ban) {
+            // Signed by the account's key, so only its holder learns that it is banned, and why (a challenge is issued for any
+            // account, so asking for one tells nobody); no login is made for it. Answered correctly, so no failure either.
+            if (pending!.CountedForAddress) {
+                this._keyLoginFailuresPerIp.Refund(connection.RemoteAddress);
+            }
+
+            throw this.BlockedAccount(connection, user!.UserId, ban);
+        }
+
         if (refusal == null) {
             token = NewDeviceToken();
             if (this.BeforeKeyLoginDeviceAddedForTests is { } hook) {
@@ -1078,7 +1170,9 @@ public sealed class RequestHandler(
     private Response LookupUser(ClientConnection connection, LookupUser request) {
         var me = RequireUser(connection);
         if (!this._lookups.TryTake(me.UserId, out var wait)) {
-            throw new RequestException(ErrorCode.RateLimited, $"You've looked up a lot of players recently; try again in {AboutHowLong(wait)}.");
+            throw new RequestException(ErrorCode.RateLimited, $"You've looked up a lot of players recently; try again in {AboutHowLong(wait)}.") {
+                Limit = nameof(LimitOptions.LookupBurst),
+            };
         }
 
         var user = db.FindUser(request.Name, request.WorldName)

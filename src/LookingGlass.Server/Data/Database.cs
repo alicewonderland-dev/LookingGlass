@@ -92,6 +92,29 @@ public sealed record Registration(UserRow User, bool KeysChanged) {
     public IReadOnlyList<RecoveredPlace> Recovered { get; init; } = [];
 }
 
+/// <summary>
+/// A ban the operator made (<c>--ban</c>), or one made automatically (see <see cref="AbuseOptions.AutoBlockMinutes"/>): on a
+/// character, by its user ID, or on an address or prefix. Times are Unix seconds.
+/// </summary>
+/// <param name="ExpiresAt">When it ends; null if it lasts until lifted.</param>
+/// <param name="LiftedAt">When the operator lifted it (<c>--unban</c>, or banning the same subject again); null if they haven't.</param>
+public sealed record BanRow(long BanId, long? UserId, string? Address, string Reason, long CreatedAt, long? ExpiresAt, long? LiftedAt, bool Automatic) {
+    /// <summary>Whether it is in force at <paramref name="now"/>.</summary>
+    public bool InForce(long now) => this.LiftedAt == null && (this.ExpiresAt == null || this.ExpiresAt > now);
+
+    /// <summary>What it is on, as flags and the command line name it: "user 123" or "address 203.0.113.0/24".</summary>
+    public string Subject => this.UserId is { } id ? $"user {id}" : $"address {this.Address}";
+}
+
+/// <summary>
+/// An account or address flagged for being refused by limits again and again (see <see cref="Services.AbuseMonitor"/>). Times are
+/// Unix seconds; it expires <see cref="AbuseOptions.FlagExpiresAfterHours"/> after <paramref name="LastRefusedAt"/>.
+/// </summary>
+/// <param name="Subject">"user 123", or "address 203.0.113.9" (an IPv6 one as its /64 or /56).</param>
+/// <param name="Limits">The limits that refused it, by name, comma separated.</param>
+/// <param name="Why">Which threshold it passed, in words.</param>
+public sealed record FlagRow(string Subject, long? UserId, string? Address, long FirstFlaggedAt, long LastRefusedAt, string Limits, string Why);
+
 /// <summary>A registration names a signing key the account replaced or retired, which it never registers again.</summary>
 public sealed class KeyRetiredException() : Exception("That identity key was replaced or retired, so it can't be registered again.");
 
@@ -106,7 +129,7 @@ public sealed class UnsupportedDatabaseException(string message) : Exception(mes
 /// Methods are synchronous (SQLite is in-process) and short.
 /// </summary>
 public sealed class Database {
-    private const int SchemaVersion = 9;
+    private const int SchemaVersion = 10;
     private const int KeptEpochs = 4;
 
     /// <summary>
@@ -412,6 +435,36 @@ public sealed class Database {
             }
 
             Execute(connection, tx, "INSERT INTO schema_version (version) VALUES (9);");
+        }
+
+        if (current < 10) {
+            // Bans the operator makes (--ban), on a character (by user ID, the Lodestone ID, whether or not it is registered:
+            // no reference to users) or an address or prefix; kept once lifted or ended, for a while, as history. And the
+            // accounts and addresses flagged for being refused by limits again and again, for --bans to list. Nothing else
+            // changes. (IF NOT EXISTS, as tests of older schemas only remove the version rows.)
+            Execute(connection, tx, """
+                CREATE TABLE IF NOT EXISTS bans (
+                    ban_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id    INTEGER,
+                    address    TEXT,
+                    reason     TEXT    NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    expires_at INTEGER,
+                    lifted_at  INTEGER,
+                    automatic  INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE INDEX IF NOT EXISTS bans_by_user ON bans (user_id);
+                CREATE TABLE IF NOT EXISTS abuse_flags (
+                    subject          TEXT    PRIMARY KEY,
+                    user_id          INTEGER,
+                    address          TEXT,
+                    first_flagged_at INTEGER NOT NULL,
+                    last_refused_at  INTEGER NOT NULL,
+                    limits           TEXT    NOT NULL,
+                    why              TEXT    NOT NULL
+                );
+                INSERT INTO schema_version (version) VALUES (10);
+                """);
         }
 
         tx.Commit();
@@ -1526,6 +1579,126 @@ public sealed class Database {
     internal List<ulong> StoredKeyEpochs(string channelId) {
         using var connection = this.Open();
         return Query(connection, null, "SELECT DISTINCT epoch FROM epoch_keys WHERE channel_id = $id ORDER BY epoch;", reader => (ulong) reader.GetInt64(0), ("$id", channelId));
+    }
+
+    // ================================================================ bans and flags (see "Spotting abuse, and banning" in docs/design.md)
+
+    /// <summary>
+    /// Bans a character (by user ID, registered or not) or an address or prefix (as <see cref="Hosting.ClientAddresses.BanPrefix"/>
+    /// writes it), from <paramref name="now"/> until <paramref name="expiresAt"/> (null: until lifted). A ban the same subject
+    /// has already is lifted (it becomes history), in the same transaction.
+    /// </summary>
+    /// <param name="replaced">How many bans in force it replaced (0 or 1).</param>
+    public BanRow AddBan(long? userId, string? address, string reason, long? expiresAt, bool automatic, long now, out int replaced) {
+        if ((userId == null) == (address == null)) {
+            throw new ArgumentException("A ban is on a character or an address, not both or neither.");
+        }
+
+        using var connection = this.Open();
+        using var tx = connection.BeginTransaction();
+        replaced = LiftBans(connection, tx, userId, address, now);
+        var id = Convert.ToInt64(Scalar(connection, tx, """
+            INSERT INTO bans (user_id, address, reason, created_at, expires_at, lifted_at, automatic)
+            VALUES ($user, $address, $reason, $now, $expires, NULL, $automatic) RETURNING ban_id;
+            """, ("$user", (object?) userId ?? DBNull.Value), ("$address", (object?) address ?? DBNull.Value), ("$reason", reason), ("$now", now),
+            ("$expires", (object?) expiresAt ?? DBNull.Value), ("$automatic", automatic ? 1 : 0)));
+        tx.Commit();
+        return new BanRow(id, userId, address, reason, now, expiresAt, null, automatic);
+    }
+
+    /// <summary>Lifts the bans in force on a character or an address (exactly as written), as of <paramref name="now"/>.</summary>
+    /// <returns>How many were lifted.</returns>
+    public int LiftBans(long? userId, string? address, long now) {
+        using var connection = this.Open();
+        return LiftBans(connection, null, userId, address, now);
+    }
+
+    private static int LiftBans(SqliteConnection connection, SqliteTransaction? tx, long? userId, string? address, long now) {
+        return Execute(connection, tx, $"""
+            UPDATE bans SET lifted_at = $now
+            WHERE {(userId != null ? "user_id = $subject" : "address = $subject")} AND lifted_at IS NULL AND (expires_at IS NULL OR expires_at > $now);
+            """, ("$subject", (object?) userId ?? address!), ("$now", now));
+    }
+
+    /// <summary>The bans in force at <paramref name="now"/>, oldest first.</summary>
+    public List<BanRow> GetActiveBans(long now) {
+        using var connection = this.Open();
+        return Query(connection, null, "SELECT * FROM bans WHERE lifted_at IS NULL AND (expires_at IS NULL OR expires_at > $now) ORDER BY ban_id;", ReadBan, ("$now", now));
+    }
+
+    /// <summary>The bans lifted or ended by <paramref name="now"/> and not yet swept, most recent first.</summary>
+    public List<BanRow> GetBanHistory(long now) {
+        using var connection = this.Open();
+        return Query(connection, null, """
+            SELECT * FROM bans WHERE lifted_at IS NOT NULL OR (expires_at IS NOT NULL AND expires_at <= $now)
+            ORDER BY COALESCE(lifted_at, expires_at) DESC, ban_id DESC;
+            """, ReadBan, ("$now", now));
+    }
+
+    /// <summary>Deletes bans lifted or ended more than <paramref name="historyDays"/> days before <paramref name="now"/>; never one in force.</summary>
+    /// <returns>How many went.</returns>
+    public int SweepBans(long now, int historyDays) {
+        using var connection = this.Open();
+        var before = now - historyDays * 86400L;
+        return Execute(connection, null, """
+            DELETE FROM bans WHERE (lifted_at IS NOT NULL AND lifted_at < $before)
+                OR (lifted_at IS NULL AND expires_at IS NOT NULL AND expires_at < $before);
+            """, ("$before", before));
+    }
+
+    /// <summary>Adds a flag, or updates the one its subject has.</summary>
+    public void SaveFlag(FlagRow flag) {
+        using var connection = this.Open();
+        Execute(connection, null, """
+            INSERT INTO abuse_flags (subject, user_id, address, first_flagged_at, last_refused_at, limits, why)
+            VALUES ($subject, $user, $address, $first, $last, $limits, $why)
+            ON CONFLICT (subject) DO UPDATE SET first_flagged_at = excluded.first_flagged_at, last_refused_at = excluded.last_refused_at,
+                limits = excluded.limits, why = excluded.why;
+            """, ("$subject", flag.Subject), ("$user", (object?) flag.UserId ?? DBNull.Value), ("$address", (object?) flag.Address ?? DBNull.Value),
+            ("$first", flag.FirstFlaggedAt), ("$last", flag.LastRefusedAt), ("$limits", flag.Limits), ("$why", flag.Why));
+    }
+
+    public FlagRow? GetFlag(string subject) {
+        using var connection = this.Open();
+        return Query(connection, null, "SELECT * FROM abuse_flags WHERE subject = $subject;", ReadFlag, ("$subject", subject)).FirstOrDefault();
+    }
+
+    /// <summary>The flags whose last refusal was at or after <paramref name="refusedSince"/> (those that haven't expired), most recent first.</summary>
+    public List<FlagRow> GetFlags(long refusedSince) {
+        using var connection = this.Open();
+        return Query(connection, null, "SELECT * FROM abuse_flags WHERE last_refused_at >= $since ORDER BY last_refused_at DESC, subject;", ReadFlag,
+            ("$since", refusedSince));
+    }
+
+    /// <summary>Deletes the flags whose last refusal was before <paramref name="refusedBefore"/> (those that have expired).</summary>
+    /// <returns>How many went.</returns>
+    public int SweepFlags(long refusedBefore) {
+        using var connection = this.Open();
+        return Execute(connection, null, "DELETE FROM abuse_flags WHERE last_refused_at < $before;", ("$before", refusedBefore));
+    }
+
+    private static BanRow ReadBan(SqliteDataReader reader) {
+        long? Nullable(string column) => reader.IsDBNull(reader.GetOrdinal(column)) ? null : reader.GetInt64(reader.GetOrdinal(column));
+        return new BanRow(
+            reader.GetInt64(reader.GetOrdinal("ban_id")),
+            Nullable("user_id"),
+            reader.IsDBNull(reader.GetOrdinal("address")) ? null : reader.GetString(reader.GetOrdinal("address")),
+            reader.GetString(reader.GetOrdinal("reason")),
+            reader.GetInt64(reader.GetOrdinal("created_at")),
+            Nullable("expires_at"),
+            Nullable("lifted_at"),
+            reader.GetInt64(reader.GetOrdinal("automatic")) != 0);
+    }
+
+    private static FlagRow ReadFlag(SqliteDataReader reader) {
+        return new FlagRow(
+            reader.GetString(reader.GetOrdinal("subject")),
+            reader.IsDBNull(reader.GetOrdinal("user_id")) ? null : reader.GetInt64(reader.GetOrdinal("user_id")),
+            reader.IsDBNull(reader.GetOrdinal("address")) ? null : reader.GetString(reader.GetOrdinal("address")),
+            reader.GetInt64(reader.GetOrdinal("first_flagged_at")),
+            reader.GetInt64(reader.GetOrdinal("last_refused_at")),
+            reader.GetString(reader.GetOrdinal("limits")),
+            reader.GetString(reader.GetOrdinal("why")));
     }
 
     // ================================================================ helpers

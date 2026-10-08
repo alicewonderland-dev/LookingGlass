@@ -21,6 +21,12 @@ public enum ConnectionState {
     /// account or this key, or there is no key. The login is kept and tried again now and then; registering again replaces it.
     /// </summary>
     LoginNotRecognized,
+
+    /// <summary>
+    /// The server's operator blocked this character, or the address this computer connects from (a ban): the server refuses
+    /// it, and the session tries again only now and then (<see cref="ClientSessionOptions.BlockedRetryDelay"/>), or when asked to.
+    /// </summary>
+    Blocked,
 }
 
 /// <summary>
@@ -266,6 +272,9 @@ public sealed class ServerErrorException(ErrorCode code, string message, string?
 
     /// <summary>What the server said, without registration codes (see the class documentation).</summary>
     public string ServerMessage { get; } = Crypto.LodestoneCode.Redact(message, keepCode);
+
+    /// <summary>With <see cref="ErrorCode.Blocked"/>: the operator's block, as the server describes it.</summary>
+    public Block? Block { get; init; }
 }
 
 /// <summary>The connection closed before the request was answered.</summary>
@@ -288,6 +297,12 @@ public sealed class ClientSessionOptions {
     public TimeSpan RequestTimeout { get; init; } = TimeSpan.FromSeconds(15);
     public TimeSpan ReconnectMinDelay { get; init; } = TimeSpan.FromSeconds(1);
     public TimeSpan ReconnectMaxDelay { get; init; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// How long to wait before connecting again once the server says its operator blocked this character or address: much
+    /// longer than <see cref="ReconnectMaxDelay"/>, so a blocked plugin doesn't keep knocking (sooner if the block ends sooner).
+    /// </summary>
+    public TimeSpan BlockedRetryDelay { get; init; } = TimeSpan.FromMinutes(5);
 
     /// <summary>
     /// How long to wait, at first, before trying a saved login the server didn't recognise again on the same
