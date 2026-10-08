@@ -3668,6 +3668,51 @@ or GagSpeak is gone, the message is sent as typed (it is cosmetic), with a
 warning in the log that never holds the text. The same words in simple and
 advanced mode.
 
+### Alerts to a Discord channel
+
+Status: planned, not started (owner, 2026-10-08), for when the server is
+public and the plugin has a Discord with an admin channel. Flags and automatic
+blocks (see [Spotting abuse, and banning](#spotting-abuse-and-banning)) today
+show only in the log and in `--bans`, so the operator has to remember to look.
+
+- **A webhook, set by the operator.** One setting,
+  `LookingGlass:Alerts:DiscordWebhookUrl` (empty: no alerts, the default).
+  The URL is a secret (anyone holding it can post in the channel), so it goes
+  in a root-only drop-in or `EnvironmentFile=`, never in `appsettings.json` or
+  the repository, and is never logged; the startup line says only "Discord
+  alerts on". A `--alert-test` command posts one test message, to check it.
+- **What is posted:** someone flagged (account or address, the limits, how
+  often), an address blocked automatically, a ban made or lifted with the
+  command line (the server posts it when it picks the change up, so the
+  command needs no network), and the proxy warning (every player seeming to
+  come from 127.0.0.1: worth knowing at once). Each says what to do next, as
+  a command to copy (`LG --ban 4242 --days 7 --reason "..."`, `LG --bans`),
+  and links the character's Lodestone page.
+- **Never in the way of the server.** Alerts go through a bounded queue on
+  their own task: a slow or failing Discord never delays a request. Discord
+  limits a webhook to a few messages a second, so alerts within a minute are
+  batched into one message, a flood is summed up ("and 37 more"), a `429`'s
+  `Retry-After` is honoured, and a failure is logged at most once every ten
+  minutes, without the URL.
+- **Safe to post.** `allowed_mentions` is empty, so no character name or ban
+  reason can ping `@everyone` or anyone; names and reasons are escaped so they
+  can't format the message. Nothing anyone said is ever posted (the server
+  never has it).
+- **Built and tested like the rest:** a fake webhook in the tests (batching,
+  limits, retries, escaping, nothing posted when unset), and steps in the bans
+  checklist with a private test channel.
+
+**To decide when it's built:**
+
+- **How much to post to Discord**, a third party that keeps what it's sent:
+  character names (public on the Lodestone anyway) or only user IDs with the
+  Lodestone link; and addresses in full, shortened (`203.0.113.x`), or left
+  out (they're in `--bans` on the server).
+- **Whether to ping a role** for the urgent ones (an automatic block, the
+  proxy warning), or never ping.
+- **Anything else worth an alert:** the server restarting, a daily summary
+  ("3 flagged, 1 blocked, nothing else"), or nothing more.
+
 ### A chat history kept unencrypted
 
 Status: planned, not started (tester request, accepted by the owner
