@@ -122,7 +122,7 @@ with key distribution, and from unsafe concurrency on both sides.
 | Limits | No rate, size or count limits | Easy to flood the server and the Lodestone | Limits advertised in the handshake and enforced by the server |
 | Secret recovery | The serialiser was missing two request kinds | The feature never worked | The server stores sealed epoch keys, so members can catch up |
 | Disconnects | Messages are only relayed to whoever is connected | Messages sent during an untimely disconnect are lost | The server keeps the encrypted messages for a week, and a returning member catches up (see [Message catch-up](#message-catch-up)) |
-| Upkeep | Stale CI, an example config that doesn't load, frozen dependencies | Hard to build, hard to trust | The plugin's package versions are locked; CI and automated dependency updates are planned |
+| Upkeep | Stale CI, an example config that doesn't load, frozen dependencies | Hard to build, hard to trust | The plugin's package versions are locked; CI builds and tests every push and pull request, and Dependabot proposes dependency updates weekly |
 
 ## Core principles
 
@@ -3500,7 +3500,7 @@ without touching chat, UI or server routing.
 Version 0.2 covers M1 and M2 and the key-verification UI of M3. Of M3's
 ChatTwo integration, sticky mode's (sending through ChatTwo's input, and
 naming the channel in it) and the invite item in its right-click menu are
-built. CI (from M0), the rest of the ChatTwo integration (channel names and
+built, as is M0's CI. The rest of the ChatTwo integration (channel names and
 colours for ChatTwo's own use) and the import wizard aren't built yet.
 
 ## Decisions
