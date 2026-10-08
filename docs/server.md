@@ -216,8 +216,8 @@ All of these are under `LookingGlass`.
 | `Limits:LocalMessageIntervalSeconds` | 1 | Seconds between their local chat messages once those are spent. 1 to 86,400 |
 | `Limits:LocalMessagesReceivedBurst` | 120 | Local chat messages one user may be sent at once, by everyone together; past it their copies are dropped (the senders aren't told). 1 to 10,000 |
 | `Limits:LocalMessagesReceivedIntervalSeconds` | 1 | Seconds between local chat messages one user may be sent once those are spent. 1 to 86,400 |
-| `Limits:LocalMessagesBetweenBurst` | 10 | Local chat messages one user may send one other at once; past it those copies are dropped. 1 to 10,000, and less than `LocalMessagesReceivedBurst` |
-| `Limits:LocalMessagesBetweenIntervalSeconds` | 5 | Seconds between them once those are spent. 1 to 86,400, and more than `LocalMessagesReceivedIntervalSeconds` |
+| `Limits:LocalMessagesBetweenBurst` | 30 | Local chat messages one user may send one other at once; past it those copies are dropped. 1 to 10,000, and less than `LocalMessagesReceivedBurst` |
+| `Limits:LocalMessagesBetweenIntervalSeconds` | 2 | Seconds between them once those are spent. 1 to 86,400, and more than `LocalMessagesReceivedIntervalSeconds` |
 
 The server won't start with an invite, lookup, registration lookup or local chat setting outside its range: see
 [Limits worth knowing](#limits-worth-knowing).
@@ -368,7 +368,7 @@ IPv6 clients are counted per /64.
   (`LocalMessageBurst`, `LocalMessageIntervalSeconds`), as channel messages;
   each user may be sent 120 at once, by everyone together, then one a second
   (`LocalMessagesReceivedBurst`, `LocalMessagesReceivedIntervalSeconds`), and
-  10 at once from any one sender, then one every 5 seconds
+  30 at once from any one sender, then one every 2 seconds
   (`LocalMessagesBetweenBurst`, `LocalMessagesBetweenIntervalSeconds`; checked
   first, and smaller and slower, or the server doesn't start, so a couple of
   accounts can't use up what someone's friends may send them), and

@@ -3133,7 +3133,10 @@ meanwhile (another first message, shown first), or if **another account is
 held under the name it gives**: a malicious server could otherwise send from a
 new account named as a held friend, and if that friend stood near, the message
 would show as theirs (pinning would only have warned that the name now belongs
-to another account). Nothing is pinned then. Anything that fails is dropped
+to another account). Nothing is pinned then. The same check covers a sender held with no
+name (a channel's membership log can pin someone so, and then no rename could
+be noticed): the name its message gives mustn't be another held account's,
+and is held with their keys from then on. Anything that fails is dropped
 silently: the diagnostic log counts drops by reason, never who or what.
 
 **Hints, for a friend near.** A message under other keys than those held, from
@@ -3142,19 +3145,35 @@ account, never shows and changes nothing, but it isn't dropped without a word
 if it may well be a friend's: the session passes it on without its content
 (`LocalMessageUnchecked`: who the server says sent it, and why), and if, as
 the game shows it, that sender is near and a friend, one information line (in
-LookingGlass blue, once a session per sender; `LocalHints`,
-`LocalChatWords.Unchecked`) says what may have happened and what to do: "Bob
-sent you a local message that couldn't be checked: they may have set up
-LookingGlass again. Talk to them with /lgl, or share a channel, to update it."
-(or "they may have changed their name or world"; or, for a name held by
-another account, that LookingGlass knows someone else by that name, and to
-check with them over /tell). Strangers, and anyone not near, get nothing.
-Sending them a `/lgl` then looks them up afresh (after a message under other
-keys, what was looked up for that name is forgotten), which updates their keys
-or name with the usual warning. The other exception: if the sender was near but not marked as a
-friend and the friends list is empty, one line a session says that a player
-near sent a local message and to open the friends list once to see local
-messages from friends.
+LookingGlass blue; `LocalHints`, `LocalChatWords.Unchecked`) says what may
+have happened and what to do. Strangers, and anyone not near, get nothing.
+The name in a hint is the server's word, so hints are remembered by name (one
+per name a session, whichever account it came from) and capped at 5 a session.
+
+- **Other keys:** "Bob sent you a local message that couldn't be checked: they
+  may have set up LookingGlass again, or someone else may be using their name.
+  Check with them over /tell before you trust it." A server can fake this
+  (a held account, other keys, named as a friend standing near), so the hint
+  never says the player will be warned of new keys, or that accepting them is
+  the fix: a server swapping keys produces exactly that warning. The verification
+  review found the first wording did, and that the lookup memory was cleared
+  as the message arrived, priming the swap. Now nothing is forgotten on
+  arrival; only once the plugin has judged the sender near and a friend is
+  what was looked up for them forgotten (`ClientSession.ForgetLookupAfterHint`:
+  the positive lookup only, never the answer that nobody is registered by a
+  name), and only if the server named the account by the name held for it, so
+  a faked hint naming someone else forgets nothing. Their next `/lgl` then
+  looks them up afresh, which changes nothing unless their keys did.
+- **Another name or world:** "...they may have changed their name or world.
+  Talk to them with /lgl, or share a channel, to update it." (The message was
+  signed by the keys held for that account, so it is theirs.)
+- **A name held by another account:** that LookingGlass knows someone else by
+  that name, and to check with them over /tell.
+
+The other exception: if the sender was near but not marked as a friend and the
+friends list is empty, one line a session says that a player near sent a
+local message and to open the friends list once to see local messages from
+friends.
 
 **Shown in game chat** as a channel's message is (`ChatOutput.LocalMessage`):
 the tag `[Local]`, then `<Name@World>` and the message, sanitised, with links
@@ -3197,8 +3216,10 @@ together, so many senders can't flood one person
 (`Limits:LocalMessagesReceivedBurst`, 120 at once, then one every
 `Limits:LocalMessagesReceivedIntervalSeconds`, 1), and per sender and
 recipient, checked first and smaller, so a couple of accounts can't use that up
-and silence someone's friends (`Limits:LocalMessagesBetweenBurst`, 10 at once,
-then one every `Limits:LocalMessagesBetweenIntervalSeconds`, 5; the server
+and silence someone's friends (`Limits:LocalMessagesBetweenBurst`, 30 at once,
+then one every `Limits:LocalMessagesBetweenIntervalSeconds`, 2, enough for a
+busy roleplay scene; at most 100,000 pairs remembered, the least recently
+used forgotten past that; the server
 doesn't start unless they are smaller and slower). Both are spent only by
 copies that would reach them. Each copy goes to its recipient if they are online on a
 connection that agreed, with the sender's identity; nothing is stored, and a
@@ -3353,7 +3374,7 @@ one transaction for every multi-step change.
 | Outbound queue per connection | 256 events | A slow client is disconnected, not waited on |
 | Stored messages (catch-up) | 7 days, 5,000 per channel; the oldest go first | Bounds the disk a channel can take (about 22 MB at worst); operator settings |
 | Pages of stored messages | 200 messages or 96 KiB each; 100 pages per user at once, then 4 a second | A returning client asks once per channel; within the frame limit |
-| Local messages | 50 recipients each (0 to 200, 0 turns local chat off); 5 per user at once, then 1 a second; 120 to one user at once, by everyone together, then 1 a second, and 10 from one sender to one user, then 1 every 5 seconds (past either, and to a connection whose queue is half full, dropped); the message as large as a channel message | Crowds of friends stay cheap and within the frame limit; floods are stopped as in channels; operator settings |
+| Local messages | 50 recipients each (0 to 200, 0 turns local chat off); 5 per user at once, then 1 a second; 120 to one user at once, by everyone together, then 1 a second, and 30 from one sender to one user, then 1 every 2 seconds (past either, and to a connection whose queue is half full, dropped); the message as large as a channel message | Crowds of friends stay cheap and within the frame limit; floods are stopped as in channels; operator settings |
 | Devices per user | 20 most recently used | Bounds stored logins |
 
 Channel creation, renames, disbands, identity lookups and heavy reads have
