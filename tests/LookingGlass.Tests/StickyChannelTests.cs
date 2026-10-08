@@ -348,10 +348,16 @@ public sealed class StickyChannelTests {
     }
 
     [Fact]
-    public void InChatTwoItsOwnChannelsShortCommandTypedIsTheChannelsTheAcceptedEdge() {
-        // ChatTwo on Party, "/p hi" typed: indistinguishable from typing "hi" there, so it goes to the LookingGlass channel.
-        // The long form talks in Party.
-        Assert.Equal(new StickyRoute.ToChannel("aaa", "hi"), Route("/p hi", LineSource.Plugin, MainInput(ChatTwoParty, "/p hi", "/p hi")));
+    public void InChatTwoItsOwnChannelsShortCommandTypedTalksInThatGameChannelOnceToo() {
+        // ChatTwo on Party, "/p hi" typed: the input holds the whole line, as typed, where "hi" typed there (sent as "/p hi"
+        // too) leaves it holding only "hi". So it is the player's one-off, Party once, like any other short command.
+        // (Before 0.2.10 it went to the LookingGlass channel, as if the two couldn't be told apart.)
+        Assert.Equal(StickyRoute.Game, Route("/p hi", LineSource.Plugin, MainInput(ChatTwoParty, "/p hi", "/p hi")));
+        Assert.Equal(StickyRoute.Game, Route("/s test", LineSource.Plugin, MainInput(ChatTwoSay, "/s test", "/s test")));
+        Assert.Equal(StickyRoute.Game, Route("/s test", LineSource.Plugin, MainInput(ChatTwoSay, "/s test ", "/s test")));
+        // Plain text typed there still goes to the channel, though ChatTwo sends it with the same command.
+        Assert.Equal(new StickyRoute.ToChannel("aaa", "test"), Route("/s test", LineSource.Plugin, MainInput(ChatTwoSay, "test", "/s test")));
+        Assert.Equal(new StickyRoute.ToChannel("aaa", "test"), Route("/s test", LineSource.Plugin, MainInput(ChatTwoSay, " test ", "/s test")));
         Assert.Equal(StickyRoute.Game, Route("/party hi", LineSource.Plugin, MainInput(ChatTwoParty, "/party hi", "/party hi")));
     }
 
@@ -566,7 +572,8 @@ public sealed class StickyChannelTests {
         Assert.Equal(StickyMessages.ChatTwoNote(Tag), note);
         Assert.Contains("(Warning: …)", note);
         Assert.Contains(Tag, note);
-        Assert.Contains("/party hi", note);
+        Assert.Contains("/p hi", note);
+        Assert.DoesNotContain("/party hi", note);
         Assert.Single(note!.Split(". ", StringSplitOptions.RemoveEmptyEntries));
         Assert.True(note.Length < 160, note);
 
@@ -1045,6 +1052,7 @@ public sealed class StickyChannelTests {
             ShortCommandRule.For(LineSource.Plugin, new ChatTwoLine(null, true)),
             ShortCommandRule.For(LineSource.Plugin, new ChatTwoLine("/p", false)),
             ShortCommandRule.For(LineSource.Plugin, ChatTwoLine.Of(ChatTwoParty, true, 14, "/s hi")),
+            ShortCommandRule.For(LineSource.Plugin, ChatTwoLine.Of(ChatTwoParty, true, 5, "/s hi")),
             ShortCommandRule.For(LineSource.Plugin, new ChatTwoLine("/p", true)),
             ShortCommandRule.For(LineSource.Plugin, new ChatTwoLine("/e", true)),
             ShortCommandRule.For(LineSource.Unknown, new ChatTwoLine("/p", true)),

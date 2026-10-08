@@ -36,12 +36,12 @@ public sealed class Configuration : IPluginConfiguration {
     public bool AdvancedMode { get; set; }
 
     /// <summary>
-    /// The one line about ChatTwo's "(Warning: …)" label and its own channel's short command has been shown: it follows
-    /// "Now talking in" only the first time talking in a channel starts with ChatTwo loaded (see
-    /// <see cref="StickyMessages.ChatTwoNote"/>). A new name for a new note: the one shown before (saved as
-    /// ChatTwoStickyNoteShown) said every short command went to the channel, which is no longer so.
+    /// The one line about ChatTwo's "(Warning: …)" label and short commands has been shown: it follows "Now talking in"
+    /// only the first time talking in a channel starts with ChatTwo loaded (see <see cref="StickyMessages.ChatTwoNote"/>).
+    /// A new name for a new note: the ones shown before (saved as ChatTwoStickyNoteShown, then ChatTwoOwnCommandNoteShown)
+    /// said every short command, then ChatTwo's own channel's, went to the channel, which is no longer so.
     /// </summary>
-    public bool ChatTwoOwnCommandNoteShown { get; set; }
+    public bool ChatTwoLabelNoteShown { get; set; }
 
     /// <summary>
     /// Verbose channel messages: say "Now talking in" and every "Stopped talking in". Off (the default, also for settings

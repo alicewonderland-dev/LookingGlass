@@ -72,11 +72,10 @@ commands such as `<t>` and `<me>`, which are sent as the names they stand for.
 `/p hi`, `/s hi` and the like still talk in that game channel once, as usual
 (a macro's `/p` line too), and tells (`/t`, `/r`) still go as tells. To go
 back, type `/s` (or any channel) on its own. With ChatTwo, every ChatTwo chat
-box not set to a tell sends to the channel too, and so does the short command
-of ChatTwo's own channel (`/p hi` while ChatTwo is on Party): use `/party hi`
-for that one (in a ChatTwo pop-out with its own input box, use the long form
-for every channel). Its "(Warning: ...)" only names ChatTwo's channel
-underneath.
+box not set to a tell sends to the channel too, and short commands typed in
+its main chat box work as usual, ChatTwo's own channel's included (in a
+ChatTwo pop-out with its own input box, use the long form, `/party hi`). Its
+"(Warning: ...)" only names ChatTwo's channel underneath.
 Turn ExtraChat off while you do this.
 
 ## Installing

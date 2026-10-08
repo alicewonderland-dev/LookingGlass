@@ -20,7 +20,11 @@ namespace LookingGlass.Core.Client;
 /// <param name="FromMainInput">The main input holds this very line, so it was typed there.</param>
 /// <param name="InputLength">The main input's length as typed, for the diagnostic log, or null if not known.</param>
 /// <param name="LineLength">The line's length, for the diagnostic log, or null if not known.</param>
-public sealed record ChatTwoLine(string? Prefix, bool FromMainInput, int? InputLength = null, int? LineLength = null) {
+/// <param name="AsTyped">
+/// The main input holds the whole line as typed ("/s hi"), not plain text ChatTwo put its channel's command in front of
+/// ("hi", sent as "/s hi" on Say). The two can't overlap: a command and its space are longer than <see cref="MostTrimmed"/>.
+/// </param>
+public sealed record ChatTwoLine(string? Prefix, bool FromMainInput, int? InputLength = null, int? LineLength = null, bool AsTyped = false) {
     /// <summary>
     /// The most spaces ChatTwo may have trimmed off its input's line (before and after together) for it still to count as
     /// that line. ChatTwo sends <c>chatInput.Trim()</c> but its typing IPC says the input's length as typed, so a stray
@@ -41,7 +45,7 @@ public sealed record ChatTwoLine(string? Prefix, bool FromMainInput, int? InputL
         // Plain text, sent (trimmed) after the channel's command and a space.
         var prefixed = hasText && prefix != null && lineText.StartsWith(prefix + " ", StringComparison.OrdinalIgnoreCase)
                        && Trimmed(textLength, lineText.Length - prefix.Length - 1);
-        return new ChatTwoLine(prefix, typedAsIs || prefixed, textLength, lineText.Length);
+        return new ChatTwoLine(prefix, typedAsIs || prefixed, textLength, lineText.Length, typedAsIs && !prefixed);
     }
 
     /// <summary>An input of <paramref name="inputLength"/> could have been <paramref name="sentLength"/> once trimmed.</summary>
@@ -59,12 +63,13 @@ public sealed record ShortCommands(IReadOnlyCollection<string> AsText, string Wh
 /// once, whatever channel the chat box is on, and players type it that way (almost nobody types "/party"), so a short
 /// command followed by text goes to that game channel once, and talking in the LookingGlass channel goes on. The one
 /// exception is ChatTwo: it sends plain text typed in it as "&lt;its channel's short command&gt; text" ("hi" typed in an
-/// input on Party is sent as "/p hi"), which can't be told apart from the player typing "/p hi" there. So:
+/// input on Party is sent as "/p hi"), which only what its main input holds tells apart from the player typing "/p hi"
+/// there. So:
 /// <list type="bullet">
 /// <item>A line from the game itself (its own chat box, a macro line, a gear set): short commands go to the game once.</item>
-/// <item>A line from ChatTwo's main input (see <see cref="ChatTwoLine"/>): only the short command of ChatTwo's current
-/// channel stands for plain text; any other short command goes to the game once. The cost, accepted: "/p hi" typed in
-/// ChatTwo while it is on Party goes to the LookingGlass channel (the long form, "/party hi", goes to Party).</item>
+/// <item>A line from ChatTwo's main input (see <see cref="ChatTwoLine"/>): typed as it is, every short command goes to
+/// the game once, ChatTwo's own channel's included; plain text ChatTwo sent after its channel's command goes to the
+/// LookingGlass channel. (Before 0.2.10 "/p hi" typed in ChatTwo while it was on Party went to the channel too.)</item>
 /// <item>Anything else from a plugin, or a line whose way in isn't known: every short command stands for plain text, as
 /// it did before (fail safe: a pop-out's typing, sent with the pop-out's own channel's command, never reaches game chat).</item>
 /// </list>
@@ -80,9 +85,13 @@ public static class ShortCommandRule {
                 { FromMainInput: false, InputLength: { } input, LineLength: { } line } =>
                     new ShortCommands(all, $"not ChatTwo's main input (it holds {input} characters, the line {line}): short commands are text"),
                 { FromMainInput: false } => new ShortCommands(all, "not ChatTwo's main input: short commands are text"),
+                // Typed as it is, ChatTwo's own channel's command too ("/s hi" on Say): the player's one-off.
+                { AsTyped: true, Prefix: { } typedOn } =>
+                    new ShortCommands([], $"ChatTwo's main input on {typedOn}, a command as typed: short commands go to the game once"),
+                // Plain text, sent after the channel's command.
                 { Prefix: { } prefix } when all.Contains(prefix) =>
                     new ShortCommands(new[] { prefix }.ToHashSet(StringComparer.OrdinalIgnoreCase),
-                        $"ChatTwo's main input on {prefix}: only {prefix} is text, other short commands go to the game once"),
+                        $"ChatTwo's main input on {prefix}, plain text sent as {prefix}: only {prefix} is text"),
                 // On echo (no channel), a tell or an ExtraChat channel: none of the game's short commands is its typing.
                 { Prefix: { } other } => new ShortCommands([], $"ChatTwo's main input on {other}: short commands go to the game once"),
             },

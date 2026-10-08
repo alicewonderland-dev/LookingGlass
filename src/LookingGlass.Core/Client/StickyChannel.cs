@@ -519,10 +519,10 @@ public static class StickyMessages {
 
     /// <summary>
     /// Said once ever, the first time talking in a channel starts with ChatTwo loaded: what ChatTwo's label means, and
-    /// the one short command that doesn't talk in a game channel once there (see <see cref="ShortCommandRule"/>).
+    /// that short commands still talk in a game channel once there, its own channel's too (see <see cref="ShortCommandRule"/>).
     /// </summary>
     public static string ChatTwoNote(string tag) =>
-        $"ChatTwo's \"(Warning: …)\" names its own channel: typing still goes to {tag}, and so does that channel's short command (/p hi on Party), so use /party hi.";
+        $"ChatTwo's \"(Warning: …)\" names its own channel: typing still goes to {tag}, and a short command like /p hi talks in that game channel once.";
 
     /// <summary>Said after a message was sent with a link the game didn't say anything about (not even its name), so it was left out.</summary>
     public const string LinkNotSent = "A link in it couldn't be read, so it was left out.";

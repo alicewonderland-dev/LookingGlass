@@ -102,9 +102,9 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
             this._chat.ChannelNotice(start.Text, tag, this._sessions.ColourOf(channelId));
         }
 
-        if (StickyMessages.ChatTwoNoteFor(tag, chatTwo, this._config.ChatTwoOwnCommandNoteShown) is { } note) {
+        if (StickyMessages.ChatTwoNoteFor(tag, chatTwo, this._config.ChatTwoLabelNoteShown) is { } note) {
             this._chat.Notice(NoticeTone.Info, note, tag, this._sessions.ColourOf(channelId));
-            this._config.ChatTwoOwnCommandNoteShown = true;
+            this._config.ChatTwoLabelNoteShown = true;
             this._config.Save();
         }
 
@@ -139,7 +139,7 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
         var typed = GameLinks.ReadLine(message);
         var line = new ChatBoxLine(message, typed.Text) { Links = typed.Links };
         var chatTwo = this._chatTwo.Loaded;
-        // Short commands: the player's one-off in the game's chat box; in ChatTwo's main input, all but its own channel's.
+        // Short commands: the player's one-off, typed in the game's chat box or in ChatTwo's main input (not ChatTwo's plain text).
         var rule = ShortCommandRule.For(source, chatTwoLine);
         var (route, reason) = StickyRoute.Decide(channelId, tag, line, rule.AsText, this._switches);
         // Before acting on it, so the log has the line even if acting fails. Never the text itself.
