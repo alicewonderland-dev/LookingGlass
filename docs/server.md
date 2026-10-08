@@ -19,6 +19,7 @@ on Linux and Windows. It only ever sees encrypted channel names and messages.
 | `scripts/` | Running a development server; packing a Linux release |
 | `deploy/` | The systemd unit and the Linux installer |
 | `Dockerfile` | A container image of the server |
+| `.github/` | CI (build, tests, Linux packages) and Dependabot's weekly updates |
 
 ## Building and testing
 
@@ -29,6 +30,12 @@ Dalamud's development files, which XIVLauncher installs.
 dotnet build LookingGlass.slnx -c Release
 dotnet test LookingGlass.slnx -c Release
 ```
+
+Without XIVLauncher, unpack Dalamud's
+[latest.zip](https://goatcorp.github.io/dalamud-distrib/latest.zip) and set
+`DALAMUD_HOME` to its folder. GitHub Actions does that and runs the same two
+commands on every push to main and every pull request, and packs both Linux
+servers ([.github/workflows/ci.yml](../.github/workflows/ci.yml)).
 
 ## Development and production
 
