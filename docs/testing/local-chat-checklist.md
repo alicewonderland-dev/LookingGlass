@@ -168,8 +168,8 @@ Before anyone opens their Friends window this session.
 
 `/lgl` with no message talks in local chat, as `/lgc1` with no message talks
 in a channel (see *Talking in local chat* in
-[Local chat (friends only)](../design.md#local-chat-friends-only)). Needs a
-build newer than 0.2.11. Setup: A has accepted local chat (3c), is a member
+[Local chat (friends only)](../design.md#local-chat-friends-only)). Needs
+0.2.12. Setup: A has accepted local chat (3c), is a member
 of a channel `sky` on `/lgc1`, has a swatch picked as **Local chat colour**
 (so the colour can be told from the default), and has **Verbose channel
 messages** on (Settings, under Chat) unless a step says off. ChatTwo off until
