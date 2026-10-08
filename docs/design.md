@@ -1722,7 +1722,8 @@ Dalamud dependency.
   [Talking in a channel without /lgc](#talking-in-a-channel-without-lgc)), or
   a channel window's own input box (see [Channel windows](#channel-windows)).
   Sending fails closed: an error never falls through to ordinary game chat.
-  `/lgl <message>` talks to the friends near the player (see
+  `/lgl <message>` talks to the friends near the player, and `/lgl` alone
+  talks in local chat as `/lgc3` alone does in a channel (see
   [Local chat (friends only)](#local-chat-friends-only)).
 - **Game interop.** Signatures live in one module (`ChatInterop`), and come
   from FFXIVClientStructs. A missing one disables only its feature.
@@ -1931,7 +1932,10 @@ the channel, as `/lgc3 <message>` would send it, and never to game chat.
 Commands still work, and so do the game's short channel commands as one-off
 modifiers, as in FFXIV: `/p brb` talks in Party once, and talking in the
 channel goes on (with one ChatTwo exception, below). `/lgc` alone still
-explains itself, and `/lgc 3` is a nickname, never channel number 3. The rules
+explains itself, and `/lgc 3` is a nickname, never channel number 3. `/lgl`
+alone talks in local chat the same way, held as one more channel (see
+*Talking in local chat* under
+[Local chat (friends only)](#local-chat-friends-only)). The rules
 live in the core library (`StickyChannel`, `StickyRoute`, `ShortCommandRule`,
 `ChatTwoLine`, `ChatChannelPrefixes`, `LinkText`, `ChatBoxGate`), with no game
 types, and are unit tested; the plugin's `StickyMode` feeds them and acts on
@@ -3039,7 +3043,8 @@ message:
   doesn't touch channels, the membership log or epochs, and an old client
   never sees it.
 
-**Sending.** `/lgl <message>` (`/lgl` alone says how to use it):
+**Sending.** `/lgl <message>` (`/lgl` alone talks in local chat from then on,
+see *Talking in local chat* below; a link alone is sent, as with `/lgc3`):
 
 - **Who is near and a friend**, read in the frame the line was typed, on the
   game thread: every player in the object table (`IObjectTable.PlayerObjects`)
@@ -3194,6 +3199,78 @@ settings saved before; one for every character), used for the tag, or the
 whole line as **Colour the whole line in a channel's colour** says. It goes to
 the chat channel chosen in Settings, like every LookingGlass line.
 
+**Talking in local chat** (the owner's decisions, built 2026-10-08). `/lgl`
+with no message talks in local chat as `/lgc3` with no message talks in a
+channel (see [Talking in a channel without /lgc](#talking-in-a-channel-without-lgc)):
+from then on, plain text typed in the chat box or ChatTwo's main input is sent
+as if typed after `/lgl`, by the same `LocalSender`, to the friends near the
+player as they are when the line is typed, and never to game chat. The first
+version left this out (`/lgl` alone explained itself), as sticky mode was
+built around channels; it is now built into sticky mode rather than beside it:
+
+- **One more channel, never a channel.** `StickyChannel` holds local chat as
+  the channel ID `StickyChannel.LocalId` (`local`, which no channel ID can be:
+  those are 32 hex digits). So starting, every way of leaving, where a line
+  goes (`StickyRoute`, the short-command rule, ChatTwo's prefix and its typed
+  text, lines run inside a reply), the chat box labels, the server info bar
+  and ExtraChat's warning are the channels' own code. The ID never leaves
+  sticky mode: `StickyMode` tags it `[Local]` (`LocalChat.Tag`, in local chat's
+  colour, `Configuration.LocalChatColour`) without looking it up as a channel,
+  and sends its lines with `LocalSender`, never `ChannelSender`, so nothing
+  that holds channels (windows, unread counts, the chat log, slots, nicknames,
+  colours, snapshots) is ever given it. Checking membership skips it, so it is
+  never ended for not being in a channel.
+- **What it shows.** "Now talking in [Local]." (with **Verbose channel
+  messages** on, as for a channel), "LG [Local]" in the server info bar (its
+  tooltip names the friends near rather than a channel), "LookingGlass
+  [Local]" in ChatTwo's input, and `[Local]` where the game's chat input names
+  its channel, all in local chat's colour. The ChatTwo note is the channels'
+  (once ever, whichever is talked in first).
+- **Starting needs what `/lgl` needs, not membership.** In order: the hooks
+  (else "Talking in local chat without /lgl doesn't work in this game version
+  yet"); the privacy notice accepted (else, as the first `/lgl <message>`,
+  nothing starts: game chat says local chat first asks to accept, and the
+  privacy window opens through the same callback; once accepted, it says to
+  type `/lgl <message>` or `/lgl` alone again); connected and logged in
+  ("Can't switch to [Local]: not connected to LookingGlass."); a server that
+  offers local chat (`LocalChatWords.NotOnThisServer`); then, as for a
+  channel, the game's channel readable and ChatTwo not on a tell. The channel
+  list doesn't matter, loaded or not.
+- **Switching and ending** are a channel's: a channel command on its own
+  (`/s`) ends it, `/lgc3` alone moves to that channel and `/lgl` alone moves
+  back (or, already in local chat, says "Now talking in [Local]." again),
+  and a channel switch in the game's UI, a one-off switch, a logout,
+  **Disconnect**, a new session and unloading end it with the channels' lines
+  ("Stopped talking in [Local]: disconnected."). `/lgl <message>` while talking
+  in a channel sends once and the channel goes on; `/lgc3 <message>` while
+  talking in local chat sends to the channel once and local chat goes on (both
+  are commands, which go to the game, so their handlers run).
+- **Each line is checked as `/lgl <message>` is.** Nobody near, no friend
+  near, the friends list not loaded, none of them using LookingGlass: the same
+  "Not sent" lines. As for a channel, not being connected, an unreadable link
+  and a failed send say "Not sent to [Local] or game chat: …" while talking in
+  it, and a line with nothing to send says "…: nothing in it can be sent.".
+  A server that stops offering local chat after a reconnect doesn't end it:
+  each line says local chat isn't available, and nothing reaches game chat.
+- **The privacy notice withdrawn while talking in local chat** (Settings, or
+  the privacy window's **Withdraw**): it goes on, and each line is refused
+  as `/lgl <message>` is then (not sent, kept from game chat, the notice asked
+  again). Simpler than ending it from a setting, and as safe: nothing is
+  looked up and nothing reaches game chat until it is accepted again.
+- **How to use it stays findable.** `/lgl` alone no longer prints the usage,
+  so the usage (`LocalChatWords.Usage`: Dalamud's command help and Settings,
+  under Chat) says both forms and how to stop, and the first time ever that
+  talking in local chat starts, one more line says where typing goes and to
+  type `/s` (or another channel) on its own to stop (a saved setting,
+  `LocalChatTalkNoteShown`), whatever **Verbose channel messages** says.
+- **The diagnostic log** is the channels' (`[sticky]` lines), tagged
+  `[Local]`; `/lgl` is a known command in it. Never what was typed, nor who is
+  near.
+
+The checks to make in game are in
+[docs/testing/local-chat-checklist.md](testing/local-chat-checklist.md),
+*Talking in local chat*.
+
 **What it doesn't do (choices made when building it):**
 
 - **Not in channel windows, and always in game chat.** It isn't a channel, so
@@ -3201,11 +3278,6 @@ the chat channel chosen in Settings, like every LookingGlass line.
   windows** doesn't move it: like the other lines no window could show, it
   stays in game chat (the setting's tooltip says so). There is no "Show in
   game chat" for it. A tab for local chat could come later.
-- **No sticky mode.** `/lgl` with no message explains itself rather than
-  starting to talk in local chat. Sticky mode is built around channels (their
-  membership, tags, the ChatTwo label and the server info bar), and local
-  chat's recipients are decided per line from who is near, so it was left for
-  later rather than bent to fit.
 - **Not kept.** Not in the chat log on this computer, not caught up (the
   server stores nothing), not counted as unread.
 
