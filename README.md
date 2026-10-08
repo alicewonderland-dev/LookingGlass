@@ -47,7 +47,10 @@ early testing (version 0.2).
 - **Privacy.** Only the members of a channel can read its name and messages.
   The server still sees who is in which channel and when messages are sent,
   and keeps the encrypted messages for a week so members who were away get
-  them.
+  them. To deal with abuse, it also keeps the internet address of anyone its
+  limits refuse again and again (until a day after the last refusal) and the
+  addresses its operator bans (until 90 days after the ban ends), and logs the
+  character and address when a banned player tries to connect.
 
 ## Commands
 

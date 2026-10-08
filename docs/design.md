@@ -3114,10 +3114,21 @@ uses it is in [server.md](server.md#flags-and-bans).
 - **What counts.** Every refusal by a limit: invites, messages, lookups,
   registrations, key logins, connections (too many new, open, or not logged
   in, from one address), and the other per-user limits. A refusal that isn't
-  the client's doing (the server-wide Lodestone queue is busy, the server is
-  full) doesn't count. It counts for the account, if the connection is logged
-  in (never an account a request only names, as a key login does), and for
-  the address: an IPv4 address, and an IPv6 /64 and its /56 each.
+  the client's doing doesn't count: the server-wide Lodestone queue is busy,
+  the server is full, or a limit others filled (the invitee has been sent too
+  many invites, by everyone together, or has as many waiting as they may; the
+  channel has as many invites waiting as it may). The requests that read a
+  lot share one budget, which a plugin reconnecting with many channels spends
+  across several kinds of request, so they are one limit (`ReadBudget`), not
+  one per kind. It counts for the account, if the connection is logged in
+  (never an account a request only names, as a key login does), and for the
+  address: an IPv4 address, and an IPv6 /64 and its /56 each.
+- **Not the proxy's address.** Refusals from this machine's own address
+  (loopback), the unspecified address, or a trusted proxy's mean the proxy
+  isn't passing the client's address on, so every player seems to come from
+  there: that address is never flagged or blocked, and the warning in the log
+  says the forwarded client address is missing instead of suggesting a ban.
+  The accounts are still counted.
 - **Flagged.** Over a sliding window of 60 minutes, an account or address
   refused in at least 30 different minutes, or by at least 4 different limits
   within 10 minutes, is flagged: one warning in the server's log (the limits'
@@ -3155,10 +3166,14 @@ uses it is in [server.md](server.md#flags-and-bans).
   registers (by its ID). A ban on an address covers an IPv4 address or
   network (a /16 at the widest), or an IPv6 prefix from a /64 (an address
   alone stands for its /64, as one client usually has a whole /64) to a /32.
+  Never the server's own or its proxy's address, nor a prefix holding one,
+  unless the operator adds `--force`: that would shut out every player.
 - **An optional automatic temporary block**, off by default: an address
   refused 1,000 times within the window is blocked for the minutes the
   operator sets, to blunt a flood until the operator looks. Only addresses,
-  never accounts, and never over a ban already covering the address.
+  never accounts or the proxy's address, and never over a ban already
+  covering the address. Its connections are refused at once (HTTP 429), before
+  any WebSocket is opened, rather than let in to be told why.
 
 ### What a ban does
 
@@ -3175,7 +3190,8 @@ uses it is in [server.md](server.md#flags-and-bans).
   operator has blocked them (or their internet address, which others may
   share), why if a reason was given, and until when; shows it as the
   connection's status; and tries again only every 5 minutes (or once the block
-  ends, if sooner; **Try again now** at once), not every 30 seconds.
+  ends, if sooner, but never sooner than 30 seconds, in case its clock is
+  ahead; **Try again now** at once), not every 30 seconds.
 - **Older plugins** show the server's message ("This server's operator has
   blocked this character, so you can't use it. The reason they gave: ...") as
   a failed connection, and reconnect as after any failure.
@@ -3199,8 +3215,11 @@ uses it is in [server.md](server.md#flags-and-bans).
 - The automatic temporary block is off by default (when turned on, an address
   refused 1,000 times within the window is blocked).
 - A blocked plugin tries again every 5 minutes, or once the block ends if
-  that is sooner.
-- Address bans cover an IPv4 /16 to /32, or an IPv6 /32 to /64.
+  that is sooner (but at least 30 seconds apart).
+- Address bans cover an IPv4 /16 to /32, or an IPv6 /32 to /64, and never the
+  server's own or its proxy's address without `--force`.
+- Limits others filled (the invitee's, the channel's pending invites) don't
+  count towards flagging the one refused.
 
 ## Operations
 
