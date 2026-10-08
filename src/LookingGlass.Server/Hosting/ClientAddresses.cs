@@ -61,6 +61,138 @@ public static class ClientAddresses {
             : limitKey;
     }
 
+    /// <summary>The narrowest IPv4 network a ban may cover, as a prefix length: a /16 (65,536 addresses).</summary>
+    public const int WidestIpv4Ban = 16;
+
+    /// <summary>The widest IPv6 prefix a ban may cover: a /32, as large as a whole ISP's.</summary>
+    public const int WidestIpv6Ban = 32;
+
+    /// <summary>
+    /// What an operator's ban on an address covers, written one way: an IPv4 address ("203.0.113.5") or network
+    /// ("203.0.113.0/24", a /16 or narrower), or an IPv6 prefix of /32 to /64 ("2001:db8:1:2::/64"; an IPv6 address alone
+    /// stands for its /64, which one client usually has, as limits count it). Bits past the prefix are cleared, so a flag's
+    /// address and a ban on it read the same.
+    /// </summary>
+    /// <returns>The prefix, or null (and <paramref name="problem"/> says why) if it isn't one that can be banned.</returns>
+    public static string? BanPrefix(string text, out string? problem) {
+        problem = null;
+        var trimmed = text.Trim();
+        var slash = trimmed.IndexOf('/');
+        var addressPart = slash < 0 ? trimmed : trimmed[..slash];
+        if (!IPAddress.TryParse(addressPart, out var address) || addressPart.Contains('%')) {
+            problem = $"\"{trimmed}\" isn't an address or a prefix (such as 203.0.113.5, 203.0.113.0/24 or 2001:db8:1:2::/64).";
+            return null;
+        }
+
+        var ipv4 = address.AddressFamily != AddressFamily.InterNetworkV6 || address.IsIPv4MappedToIPv6;
+        int length;
+        if (slash < 0) {
+            length = ipv4 ? 32 : 64;
+        } else if (!int.TryParse(trimmed[(slash + 1)..], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out length)) {
+            problem = $"\"{trimmed}\" has no prefix length after the /.";
+            return null;
+        } else if (address.IsIPv4MappedToIPv6) {
+            // An IPv4 address written as IPv6 (::ffff:203.0.113.0/120) is that IPv4 network.
+            length -= 96;
+        }
+
+        if (ipv4) {
+            address = address.MapToIPv4();
+            if (length is < WidestIpv4Ban or > 32) {
+                problem = $"An IPv4 ban covers a /{WidestIpv4Ban} at the widest, and a /32 (one address) at the narrowest; {trimmed} doesn't.";
+                return null;
+            }
+        } else if (length is < WidestIpv6Ban or > 64) {
+            problem = $"An IPv6 ban covers a /{WidestIpv6Ban} at the widest, and a /64 at the narrowest (one client usually has a whole /64); {trimmed} doesn't.";
+            return null;
+        }
+
+        var bytes = address.GetAddressBytes();
+        for (var bit = length; bit < bytes.Length * 8; bit++) {
+            bytes[bit / 8] &= (byte) ~(0x80 >> (bit % 8));
+        }
+
+        var network = new IPAddress(bytes);
+        return ipv4 && length == 32 ? network.ToString() : $"{network}/{length}";
+    }
+
+    /// <summary>
+    /// Whether an address or prefix is, or holds, the server's own address or its proxy's: loopback, the unspecified address,
+    /// or one of <c>LookingGlass:TrustedProxies</c>. When a proxy's forwarded client address goes missing, every player's
+    /// connections come from there, so such an address is never flagged or blocked, and banned only when forced.
+    /// </summary>
+    /// <param name="addressOrPrefix">An address, a prefix, or an address as <see cref="LimitKey"/> gives it.</param>
+    /// <returns>Why, for the operator; or null if it is neither (or isn't an address at all).</returns>
+    public static string? ProxyProblem(string addressOrPrefix, IEnumerable<string>? trustedProxies) {
+        if (!TryNetwork(addressOrPrefix, out var network)) {
+            return null;
+        }
+
+        var own = new List<(string Entry, string What)> {
+            ("127.0.0.0/8", "this machine's own (loopback) address"),
+            ("::1/128", "this machine's own (loopback) address"),
+            ("0.0.0.0/32", "the unspecified address"),
+            ("::/128", "the unspecified address"),
+        };
+        own.AddRange((trustedProxies ?? []).Where(entry => !string.IsNullOrWhiteSpace(entry))
+            .Select(entry => (entry.Trim(), $"a trusted proxy's (LookingGlass:TrustedProxies lists {entry.Trim()})")));
+        foreach (var (entry, what) in own) {
+            if (TryNetwork(entry, out var proxy) && network.BaseAddress.AddressFamily == proxy.BaseAddress.AddressFamily
+                && (network.Contains(proxy.BaseAddress) || proxy.Contains(network.BaseAddress))) {
+                return $"{addressOrPrefix.Trim()} is or holds {what}: when a proxy's forwarded client address is missing, every player's connections " +
+                       "come from there, so a ban on it would shut out every player.";
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>An address (alone, a /32 or /128; IPv4 mapped to IPv6 as IPv4) or a CIDR prefix, as a network.</summary>
+    private static bool TryNetwork(string text, out System.Net.IPNetwork network) {
+        network = default;
+        var trimmed = text.Trim();
+        var slash = trimmed.IndexOf('/');
+        if (!IPAddress.TryParse(slash < 0 ? trimmed : trimmed[..slash], out var address)) {
+            return false;
+        }
+
+        var length = address.AddressFamily == AddressFamily.InterNetworkV6 ? 128 : 32;
+        if (slash >= 0 && !int.TryParse(trimmed[(slash + 1)..], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out length)) {
+            return false;
+        }
+
+        if (address.IsIPv4MappedToIPv6) {
+            address = address.MapToIPv4();
+            length = Math.Max(0, length - 96);
+        }
+
+        if (length > (address.AddressFamily == AddressFamily.InterNetworkV6 ? 128 : 32)) {
+            return false;
+        }
+
+        var bytes = address.GetAddressBytes();
+        for (var bit = length; bit < bytes.Length * 8; bit++) {
+            bytes[bit / 8] &= (byte) ~(0x80 >> (bit % 8));
+        }
+
+        network = new System.Net.IPNetwork(new IPAddress(bytes), length);
+        return true;
+    }
+
+    /// <summary>
+    /// Whether a ban's prefix (as <see cref="BanPrefix"/> writes it) covers an address as <see cref="LimitKey"/> gives it (an
+    /// IPv4 address, or an IPv6 /64, which a prefix of /64 or wider covers whole or not at all).
+    /// </summary>
+    public static bool Covers(string prefix, string limitKey) {
+        var slash = limitKey.IndexOf('/');
+        if (!IPAddress.TryParse(slash < 0 ? limitKey : limitKey[..slash], out var address)
+            || !System.Net.IPNetwork.TryParse(prefix.Contains('/') ? prefix : prefix + "/32", out var network)) {
+            return false;
+        }
+
+        return network.Contains(address);
+    }
+
     /// <summary>
     /// The key connection limits count against: like <see cref="LimitKey"/>, but a whole IPv6 /56, the least an ISP commonly
     /// gives one customer (many give a /48), so holding connections open takes many customers' worth of addresses, not

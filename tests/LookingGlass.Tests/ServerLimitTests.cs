@@ -261,6 +261,68 @@ public sealed class ServerLimitTests : IAsyncLifetime {
     }
 
     /// <summary>
+    /// An invite refused because the invitee has been sent too many (by everyone together) isn't the inviter's doing, so it
+    /// doesn't count towards flagging them; their own limits do. (Here a single refusal flags.)
+    /// </summary>
+    [Fact]
+    public async Task TheInviteesLimitsDontCountAgainstTheInviter() {
+        await this.StopTheClockAsync(settings: [
+            ("LookingGlass:Abuse:FlagAfterMinutesRefused", "1"),
+            ("LookingGlass:Limits:InviteBurstPerInvitee", "2"),
+            ("LookingGlass:Limits:InviteBurstPerPair", "1"),
+            ("LookingGlass:Limits:LookupBurst", "1"),
+        ]);
+        var bob = await this._server.RegisterAsync("Bob Much Invited");
+        var invitee = new Invitee(bob.UserId, bob.Keys());
+        foreach (var name in new[] { "Alice Inviting", "Carol Inviting" }) {
+            var inviter = await this._server.RegisterAsync(name);
+            Assert.Equal((1, (ServerErrorException?) null), await this.InviteUntilLimitedAsync(inviter, [(this.SeedChannels(inviter, 1)[0], invitee)]));
+        }
+
+        var dave = await this._server.RegisterAsync("Dave Inviting");
+        var (sent, refused) = await this.InviteUntilLimitedAsync(dave, [(this.SeedChannels(dave, 1)[0], invitee)]);
+        Assert.Equal(0, sent);
+        Assert.StartsWith("Bob Much Invited@Debug has been sent a lot of invites recently", refused?.ServerMessage);
+        Assert.Null(this._server.Database.GetFlag($"user {dave.UserId}"));
+
+        // His own limit (a lookup, here) does.
+        var lookup = new ClientFrame { LookupUser = new LookupUser { Name = bob.Name, WorldName = ProtocolInfo.DebugWorldName } };
+        await dave.Session.SendRawAsync(lookup, Ct);
+        await Assert.ThrowsAsync<ServerErrorException>(() => dave.Session.SendRawAsync(lookup, Ct));
+        Assert.Equal("LookupBurst", (await WaitFor(() => this._server.Database.GetFlag($"user {dave.UserId}"))).Limits);
+    }
+
+    /// <summary>
+    /// A channel's cap on pending invites counts towards flagging only an inviter who sent most of them: a moderator refused
+    /// because their admin filled it isn't flagged, the admin who filled it is. (Here a single refusal flags.)
+    /// </summary>
+    [Fact]
+    public async Task AChannelsPendingInvitesCountAgainstTheOneWhoFilledThem() {
+        await this._server.DisposeAsync();
+        this._server = new Harness(settings: ("LookingGlass:Abuse:FlagAfterMinutesRefused", "1"));
+        var alice = await this._server.RegisterAsync("Alice Fills");
+        var bob = await this._server.RegisterAsync("Bob Moderates");
+        var channelId = await alice.Session.CreateChannelAsync("Crowded", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        await alice.Session.SetRankAsync(channelId, bob.UserId, Rank.Moderator, Ct);
+        await WaitFor(() => bob.Session.Snapshot.FindChannel(channelId) is { MyRank: Rank.Moderator } channel ? channel : null);
+        for (var i = 0; i < ProtocolInfo.DefaultLimits().MaxPendingInvitesPerChannel; i++) {
+            this.SeedInvite(alice, channelId, this.SeedUser($"Waiting Invitee {i}"));
+        }
+
+        var another = this.SeedUser("One Too Many");
+        foreach (var inviter in new[] { bob, alice }) {
+            using var keys = inviter.LoadIdentity();
+            var refused = await Assert.ThrowsAsync<ServerErrorException>(() => inviter.Session.SendRawAsync(this.Invite(channelId, inviter, another.UserId, another.Keys,
+                at => ChannelCrypto.SealInvite("Crowded", channelId, at, another.UserId, another.Keys.AgreementPublicKey, keys, inviter.UserId)), Ct));
+            Assert.Equal(ErrorCode.LimitReached, refused.Code);
+        }
+
+        Assert.Equal("MaxPendingInvitesPerChannel", (await WaitFor(() => this._server.Database.GetFlag($"user {alice.UserId}"))).Limits);
+        Assert.Null(this._server.Database.GetFlag($"user {bob.UserId}"));
+    }
+
+    /// <summary>
     /// An invite the server refuses for its log entry (made before someone else's change landed: the client fetches the log
     /// and tries again) spends nothing: not the inviter's, the pair's or the invitee's allowance. Otherwise one invite,
     /// retried, could use up all of the pair's, and enough retries all of the inviter's and invitee's.
@@ -730,6 +792,14 @@ public sealed class ServerLimitTests : IAsyncLifetime {
         using var keys = inviter.LoadIdentity();
         var entry = this._server.NextEntry(channelId, inviter, MembershipEntryKind.Invite, invitee.UserId, invitee.Keys());
         var (sealedName, signature) = ChannelCrypto.SealInvite("Seeded", channelId, MembershipEntries.PositionOf(entry), invitee.UserId, invitee.Keys().AgreementPublicKey, keys, inviter.UserId);
+        Assert.True(this._server.Database.AppendEntry(channelId, entry, sealedName, signature));
+    }
+
+    /// <inheritdoc cref="SeedInvite(TestClient, string, TestClient)"/>
+    private void SeedInvite(TestClient inviter, string channelId, Invitee invitee) {
+        using var keys = inviter.LoadIdentity();
+        var entry = this._server.NextEntry(channelId, inviter, MembershipEntryKind.Invite, invitee.UserId, invitee.Keys);
+        var (sealedName, signature) = ChannelCrypto.SealInvite("Seeded", channelId, MembershipEntries.PositionOf(entry), invitee.UserId, invitee.Keys.AgreementPublicKey, keys, inviter.UserId);
         Assert.True(this._server.Database.AppendEntry(channelId, entry, sealedName, signature));
     }
 

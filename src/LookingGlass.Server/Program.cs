@@ -15,7 +15,9 @@ using LookingGlass.Server.Services;
 // current directory, so the server behaves the same however it is launched
 // (systemd, Windows service, Docker, or by hand).
 var builder = WebApplication.CreateBuilder(new WebApplicationOptions {
-    Args = args,
+    // Settings can be given on the command line too (--LookingGlass:DataDirectory=...), where a switch without "=" takes the
+    // next argument as its value: "--bans" and "--force", which have none, would take the setting after them.
+    Args = args.Where(arg => arg is not ("--bans" or "--force")).ToArray(),
     ContentRootPath = AppContext.BaseDirectory,
 });
 
@@ -23,18 +25,26 @@ string DatabasePath(ServerOptions options) =>
     Path.Combine(Path.GetFullPath(options.DataDirectory, builder.Environment.ContentRootPath), "lookingglass.db");
 
 // "--backup <file or folder> [--keep N]": an online backup of the configured database, and no server (nothing listens).
+// "--ban <whom> [--days N] [--reason "..."]", "--unban <whom>" and "--bans": the operator's bans, likewise (see BanCommand).
 BackupCommand.Request? backup;
+BanCommand.Request? banning;
 try {
     backup = BackupCommand.Parse(args);
+    banning = BanCommand.Parse(args);
+    if (backup != null && banning != null) {
+        throw new ArgumentException("Use --backup on its own, not with --ban, --unban or --bans.");
+    }
 } catch (ArgumentException ex) {
     Console.Error.WriteLine(ex.Message);
     Environment.ExitCode = 2;
     return;
 }
 
-if (backup != null) {
+if (backup != null || banning != null) {
     var configured = builder.Configuration.GetSection(ServerOptions.Section).Get<ServerOptions>() ?? new ServerOptions();
-    Environment.ExitCode = BackupCommand.Run(backup, DatabasePath(configured), Console.Out, Console.Error);
+    Environment.ExitCode = backup != null
+        ? BackupCommand.Run(backup, DatabasePath(configured), Console.Out, Console.Error)
+        : BanCommand.Run(banning!, DatabasePath(configured), configured.Abuse, Console.Out, Console.Error, trustedProxies: configured.TrustedProxies);
     return;
 }
 
@@ -55,6 +65,10 @@ builder.Services.AddSingleton(services => {
 builder.Services.AddSingleton<IMembershipProvider>(SignedLogMembershipProvider.Instance);
 builder.Services.AddSingleton<IGroupKeyProvider>(SealedEpochKeyProvider.Instance);
 builder.Services.AddSingleton<ConnectionRegistry>();
+// Bans, and noticing abuse (see "Spotting abuse, and banning" in docs/design.md).
+builder.Services.AddSingleton<BanList>();
+builder.Services.AddSingleton<AbuseMonitor>();
+builder.Services.AddHostedService<BanEnforcer>();
 builder.Services.AddSingleton<RequestHandler>();
 builder.Services.AddHttpClient<LodestoneClient>(client => {
     client.DefaultRequestHeaders.UserAgent.ParseAdd("LookingGlass/0.1 (+character verification)");
@@ -105,6 +119,13 @@ if (options.Messages.Problem() is { } messageSettings) {
 // The invite and lookup limits; the invite limits keep their protective shape: one inviter can't use up what others can send someone.
 if (options.Limits.Problem() is { } limitSettings) {
     app.Logger.LogCritical("{Problem}", limitSettings);
+    Environment.ExitCode = 1;
+    return;
+}
+
+// When repeated refusals flag someone, and how bans are picked up.
+if (options.Abuse.Problem() is { } abuseSettings) {
+    app.Logger.LogCritical("{Problem}", abuseSettings);
     Environment.ExitCode = 1;
     return;
 }
@@ -180,12 +201,17 @@ if (options.Dev.AllowDebugAccounts && app.Environment.IsDevelopment()) {
 
 // One line saying how this server is set up, for the operator to check after every start or update.
 app.Logger.LogInformation(
-    "LookingGlass server {Version} in {Environment}: debug accounts {DebugAccounts}, echo bot {EchoBot}; {Messages}; {Addresses}; database {Database}",
+    "LookingGlass server {Version} in {Environment}: debug accounts {DebugAccounts}, echo bot {EchoBot}; {Messages}; {Abuse}; {Addresses}; database {Database}",
     RequestHandler.ServerVersion, app.Environment.EnvironmentName, options.Dev.AllowDebugAccounts ? "ON" : "off",
     options.Dev.HostEchoBot && options.Dev.AllowDebugAccounts ? "ON" : "off",
     options.Messages.Enabled
         ? $"messages kept {options.Messages.KeepDays} days, at most {options.Messages.MaxPerChannel} per channel, for members who were away"
         : "no messages kept",
+    $"flagged when refused by limits in {options.Abuse.FlagAfterMinutesRefused} of {options.Abuse.WindowMinutes} minutes, " +
+    $"or by {options.Abuse.FlagAfterLimits} limits within {options.Abuse.FlagLimitsWithinMinutes} minutes; " +
+    (options.Abuse.AutoBlockMinutes > 0
+        ? $"addresses blocked automatically for {options.Abuse.AutoBlockMinutes} minutes after {options.Abuse.AutoBlockAfterRefusals} refusals"
+        : "automatic blocks off"),
     publicOrigins.Count == 0 ? "no PublicUrls (going by each connection's Host header)"
     : sharedAddresses == 0 ? $"every address is wss:// with a fully qualified name ({publicOrigins.Count})"
     : $"{sharedAddresses} of {publicOrigins.Count} addresses may not be this server's alone (see the warnings above)",
@@ -203,6 +229,26 @@ app.UseWebSockets(new WebSocketOptions {
 var gate = new ConnectionGate(options.Limits.MaxConnections, options.Limits.ConnectionsPerIp, options.Limits.NotLoggedInConnectionsPerIp,
     options.Limits.ConnectionsPerMinutePerIp);
 var acceptor = new WebSocketAcceptor(app.Services.GetRequiredService<ILoggerFactory>().CreateLogger<WebSocketAcceptor>());
+var abuse = app.Services.GetRequiredService<AbuseMonitor>();
+var bans = app.Services.GetRequiredService<BanList>();
+// When the server last warned that it couldn't read the bans for a new connection (UTC ticks): once a minute at most.
+long bansUnreadableWarned = 0;
+
+// Whether an address is blocked automatically (a flood). If the bans can't be read (the database fails), the connection
+// goes on to the usual path, which checks again and answers an error as any request's, rather than failing here with a 500.
+bool BlockedAutomatically(string limitKey) {
+    try {
+        return bans.ForAddress(limitKey) is { Automatic: true };
+    } catch (Exception ex) {
+        var now = DateTime.UtcNow.Ticks;
+        var last = Interlocked.Read(ref bansUnreadableWarned);
+        if (now - last >= TimeSpan.TicksPerMinute && Interlocked.CompareExchange(ref bansUnreadableWarned, now, last) == last) {
+            app.Logger.LogWarning(ex, "Couldn't check the address of a new connection against the bans, so it was let through (said once a minute at most)");
+        }
+
+        return false;
+    }
+}
 
 // Whether the server is up, and its version: nothing about who uses it.
 app.MapGet("/health", () => Results.Ok(new { status = "ok", version = RequestHandler.ServerVersion }));
@@ -214,12 +260,25 @@ app.Map(ProtocolInfo.WebSocketPath, async (HttpContext context, RequestHandler h
         return;
     }
 
+    // An address blocked automatically is flooding: refused before anything else, not even let in to be told why (the
+    // operator's own bans let it say hello, and answer that).
+    if (BlockedAutomatically(ClientAddresses.LimitKey(context.Connection.RemoteIpAddress))) {
+        context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+        return;
+    }
+
     var (ticket, refusal) = gate.TryAdmit(ClientAddresses.ConnectionLimitKey(context.Connection.RemoteIpAddress));
     if (ticket == null) {
         if (refusal == ConnectionRefusal.ServerFull) {
+            // Not the address's doing: not counted towards flagging it.
             acceptor.RefuseFull(context);
         } else {
             context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+            abuse.Refused(refusal switch {
+                ConnectionRefusal.TooManyNew => nameof(LimitOptions.ConnectionsPerMinutePerIp),
+                ConnectionRefusal.AddressFull => nameof(LimitOptions.ConnectionsPerIp),
+                _ => nameof(LimitOptions.NotLoggedInConnectionsPerIp),
+            }, null, ClientAddresses.LimitKey(context.Connection.RemoteIpAddress));
         }
 
         return;
@@ -243,6 +302,9 @@ app.Map(ProtocolInfo.WebSocketPath, async (HttpContext context, RequestHandler h
         // only once the answer goes out.
         ticket.Attach(() => connection.PendingRegistration != null, () => connection.Abort("Server busy", WebSocketCloseStatus.EndpointUnavailable),
             isLoggedIn: () => connection.User != null);
+
+        // Open until it closes, so a ban made meanwhile closes it (see BanEnforcer).
+        using var open = registry.Opened(connection);
 
         // Stopping (systemd sends SIGTERM) closes every connection at once, saying the server is going away, so clients
         // reconnect later and the server stops without waiting out its shutdown timeout.

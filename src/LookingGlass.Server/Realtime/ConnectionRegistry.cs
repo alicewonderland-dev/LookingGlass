@@ -28,6 +28,21 @@ public sealed class ConnectionRegistry(Database db, ILogger<ConnectionRegistry> 
     private readonly Lock _presence = new();
     // Members who joined a channel so far (see AnnounceJoined); changed under _presence.
     private long _joins;
+    // Every connection open now, logged in or not, so a ban made meanwhile can close those it covers (see BanEnforcer).
+    private readonly ConcurrentDictionary<ClientConnection, byte> _open = new();
+
+    /// <summary>Every connection open now, logged in or not.</summary>
+    public ICollection<ClientConnection> OpenConnections => this._open.Keys;
+
+    /// <summary>Counts a connection as open until the result is disposed (when it closes).</summary>
+    public IDisposable Opened(ClientConnection connection) {
+        this._open[connection] = 0;
+        return new Closing(this, connection);
+    }
+
+    private sealed class Closing(ConnectionRegistry registry, ClientConnection connection) : IDisposable {
+        public void Dispose() => registry._open.TryRemove(connection, out _);
+    }
 
     /// <summary>Runs after each query of whom to tell about a user's presence, so tests can hold it there.</summary>
     internal Action<long>? AfterCoMemberQueryForTests { get; set; }

@@ -52,7 +52,11 @@ early testing (version 0.2).
 - **Privacy.** Only the members of a channel can read its name and messages.
   The server still sees who is in which channel and when messages are sent,
   and keeps the encrypted messages for a week so members who were away get
-  them.
+  them. To deal with abuse, it also keeps the internet address of anyone its
+  limits refuse again and again (until a day after the last refusal) and the
+  addresses its operator bans (until 90 days after the ban ends), and logs the
+  character's user ID (its Lodestone ID, not its name) and the address when a
+  banned player tries to connect.
 
 ## Commands
 
@@ -188,6 +192,11 @@ other servers.
 - **A channel shows "From your old setup"** ("Your old key's place" in advanced
   mode). It's left over from an older version and can't be used. Choose
   **Remove from my list...** in its menu.
+- **"Blocked by the server".** The people who run that server blocked your
+  character, or your internet connection (which others in your household may
+  share), and the plugin says why if they gave a reason, and until when. You
+  keep your places in your channels; the plugin tries again every few minutes
+  by itself. If you think it's a mistake, ask the people who run the server.
 - **The server moved to a new address.** Change it in Settings. If both
   addresses belong to the same server, the plugin offers to keep your identity;
   otherwise you register again there.

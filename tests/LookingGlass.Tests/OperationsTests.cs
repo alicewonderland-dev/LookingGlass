@@ -78,6 +78,7 @@ public sealed class OperationsTests {
             Assert.Contains("Production", summary);
             Assert.Contains("debug accounts off", summary);
             Assert.Contains("echo bot off", summary);
+            Assert.Contains("flagged when refused by limits in 30 of 60 minutes, or by 4 limits within 10 minutes; automatic blocks off", summary);
             Assert.Contains("every address is wss:// with a fully qualified name", summary);
         } finally {
             DeleteDirectory(server.DataDirectory);

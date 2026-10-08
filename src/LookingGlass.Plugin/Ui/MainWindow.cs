@@ -155,6 +155,7 @@ public sealed class MainWindow : Window {
             ConnectionState.Connecting => ("Connecting...", ImGuiColors.DalamudOrange, status ?? "Waiting for the server."),
             ConnectionState.Reconnecting => ("Reconnecting...", ImGuiColors.DalamudOrange, status ?? "The connection to the server dropped. Trying again."),
             ConnectionState.LoginNotRecognized => ("Login not recognised", Widgets.Warning, status ?? PlainMessages.LoginNotRecognized.For(advanced)),
+            ConnectionState.Blocked => ("Blocked by the server", Widgets.Warning, status ?? "This server's operator has blocked you from it."),
             ConnectionState.Registering when snapshot.LoginRejected => ("Registering again", Widgets.Warning,
                 status ?? "The server didn't recognise your login, so you're registering again. Follow the steps below."),
             ConnectionState.Unregistered or ConnectionState.Registering => ("Not registered", ImGuiColors.DalamudOrange,
@@ -340,6 +341,17 @@ public sealed class MainWindow : Window {
             case ConnectionState.Reconnecting:
                 Widgets.Centred(FontAwesomeIcon.Sync, "Reconnecting...", snapshot.StatusFor(this._config.AdvancedMode) ?? "The connection to the server dropped. Trying again.");
                 break;
+            case ConnectionState.Blocked: {
+                // The operator's decision, said plainly (with their reason, if they gave one); trying again now is all there is to do here.
+                Widgets.Centred(FontAwesomeIcon.Ban, "Blocked by this server", snapshot.StatusFor(this._config.AdvancedMode) ?? "This server's operator has blocked you from it.");
+                var width = ImGui.GetContentRegionAvail().X;
+                Widgets.CentreNext(Widgets.ButtonWidth("Try again now"), width);
+                if (ImGui.Button("Try again now")) {
+                    session.Reconnect();
+                }
+
+                break;
+            }
             default:
                 Widgets.Centred(FontAwesomeIcon.Sync, "Connecting...", snapshot.StatusFor(this._config.AdvancedMode) ?? "Waiting for the server.");
                 break;

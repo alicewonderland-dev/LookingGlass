@@ -118,7 +118,16 @@ public sealed partial class ClientSession : IAsyncDisposable {
     private DateTimeOffset _replayStateSavedAt = DateTimeOffset.MinValue;
     // Notices found while holding the lock; Publish raises them.
     private readonly List<SessionNotice> _pendingNotices = new();
+    // The server said, on the current connection, that its operator blocked this character or address; the connection then
+    // closes, and the session waits (see WaitWhileBlockedAsync).
+    private Block? _blocked;
     // ----
+
+    // What the user was last told about a block, so a block that is still the same isn't told again at every try; cleared
+    // once logged in.
+    private string? _blockedReported;
+    // Set while waiting because of a block; Reconnect ends the wait.
+    private volatile TaskCompletionSource? _blockedWait;
 
     private long _savedSecretsVersion;
     private volatile SessionSnapshot _snapshot = SessionSnapshot.Empty;
@@ -195,10 +204,11 @@ public sealed partial class ClientSession : IAsyncDisposable {
         this._runTask = Task.Run(() => this.RunLoop(this._runCts.Token));
     }
 
-    /// <summary>Drops the current connection and reconnects straight away.</summary>
+    /// <summary>Drops the current connection and reconnects straight away (also while waiting because the server's operator blocked this).</summary>
     public void Reconnect() {
         this._reconnectImmediately = true;
         this._connection?.Abort("Reconnect requested");
+        this._blockedWait?.TrySetResult();
     }
 
     public async ValueTask DisposeAsync() {
@@ -1254,6 +1264,11 @@ public sealed partial class ClientSession : IAsyncDisposable {
                 this.Log(NoticeLevel.Info, connection.CloseReason);
             } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
                 break;
+            } catch (ServerErrorException ex) when (ex.Code == ErrorCode.Blocked) {
+                // Said below, once the connection is gone.
+            } catch (Exception ex) when (this.Read(() => this._blocked != null)) {
+                // Whatever was under way when the server said so (and closed the connection): the block is what to say.
+                this.Log(NoticeLevel.Info, $"Connection ended after the server said this is blocked: {ex.Message}");
             } catch (Exception ex) {
                 failure = $"Connection failed: {ex.Message}";
                 this.Log(NoticeLevel.Warning, failure);
@@ -1276,6 +1291,20 @@ public sealed partial class ClientSession : IAsyncDisposable {
                 break;
             }
 
+            var block = this.Read(() => {
+                var blocked = this._blocked;
+                this._blocked = null;
+                return blocked;
+            });
+            if (block != null) {
+                if (!await this.WaitWhileBlockedAsync(block, ct)) {
+                    break;
+                }
+
+                delay = this._options.ReconnectMinDelay;
+                continue;
+            }
+
             if (this._reconnectImmediately) {
                 this._reconnectImmediately = false;
                 continue;
@@ -1293,6 +1322,48 @@ public sealed partial class ClientSession : IAsyncDisposable {
         }
 
         this.SetState(ConnectionState.Stopped, "Stopped");
+    }
+
+    /// <summary>
+    /// The server's operator blocked this character, or the address this computer connects from: says so (once, while it is the
+    /// same block), shows it as the status, and waits <see cref="ClientSessionOptions.BlockedRetryDelay"/> before connecting
+    /// again (until the block ends, if that is sooner), rather than knocking every few seconds. <see cref="Reconnect"/> ends
+    /// the wait at once.
+    /// </summary>
+    /// <returns>False if the session is stopping.</returns>
+    private async Task<bool> WaitWhileBlockedAsync(Block block, CancellationToken ct) {
+        var wording = PlainMessages.Blocked(block, this._options.BlockedRetryDelay);
+        if (Interlocked.Exchange(ref this._blockedReported, wording.Technical) != wording.Technical) {
+            this.RaiseNotice(NoticeLevel.Warning, wording);
+        }
+
+        this.SetState(ConnectionState.Blocked, wording);
+        var wait = this._options.BlockedRetryDelay;
+        if (block.UntilUnix > 0) {
+            // A few seconds after it ends, so the server's clock has passed it too; but never sooner than the least wait, as this
+            // computer's clock may be ahead of the server's (and the block then seem over when it isn't).
+            var left = DateTimeOffset.FromUnixTimeSeconds(block.UntilUnix) - this._options.TimeProvider.GetUtcNow() + TimeSpan.FromSeconds(5);
+            var least = this._options.BlockedRetryMinDelay < wait ? this._options.BlockedRetryMinDelay : wait;
+            if (left < wait) {
+                wait = left > least ? left : least;
+            }
+        }
+
+        var wake = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        this._blockedWait = wake;
+        if (this._reconnectImmediately) {
+            // Asked for just before the wait began.
+            wake.TrySetResult();
+        }
+
+        try {
+            await Task.WhenAny(Task.Delay(wait, ct), wake.Task);
+        } finally {
+            this._blockedWait = null;
+            this._reconnectImmediately = false;
+        }
+
+        return !ct.IsCancellationRequested;
     }
 
     private async Task<WebSocket> ConnectSocketAsync(CancellationToken ct) {
@@ -1560,8 +1631,9 @@ public sealed partial class ClientSession : IAsyncDisposable {
             this._users[ok.User.UserId] = ok.User;
             this._secrets.UserId = ok.User.UserId;
             this._loginRejected = false;
-            // Logged in: a registration under way (from before a saved login worked again) is moot.
+            // Logged in: a registration under way (from before a saved login worked again) is moot, and so is any block.
             this._challenge = null;
+            this._blockedReported = null;
             this._state = ConnectionState.Ready;
             // Ready, but the channel list is only complete once RefreshAsync has fetched it.
             this._channelsLoaded = false;
@@ -2244,6 +2316,12 @@ public sealed partial class ClientSession : IAsyncDisposable {
         lock (this._lock) {
             if (source == null || source != this._connection) {
                 return;
+            }
+
+            if (response.Error?.Code == ErrorCode.Blocked) {
+                // Whichever request it answered, the server closes the connection next. Noted here, as it arrives, before the
+                // close does: RunLoop then says so and waits (see WaitWhileBlockedAsync).
+                this._blocked = response.Error.Block ?? new Block();
             }
 
             // Every channel listed is one this user is in, so its members are theirs to see. Invitees' flags
@@ -3554,7 +3632,7 @@ public sealed partial class ClientSession : IAsyncDisposable {
                 this._channelsLoaded = false;
             }
 
-            if (state is ConnectionState.Connecting or ConnectionState.Reconnecting or ConnectionState.Stopped) {
+            if (state is ConnectionState.Connecting or ConnectionState.Reconnecting or ConnectionState.Stopped or ConnectionState.Blocked) {
                 this._challenge = null;
             }
         }
@@ -3571,7 +3649,9 @@ public sealed partial class ClientSession : IAsyncDisposable {
             notices = [.. this._pendingNotices.Select(notice => Redacted(notice, keep))];
             this._pendingNotices.Clear();
             // As the server said on this connection; nothing while there is none.
-            var addressNotListed = this._state is ConnectionState.Stopped or ConnectionState.Connecting or ConnectionState.Reconnecting ? null : this._addressNotListed;
+            var addressNotListed = this._state is ConnectionState.Stopped or ConnectionState.Connecting or ConnectionState.Reconnecting or ConnectionState.Blocked
+                ? null
+                : this._addressNotListed;
             snapshot = new SessionSnapshot(
                 this._state,
                 LodestoneCode.Redact(this._status?.Technical, keep),
@@ -3665,7 +3745,8 @@ public sealed partial class ClientSession : IAsyncDisposable {
     private async Task<Response> RequestAsync(Connection connection, ClientFrame frame, CancellationToken ct, TimeSpan? timeout = null) {
         var response = await connection.RequestAsync(frame, ct, timeout);
         if (response.Error != null) {
-            throw new ServerErrorException(response.Error.Code, response.Error.Message, this.ShownCode());
+            // A block is noted as the answer arrives (see OnResponse).
+            throw new ServerErrorException(response.Error.Code, response.Error.Message, this.ShownCode()) { Block = response.Error.Block };
         }
 
         return response;

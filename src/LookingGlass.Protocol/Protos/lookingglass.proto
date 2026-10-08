@@ -125,11 +125,28 @@ enum ErrorCode {
   ERROR_CODE_UNSUPPORTED_VERSION = 11;
   ERROR_CODE_REGISTRATION_FAILED = 12;
   ERROR_CODE_INTERNAL = 13;
+  // The server's operator blocked this character, or the address the connection comes from
+  // (Error.block says which, and why). The server closes the connection after this answer.
+  // Added without a version change: an older plugin shows the message, which says it all,
+  // and reconnects as after any failed connection.
+  ERROR_CODE_BLOCKED = 14;
 }
 
 message Error {
   ErrorCode code = 1;
   string message = 2;
+  // With ERROR_CODE_BLOCKED: the block. Added without a version change.
+  Block block = 3;
+}
+
+// A block (ban) made by the server's operator.
+message Block {
+  // What the operator gave as the reason, as they wrote it; empty if they gave none.
+  string reason = 1;
+  // When the block ends, in Unix seconds; 0 if it lasts until the operator lifts it.
+  int64 until_unix = 2;
+  // The block is on the address the connection comes from (everyone sharing it), not the character.
+  bool address = 3;
 }
 
 message Ack {}

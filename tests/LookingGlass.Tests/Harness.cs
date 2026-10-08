@@ -168,17 +168,18 @@ public sealed class Harness : IAsyncDisposable {
     /// <param name="maxHeldLive">How many live messages are held back while catching up.</param>
     /// <param name="replaySaveDelay">How soon changed message times and positions are saved.</param>
     /// <param name="offerLocalChat">Offer local chat in Hello; off plays a plugin from before it.</param>
+    /// <param name="remoteAddress">The address the client's connections come from (by default none, which per-IP limits count as one address).</param>
     public ClientSessionOptions Options(bool autoRekey = true, Action<NoticeLevel, string>? log = null, TimeProvider? time = null, Func<CancellationToken, Task>? beforeConnect = null,
         uint protocolVersion = ProtocolInfo.CurrentVersion, Func<WebSocket, WebSocket>? wrap = null, TimeSpan? forkCheckInterval = null, TimeSpan? loginRetryDelay = null,
         Uri? serverUri = null, bool offerCatchUp = true, TimeSpan? catchUpWithoutPosition = null, int maxHeldLive = 2000, TimeSpan? replaySaveDelay = null,
-        bool offerLocalChat = true) => new() {
+        bool offerLocalChat = true, string? remoteAddress = null) => new() {
         ServerUri = serverUri ?? new Uri(this.Factory.Server.BaseAddress, ProtocolInfo.WebSocketPath),
         Connect = async (uri, ct) => {
             if (beforeConnect != null) {
                 await beforeConnect(ct);
             }
 
-            var socket = await this.ConnectAsync(uri, ct);
+            var socket = await this.ConnectAsync(uri, ct, remoteAddress);
             return wrap?.Invoke(socket) ?? socket;
         },
         ReconnectMinDelay = TimeSpan.FromMilliseconds(100),
@@ -199,7 +200,18 @@ public sealed class Harness : IAsyncDisposable {
     };
 
     /// <summary>Opens a WebSocket to this server, whatever address <paramref name="uri"/> names (as a client's Connect).</summary>
-    public Task<WebSocket> ConnectAsync(Uri uri, CancellationToken ct) => this.Factory.Server.CreateWebSocketClient().ConnectAsync(uri, ct);
+    public Task<WebSocket> ConnectAsync(Uri uri, CancellationToken ct) => this.ConnectAsync(uri, ct, null);
+
+    /// <inheritdoc cref="ConnectAsync(Uri, CancellationToken)"/>
+    /// <param name="remoteAddress">The address the connection comes from (none: what per-IP limits count as one address).</param>
+    public Task<WebSocket> ConnectAsync(Uri uri, CancellationToken ct, string? remoteAddress) {
+        var client = this.Factory.Server.CreateWebSocketClient();
+        if (remoteAddress != null) {
+            client.ConfigureRequest = request => request.HttpContext.Connection.RemoteIpAddress = System.Net.IPAddress.Parse(remoteAddress);
+        }
+
+        return client.ConnectAsync(uri, ct);
+    }
 
     public void Track(IAsyncDisposable disposable) => this._disposables.Add(disposable);
 
