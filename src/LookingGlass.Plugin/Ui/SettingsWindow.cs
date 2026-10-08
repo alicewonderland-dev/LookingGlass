@@ -363,19 +363,28 @@ public sealed class SettingsWindow : Window {
         this.DrawLocalColourPopup(current);
 
         // What sending tells the server, accepted before the first /lgl; withdrawn here (then /lgl asks again).
+        // The words wrap on a line of their own and the buttons go under them: side by side, the last button ran past the
+        // right edge of the window at its usual width, out of sight.
         var accepted = this._config.LocalChatPrivacyAccepted;
-        ImGui.AlignTextToFramePadding();
+        ImGui.Spacing();
+        ImGui.PushTextWrapPos();
         ImGui.TextColored(Widgets.Muted, accepted
             ? "You've accepted what local chat tells the server."
             : "Local chat asks you to accept what it tells the server before you first send.");
-        ImGui.SameLine();
+        ImGui.PopTextWrapPos();
         if (Widgets.GhostButton("What it tells the server", "Which names the LookingGlass server learns when you use /lgl, and what it never sees.")) {
             this._reviewLocalPrivacy();
         }
 
         if (accepted) {
-            ImGui.SameLine();
-            if (Widgets.GhostButton("Withdraw", "Stop sending local messages until you accept again. Receiving them doesn't need it.")) {
+            const string withdraw = "Withdraw";
+            // Beside it if it fits, else under it.
+            var room = ImGui.GetContentRegionMax().X - ImGui.GetItemRectMax().X + ImGui.GetWindowPos().X;
+            if (room > Widgets.ButtonWidth(withdraw) + ImGui.GetStyle().ItemSpacing.X) {
+                ImGui.SameLine();
+            }
+
+            if (Widgets.GhostButton(withdraw, "Stop sending local messages until you accept again. Receiving them doesn't need it.")) {
                 this._config.LocalChatPrivacyAccepted = false;
                 this._config.Save();
             }

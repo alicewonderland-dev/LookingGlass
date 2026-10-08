@@ -39,7 +39,17 @@ public sealed class LocalChatPrivacyWindow : Window {
         ImGui.PopTextWrapPos();
         ImGui.Spacing();
         if (this._config.LocalChatPrivacyAccepted) {
-            ImGui.TextColored(Widgets.Muted, "You've accepted this. You can withdraw it in Settings, under Chat.");
+            ImGui.PushTextWrapPos(ImGui.GetFontSize() * 30);
+            ImGui.TextColored(Widgets.Muted, "You've accepted this. Withdraw it to stop sending local messages until you accept again " +
+                                             "(also in Settings, under Chat).");
+            ImGui.PopTextWrapPos();
+            if (ImGui.Button("Withdraw")) {
+                this._config.LocalChatPrivacyAccepted = false;
+                this._config.Save();
+                this.IsOpen = false;
+            }
+
+            ImGui.SameLine();
             if (ImGui.Button("Close")) {
                 this.IsOpen = false;
             }
