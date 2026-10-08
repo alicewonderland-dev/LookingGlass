@@ -39,6 +39,10 @@ public sealed class LookupMemory(TimeProvider time) {
         this._lookups[lookup] = (userId, now);
     }
 
+    /// <summary>Forgets whom <paramref name="lookup"/> was found to be, but not that nobody is registered by it.</summary>
+    /// <returns>Whether it was remembered.</returns>
+    public bool ForgetFound(string lookup) => this._lookups.TryRemove(lookup, out _);
+
     public void Forget(string lookup) {
         this._lookups.TryRemove(lookup, out _);
         this._missing.TryRemove(lookup, out _);

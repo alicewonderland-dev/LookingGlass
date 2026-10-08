@@ -169,9 +169,10 @@ public sealed partial class ClientSession {
             : null);
         if (pinned != null && pinned.Keys != offered) {
             this.DropLocal("keys other than those held");
-            // The next /lgl to them looks them up afresh rather than reusing what was looked up (which may be what changed).
-            this._lookups.Forget($"{sender.Name}@{sender.WorldName}");
-            this.InvokeSafely(this.LocalMessageUnchecked, new LocalUnchecked(Shown(sender), LocalUncheckedReason.KeysChanged));
+            // Nothing else changes here, not even what was looked up for them: the name is the server's word (see ForgetLookupAfterHint).
+            this.InvokeSafely(this.LocalMessageUnchecked, new LocalUnchecked(Shown(sender), LocalUncheckedReason.KeysChanged) {
+                HeldAs = pinned.Name.Length > 0 ? $"{pinned.Name}@{pinned.WorldName}" : null,
+            });
             return;
         }
 
@@ -234,7 +235,8 @@ public sealed partial class ClientSession {
     /// <see cref="LocalChat.Judge"/>): call first, and show it only if this says <see cref="LocalConfirmation.Show"/>. Then it
     /// is recorded against replays (only messages shown are, so strangers' can't grow what is saved), and if no key was held
     /// for the sender when it arrived, the keys it came with are pinned (trust on first use, as for a lookup); not if another
-    /// account is held under the name it gives, or other keys were held for the sender meanwhile.
+    /// account is held under the name it gives, or other keys were held for the sender meanwhile. A sender held with no name
+    /// (pinned from a membership log) gets the same name check, and the name is held from then on.
     /// </summary>
     public LocalConfirmation ConfirmLocalSender(IncomingLocalMessage message) {
         if (message.IsOwn || message.MessageId is not { } messageId) {
@@ -258,9 +260,7 @@ public sealed partial class ClientSession {
                     }
                 } else {
                     // Someone else is held under this name: never taken from a local message (Pin would only warn, and take it).
-                    if (this._secrets.PinnedIdentities.Any(pair => pair.Key != user.UserId
-                                                                   && string.Equals(pair.Value.Name, user.Name, StringComparison.OrdinalIgnoreCase)
-                                                                   && string.Equals(pair.Value.WorldName, user.WorldName, StringComparison.OrdinalIgnoreCase))) {
+                    if (this.NameHeldByOther(user.UserId, user.Name, user.WorldName)) {
                         return LocalConfirmation.NameHeldByAnother;
                     }
 
@@ -269,6 +269,17 @@ public sealed partial class ClientSession {
                     this._users[user.UserId] = user;
                     pinnedNow = true;
                 }
+            } else if (this._secrets.PinnedIdentities.TryGetValue(senderId, out var unnamed) && unnamed.Name.Length == 0) {
+                // Held with no name (a channel's membership log can pin someone so): the name it gives mustn't be another
+                // account's either, and is held with their keys from now on, so a later rename is noticed.
+                if (this.NameHeldByOther(senderId, message.Sender.Name, message.Sender.WorldName)) {
+                    return LocalConfirmation.NameHeldByAnother;
+                }
+
+                unnamed.Name = message.Sender.Name;
+                unnamed.WorldName = message.Sender.WorldName;
+                this._secretsVersion++;
+                pinnedNow = true;
             }
 
             // Saved soon, with the channels' message times.
@@ -284,6 +295,29 @@ public sealed partial class ClientSession {
         }
 
         return LocalConfirmation.Show;
+    }
+
+    /// <summary>Whether an account other than <paramref name="userId"/> is held under that name and world. Call inside the lock.</summary>
+    private bool NameHeldByOther(long userId, string name, string worldName) =>
+        this._secrets.PinnedIdentities.Any(pair => pair.Key != userId
+                                                   && string.Equals(pair.Value.Name, name, StringComparison.OrdinalIgnoreCase)
+                                                   && string.Equals(pair.Value.WorldName, worldName, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// After a local message under other keys than those held (<see cref="LocalUncheckedReason.KeysChanged"/>), once the plugin
+    /// found its sender near and a friend: forgets what was looked up under the name held for that account, so the next /lgl
+    /// to them looks them up afresh (which changes nothing unless their keys did, and then warns as always). Only if the server
+    /// gave that very name: a message naming someone else (a server faking a hint) forgets nothing. Never the answer that
+    /// nobody is registered by a name.
+    /// </summary>
+    /// <returns>Whether anything was forgotten.</returns>
+    public bool ForgetLookupAfterHint(LocalUnchecked unchecked_) {
+        if (unchecked_.Reason != LocalUncheckedReason.KeysChanged || unchecked_.HeldAs is not { } held
+            || !string.Equals(held, $"{unchecked_.Sender.Name}@{unchecked_.Sender.WorldName}", StringComparison.OrdinalIgnoreCase)) {
+            return false;
+        }
+
+        return this._lookups.ForgetFound(held);
     }
 
     /// <summary>Counts a local message dropped, and logs the count (never who, nor what).</summary>

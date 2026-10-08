@@ -142,10 +142,35 @@ public sealed class LocalChatTests {
     }
 
     [Fact]
+    public void HintsAreRememberedByNameAndCappedPerSession() {
+        var hints = new LocalHints();
+
+        // The name a hint gives is the server's word, so it is remembered by name: other accounts under one name, once.
+        Assert.NotNull(hints.For(new LocalUnchecked(Bob, LocalUncheckedReason.KeysChanged), LocalVerdict.Show));
+        Assert.Null(hints.For(new LocalUnchecked(new LookingGlass.Protocol.User { UserId = 99, Name = "bob hatter", WorldName = "LICH" }, LocalUncheckedReason.KeysChanged), LocalVerdict.Show));
+        // One account under another name is another hint.
+        Assert.NotNull(hints.For(new LocalUnchecked(new LookingGlass.Protocol.User { UserId = 7, Name = "Robert Hatter", WorldName = "Lich" }, LocalUncheckedReason.Renamed), LocalVerdict.Show));
+
+        // At most a few a session, however many names.
+        for (var i = 0; i < 10; i++) {
+            hints.For(new LocalUnchecked(new LookingGlass.Protocol.User { UserId = 100 + i, Name = $"Friend {i}", WorldName = "Lich" }, LocalUncheckedReason.KeysChanged), LocalVerdict.Show);
+        }
+
+        Assert.Null(hints.For(new LocalUnchecked(new LookingGlass.Protocol.User { UserId = 200, Name = "One More", WorldName = "Lich" }, LocalUncheckedReason.KeysChanged), LocalVerdict.Show));
+        Assert.Equal(5, LocalHints.MaxPerSession);
+    }
+
+    [Fact]
     public void TheHintsSayWhatMayHaveHappenedAndWhatToDo() {
         var keys = LocalChatWords.Unchecked("Bob Hatter@Lich", LocalUncheckedReason.KeysChanged);
         Assert.Contains("set up LookingGlass again", keys.Plain);
-        Assert.Contains("/lgl", keys.Plain);
+        // Never "you'll be warned", nor anything else that trains the player to accept a change of keys: a server could fake
+        // this hint to prime one. Check with them first.
+        Assert.Contains("someone else may be using their name", keys.Plain);
+        Assert.All(new[] { keys.Plain, keys.Technical }, text => {
+            Assert.Contains("/tell", text);
+            Assert.DoesNotContain("warned", text);
+        });
         Assert.Contains("changed their name or world", LocalChatWords.Unchecked("Bob Hatter@Lich", LocalUncheckedReason.Renamed).Plain);
         Assert.Contains("/tell", LocalChatWords.Unchecked("Bob Hatter@Lich", LocalUncheckedReason.NameHeldByAnother).Plain);
         Assert.All(Enum.GetValues<LocalUncheckedReason>(), reason => PlainLanguage.AssertPlain(LocalChatWords.Unchecked("Bob Hatter@Lich", reason).Plain));

@@ -231,13 +231,13 @@ public sealed class LimitOptions {
     /// dropped. Less than <see cref="LocalMessagesReceivedBurst"/>, so a couple of accounts can't use up what everyone together
     /// may send someone, and their friends still get through.
     /// </summary>
-    public int LocalMessagesBetweenBurst { get; set; } = 10;
+    public int LocalMessagesBetweenBurst { get; set; } = 30;
 
     /// <summary>
     /// Seconds between local messages one user may send one other once <see cref="LocalMessagesBetweenBurst"/> is spent. More
     /// than <see cref="LocalMessagesReceivedIntervalSeconds"/>, for the same reason.
     /// </summary>
-    public int LocalMessagesBetweenIntervalSeconds { get; set; } = 5;
+    public int LocalMessagesBetweenIntervalSeconds { get; set; } = 2;
 
     /// <summary>
     /// The most <see cref="MaxLocalRecipients"/> can be: each recipient's copy of the key, with its signature, is about 170
@@ -271,7 +271,7 @@ public sealed class LimitOptions {
                      (nameof(this.LookupBurst), this.LookupBurst, "lookups", 60),
                      (nameof(this.LocalMessageBurst), this.LocalMessageBurst, "local messages", 5),
                      (nameof(this.LocalMessagesReceivedBurst), this.LocalMessagesReceivedBurst, "local messages one user is sent", 120),
-                     (nameof(this.LocalMessagesBetweenBurst), this.LocalMessagesBetweenBurst, "local messages one user sends one other", 10),
+                     (nameof(this.LocalMessagesBetweenBurst), this.LocalMessagesBetweenBurst, "local messages one user sends one other", 30),
                  }) {
             if (value is < 1 or > MaxBurst) {
                 return $"LookingGlass:Limits:{name} is {value}, so the server won't start: it must be 1 to {MaxBurst} ({what} at once; {fallback} by default).";
@@ -285,7 +285,7 @@ public sealed class LimitOptions {
                      (nameof(this.LookupIntervalSeconds), this.LookupIntervalSeconds, "lookups", 1),
                      (nameof(this.LocalMessageIntervalSeconds), this.LocalMessageIntervalSeconds, "local messages", 1),
                      (nameof(this.LocalMessagesReceivedIntervalSeconds), this.LocalMessagesReceivedIntervalSeconds, "local messages one user is sent", 1),
-                     (nameof(this.LocalMessagesBetweenIntervalSeconds), this.LocalMessagesBetweenIntervalSeconds, "local messages one user sends one other", 5),
+                     (nameof(this.LocalMessagesBetweenIntervalSeconds), this.LocalMessagesBetweenIntervalSeconds, "local messages one user sends one other", 2),
                  }) {
             if (value is < 1 or > MaxIntervalSeconds) {
                 return $"LookingGlass:Limits:{name} is {value}, so the server won't start: it must be 1 to {MaxIntervalSeconds} " +

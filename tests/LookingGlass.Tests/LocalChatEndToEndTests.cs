@@ -345,6 +345,92 @@ public sealed class LocalChatEndToEndTests : IAsyncLifetime {
         Assert.Equal(["once"], bob.LocalMessages.Select(m => m.Text));
     }
 
+    private static int Lookups(TestClient client) =>
+        client.Session.GetTrace().Count(entry => entry.Outgoing && entry.Summary.EndsWith(nameof(ClientFrame.BodyOneofCase.LookupUser)));
+
+    /// <summary>
+    /// A server can fake a "couldn't be checked" hint (a held account, other keys, named as a friend standing near). It mustn't
+    /// prime a key swap: nothing is forgotten when it arrives, and afterwards only what was looked up under the name held for
+    /// that account, and only if the server gave that very name.
+    /// </summary>
+    [Fact]
+    public async Task AFakedKeyChangeForgetsNoLookups() {
+        var alice = await this._server.RegisterAsync("Alice Looked Up Local");
+        var bob = await this._server.RegisterAsync("Bob Looking Local");
+        await bob.Session.SendLocalAsync([Near(alice)], Say("hi"), Ct);
+        var before = Lookups(bob);
+        using var mallory = IdentityKeys.Generate();
+
+        var faked = Forge(alice, bob, "x", signWith: mallory, claim: mallory.ToBundle());
+        faked.LocalMessage.Sender.User.Name = "Carol Nearby Local";
+        await this._server.SendAndSettleAsync(bob, faked);
+
+        var hint = Assert.Single(bob.LocalUnchecked);
+        Assert.Equal("Carol Nearby Local", hint.Sender.Name);
+        Assert.False(bob.Session.ForgetLookupAfterHint(hint));
+        await bob.Session.SendLocalAsync([Near(alice)], Say("still you?"), Ct);
+        Assert.Equal(before, Lookups(bob));
+    }
+
+    [Fact]
+    public async Task AKeyChangeUnderTheNameHeldForgetsThatLookupOnceJudged() {
+        var alice = await this._server.RegisterAsync("Alice Set Up Again Local");
+        var bob = await this._server.RegisterAsync("Bob Noticing Local");
+        await bob.Session.SendLocalAsync([Near(alice)], Say("hi"), Ct);
+        var before = Lookups(bob);
+        using var mallory = IdentityKeys.Generate();
+
+        await this._server.SendAndSettleAsync(bob, Forge(alice, bob, "x", signWith: mallory, claim: mallory.ToBundle()));
+        // Not on arrival: only once the plugin found the sender near and a friend.
+        await bob.Session.SendLocalAsync([Near(alice)], Say("before"), Ct);
+        Assert.Equal(before, Lookups(bob));
+
+        Assert.True(bob.Session.ForgetLookupAfterHint(Assert.Single(bob.LocalUnchecked)));
+        await bob.Session.SendLocalAsync([Near(alice)], Say("after"), Ct);
+        Assert.Equal(before + 1, Lookups(bob));
+    }
+
+    [Fact]
+    public async Task AHeldSenderWithNoNameHeldCantTakeAnothersName() {
+        var alice = await this._server.RegisterAsync("Alice Unnamed Local");
+        var bob = await this._server.RegisterAsync("Bob Holding Local");
+        var carol = await this._server.RegisterAsync("Carol Held Local");
+        await this._server.SendAndSettleAsync(bob, Forge(carol, bob, "carol"), Forge(alice, bob, "alice"));
+        Assert.All(bob.LocalMessages, message => Assert.Equal(LocalConfirmation.Show, bob.Session.ConfirmLocalSender(message)));
+
+        // Alice held with no name, as a channel's membership log can pin someone.
+        await bob.Session.DisposeAsync();
+        var secrets = bob.Store.Load();
+        secrets.PinnedIdentities[alice.UserId].Name = "";
+        secrets.PinnedIdentities[alice.UserId].WorldName = "";
+        bob.Store.Save(secrets);
+        var back = await this._server.RestartAsync(bob);
+
+        // Alice's own account and keys, named as Carol, who is held as another account.
+        var claimed = Forge(alice, back, "it's Carol");
+        claimed.LocalMessage.Sender.User.Name = carol.Name;
+        await this._server.SendAndSettleAsync(back, claimed);
+        Assert.Equal(LocalConfirmation.NameHeldByAnother, back.Session.ConfirmLocalSender(back.LocalMessages.Single()));
+
+        // Under her own name: shown, and the name held with her keys from then on.
+        await this._server.SendAndSettleAsync(back, Forge(alice, back, "really Alice"));
+        Assert.Equal(LocalConfirmation.Show, back.Session.ConfirmLocalSender(back.LocalMessages.Last()));
+        await back.Session.DisposeAsync();
+        Assert.Equal(alice.Name, back.Store.Load().PinnedIdentities[alice.UserId].Name);
+    }
+
+    [Fact]
+    public void ThePairLimitsMemoryIsCapped() {
+        var limits = new LookingGlass.Server.Services.KeyedRateLimits<(long, long)>(1, 5) { MaxKeys = 10 };
+        for (var i = 0; i < 25; i++) {
+            Assert.True(limits.TryTake((i, 1)));
+        }
+
+        Assert.InRange(limits.TrackedKeys, 1, 10);
+        Assert.Equal(30, new LookingGlass.Server.LimitOptions().LocalMessagesBetweenBurst);
+        Assert.Equal(2, new LookingGlass.Server.LimitOptions().LocalMessagesBetweenIntervalSeconds);
+    }
+
     [Fact]
     public async Task OnlyMessagesShownAreRememberedAgainstReplays() {
         var alice = await this._server.RegisterAsync("Alice Remembered Local");

@@ -133,8 +133,11 @@ public sealed class RequestHandler(
         PerSecond(options.Value.Limits.LocalMessagesReceivedIntervalSeconds), Burst(options.Value.Limits.LocalMessagesReceivedBurst), time);
     // And between each sender and recipient, checked first and smaller (the startup check sees to it), so a couple of accounts
     // can't use up what everyone together may send someone (LocalMessagesBetween...).
+    // Kept to as many pairs as the per-address counters keep addresses, so a stream of new pairs can't grow memory without bound.
     private readonly KeyedRateLimits<(long Sender, long Recipient)> _localBetween = new(
-        PerSecond(options.Value.Limits.LocalMessagesBetweenIntervalSeconds), Burst(options.Value.Limits.LocalMessagesBetweenBurst), time);
+        PerSecond(options.Value.Limits.LocalMessagesBetweenIntervalSeconds), Burst(options.Value.Limits.LocalMessagesBetweenBurst), time) {
+        MaxKeys = WindowCounter.DefaultMaxKeys,
+    };
     // Invites are limited on both ends: an inviter can't spam many people, and many inviters (or invite, cancel, invite
     // loops) can't flood one person. Operator settings (LookingGlass:Limits:Invite...), checked at startup.
     private readonly UserRateLimits _invitesSent = new(

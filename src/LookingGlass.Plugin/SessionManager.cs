@@ -568,10 +568,10 @@ public sealed class SessionManager : IDisposable {
 
     /// <summary>
     /// A local message the session couldn't check (see <see cref="LocalUnchecked"/>): one information line, once a session
-    /// for that sender, and only if, as the game shows it now, they are near and on the friends list (<see cref="LocalHints"/>);
-    /// otherwise nothing at all. From any thread.
+    /// for that name (a few at most), and only if, as the game shows it now, they are near and on the friends list (<see cref="LocalHints"/>),
+    /// which is also when what was looked up for them may be forgotten (<see cref="ClientSession.ForgetLookupAfterHint"/>); otherwise nothing at all. From any thread.
     /// </summary>
-    private void HintLocal(LocalUnchecked unchecked_, int generation) {
+    private void HintLocal(ClientSession session, LocalUnchecked unchecked_, int generation) {
         _ = Services.Framework.RunOnFrameworkThread(() => {
             if (generation != this.History.Generation) {
                 return;
@@ -579,6 +579,11 @@ public sealed class SessionManager : IDisposable {
 
             try {
                 var verdict = LocalChat.Judge(LocalChatGame.Read(), unchecked_.Sender.Name, unchecked_.Sender.WorldName);
+                if (verdict == LocalVerdict.Show) {
+                    // A friend near: what was looked up for them may be what changed (only if the server named them as held).
+                    session.ForgetLookupAfterHint(unchecked_);
+                }
+
                 if (this._localHints.For(unchecked_, verdict) is { } hint) {
                     this.Tell(NoticeLevel.Info, hint);
                 }
@@ -668,7 +673,7 @@ public sealed class SessionManager : IDisposable {
         };
         session.LocalMessageUnchecked += unchecked_ => {
             if (this.Session == session) {
-                this.HintLocal(unchecked_, history);
+                this.HintLocal(session, unchecked_, history);
             }
         };
         session.Notice += notice => {
