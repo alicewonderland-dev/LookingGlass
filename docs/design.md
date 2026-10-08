@@ -3117,10 +3117,10 @@ uses it is in [server.md](server.md#flags-and-bans).
   the client's doing doesn't count: the server-wide Lodestone queue is busy,
   the server is full, or a limit others filled (the invitee has been sent too
   many invites, by everyone together, or has as many waiting as they may; the
-  channel has as many invites waiting as it may). The requests that read a
-  lot share one budget, which a plugin reconnecting with many channels spends
-  across several kinds of request, so they are one limit (`ReadBudget`), not
-  one per kind. It counts for the account, if the connection is logged in
+  channel has as many invites waiting as it may, unless the inviter sent most
+  of them). The requests that read a lot share one budget, which a plugin
+  reconnecting with many channels spends across several kinds of request, so
+  they are one limit (`ReadBudget`), not one per kind. It counts for the account, if the connection is logged in
   (never an account a request only names, as a key login does), and for the
   address: an IPv4 address, and an IPv6 /64 and its /56 each.
 - **Not the proxy's address.** Refusals from this machine's own address
@@ -3219,7 +3219,8 @@ uses it is in [server.md](server.md#flags-and-bans).
 - Address bans cover an IPv4 /16 to /32, or an IPv6 /32 to /64, and never the
   server's own or its proxy's address without `--force`.
 - Limits others filled (the invitee's, the channel's pending invites) don't
-  count towards flagging the one refused.
+  count towards flagging the one refused; a channel's pending invites do when
+  the one refused sent most of them.
 
 ## Operations
 

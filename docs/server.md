@@ -581,9 +581,10 @@ for it. The limits are named as their settings are (or as the request, for
 limits that have no setting; the requests that read a lot share one budget,
 `ReadBudget`), and the line holds no names and nothing anyone said. Limits
 that others filled (an invitee sent too many invites by everyone together, a
-channel's pending invites) don't count against the one refused. A flagged
-address may be shared (a household, a mobile carrier's NAT), and a plugin
-with a bug can hit a limit too: look before banning.
+channel's pending invites, unless they sent most of those themselves) don't
+count against the one refused. A flagged address may be shared (a household,
+a mobile carrier's NAT), and a plugin with a bug can hit a limit too: look
+before banning.
 
 **The proxy's address is never flagged.** Refusals from this machine's own
 address (127.0.0.1, ::1), the unspecified address, or one of
@@ -614,15 +615,21 @@ server, and the running one picks up a change within 30 seconds
 `Environment=` lines of its unit and drop-ins (the data folder, and any
 `LookingGlass__Abuse__...` or `LookingGlass__TrustedProxies__...` you added),
 and `appsettings.json` beside the binary, which the commands read anyway.
-This shell function runs a command with the unit's own: `systemctl show`
-gives every `Environment=` of the unit and its drop-ins, and only those the
-commands use are passed on (so a value with spaces elsewhere, such as an
-announcement, does no harm):
+This shell function (bash) runs a command with the unit's own: `systemctl
+show` gives every `Environment=` of the unit and its drop-ins, and only those
+the commands use are passed on (so a value with spaces elsewhere, such as an
+announcement, does no harm). It doesn't pick up settings from an
+`EnvironmentFile=` (the installed unit has none) or from an
+environment-specific `appsettings.<Environment>.json` (the commands run in
+Production): pass those on the command line, as `--LookingGlass:Abuse:...=`,
+if you use them.
 
 ```sh
 LG() {
-    sudo -u lookingglass env $(systemctl show lookingglass -p Environment --value | tr ' ' '\n' |
-        grep -E '^LookingGlass__(DataDirectory|Abuse__|TrustedProxies__)') /opt/lookingglass/LookingGlass.Server "$@"
+    local settings
+    mapfile -t settings < <(systemctl show lookingglass -p Environment --value | tr ' ' '\n' |
+        grep -E '^LookingGlass__(DataDirectory|Abuse__|TrustedProxies__)')
+    sudo -u lookingglass env "${settings[@]}" /opt/lookingglass/LookingGlass.Server "$@"
 }
 
 LG --bans                                                  # bans in force, flags, and recent history

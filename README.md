@@ -50,7 +50,8 @@ early testing (version 0.2).
   them. To deal with abuse, it also keeps the internet address of anyone its
   limits refuse again and again (until a day after the last refusal) and the
   addresses its operator bans (until 90 days after the ban ends), and logs the
-  character and address when a banned player tries to connect.
+  character's user ID (its Lodestone ID, not its name) and the address when a
+  banned player tries to connect.
 
 ## Commands
 

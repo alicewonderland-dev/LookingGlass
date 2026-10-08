@@ -13,8 +13,10 @@ the service's own settings (adjust the paths to the install):
 
 ```sh
 LG() {
-    sudo -u lookingglass env $(systemctl show lookingglass -p Environment --value | tr ' ' '\n' |
-        grep -E '^LookingGlass__(DataDirectory|Abuse__|TrustedProxies__)') /opt/lookingglass/LookingGlass.Server "$@"
+    local settings
+    mapfile -t settings < <(systemctl show lookingglass -p Environment --value | tr ' ' '\n' |
+        grep -E '^LookingGlass__(DataDirectory|Abuse__|TrustedProxies__)')
+    sudo -u lookingglass env "${settings[@]}" /opt/lookingglass/LookingGlass.Server "$@"
 }
 ```
 
@@ -137,8 +139,11 @@ Take them out again at the end.
 
       The journal says `Blocked address <the spare machine's address> for 5
       minutes automatically`, and `LG --bans` lists it, made automatically.
-      Every connection from there is now answered 429 at once, with no
-      `Connection from` line. After 5 minutes it is gone from the bans in
+      Every connection from there is now answered at once, with no
+      `Connection from` line. (The 429 itself proves nothing: the connection
+      limit answers 429 too, and looks the same. What shows the block is that
+      there are no `Connection from` lines for that address, and the
+      `LG --bans` listing.) After 5 minutes it is gone from the bans in
       force. Put the settings back.
 
 ## Afterwards
