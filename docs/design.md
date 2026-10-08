@@ -1750,13 +1750,15 @@ These are plugin settings, kept per character, and never sent to the server.
   they are removed). The freed number then goes to the next channel without
   one. Choosing a number another channel has swaps the two. Typing a number
   with no channel on it says so.
-- **Commands.** Only `/lgc` is listed in Dalamud's command help; the fifty
-  numbered commands are hidden to keep the list short. `/lgc` on its own
-  explains how to use it.
+- **Commands.** Of the channel commands only `/lgc` is listed in Dalamud's
+  command help (`/lgl` is too); the fifty numbered commands are hidden to keep
+  the list short. `/lgc` on its own explains how to use it.
 - **Nicknames.** 1 to 16 letters, digits, `-` or `_`. A nickname can't be only
   digits, so `/lgc 3` is never confused with `/lgc3`. It must differ from the
-  user's other nicknames, ignoring case. A channel's nickname goes away when
-  the user leaves it.
+  user's other nicknames, ignoring case. It can't be `Local` (in any case):
+  its tag would be local chat's `[Local]`, so one saved before that rule is
+  tagged by its number instead. A channel's nickname goes away when the user
+  leaves it.
 - **Chat tags.** A channel with a nickname is tagged with it, as in `[sky]`,
   unless **Show nicknames in chat tags** is off; otherwise with its number, as
   in `[LGC3]`. A channel with neither (more than fifty channels, or a message
@@ -3222,20 +3224,27 @@ built around channels; it is now built into sticky mode rather than beside it:
   never ended for not being in a channel.
 - **What it shows.** "Now talking in [Local]." (with **Verbose channel
   messages** on, as for a channel), "LG [Local]" in the server info bar (its
-  tooltip names the friends near rather than a channel), "LookingGlass
-  [Local]" in ChatTwo's input, and `[Local]` where the game's chat input names
-  its channel, all in local chat's colour. The ChatTwo note is the channels'
-  (once ever, whichever is talked in first).
+  tooltip names the friends near rather than a channel) and "LookingGlass
+  [Local]" in ChatTwo's input, both in local chat's colour, and `[Local]`
+  where the game's chat input names its channel, uncoloured, as a channel's
+  tag is there (`ChatInterop.SetChannelLabel` writes plain text). The ChatTwo
+  note is the channels' (once ever, whichever is talked in first). No channel
+  may be nicknamed "Local" (any case; `ChannelNicknames.Reserved`), so no
+  channel's tag is `[Local]`: one saved so before is tagged by its number.
 - **Starting needs what `/lgl` needs, not membership.** In order: the hooks
   (else "Talking in local chat without /lgl doesn't work in this game version
   yet"); the privacy notice accepted (else, as the first `/lgl <message>`,
   nothing starts: game chat says local chat first asks to accept, and the
-  privacy window opens through the same callback; once accepted, it says to
-  type `/lgl <message>` or `/lgl` alone again); connected and logged in
+  privacy window opens through the same callback); connected and logged in
   ("Can't switch to [Local]: not connected to LookingGlass."); a server that
   offers local chat (`LocalChatWords.NotOnThisServer`); then, as for a
   channel, the game's channel readable and ChatTwo not on a tell. The channel
-  list doesn't matter, loaded or not.
+  list doesn't matter, loaded or not. Once the notice is accepted, game chat
+  says what to type again for what asked (`LocalChatWords.PrivacyAcceptedFor`):
+  after `/lgl <message>`, to send it again with `/lgl <message>`; after `/lgl`
+  alone, to type `/lgl` again to talk in local chat; while already talking in
+  local chat, only to type the message again, never `/lgl`; from Settings,
+  nothing.
 - **Switching and ending** are a channel's: a channel command on its own
   (`/s`) ends it, `/lgc3` alone moves to that channel and `/lgl` alone moves
   back (or, already in local chat, says "Now talking in [Local]." again),
@@ -3244,19 +3253,29 @@ built around channels; it is now built into sticky mode rather than beside it:
   ("Stopped talking in [Local]: disconnected."). `/lgl <message>` while talking
   in a channel sends once and the channel goes on; `/lgc3 <message>` while
   talking in local chat sends to the channel once and local chat goes on (both
-  are commands, which go to the game, so their handlers run).
-- **Each line is checked as `/lgl <message>` is.** Nobody near, no friend
-  near, the friends list not loaded, none of them using LookingGlass: the same
-  "Not sent" lines. As for a channel, not being connected, an unreadable link
-  and a failed send say "Not sent to [Local] or game chat: …" while talking in
-  it, and a line with nothing to send says "…: nothing in it can be sent.".
-  A server that stops offering local chat after a reconnect doesn't end it:
-  each line says local chat isn't available, and nothing reaches game chat.
-- **The privacy notice withdrawn while talking in local chat** (Settings, or
-  the privacy window's **Withdraw**): it goes on, and each line is refused
-  as `/lgl <message>` is then (not sent, kept from game chat, the notice asked
-  again). Simpler than ending it from a setting, and as safe: nothing is
-  looked up and nothing reaches game chat until it is accepted again.
+  are commands, which go to the game, so their handlers run). Which sender a
+  line goes to, and the tag and colour, are decided in one place,
+  `StickyTarget`, so local chat's ID can't reach `ChannelSender`.
+- **Each line is checked as `/lgl <message>` is**, and every refusal says it
+  didn't go to game chat either, as for a channel (`LocalChatWords.Refusal`):
+  "Not sent to [Local] or game chat: nobody is near enough to hear you…", and
+  so for no friend near, the friends list not loaded, none of them using
+  LookingGlass, not being able to see who is near, not connected, an
+  unreadable link, a failed send and a server that doesn't offer local chat.
+  A line with nothing to send says "…: nothing in it can be sent.". A server
+  that stops offering local chat after a reconnect doesn't end it: each line
+  says local chat isn't available, and nothing reaches game chat.
+- **The privacy notice withdrawn ends it** (reviewed 2026-10-08; Settings, or
+  the privacy window's **Withdraw**). The notice is read once a frame with
+  the rest of what sticky mode checks, and withdrawn it ends
+  (`StickyEnd.PrivacyWithdrawn`): "Stopped talking in [Local]: you withdrew
+  the privacy notice.", always said, as the player chose to withdraw, not to
+  switch channel. The first version kept talking and refused each line, which
+  opened the notice again for every line. As a backstop, a line typed before
+  the frame's check sees it (`StickySendTo.LocalNotAccepted`) is refused
+  ("Not sent to [Local] or game chat: local chat first asks you to accept…"),
+  kept from game chat, ends talking in local chat at once and opens the notice:
+  once, as nothing is talked in after it. Nothing is looked up meanwhile.
 - **How to use it stays findable.** `/lgl` alone no longer prints the usage,
   so the usage (`LocalChatWords.Usage`: Dalamud's command help and Settings,
   under Chat) says both forms and how to stop, and the first time ever that
@@ -3363,8 +3382,8 @@ of it, with **Accept and use local chat** and **Not now**. The message typed
 isn't kept: once accepted, game chat says to send it again. The choice is one
 setting for every character (`LocalChatPrivacyAccepted`, off by default, also
 for settings saved before it), shown in Settings under Chat with **What it
-tells the server** and **Withdraw** under it (then `/lgl` asks again; the
-window has a **Withdraw** too, once accepted).
+tells the server** and **Withdraw** under it (then `/lgl` asks again, and
+talking in local chat ends; the window has a **Withdraw** too, once accepted).
 
 **What is checked in game** (the checklist has it): that `/lgl` is free (no
 game command and no common plugin uses it); that 20 yalms is about `/say`'s

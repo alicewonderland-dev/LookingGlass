@@ -41,9 +41,8 @@ lines. Do it once with ChatTwo off and once with ChatTwo on, on A.
       mode it has no technical words.
 - [ ] 3b. **Not now**: the window closes; `/lgl hello` again asks again.
 - [ ] 3c. **(changed)** **Accept and use local chat**: the window closes, and game chat says
-      "Local chat is on. Type /lgl <message> again to send your message, or
-      /lgl alone to talk in local chat." `/lgl hello` now
-      sends. Settings, under Chat, says you've accepted (on a line of its
+      "Local chat is on. Send your message again with /lgl <message>."
+      `/lgl hello` now sends. Settings, under Chat, says you've accepted (on a line of its
       own), with **What it tells the server** and **Withdraw** under it, both
       visible at the window's usual width (beside each other, or one under the
       other if the window is narrow). **What it tells the server** opens the
@@ -191,14 +190,16 @@ need only A, standing away from everyone unless a step says otherwise; 42 to
       [Local]." (the second line never comes again, even after reloading the
       plugin).
 - [ ] 30. **Typing goes to local chat, never to Say.** Alone (nobody within 20
-      yalms), type `hello`: "Not sent: nobody is near enough to hear you
-      (about 20 yalms, as far as /say)." No Say line in your chat log. A line
+      yalms), type `hello`: "Not sent to [Local] or game chat: nobody is near
+      enough to hear you (about 20 yalms, as far as /say)." No Say line in
+      your chat log. A line
       with only an item link: the same line (not how to use `/lgl`). A line of
       only spaces: nothing at all.
 - [ ] 31. **A stranger near.** Stand next to a player who isn't your friend
-      (anyone): `hello` says none of the players near you is on your friends
-      list (or, with your friends list not opened yet this session, to open
-      it once). They see nothing: no Say line.
+      (anyone): `hello` says "Not sent to [Local] or game chat: none of the
+      players near you is on your friends list…" (or, with your friends list
+      not opened yet this session, to open it once). They see nothing: no Say
+      line.
 - [ ] 32. **Commands and one-offs.** While talking in local chat: `/s hi`
       goes to Say once, and `/p brb` (in a party) to Party once; `/em waves`
       works; `/lgc1 hi` goes to `sky` once; `/lgl hi` goes to local chat once
@@ -207,7 +208,9 @@ need only A, standing away from everyone unless a step says otherwise; 42 to
 - [ ] 33. **Moving between local chat and a channel.** `/lgc1` alone: "Now
       talking in [sky].", the labels say `[sky]`, and plain text goes to `sky`.
       `/lgl hi` there: local chat once, and `sky` goes on. `/lgl` alone: "Now
-      talking in [Local]." and the labels say `[Local]` again.
+      talking in [Local]." and the labels say `[Local]` again. In the main
+      window, try to give `sky` the nickname `Local` (or `local`): refused,
+      "Local is used by local chat; choose another nickname."
 - [ ] 34. **Ending it yourself.** `/s` on its own: "Stopped talking in
       [Local].", the labels go back to Say, and `hello` now goes to Say. Start
       again with `/lgl`, then: press Tab to change the chat channel (ends);
@@ -231,13 +234,14 @@ need only A, standing away from everyone unless a step says otherwise; 42 to
       "Local chat first asks you to accept what it tells the LookingGlass
       server. See the window that opened, then type /lgl again." and the
       privacy window opens. Nothing starts. **Accept and use local chat**:
-      "Local chat is on. Type /lgl <message> again to send your message, or
-      /lgl alone to talk in local chat." `/lgl` alone now starts.
+      "Local chat is on. Type /lgl again to talk in local chat." `/lgl` alone
+      now starts.
 - [ ] 39. **Withdrawn while talking in local chat.** While talking in local
-      chat, **Withdraw** in Settings, then type `hello`: "Not sent: local chat
-      first asks you to accept…", the privacy window opens, nothing goes to
-      Say, and the labels still say `[Local]`. Each line typed until you
-      accept does the same. Accept again.
+      chat, **Withdraw** in Settings: at once, "Stopped talking in [Local]: you
+      withdrew the privacy notice." (even with verbose channel messages off),
+      the labels and the info bar entry go away, and `hello` now goes to Say.
+      Start again (accept first), then **Withdraw** in the privacy window
+      (Settings, **What it tells the server**): the same. Accept again.
 - [ ] 40. **The diagnostic log.** In `/xllog`, the `[sticky]` lines from the
       steps above say "talking in [Local]" with sizes and fixed words (and
       `/lgl` as a command's name), never what you typed or anyone's name.
