@@ -727,7 +727,15 @@ public sealed class SessionManager : IDisposable {
         }
 
         // In the words of the mode set now: switching modes changes the words of what comes next, never whether it is shown.
-        this._chat.Notice(notice.Level, notice.TextFor(this.AdvancedMode), notice.Kind);
+        // About a channel the player is in: its tag in front, in its colour, so game chat says which (its window does anyway).
+        var text = notice.TextFor(this.AdvancedMode);
+        if (notice.ChannelId is { } channelId && snapshot.FindChannel(channelId) is { OldKeyMembership: false } && this.TagOf(channelId) is var tag
+            && tag != ChannelTag.Fallback) {
+            this._chat.Notice(notice.Level, ColouredText.WithChannelTag(text, tag), notice.Kind, tag, this.ColourOf(channelId));
+            return;
+        }
+
+        this._chat.Notice(notice.Level, text, notice.Kind);
     }
 
     /// <summary>Prints something to chat in the words of the mode set now.</summary>

@@ -1770,7 +1770,11 @@ These are plugin settings, kept per character, and never sent to the server.
 - **LookingGlass's own lines.** Everything LookingGlass itself says in the
   chat log starts with "[LookingGlass]" in LookingGlass blue, and is in one of
   three colours (rows of the game's UIColor sheet, chosen in one place,
-  `NoticeColours`, and tested):
+  `NoticeColours`, and tested). A notice about one of the player's channels
+  also names it: its tag goes in front, in the channel's colour ("[sky]
+  Dropped a message from Bob…"), unless the words hold it already ("Now
+  talking in [sky]."); since 0.2.12, after a tester couldn't tell which
+  channel a warning in game chat was about (`ColouredText.WithChannelTag`):
 
   | Tone | Colour | What |
   |------|--------|------|

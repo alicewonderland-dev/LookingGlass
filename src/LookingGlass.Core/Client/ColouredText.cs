@@ -126,6 +126,13 @@ public static class ColouredText {
     }
 
     /// <summary>
+    /// A notice about a channel, for game chat, where nothing else says which channel it is about: its tag in front
+    /// ("[sky] Dropped a message…"), unless the words already hold it ("Now talking in [sky]."). Without a tag, as it is.
+    /// </summary>
+    public static string WithChannelTag(string text, string? tag) =>
+        string.IsNullOrEmpty(tag) || text.Contains(tag, StringComparison.Ordinal) ? text : $"{tag} {text}";
+
+    /// <summary>
     /// One of LookingGlass's own lines: "[LookingGlass] " in LookingGlass blue, then the text in the tone's colour, with a
     /// channel's tag in it (its first appearance) in the channel's colour (LookingGlass blue for the default).
     /// </summary>

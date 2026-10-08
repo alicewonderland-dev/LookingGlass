@@ -336,4 +336,21 @@ public sealed class CustomColourTests {
         // The example code in the words is one the field accepts.
         Assert.True(HexColour.TryParse("#3FA7D6", out _));
     }
+
+    [Fact]
+    public void ANoticeAboutAChannelSaysWhichInGameChat() {
+        // A tester's warning about a dropped message showed in game chat as only "[LookingGlass] Dropped a message…": with
+        // several channels, nothing said which. Its tag goes in front, unless the words already hold it.
+        Assert.Equal("[sky] Dropped a message from Bob dated 3:53 PM.", ColouredText.WithChannelTag("Dropped a message from Bob dated 3:53 PM.", "[sky]"));
+        Assert.Equal("Now talking in [sky].", ColouredText.WithChannelTag("Now talking in [sky].", "[sky]"));
+        Assert.Equal("Nothing about a channel.", ColouredText.WithChannelTag("Nothing about a channel.", null));
+        Assert.Equal("Nothing about a channel.", ColouredText.WithChannelTag("Nothing about a channel.", ""));
+
+        // In front, the tag takes the channel's colour and the rest the notice's.
+        AssertParts([
+            new ForegroundOn(NoticeColours.Blue), new Text("[LookingGlass] "), new ForegroundOff(),
+            new ForegroundOn(45), new ColourOn(0x33DDAA), new Text("[sky]"), new ColourOff(), new ForegroundOff(),
+            new ForegroundOn(NoticeColours.LightRed), new Text(" Dropped a message."), new ForegroundOff(),
+        ], ColouredText.Notice(NoticeTone.Warning, ColouredText.WithChannelTag("Dropped a message.", "[sky]"), "[sky]", Teal, Nearest45));
+    }
 }

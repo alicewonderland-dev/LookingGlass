@@ -52,9 +52,13 @@ channel window open.
       show in game chat as before.
 - [ ] 10. **(A and B)** B invites A to a new channel: "B invited you to ..."
       shows in game chat (A isn't in it yet, so no window could show it).
-- [ ] 11. A warning about `sky` (for example a message that fails its checks,
-      with the debug tools) still shows in game chat, light red, and in the
-      `sky` tab.
+- [ ] 11. A warning about `sky` still shows in game chat, light red, and in the
+      `sky` tab. To cause one (two players): B, already connected, moves their
+      PC clock 15 minutes ahead (Windows: Date & time, turn off **Set time
+      automatically**, **Change**) and sends in `sky`: A gets "Dropped a
+      message from B… too far from the current time". B puts the clock back
+      afterwards. **(new, 0.2.12)** In game chat the line starts with `[sky]`
+      in `sky`'s colour, after `[LookingGlass]`, so it says which channel.
 - [ ] 12. Right-click a player and **Invite to LookingGlass ▸** `sky`: "Invited
       ... to [sky]." (or why not) shows in game chat.
 

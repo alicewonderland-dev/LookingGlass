@@ -82,12 +82,13 @@ public sealed class ChatOutput(Configuration config) {
     /// Shows a notice in chat only, in the colour of its level and kind (see <see cref="NoticeColours.ToneOf"/>). Notice
     /// text can contain names and channel names, so it is never logged.
     /// </summary>
-    public void Notice(NoticeLevel level, string text, NoticeKind kind = NoticeKind.General) {
+    /// <param name="tag">A channel's tag in the text, shown in the channel's colour (<paramref name="tagColour"/>).</param>
+    public void Notice(NoticeLevel level, string text, NoticeKind kind = NoticeKind.General, string? tag = null, ChannelColour? tagColour = null) {
         if (level == NoticeLevel.Debug) {
             return;
         }
 
-        this.Notice(NoticeColours.ToneOf(level, kind), text);
+        this.Notice(NoticeColours.ToneOf(level, kind), text, tag, tagColour);
     }
 
     /// <summary>Shows a notice in chat only, in a tone's colour.</summary>
