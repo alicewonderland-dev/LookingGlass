@@ -231,6 +231,11 @@ second character, checks every step: the label alone proves nothing.
       Then type `hi`: only LookingGlass, though ChatTwo sends it as `/p hi`.
       (Before 0.2.10, `/p hi` here went to LookingGlass.) Also switch ChatTwo
       to Say, `/lgc1`, and type `/s hi`: Say once; `hi`: only LookingGlass.
+- [ ] 30b. **(new, 0.2.10)** ChatTwo still on Party: type `hi` followed by
+      three spaces. It goes only to LookingGlass, never Party. (Afterwards,
+      the diagnostic log's lines for these say "plain text sent as /p" and "a
+      command as typed", not "by its length only": that shows LookingGlass
+      read what you typed.)
 - [ ] 31. Type `/party hi`. It goes to Party. You're still in [sky].
 - [ ] 32. **(changed)** Type `/s hi`. It goes to Say once (B sees it in Say),
       and you're still in [sky]. `/say hi` goes to Say too.

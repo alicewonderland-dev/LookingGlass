@@ -186,24 +186,31 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
     /// as ChatTwo sends its main input's line, it is that input's text (see <see cref="ChatTwoLine.Of"/>), which tells a
     /// command typed as it is from plain text ChatTwo put its channel's command in front of. Never logged.
     /// </summary>
-    private static unsafe string? LastTypedText() {
+    private static string? LastTypedText() {
         try {
-            var context = Dalamud.Bindings.ImGui.ImGui.GetCurrentContext();
-            if (context.IsNull) {
-                return null;
-            }
-
-            ref var typed = ref context.InputTextState;
-            var length = typed.CurLenW;
-            if (typed.ID == 0 || length < 0 || length > typed.TextW.Size || (length > 0 && typed.TextW.Data == null)) {
-                return null;
-            }
-
-            return new string((char*) typed.TextW.Data, 0, length);
+            return ReadLastTypedText();
         } catch (Exception ex) {
+            // Also a field this Dalamud's ImGui no longer has (ImGui 1.91.3 dropped TextW), which is thrown as the method
+            // reading it is compiled, so outside its own try. Then the length alone decides, as before.
             Services.Log.Debug(ex, "Couldn't read the text last typed in");
             return null;
         }
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private static unsafe string? ReadLastTypedText() {
+        var context = Dalamud.Bindings.ImGui.ImGui.GetCurrentContext();
+        if (context.IsNull) {
+            return null;
+        }
+
+        ref var typed = ref context.InputTextState;
+        var length = typed.CurLenW;
+        if (typed.ID == 0 || length < 0 || length > typed.TextW.Size || (length > 0 && typed.TextW.Data == null)) {
+            return null;
+        }
+
+        return new string((char*) typed.TextW.Data, 0, length);
     }
 
     /// <inheritdoc/>

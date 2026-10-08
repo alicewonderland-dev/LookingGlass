@@ -29,8 +29,8 @@ namespace LookingGlass.Core.Client;
 public sealed record ChatTwoLine(
     string? Prefix, bool FromMainInput, int? InputLength = null, int? LineLength = null, bool AsTyped = false, bool TextRead = false) {
     /// <summary>
-    /// The most spaces ChatTwo may have trimmed off its input's line (before and after together) for it still to count as
-    /// that line. ChatTwo sends <c>chatInput.Trim()</c> but its typing IPC says the input's length as typed, so a stray
+    /// With only the input's length (its text unreadable; with the text, any number of spaces counts): the most spaces
+    /// ChatTwo may have trimmed off its input's line (before and after together) for it still to count as that line. ChatTwo sends <c>chatInput.Trim()</c> but its typing IPC says the input's length as typed, so a stray
     /// space made "/s hi " look like another input's line, and every short command go to the channel. Two (one stray space
     /// at each end), not any number: the more room, the likelier a pop-out's line is taken for a main input draft of nearly
     /// its length.
