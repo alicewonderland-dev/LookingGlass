@@ -1,0 +1,103 @@
+# Builds everything and runs the tests on every push to main and every pull request, and checks that the Linux server
+# packages still build. Nothing here deploys or publishes a release.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # A newer push to the same pull request replaces the older run; runs on main always finish.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  build-and-test:
+    name: Build and test
+    # The plugin targets net10.0-windows (set by Dalamud.NET.Sdk), so it builds on Windows, as on the owner's machine.
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - uses: actions/cache@v6
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/packages.lock.json', 'Directory.Build.props') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      # The plugin compiles against the assemblies of an installed Dalamud (Dalamud.NET.Sdk looks in DALAMUD_HOME, or
+      # else in XIVLauncher's addon\Hooks\dev). On CI, unpack the current release of Dalamud and point DALAMUD_HOME at it.
+      - name: Download Dalamud
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $base = 'https://goatcorp.github.io/dalamud-distrib'
+          $dalamud = Join-Path $env:RUNNER_TEMP 'dalamud'
+          Invoke-WebRequest "$base/version" -OutFile (Join-Path $env:RUNNER_TEMP 'dalamud-version.json')
+          $version = (Get-Content -Raw (Join-Path $env:RUNNER_TEMP 'dalamud-version.json') | ConvertFrom-Json).AssemblyVersion
+          $sdk = ([xml](Get-Content -Raw src/LookingGlass.Plugin/LookingGlass.Plugin.csproj)).Project.Sdk
+          $api = $sdk -replace '^Dalamud\.NET\.Sdk/(\d+)\..*$', '$1'
+          Write-Host "Dalamud $version; the plugin uses $sdk (API $api)"
+          if (-not $version.StartsWith("$api.")) {
+            Write-Host "::warning title=Dalamud API level::The current Dalamud release is $version, but the plugin builds with $sdk (API $api)."
+          }
+          Invoke-WebRequest "$base/latest.zip" -OutFile (Join-Path $env:RUNNER_TEMP 'dalamud.zip')
+          Expand-Archive (Join-Path $env:RUNNER_TEMP 'dalamud.zip') -DestinationPath $dalamud
+          if (-not (Test-Path (Join-Path $dalamud 'Dalamud.dll'))) { throw "No Dalamud.dll in $dalamud." }
+          "DALAMUD_HOME=$dalamud" >> $env:GITHUB_ENV
+
+      - name: Build
+        run: dotnet build LookingGlass.slnx -c Release
+
+      - name: Test
+        run: dotnet test LookingGlass.slnx -c Release --no-build
+
+  server-linux:
+    name: Linux server package (${{ matrix.runtime }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: [linux-x64, linux-arm64]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - uses: actions/cache@v6
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ matrix.runtime }}-${{ hashFiles('**/*.csproj', '**/packages.lock.json', 'Directory.Build.props') }}
+          restore-keys: nuget-${{ runner.os }}-${{ matrix.runtime }}-
+
+      # The same script as a release: it publishes the server self-contained, checks that the native SQLite and libsodium
+      # libraries are in it, and packs it with the systemd units and the installer.
+      - name: Publish
+        shell: pwsh
+        run: ./scripts/publish-linux.ps1 -Runtime ${{ matrix.runtime }} -Output lookingglass-server-${{ matrix.runtime }}.tar.gz
+
+      # Builds of main stay downloadable for a week, for testing; they aren't releases.
+      - name: Upload the package
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@v7
+        with:
+          path: lookingglass-server-${{ matrix.runtime }}.tar.gz
+          archive: false
+          retention-days: 7
+          if-no-files-found: error
