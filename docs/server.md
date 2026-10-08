@@ -218,7 +218,7 @@ All of these are under `LookingGlass`.
 | `Limits:LocalMessagesReceivedIntervalSeconds` | 1 | Seconds between local chat messages one user may be sent once those are spent. 1 to 86,400 |
 | `Limits:LocalMessagesBetweenBurst` | 30 | Local chat messages one user may send one other at once; past it those copies are dropped. 1 to 10,000, and less than `LocalMessagesReceivedBurst` |
 | `Limits:LocalMessagesBetweenIntervalSeconds` | 2 | Seconds between them once those are spent. 1 to 86,400, and more than `LocalMessagesReceivedIntervalSeconds` |
-| `Abuse:...` | | When an account or address refused by limits again and again is flagged, how bans are picked up, and automatic blocks (off): see [Flags and bans](#flags-and-bans) |
+| `Abuse:...` | | When an account or address refused by limits again and again is flagged, how bans are picked up, and automatic blocks (on): see [Flags and bans](#flags-and-bans) |
 
 The server won't start with an invite, lookup, registration lookup or local chat setting outside its range: see
 [Limits worth knowing](#limits-worth-knowing).
@@ -730,10 +730,11 @@ told. Banning an address bans everyone behind it.
 hold them: restoring an older backup brings back its bans and loses later
 ones.
 
-**Automatic blocks** are off by default. With `Abuse:AutoBlockMinutes` set
-(say 15), an address refused `Abuse:AutoBlockAfterRefusals` times (1,000)
-within the window is blocked for that long by itself, with a warning in the
-log ("Blocked address ... automatically"), to blunt a flood until you look.
+**Automatic blocks** are on by default: an address refused
+`Abuse:AutoBlockAfterRefusals` times (1,000) within the window is blocked for
+`Abuse:AutoBlockMinutes` (15) by itself, with a warning in the log ("Blocked
+address ... automatically"), to blunt a flood until you look. No player is
+refused that often by accident. Set `AutoBlockMinutes` to 0 to turn them off.
 Its connections are refused (HTTP 429) before anything else, rather than let
 in to be told why as with your bans. It never blocks an account or the
 proxy's address, never lasts longer than those minutes, and never replaces a
@@ -751,7 +752,7 @@ of range):
 | `FlagLimitsWithinMinutes` | 10 | The minutes `FlagAfterLimits` counts over, 1 to `WindowMinutes` |
 | `FlagExpiresAfterHours` | 24 | Hours a flag lasts after its last refusal, 1 to 8760 |
 | `MaxTrackedKeys` | 100000 | Accounts and addresses counted at once, at most (the least recently refused are forgotten past it), 1,000 to 10,000,000 |
-| `AutoBlockMinutes` | 0 | Minutes an address is blocked by itself once far past the threshold; 0 never, up to 1440 |
+| `AutoBlockMinutes` | 15 | Minutes an address is blocked by itself once far past the threshold; 0 never, up to 1440 |
 | `AutoBlockAfterRefusals` | 1000 | Refusals within the window that block an address, when `AutoBlockMinutes` is set, 100 to 1,000,000 |
 | `BanCheckSeconds` | 30 | Seconds between the server's reads of the bans, 1 to 60: a ban from the command line applies within this |
 | `BanHistoryDays` | 90 | Days a lifted or ended ban is kept, 1 to 3650 |
@@ -935,8 +936,8 @@ there when it tries `/lgl`; an older plugin never sees it.
 
 **From a server without bans (schema 9).** The database gains two tables,
 for bans and flags; nothing else changes. The new settings (`Abuse:...`, see
-[Flags and bans](#flags-and-bans)) all have defaults, and automatic blocks are
-off, so nothing needs setting. Restart the service after updating before
+[Flags and bans](#flags-and-bans)) all have defaults (automatic blocks are on, at
+1,000 refusals an hour for 15 minutes), so nothing needs setting. Restart the service after updating before
 using `--ban`: the server running the old version doesn't read bans. Plugins
 from before bans keep working; a banned one shows the server's message as a
 failed connection.

@@ -63,9 +63,10 @@ public sealed class AbuseOptions {
 
     /// <summary>
     /// Minutes an address is blocked by itself once refused <see cref="AutoBlockAfterRefusals"/> times within the window, 0 to
-    /// 1440; 0 (the default) never blocks anything by itself. Only addresses, never accounts.
+    /// 1440; 15 by default (the owner's choice: no player is refused that often), 0 never blocks anything by itself. Only
+    /// addresses, never accounts, never the server's own proxy, and never over an operator's ban.
     /// </summary>
-    public int AutoBlockMinutes { get; set; }
+    public int AutoBlockMinutes { get; set; } = 15;
 
     /// <summary>Refusals within the window that block an address when <see cref="AutoBlockMinutes"/> is set, 100 to 1,000,000.</summary>
     public int AutoBlockAfterRefusals { get; set; } = 1000;
@@ -90,7 +91,7 @@ public sealed class AbuseOptions {
                          "the minutes FlagAfterLimits counts over; 10 by default, at most WindowMinutes"),
                      (nameof(this.FlagExpiresAfterHours), this.FlagExpiresAfterHours, 1, 8760, "hours a flag lasts after its last refusal; 24 by default"),
                      (nameof(this.MaxTrackedKeys), this.MaxTrackedKeys, 1000, 10_000_000, "accounts and addresses counted at once; 100000 by default"),
-                     (nameof(this.AutoBlockMinutes), this.AutoBlockMinutes, 0, 1440, "minutes an address is blocked by itself; 0, never, by default"),
+                     (nameof(this.AutoBlockMinutes), this.AutoBlockMinutes, 0, 1440, "minutes an address is blocked by itself; 15 by default, 0 never"),
                      (nameof(this.AutoBlockAfterRefusals), this.AutoBlockAfterRefusals, 100, 1_000_000, "refusals within the window that block an address; 1000 by default"),
                      (nameof(this.BanCheckSeconds), this.BanCheckSeconds, 1, 60, "seconds between reads of the bans; 30 by default"),
                      (nameof(this.BanHistoryDays), this.BanHistoryDays, 1, 3650, "days a lifted or ended ban is kept; 90 by default"),

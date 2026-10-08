@@ -3483,9 +3483,10 @@ uses it is in [server.md](server.md#flags-and-bans).
   alone stands for its /64, as one client usually has a whole /64) to a /32.
   Never the server's own or its proxy's address, nor a prefix holding one,
   unless the operator adds `--force`: that would shut out every player.
-- **An optional automatic temporary block**, off by default: an address
-  refused 1,000 times within the window is blocked for the minutes the
-  operator sets, to blunt a flood until the operator looks. Only addresses,
+- **An automatic temporary block**, on by default (the owner, 2026-10-08: no
+  player is refused that often): an address refused 1,000 times within the
+  window is blocked for 15 minutes (0 turns it off), to blunt a flood until
+  the operator looks. Only addresses,
   never accounts or the proxy's address, and never over a ban already
   covering the address. Its connections are refused at once (HTTP 429), before
   any WebSocket is opened, rather than let in to be told why.
@@ -3527,8 +3528,9 @@ uses it is in [server.md](server.md#flags-and-bans).
 - Ban history: a lifted or ended ban is kept 90 days, then deleted.
 - Flags are listed by `--bans`, with the bans, rather than by a separate
   `--flags`.
-- The automatic temporary block is off by default (when turned on, an address
-  refused 1,000 times within the window is blocked).
+- The automatic temporary block is on by default: an address refused 1,000
+  times within the window is blocked for 15 minutes (the owner turned it on,
+  2026-10-08).
 - A blocked plugin tries again every 5 minutes, or once the block ends if
   that is sooner (but at least 30 seconds apart).
 - Address bans cover an IPv4 /16 to /32, or an IPv6 /32 to /64, and never the
