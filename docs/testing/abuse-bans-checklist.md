@@ -44,7 +44,8 @@ Take them out again at the end.
       fix that first, and ban no address until it is.
 - [ ] 2. After the restart, the startup line (`journalctl -u lookingglass -n 20`)
       says `flagged when refused by limits in 2 of 60 minutes, or by 4 limits
-      within 10 minutes; automatic blocks off`.
+      within 10 minutes; addresses blocked automatically for 15 minutes after
+      1000 refusals`.
 - [ ] 3. `LG --bans` prints `No bans in force.`, `Nothing flagged in the last
       24 hours.` and `No bans lifted or ended in the last 90 days.`, and exits
       with 0 (`echo $?`). The server keeps running.
@@ -123,7 +124,7 @@ Take them out again at the end.
 - [ ] 24. `LG --unban <the address, exactly as --bans lists it>`; B connects
       again within 5 minutes, or at once with **Try again now**.
 
-## Automatic blocks (optional)
+## Automatic blocks (on by default; this lowers the threshold to test it)
 
 - [ ] 25. Add `LookingGlass__Abuse__AutoBlockMinutes=5`,
       `LookingGlass__Abuse__AutoBlockAfterRefusals=100` and

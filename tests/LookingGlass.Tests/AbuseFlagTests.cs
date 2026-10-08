@@ -180,15 +180,28 @@ public sealed class AbuseFlagTests : IDisposable {
         Assert.InRange(monitor.TrackedKeys, 1, 1000);
     }
 
-    /// <summary>No automatic block unless the operator turns it on: flagging only tells.</summary>
+    /// <summary>
+    /// By default (owner, 2026-10-08) an address refused 1,000 times within the window is blocked for 15 minutes, and one
+    /// refused less, however flagged, isn't: no player is refused that often. With AutoBlockMinutes 0, nothing is blocked.
+    /// </summary>
     [Fact]
-    public void NothingIsBlockedAutomaticallyByDefault() {
+    public void ByDefaultOnlyAnAddressPastAThousandRefusalsIsBlockedForAQuarterHour() {
         var monitor = this.NewMonitor();
-        for (var i = 0; i < 20_000; i++) {
+        for (var i = 0; i < 999; i++) {
             monitor.Refused("ConnectionsPerMinutePerIp", null, "203.0.113.66");
         }
 
         Assert.Empty(this._db.GetActiveBans(this.Now));
+        monitor.Refused("ConnectionsPerMinutePerIp", null, "203.0.113.66");
+        var block = Assert.Single(this._db.GetActiveBans(this.Now));
+        Assert.Equal(("203.0.113.66", true, this.Now + 15 * 60), (block.Address, block.Automatic, block.ExpiresAt));
+
+        var off = this.NewMonitor(abuse => abuse.AutoBlockMinutes = 0);
+        for (var i = 0; i < 20_000; i++) {
+            off.Refused("ConnectionsPerMinutePerIp", null, "198.51.100.7");
+        }
+
+        Assert.DoesNotContain(this._db.GetActiveBans(this.Now), ban => ban.Address == "198.51.100.7");
     }
 
     /// <summary>
@@ -258,6 +271,10 @@ public sealed class AbuseFlagTests : IDisposable {
         Assert.Contains("FlagExpiresAfterHours", new AbuseOptions { FlagExpiresAfterHours = 0 }.Problem());
         Assert.Contains("MaxTrackedKeys", new AbuseOptions { MaxTrackedKeys = 10 }.Problem());
         Assert.Contains("AutoBlockMinutes", new AbuseOptions { AutoBlockMinutes = -1 }.Problem());
+        // On by default (owner, 2026-10-08): 15 minutes for an address past 1,000 refusals an hour, which no player reaches.
+        Assert.Equal(15, new AbuseOptions().AutoBlockMinutes);
+        Assert.Equal(1000, new AbuseOptions().AutoBlockAfterRefusals);
+        Assert.Null(new AbuseOptions().Problem());
         Assert.Contains("AutoBlockAfterRefusals", new AbuseOptions { AutoBlockAfterRefusals = 10 }.Problem());
         Assert.Contains("BanCheckSeconds", new AbuseOptions { BanCheckSeconds = 61 }.Problem());
         Assert.Contains("BanHistoryDays", new AbuseOptions { BanHistoryDays = 0 }.Problem());
