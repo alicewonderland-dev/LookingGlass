@@ -21,10 +21,14 @@ lines. Do it once with ChatTwo off and once with ChatTwo on, on A.
       what it does. No other plugin you use claims it, and the game has no
       `/lgl` of its own (type `/lgl` with LookingGlass turned off: the game
       says the command doesn't exist).
-- [ ] 2. `/lgl` alone: one blue line says how to use it (friends near you
-      who use LookingGlass, about 20 yalms, only friends get it).
+- [ ] 2. **(changed)** In `/xlhelp`, `/lgl`'s line says how to use it:
+      `/lgl <message>` talks to friends near you who use LookingGlass (about
+      20 yalms, only friends get it), and `/lgl` alone sends everything you
+      type there until you type `/s` (or another channel) on its own. (`/lgl`
+      alone no longer explains itself: it talks in local chat, see *Talking in
+      local chat* below.)
 - [ ] 3. Settings, under **Chat**: **Local chat colour ([Local])** with a
-      swatch, and under it the same line as 2.
+      swatch, and under it the same words as 2.
 
 ## Asking first (each of A, B and C, once)
 
@@ -36,9 +40,9 @@ lines. Do it once with ChatTwo off and once with ChatTwo on, on A.
       never sees what you say; and that receiving needs none of it. In simple
       mode it has no technical words.
 - [ ] 3b. **Not now**: the window closes; `/lgl hello` again asks again.
-- [ ] 3c. **Accept and use local chat**: the window closes, and game chat says
-      "Local chat is on. Send your message again with /lgl." `/lgl hello` now
-      sends. Settings, under Chat, says you've accepted (on a line of its
+- [ ] 3c. **(changed)** **Accept and use local chat**: the window closes, and game chat says
+      "Local chat is on. Send your message again with /lgl <message>."
+      `/lgl hello` now sends. Settings, under Chat, says you've accepted (on a line of its
       own), with **What it tells the server** and **Withdraw** under it, both
       visible at the window's usual width (beside each other, or one under the
       other if the window is narrow). **What it tells the server** opens the
@@ -136,7 +140,9 @@ Before anyone opens their Friends window this session.
 ## Server and logs
 
 - [ ] 24. A server with `LookingGlass:Limits:MaxLocalRecipients` set to 0:
-      `/lgl hi` says local chat isn't available on this server.
+      `/lgl hi` says local chat isn't available on this server. **(new)**
+      `/lgl` alone says the same, and nothing starts (needs a build newer
+      than 0.2.11).
 - [ ] 25. `/xllog` on A and B, and the server's log: lines about local chat
       give counts only (how many friends near, sent, dropped and why), never
       a name or what was said.
@@ -157,3 +163,118 @@ Before anyone opens their Friends window this session.
 - [ ] 28. **Not tested before public release (owner, 2026-10-08): a rename or world transfer costs real money; deal with it if it comes up.** If you can, rename B (or move B to another world) after A has had
       a local message from B: B's next `/lgl` isn't shown, and one blue line
       says B may have changed their name or world. A's `/lgl` to B updates it.
+
+## Talking in local chat
+
+`/lgl` with no message talks in local chat, as `/lgc1` with no message talks
+in a channel (see *Talking in local chat* in
+[Local chat (friends only)](../design.md#local-chat-friends-only)). Needs a
+build newer than 0.2.11. Setup: A has accepted local chat (3c), is a member
+of a channel `sky` on `/lgc1`, has a swatch picked as **Local chat colour**
+(so the colour can be told from the default), and has **Verbose channel
+messages** on (Settings, under Chat) unless a step says off. ChatTwo off until
+the ChatTwo steps. Watch `/xllog` for the `[sticky]` lines. Steps 29 to 41
+need only A, standing away from everyone unless a step says otherwise; 42 to
+46 need ChatTwo; 47 needs B, A's friend.
+
+### One player
+
+- [ ] 29. **The first time ever.** `/lgl` alone: "Now talking in [Local]." in
+      blue, `[Local]` in local chat's colour, then once ever one more line:
+      "Typing now goes to [Local], your friends near you who use
+      LookingGlass, and never to game chat. Type /s (or another channel) on
+      its own to stop." The game's chat input names its channel `[Local]`,
+      and the server info bar shows "LG [Local]" in local chat's colour; its
+      tooltip says what you type goes to your friends near you, not to game
+      chat, and to click to stop. `/lgl` again: only "Now talking in
+      [Local]." (the second line never comes again, even after reloading the
+      plugin).
+- [ ] 30. **Typing goes to local chat, never to Say.** Alone (nobody within 20
+      yalms), type `hello`: "Not sent to [Local] or game chat: nobody is near
+      enough to hear you (about 20 yalms, as far as /say)." No Say line in
+      your chat log. A line
+      with only an item link: the same line (not how to use `/lgl`). A line of
+      only spaces: nothing at all.
+- [ ] 31. **A stranger near.** Stand next to a player who isn't your friend
+      (anyone): `hello` says "Not sent to [Local] or game chat: none of the
+      players near you is on your friends list…" (or, with your friends list
+      not opened yet this session, to open it once). They see nothing: no Say
+      line.
+- [ ] 32. **Commands and one-offs.** While talking in local chat: `/s hi`
+      goes to Say once, and `/p brb` (in a party) to Party once; `/em waves`
+      works; `/lgc1 hi` goes to `sky` once; `/lgl hi` goes to local chat once
+      (the nobody-near line). After each, the labels still say `[Local]` and
+      the next plain line still goes to local chat.
+- [ ] 33. **Moving between local chat and a channel.** `/lgc1` alone: "Now
+      talking in [sky].", the labels say `[sky]`, and plain text goes to `sky`.
+      `/lgl hi` there: local chat once, and `sky` goes on. `/lgl` alone: "Now
+      talking in [Local]." and the labels say `[Local]` again. In the main
+      window, try to give `sky` the nickname `Local` (or `local`): refused,
+      "Local is used by local chat; choose another nickname."
+- [ ] 34. **Ending it yourself.** `/s` on its own: "Stopped talking in
+      [Local].", the labels go back to Say, and `hello` now goes to Say. Start
+      again with `/lgl`, then: press Tab to change the chat channel (ends);
+      start again and click the server info bar entry (ends); start again and
+      right-click a player's name > **Send Tell** (ends).
+- [ ] 35. **Ending it without choosing to.** Start with `/lgl`, then press
+      **Disconnect** (Settings): "Stopped talking in [Local]: disconnected.",
+      even with verbose channel messages off. Connect, start again, and turn
+      LookingGlass off in `/xlplugins`: "Stopped talking in [Local]:
+      LookingGlass was turned off.", and the chat input names Say again. Turn
+      it back on, start again and log out to the title screen: on logging in,
+      nothing is still talking in local chat (no label, no info bar entry).
+- [ ] 36. **Verbose channel messages off.** `/lgl` alone: no "Now talking"
+      line, but the labels and the info bar show `[Local]`. `/s` alone: no
+      line, and the labels go away. Turn it back on.
+- [ ] 37. **Not connected.** Press **Disconnect**, then `/lgl` alone: "Can't
+      switch to [Local]: not connected to LookingGlass." Nothing starts (no
+      label, no info bar entry), and `hello` goes to Say as usual. Connect
+      again.
+- [ ] 38. **Asked first.** Settings, under Chat, **Withdraw**. `/lgl` alone:
+      "Local chat first asks you to accept what it tells the LookingGlass
+      server. See the window that opened, then type /lgl again." and the
+      privacy window opens. Nothing starts. **Accept and use local chat**:
+      "Local chat is on. Type /lgl again to talk in local chat." `/lgl` alone
+      now starts.
+- [ ] 39. **Withdrawn while talking in local chat.** While talking in local
+      chat, **Withdraw** in Settings: at once, "Stopped talking in [Local]: you
+      withdrew the privacy notice." (even with verbose channel messages off),
+      the labels and the info bar entry go away, and `hello` now goes to Say.
+      Start again (accept first), then **Withdraw** in the privacy window
+      (Settings, **What it tells the server**): the same. Accept again.
+- [ ] 40. **The diagnostic log.** In `/xllog`, the `[sticky]` lines from the
+      steps above say "talking in [Local]" with sizes and fixed words (and
+      `/lgl` as a command's name), never what you typed or anyone's name.
+- [ ] 41. **Simple and advanced mode.** Every line from 29 to 39 is in
+      everyday words in simple mode, and the same in advanced mode.
+
+### With ChatTwo (on A)
+
+- [ ] 42. Turn ChatTwo on, its input on Say. `/lgl` alone: ChatTwo's input
+      label reads "LookingGlass [Local]" in local chat's colour (perhaps with
+      ChatTwo's "(Warning: Say)" after it). If you never started talking in a
+      channel with ChatTwo on before, the ChatTwo line follows once, naming
+      `[Local]`.
+- [ ] 43. In ChatTwo's main input on Say, type `hello`: local chat (the
+      nobody-near line), not Say. Type `/s hi`: Say once, and local chat goes
+      on. Type `/s` alone (it ends), and in a party switch ChatTwo's input
+      to Party, then `/lgl` alone: `hi` goes to local chat, and `/p hi` typed
+      as it is goes to Party once.
+- [ ] 44. A ChatTwo pop-out with its own input: `hi` goes to local chat, and
+      `/p hi` too (the strict rule); `/party hi` goes to Party once.
+- [ ] 45. Pick another channel in ChatTwo's channel picker, or click a ChatTwo
+      tab with another channel: talking in local chat ends, ChatTwo's label
+      goes back to its own.
+- [ ] 46. Put ChatTwo's input on a tell, then `/lgl` alone: "Switch ChatTwo
+      off the tell first (type /s), then try again." Nothing starts.
+
+### With a friend (needs B)
+
+- [ ] 47. A and B are friends (both have opened their Friends window this
+      session, and accepted local chat), next to each other. A types `/lgl`
+      alone, then `hello there`: B sees `[Local] <A@World> hello there`, and A
+      its own line; nobody sees it in Say. A sends a line with only an item
+      link, then one with `<t>`: B sees the link and the target's name. B
+      walks away beyond 20 yalms: A's next line says nobody is near enough,
+      and still nothing goes to Say. A types `/s` alone, then `bye`: B sees
+      `bye` in Say, not in local chat.

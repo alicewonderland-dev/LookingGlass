@@ -828,6 +828,8 @@ public sealed class StickyChannelTests {
         { StickyEnd.NotInChannel, false },
         { StickyEnd.ChannelUnknown, false },
         { StickyEnd.Unloading, false },
+        // Local chat's privacy notice withdrawn (Settings or its window), not a channel command.
+        { StickyEnd.PrivacyWithdrawn, false },
     };
 
     [Fact]

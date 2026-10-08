@@ -44,6 +44,12 @@ public sealed class Configuration : IPluginConfiguration {
     public bool ChatTwoLabelNoteShown { get; set; }
 
     /// <summary>
+    /// The one line about talking in local chat (where typing goes, and how to stop) has been shown: it follows the first
+    /// /lgl alone that starts it (see <see cref="LocalChatWords.TalkingNote"/>). Off for settings saved before it existed.
+    /// </summary>
+    public bool LocalChatTalkNoteShown { get; set; }
+
+    /// <summary>
     /// Verbose channel messages: say "Now talking in" and every "Stopped talking in". Off (the default, also for settings
     /// saved before it existed), only stops the player didn't choose are said (see <see cref="StickyMessages.SayEnded"/>):
     /// the server info bar and the chat box labels always show where typing goes.

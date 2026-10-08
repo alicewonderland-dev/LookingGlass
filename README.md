@@ -49,7 +49,9 @@ early testing (version 0.2).
   server about them by name, so the server learns which friends were near you
   (never what you say); the first `/lgl` explains this and asks you to accept.
   If it says nobody near is a friend, open your friends list once (Social
-  menu, Friend List) so the game loads it.
+  menu, Friend List) so the game loads it. `/lgl` on its own talks in local
+  chat, as `/lgc3` does in a channel, until you type `/s` (or any channel) on
+  its own.
 - **Who's online.** Each member's icon is green while they're connected.
 - **Blocking.** Hide someone's messages and silently decline their invites.
 - **Privacy.** Only the members of a channel can read its name and messages.
@@ -70,13 +72,15 @@ early testing (version 0.2).
 | `/lgc <nickname> <message>` | Send to the channel with that nickname |
 | `/lgc3` or `/lgc <nickname>` (no message) | Talk in that channel: what you type in chat goes there, not to game chat, until you switch back with `/s` (or any chat channel) |
 | `/lgl <message>` | Talk to your friends near you who use LookingGlass (local chat) |
+| `/lgl` (no message) | Talk in local chat: what you type in chat goes to your friends near you, not to game chat, until you switch back with `/s` (or any chat channel) |
 | `/lgdebug` | Open the debug window (connection details, for reporting problems) |
 
-`/lgc` on its own explains how to use it. Only `/lgc` is listed in Dalamud's
-command help (`/xlhelp`), to keep the list short. While you talk in a channel,
-its tag (like `[sky]`) shows where the chat box names its channel and in the
-server info bar; click that to stop. Starting and stopping aren't also said in
-chat unless you turn on **Verbose channel messages** in Settings (off by
+`/lgc` on its own explains how to use it. Of the channel commands, only `/lgc`
+is listed in Dalamud's command help (`/xlhelp`), not `/lgc1` to `/lgc50`, to
+keep the list short; `/lgl` is listed too, and says how to use it. While you
+talk in a channel, its tag (like `[sky]`, or `[Local]` for local chat) shows
+where the chat box names its channel and in the server info bar; click that to
+stop. Starting and stopping aren't also said in chat unless you turn on **Verbose channel messages** in Settings (off by
 default), but a stop you didn't choose, such as a disconnect, always is. If a
 message can't be sent, you're told, and it doesn't go to game chat either.
 Item, map flag and status links work as in normal chat, and so do text
@@ -132,8 +136,9 @@ Select a channel in the main window to see its members and settings.
   `/lgcN` tag under the channel's name to pick another; if another channel has
   that number, the two swap.
 - **Nicknames.** Click **+ nickname** next to the number. A nickname is 1 to 16
-  letters, digits, `-` or `_`, and can't be only digits. Upper and lower case
-  count as the same. Nicknames stay on your computer.
+  letters, digits, `-` or `_`, and can't be only digits. `Local` is taken by
+  local chat. Upper and lower case count as the same. Nicknames stay on your
+  computer.
 - **Colours.** Choose **Colour...** in the channel's menu (the ⋮ button), or
   click the coloured dot before its name. **Custom...** there lets you pick
   any colour on a wheel or type its code, like `#3FA7D6`. In Settings you can

@@ -384,7 +384,7 @@ public sealed class SettingsWindow : Window {
                 ImGui.SameLine();
             }
 
-            if (Widgets.GhostButton(withdraw, "Stop sending local messages until you accept again. Receiving them doesn't need it.")) {
+            if (Widgets.GhostButton(withdraw, "Stop sending local messages (and talking in local chat) until you accept again. Receiving them doesn't need it.")) {
                 this._config.LocalChatPrivacyAccepted = false;
                 this._config.Save();
             }

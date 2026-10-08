@@ -20,6 +20,16 @@ public sealed class ChannelTagTests {
         Assert.Equal("[LGC1]", ChannelTag.For(1, "   ", true));
     }
 
+    [Theory]
+    [InlineData("Local")]
+    [InlineData("local")]
+    [InlineData(" LOCAL ")]
+    public void ANicknameSavedAsLocalBeforeItWasReservedIsntShownAsLocalChatsTag(string nickname) {
+        // [Local] is local chat's: a channel nicknamed so (saved before the name was reserved) is tagged by its number.
+        Assert.Equal("[LGC3]", ChannelTag.For(3, nickname, true));
+        Assert.Equal(ChannelTag.Fallback, ChannelTag.For(null, nickname, true));
+    }
+
     [Fact]
     public void WithNicknameTagsOffTheNumberIsTheTag() {
         Assert.Equal("[LGC3]", ChannelTag.For(3, "sky", false));

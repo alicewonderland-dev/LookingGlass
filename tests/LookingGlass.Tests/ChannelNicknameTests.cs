@@ -35,6 +35,23 @@ public sealed class ChannelNicknameTests {
         Assert.Equal(error, ChannelNicknames.Validate(nickname));
     }
 
+    [Theory]
+    [InlineData("Local")]
+    [InlineData("local")]
+    [InlineData("LOCAL")]
+    [InlineData(" Local ")]
+    public void LocalIsLocalChatsAndNoChannelsNickname(string nickname) {
+        // Its tag would be [Local], local chat's.
+        Assert.Equal("Local is used by local chat; choose another nickname.", ChannelNicknames.Validate(nickname));
+        var nicknames = new Dictionary<string, string>();
+        Assert.Equal("Local is used by local chat; choose another nickname.", ChannelNicknames.Set(nicknames, "aaa", nickname));
+        Assert.Empty(nicknames);
+
+        // Only the whole word.
+        Assert.Null(ChannelNicknames.Validate("locals"));
+        Assert.Null(ChannelNicknames.Validate("my-local"));
+    }
+
     [Fact]
     public void NicknamesAreUniqueIgnoringCase() {
         var nicknames = new Dictionary<string, string>();
