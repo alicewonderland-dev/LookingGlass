@@ -9,11 +9,20 @@ namespace LookingGlass.Plugin;
 /// information (LookingGlass blue), in game chat, where the line was typed: nobody to send to (and, if the friends list may
 /// not be loaded, to open it once), none of them uses LookingGlass, or "Not sent" and why.
 /// </summary>
-public sealed class LocalSender(SessionManager sessions, ChatOutput chat) {
+/// <param name="privacyAccepted">The player accepted what local chat tells the server (see <see cref="LocalChat.FirstStep"/>).</param>
+/// <param name="askPrivacy">Opens the privacy notice, to accept or not.</param>
+public sealed class LocalSender(SessionManager sessions, ChatOutput chat, Func<bool> privacyAccepted, Action askPrivacy) {
     /// <summary>Sends what was typed after /lgl, links and all, as a channel message is (see <see cref="ChannelSender"/>). Framework thread.</summary>
     internal void Send(TypedLine typed) {
         if (string.IsNullOrWhiteSpace(LinkText.StripMarkers(typed.Text))) {
             this.Tell(LocalChatWords.Usage);
+            return;
+        }
+
+        // Before anything is read or looked up: the first time, the player is asked, and nothing is sent.
+        if (LocalChat.FirstStep(privacyAccepted()) == LocalChatStep.AskFirst) {
+            this.Tell(LocalChatWords.PrivacyAsked);
+            askPrivacy();
             return;
         }
 

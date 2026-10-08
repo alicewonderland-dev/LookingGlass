@@ -102,6 +102,13 @@ public sealed class Configuration : IPluginConfiguration {
     /// </summary>
     public ushort LocalChatColourRow { get; set; }
 
+    /// <summary>
+    /// The player accepted what local chat tells the server (see <see cref="LocalChatWords.PrivacyNotice"/>): until then,
+    /// /lgl asks first and looks nobody up. Off by default, also for settings saved before it existed; withdrawn in Settings.
+    /// One for every character.
+    /// </summary>
+    public bool LocalChatPrivacyAccepted { get; set; }
+
     /// <summary>Local chat's colour as a custom colour (0xRRGGBB), or null for none.</summary>
     public uint? LocalChatCustomColour { get; set; }
 

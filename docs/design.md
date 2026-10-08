@@ -3245,7 +3245,7 @@ What it costs, all accepted by the owner:
 - **Metadata.** The server sees who sent to whom and when, which implies those
   players were together; and, from the lookups, which of the sender's friends
   were near them and when, including friends who don't use LookingGlass (see
-  the open decision below).
+  *What the lookups tell the server* below).
 - **The friends list must be loaded.** The game may only fill it in once the
   Friends window has been opened in a session. If so, the plugin says plainly
   to open it once. Check in game.
@@ -3267,20 +3267,27 @@ And, found while building it:
   channel, with the usual warning; their messages meanwhile aren't shown, but
   the player is told once a session (see *Hints, for a friend near*).
 
-**Open decision (owner): what the lookups tell the server.** Today every
-`/lgl` looks up the friends near the sender (each at most once in 10
-minutes), so the server learns who was near whom, and when, even for friends
-who don't use LookingGlass. Two ways forward:
+**What the lookups tell the server, and asking first.** Every `/lgl` looks
+up the friends near the sender (each at most once in 10 minutes), so the
+server learns who was near whom, and when, even for friends who don't use
+LookingGlass. The owner chose to keep this (2026-10-08): for friends who use
+LookingGlass the copies already say as much, so the lookups add only friends
+who don't, at most once in 10 minutes each, and only while the player uses
+local chat. Looking up the whole friends list once a session instead was
+turned down: it would hand the server every friend's name each session, use
+up the lookups invites need, and miss friends who join mid-session.
 
-1. **Keep it as it is.** Simple, and only friends near when a message is sent
-   are looked up.
-2. **Look up the whole friends list once a session, then only those known to
-   use LookingGlass.** One batch lookup of every friend (when the list is
-   loaded), then `/lgl` looks up only friends already known to be registered.
-   The server then learns the player's whole friends list (and who on it uses
-   LookingGlass) once a session, but no longer which friends were near when
-   from the lookups; the copies still say whom a message went to. It needs a
-   batch lookup request on the server.
+Instead, the player is told, and asked: the first `/lgl` sends nothing and
+looks nobody up. It opens a window (`LocalChatPrivacyWindow`, words in
+`LocalChatWords.PrivacyNotice`) saying which names the server learns (friends
+near, those who don't use LookingGlass too, and who was sent to when), that it
+never sees what is said, that LookingGlass's server keeps no record of the
+lookups (another operator could change that), and that receiving needs none
+of it, with **Accept and use local chat** and **Not now**. The message typed
+isn't kept: once accepted, game chat says to send it again. The choice is one
+setting for every character (`LocalChatPrivacyAccepted`, off by default, also
+for settings saved before it), shown in Settings under Chat with **What it
+tells the server** and **Withdraw** (then `/lgl` asks again).
 
 **What is checked in game** (the checklist has it): that `/lgl` is free (no
 game command and no common plugin uses it); that 20 yalms is about `/say`'s
@@ -3414,7 +3421,7 @@ Rate limits stop one burst of abuse, but someone who keeps hitting them, hour
 after hour, is unlikely to be doing so by accident. The server notices that,
 tells the operator, and lets the operator ban them from connecting. The owner
 made this a requirement before public release (2026-10-07); it was built the
-same day, with the defaults below for the owner to confirm. How an operator
+same day, with the defaults below, which the owner confirmed (2026-10-08). How an operator
 uses it is in [server.md](server.md#flags-and-bans).
 
 ### Noticing
@@ -3510,7 +3517,7 @@ uses it is in [server.md](server.md#flags-and-bans).
 - **History.** A ban lifted or ended is kept 90 days (listed by `--bans`),
   then deleted.
 
-### Chosen defaults (owner to confirm)
+### Chosen defaults (confirmed by the owner, 2026-10-08)
 
 - Window 60 minutes; flagged if refused by limits in at least 30 different
   minutes of it, or by at least 4 different limits within 10 minutes.
@@ -3808,8 +3815,8 @@ The owner's decisions, and why.
   release. The server flags accounts and addresses that limits refuse again and
   again; banning is the operator's decision, from the command line, never an
   automatic permanent ban; a ban is on the character, not its keys. Built with
-  defaults for the owner to confirm (see
-  [Chosen defaults](#chosen-defaults-owner-to-confirm)).
+  defaults the owner confirmed on 2026-10-08 (see
+  [Chosen defaults](#chosen-defaults-confirmed-by-the-owner-2026-10-08)).
 - **Friends-only local chat (2026-10-05).** No party or Free Company option,
   since those can include people a player doesn't trust. Built 2026-10-07, with
   every cost the design listed accepted; see
@@ -3826,6 +3833,11 @@ The owner's decisions, and why.
   can't be found in time (see [The code is bound too](#the-code-is-bound-too)).
 - **First deployment.** The first tester server runs as a systemd service on
   a Linux machine behind Tailscale Funnel; a cloud host comes later.
+- **Local chat looks up the friends near, and asks first (2026-10-08).** The
+  server learning friends near the sender, those who don't use LookingGlass
+  too, is accepted; the player is told what the server learns and accepts it
+  before the first `/lgl` (see
+  [Local chat (friends only)](#local-chat-friends-only)).
 
 ## Open questions
 
@@ -3845,7 +3857,3 @@ The owner's decisions, and why.
   Lodestone volume.
 - **Moving to MLS:** plan the switch as its own milestone, including how
   existing channels migrate.
-- **Local chat lookups:** keep looking up the friends near the sender with each
-  `/lgl` (the server learns who was near when), or look up the whole friends
-  list once a session (it learns the list instead)? See
-  [Local chat (friends only)](#local-chat-friends-only).
