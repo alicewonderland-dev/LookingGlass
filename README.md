@@ -42,6 +42,11 @@ early testing (version 0.2).
   computer**), and channel windows show older messages when you scroll up,
   even after you log out. It stays on your computer, scrambled so only you
   can read it there, is never uploaded, and you can delete it any time.
+- **Local chat with friends.** `/lgl <message>` talks to the friends standing
+  near you (about `/say` range) who use LookingGlass, tagged `[Local]` in its
+  own colour. Only players on your friends list get it, and only they can
+  read it. If it says nobody near is a friend, open your friends list once
+  (Social menu, Friend List) so the game loads it.
 - **Who's online.** Each member's icon is green while they're connected.
 - **Blocking.** Hide someone's messages and silently decline their invites.
 - **Privacy.** Only the members of a channel can read its name and messages.
@@ -61,6 +66,7 @@ early testing (version 0.2).
 | `/lgc1 <message>` … `/lgc50 <message>` | Send to the channel with that number |
 | `/lgc <nickname> <message>` | Send to the channel with that nickname |
 | `/lgc3` or `/lgc <nickname>` (no message) | Talk in that channel: what you type in chat goes there, not to game chat, until you switch back with `/s` (or any chat channel) |
+| `/lgl <message>` | Talk to your friends near you who use LookingGlass (local chat) |
 | `/lgdebug` | Open the debug window (connection details, for reporting problems) |
 
 `/lgc` on its own explains how to use it. Only `/lgc` is listed in Dalamud's

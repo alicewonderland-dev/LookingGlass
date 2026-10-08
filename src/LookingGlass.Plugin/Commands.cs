@@ -5,25 +5,29 @@ namespace LookingGlass.Plugin;
 
 /// <summary>
 /// /lgc1 to /lgc50 and /lgc &lt;nickname&gt; send to a channel, or with no message, talk in it from now on (see
-/// <see cref="StickyMode"/>); /lookingglass (or /lg) and /lgdebug open the windows. Handlers run on the framework thread;
-/// they read only the session manager's immutable copies of the slots and nicknames, and send in the background.
+/// <see cref="StickyMode"/>); /lgl &lt;message&gt; talks to the friends near the player (see <see cref="LocalSender"/>);
+/// /lookingglass (or /lg) and /lgdebug open the windows. Handlers run on the framework thread; they read only the session
+/// manager's immutable copies of the slots and nicknames, and send in the background.
 /// </summary>
 public sealed class Commands : IDisposable {
     private const string MainCommand = "/lookingglass";
     private const string ShortMainCommand = "/lg";
     private const string DebugCommand = "/lgdebug";
+    private const string LocalCommand = LocalChat.Command;
 
     private readonly SessionManager _sessions;
     private readonly ChatOutput _chat;
     private readonly ChannelSender _sender;
+    private readonly LocalSender _local;
     private readonly StickyMode _sticky;
     private readonly Action _toggleMain;
     private readonly Action _toggleDebug;
 
-    public Commands(SessionManager sessions, ChatOutput chat, ChannelSender sender, StickyMode sticky, Action toggleMain, Action toggleDebug) {
+    public Commands(SessionManager sessions, ChatOutput chat, ChannelSender sender, LocalSender local, StickyMode sticky, Action toggleMain, Action toggleDebug) {
         this._sessions = sessions;
         this._chat = chat;
         this._sender = sender;
+        this._local = local;
         this._sticky = sticky;
         this._toggleMain = toggleMain;
         this._toggleDebug = toggleDebug;
@@ -40,6 +44,9 @@ public sealed class Commands : IDisposable {
             HelpMessage = $"Send a message to a channel: {CommandSlots.Prefix}<N> <message> by its number ({CommandSlots.Prefix}1 to {CommandSlots.Prefix}{Configuration.SlotCount}), " +
                           $"or {CommandSlots.Prefix} <nickname> <message> by its nickname. Leave out the message to talk in that channel until you " +
                           $"switch back (for example with /s). Set both in {ShortMainCommand}.",
+        });
+        Services.Commands.AddHandler(LocalCommand, new CommandInfo(this.OnLocalCommand) {
+            HelpMessage = LocalChatWords.Usage.Plain,
         });
         Services.Commands.AddHandler(MainCommand, new CommandInfo((_, _) => this._toggleMain()) {
             HelpMessage = "Open LookingGlass (register, create and manage channels).",
@@ -80,6 +87,9 @@ public sealed class Commands : IDisposable {
         var typed = this.Typed(command, arguments);
         this.Run(ChannelCommand.ForSlot(this._sessions.Slots, slot, typed.Text), typed);
     }
+
+    /// <summary>/lgl &lt;message&gt;: local chat, to the friends near the player (see <see cref="LocalSender"/>); alone, how to use it.</summary>
+    private void OnLocalCommand(string command, string arguments) => this._local.Send(this.Typed(command, arguments));
 
     private void OnNicknameCommand(string command, string arguments) {
         var typed = this.Typed(command, arguments);
@@ -141,5 +151,6 @@ public sealed class Commands : IDisposable {
         Services.Commands.RemoveHandler(MainCommand);
         Services.Commands.RemoveHandler(ShortMainCommand);
         Services.Commands.RemoveHandler(DebugCommand);
+        Services.Commands.RemoveHandler(LocalCommand);
     }
 }

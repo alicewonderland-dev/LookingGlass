@@ -95,6 +95,25 @@ public sealed class Configuration : IPluginConfiguration {
 
     private Dictionary<string, uint>? _nameColours;
 
+    /// <summary>
+    /// Local chat's colour (see <see cref="LocalChat"/>), as a UIColor row; 0 (the default, also for settings saved before
+    /// local chat) is none. <see cref="LocalChatCustomColour"/> wins if both are set. One for every character. Never sent to
+    /// the server.
+    /// </summary>
+    public ushort LocalChatColourRow { get; set; }
+
+    /// <summary>Local chat's colour as a custom colour (0xRRGGBB), or null for none.</summary>
+    public uint? LocalChatCustomColour { get; set; }
+
+    /// <summary>Local chat's colour, or null for the default: only the [Local] tag coloured, in LookingGlass blue.</summary>
+    public ChannelColour? LocalChatColour() => LocalChat.ColourOf(this.LocalChatColourRow, this.LocalChatCustomColour);
+
+    /// <summary>Sets local chat's colour, or with null its default. A row clears a custom colour, and a custom colour a row.</summary>
+    public void SetLocalChatColour(ChannelColour? colour) {
+        this.LocalChatColourRow = colour is { IsCustom: false } row ? row.Row : (ushort) 0;
+        this.LocalChatCustomColour = colour is { IsCustom: true } custom ? custom.Rgb : null;
+    }
+
     /// <summary>Per character, keyed by content ID.</summary>
     public Dictionary<ulong, CharacterSettings> Characters { get; set; } = new();
 

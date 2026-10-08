@@ -44,7 +44,8 @@ public sealed class TokenBucket(double perSecond, double burst, TimeProvider? ti
 /// <summary>
 /// A token bucket per key (a user, or an inviter and invitee). Keyed by account, not connection, so reconnecting doesn't
 /// reset them. Keys unused for an hour, or for as long as their bucket takes to fill if that is longer (so a dropped bucket
-/// was full again anyway), are dropped every 10 minutes.
+/// was full again anyway), are dropped every 10 minutes. With <see cref="MaxKeys"/> set, at most that many are kept: past it, a
+/// new key sweeps at once, and if that isn't enough, the least recently used are forgotten (their allowance starts afresh).
 /// </summary>
 public class KeyedRateLimits<TKey>(double perSecond, double burst, TimeProvider? time = null) where TKey : notnull {
     private static readonly TimeSpan SweepEvery = TimeSpan.FromMinutes(10);
@@ -56,6 +57,11 @@ public class KeyedRateLimits<TKey>(double perSecond, double burst, TimeProvider?
     private readonly ConcurrentDictionary<TKey, (TokenBucket Bucket, DateTimeOffset LastUsed)> _buckets = new();
     private long _lastSweepTicks = (time ?? TimeProvider.System).GetUtcNow().UtcTicks;
 
+    /// <summary>Most keys kept at once (see the class summary); unlimited unless set.</summary>
+    public int MaxKeys { get; init; } = int.MaxValue;
+
+    private readonly Lock _trimming = new();
+
     /// <summary>How many keys are tracked now, for tests.</summary>
     internal int TrackedKeys => this._buckets.Count;
 
@@ -64,6 +70,10 @@ public class KeyedRateLimits<TKey>(double perSecond, double burst, TimeProvider?
     /// <summary>Takes a token for the key if it has one; if not, <paramref name="wait"/> is how long until it has (else it is zero).</summary>
     public bool TryTake(TKey key, out TimeSpan wait) {
         var now = this._time.GetUtcNow();
+        if (this._buckets.Count >= this.MaxKeys && !this._buckets.ContainsKey(key)) {
+            this.Trim(now);
+        }
+
         var entry = this._buckets.AddOrUpdate(key,
             _ => (new TokenBucket(perSecond, burst, this._time), now),
             (_, existing) => (existing.Bucket, now));
@@ -79,6 +89,35 @@ public class KeyedRateLimits<TKey>(double perSecond, double burst, TimeProvider?
         }
 
         return entry.Bucket.TryTake(out wait);
+    }
+
+    /// <summary>
+    /// At the cap: drops the keys idle long enough, and if that leaves too many, the least recently used, down to nine tenths of
+    /// the cap (so this runs once per tenth of the cap new keys at most). One trim at a time.
+    /// </summary>
+    private void Trim(DateTimeOffset now) {
+        if (!this._trimming.TryEnter()) {
+            return;
+        }
+
+        try {
+            foreach (var (id, value) in this._buckets) {
+                if (now - value.LastUsed > this._idleFor) {
+                    this._buckets.TryRemove(new KeyValuePair<TKey, (TokenBucket, DateTimeOffset)>(id, value));
+                }
+            }
+
+            var excess = this._buckets.Count - (int) ((long) this.MaxKeys * 9 / 10);
+            if (excess <= 0) {
+                return;
+            }
+
+            foreach (var oldest in this._buckets.OrderBy(pair => pair.Value.LastUsed).Take(excess).ToList()) {
+                this._buckets.TryRemove(oldest);
+            }
+        } finally {
+            this._trimming.Exit();
+        }
     }
 
     /// <summary>Gives back a token taken for the key, for something that turned out not to happen.</summary>

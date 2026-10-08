@@ -25,6 +25,12 @@ public sealed class SessionManager : IDisposable {
     private volatile ImmutableHashSet<string> _gameChatOff = ImmutableHashSet<string>.Empty;
     private volatile ImmutableDictionary<string, uint> _nameColours = ImmutableDictionary<string, uint>.Empty;
     private Task? _closing;
+    // Local chat, framework thread only: the player was told this session to open the friends list to see local messages,
+    // and how many local messages weren't shown, by why (for the diagnostic log).
+    private bool _toldOpenFriendsList;
+    private readonly Dictionary<LocalVerdict, int> _localNotShown = new();
+    // Local messages that couldn't be checked, hinted at once a session per sender (a friend near only).
+    private readonly LocalHints _localHints = new();
     // Framework thread only. Bumped by every start and stop, so a start that was
     // waiting for the previous session to close is dropped if anything changed meanwhile.
     private int _generation;
@@ -502,6 +508,91 @@ public sealed class SessionManager : IDisposable {
         }
     }
 
+    /// <summary>
+    /// A local chat message (see <see cref="LocalChat"/>): the player's own is printed as it is; anyone else's only if, as the
+    /// game shows it now, the sender is near and on the friends list (<see cref="LocalChat.Judge"/>), and isn't blocked; only
+    /// then is a sender seen for the first time held (<see cref="ClientSession.ConfirmLocalSender"/>). Otherwise it is dropped, only counted in the diagnostic log, but for once a session, when the friends list isn't
+    /// loaded, a line saying to open it. Always in game chat, whatever "Show LookingGlass messages only in windows" says:
+    /// no window shows local chat (see "Local chat (friends only)" in docs/design.md). From any thread.
+    /// </summary>
+    /// <param name="generation">The history's generation the session was started with: a message caught in a logout is dropped.</param>
+    private void DeliverLocal(ClientSession session, IncomingLocalMessage message, int generation) {
+        _ = Services.Framework.RunOnFrameworkThread(() => {
+            if (generation != this.History.Generation) {
+                return;
+            }
+
+            if (!message.IsOwn) {
+                // The session drops a blocked sender's already; this is for someone blocked while it was on its way.
+                if (this.Snapshot.BlockedUsers.Any(user => user.UserId == message.Sender.UserId)) {
+                    return;
+                }
+
+                LocalVerdict verdict;
+                try {
+                    verdict = LocalChat.Judge(LocalChatGame.Read(), message.Sender.Name, message.Sender.WorldName);
+                } catch (Exception ex) {
+                    Services.Log.Error(ex, "Couldn't read who is near for a local message; it isn't shown");
+                    return;
+                }
+
+                if (verdict != LocalVerdict.Show) {
+                    // Counts only: never who, nor what.
+                    var count = this._localNotShown[verdict] = this._localNotShown.GetValueOrDefault(verdict) + 1;
+                    Services.Log.Debug($"Local message not shown ({verdict}); {count} so far this session");
+                    if (verdict == LocalVerdict.FriendsListNotLoaded && !this._toldOpenFriendsList) {
+                        this._toldOpenFriendsList = true;
+                        this.Tell(NoticeLevel.Info, LocalChatWords.OpenFriendsListToReceive);
+                    }
+
+                    return;
+                }
+
+                // Shown: recorded against replays, and a sender seen for the first time held from now on; unless another account is
+                // held under their name, or other keys for them meanwhile (then a hint instead), or it was shown already.
+                var confirmation = session.ConfirmLocalSender(message);
+                if (confirmation != LocalConfirmation.Show) {
+                    Services.Log.Debug($"Local message not shown ({confirmation})");
+                    var reason = confirmation == LocalConfirmation.NameHeldByAnother ? LocalUncheckedReason.NameHeldByAnother : LocalUncheckedReason.KeysChanged;
+                    if (confirmation != LocalConfirmation.Replayed && this._localHints.For(new LocalUnchecked(message.Sender, reason), verdict) is { } hint) {
+                        this.Tell(NoticeLevel.Info, hint);
+                    }
+
+                    return;
+                }
+            }
+
+            this._chat.LocalMessage(message, this._config.LocalChatColour(), this.NameColourOf(message.Sender));
+        });
+    }
+
+    /// <summary>
+    /// A local message the session couldn't check (see <see cref="LocalUnchecked"/>): one information line, once a session
+    /// for that name (a few at most), and only if, as the game shows it now, they are near and on the friends list (<see cref="LocalHints"/>),
+    /// which is also when what was looked up for them may be forgotten (<see cref="ClientSession.ForgetLookupAfterHint"/>); otherwise nothing at all. From any thread.
+    /// </summary>
+    private void HintLocal(ClientSession session, LocalUnchecked unchecked_, int generation) {
+        _ = Services.Framework.RunOnFrameworkThread(() => {
+            if (generation != this.History.Generation) {
+                return;
+            }
+
+            try {
+                var verdict = LocalChat.Judge(LocalChatGame.Read(), unchecked_.Sender.Name, unchecked_.Sender.WorldName);
+                if (verdict == LocalVerdict.Show) {
+                    // A friend near: what was looked up for them may be what changed (only if the server named them as held).
+                    session.ForgetLookupAfterHint(unchecked_);
+                }
+
+                if (this._localHints.For(unchecked_, verdict) is { } hint) {
+                    this.Tell(NoticeLevel.Info, hint);
+                }
+            } catch (Exception ex) {
+                Services.Log.Error(ex, "Couldn't read who is near for a local message that couldn't be checked");
+            }
+        });
+    }
+
     private void OnPlayerChanged(PlayerInfo? player) {
         if (player?.ContentId == this._sessionPlayer?.ContentId && this.Session != null) {
             return;
@@ -575,6 +666,16 @@ public sealed class SessionManager : IDisposable {
                 this.DeliverCaughtUp(caughtUp, history);
             }
         };
+        session.LocalMessageReceived += message => {
+            if (this.Session == session) {
+                this.DeliverLocal(session, message, history);
+            }
+        };
+        session.LocalMessageUnchecked += unchecked_ => {
+            if (this.Session == session) {
+                this.HintLocal(session, unchecked_, history);
+            }
+        };
         session.Notice += notice => {
             if (this.Session == session) {
                 this.OnNotice(notice, history);
@@ -588,6 +689,9 @@ public sealed class SessionManager : IDisposable {
         });
 
         this._sessionPlayer = player;
+        this._toldOpenFriendsList = false;
+        this._localNotShown.Clear();
+        this._localHints.Clear();
         this.RefreshCommandCache();
         // A new session (relog, another character or server) counts from zero; reconnects keep counting.
         this.Unread.Reset();

@@ -112,6 +112,17 @@ public sealed class ConnectionRegistry(Database db, ILogger<ConnectionRegistry> 
         }
     }
 
+    /// <summary>Whether a user is online on a connection that agreed to local chat (so a local message would reach them).</summary>
+    public bool AcceptsLocal(long userId) => this._online.TryGetValue(userId, out var connection) && connection.LocalChatAgreed;
+
+    /// <summary>
+    /// Passes a local message to a user, if they are online on a connection that agreed to local chat and isn't too slow to
+    /// take it (see <see cref="ClientConnection.TrySendDroppable"/>); otherwise it goes nowhere, as nothing is kept.
+    /// </summary>
+    /// <returns>Whether it was queued for them.</returns>
+    public bool SendLocal(long userId, Event ev) =>
+        this._online.TryGetValue(userId, out var connection) && connection.LocalChatAgreed && connection.TrySendDroppable(ev);
+
     public void SendToAll(IEnumerable<long> userIds, Event ev, long? except = null) {
         foreach (var userId in userIds) {
             if (userId != except) {

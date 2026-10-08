@@ -70,4 +70,8 @@ public static class Domains {
     public const string Registration = "lookingglass/registration/v1";
     public const string LodestoneCode = "lookingglass/lodestone-code/v1";
     public const string KeyRecovery = "lookingglass/key-recovery/v1";
+    // Local chat's are v2: v1, without the key commitment, was never released.
+    public const string LocalMessage = "lookingglass/local-message/v2";
+    public const string LocalMessageKey = "lookingglass/local-message-key/v2";
+    public const string LocalMessageKeyCommitment = "lookingglass/local-message-key-commitment/v2";
 }

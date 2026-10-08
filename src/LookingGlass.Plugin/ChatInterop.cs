@@ -74,7 +74,7 @@ internal interface IChatBoxListener {
 /// (/lgc included) still run: Dalamud dispatches them from its own hook on <c>ShellCommands.TryInvokeDebugCommand</c>,
 /// which the game calls while running a command it doesn't know, inside this function, and runs the handler right
 /// there. Another plugin hooking this same function is chained by Dalamud: whichever runs first passes the line on.
-/// A /lgc line is also read here, sticky or not, for its links (see <see cref="TypedCommandLine"/>).</item>
+/// A /lgc (or /lgl) line is also read here, sticky or not, for its links (see <see cref="TypedCommandLine"/>).</item>
 /// <item><c>RaptureShellModule.ChangeChatChannel</c> (required): switches the game's chat channel (/s, /p, ChatTwo's
 /// picker and tabs). Seen even when the channel switched to is the one it was on; the listener is told whether a line
 /// being run made the call, as ChatTwo also calls it with the channel already on at every tab change. Some of the
@@ -113,7 +113,7 @@ internal sealed unsafe class ChatInterop : IDisposable {
     // The commands of the lines let through that are running now, outermost first (null: not a command, or not talking
     // in a channel when it started). Game thread only.
     private readonly List<string?> _running = [];
-    // Alongside them: a /lgc line, as read at the gate (its links, and what its placeholders stood for then), for its
+    // Alongside them: a /lgc or /lgl line, as read at the gate (its links, and what its placeholders stood for then), for its
     // command handler, which Dalamud runs inside the game's call (see TypedCommandLine). Null for any other line.
     private readonly List<TypedLine?> _typed = [];
 
@@ -147,7 +147,7 @@ internal sealed unsafe class ChatInterop : IDisposable {
     }
 
     /// <summary>
-    /// The /lgc line being run by the game now, if <paramref name="command"/> (as Dalamud gives it to its handler) is
+    /// The /lgc or /lgl line being run by the game now, if <paramref name="command"/> (as Dalamud gives it to its handler) is
     /// its command: its text (the command included) with a marker for each link, read at the gate before the game ran
     /// it, and its links, the placeholders' already resolved (see <see cref="GameLinks"/>). Null if the line running is
     /// another (a plugin called the command itself), or couldn't be read. Game thread only.
@@ -161,9 +161,9 @@ internal sealed unsafe class ChatInterop : IDisposable {
         return string.Equals(line.Command(), command.Trim(), StringComparison.OrdinalIgnoreCase) ? line : null;
     }
 
-    /// <summary>A /lgc line read for its handler (see <see cref="TypedCommandLine"/>), or null for any other line, or if reading it failed.</summary>
+    /// <summary>A /lgc or /lgl line read for its handler (see <see cref="TypedCommandLine"/>), or null for any other line, or if reading it failed.</summary>
     private static TypedLine? ReadCommandLine(ReadOnlySpan<byte> raw) {
-        if (raw.Length < 4 || !Ascii.EqualsIgnoreCase(raw[..4], "/lgc"u8)) {
+        if (raw.Length < 4 || (!Ascii.EqualsIgnoreCase(raw[..4], "/lgc"u8) && !Ascii.EqualsIgnoreCase(raw[..4], "/lgl"u8))) {
             return null;
         }
 

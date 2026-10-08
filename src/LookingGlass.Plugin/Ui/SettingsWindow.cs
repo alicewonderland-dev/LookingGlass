@@ -3,6 +3,7 @@ using System.Text;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Game.Text;
 using Dalamud.Interface;
+using Dalamud.Interface.Utility;
 using Dalamud.Interface.Windowing;
 using LookingGlass.Core.Client;
 
@@ -35,6 +36,10 @@ public sealed class SettingsWindow : Window {
     private DateTime _logSizeAt;
     private Task<long>? _offerDelete;
     private int? _logMegabytes;
+
+    // Local chat's colour menu: showing the custom colour part, and its wheel.
+    private bool _localCustomOpen;
+    private readonly ColourWheel _localWheel = new();
 
     public SettingsWindow(Configuration config, SessionManager sessions, UiActions actions) : base("LookingGlass settings###lookingglass-settings") {
         this._config = config;
@@ -329,6 +334,95 @@ public sealed class SettingsWindow : Window {
         ImGui.PopTextWrapPos();
 
         this.DrawWindowsOnly();
+        this.DrawLocalChat();
+    }
+
+    /// <summary>
+    /// Local chat's colour (see <see cref="LocalChat"/>): a button in the colour, opening the same swatches, Default and
+    /// Custom... as a channel's colour menu, and under it what /lgl does.
+    /// </summary>
+    private void DrawLocalChat() {
+        var current = this._config.LocalChatColour();
+        ImGui.AlignTextToFramePadding();
+        ImGui.TextUnformatted($"Local chat colour ({LocalChat.Tag})");
+        ImGui.SameLine();
+        var swatch = 18 * Widgets.Scale;
+        if (ImGui.ColorButton("##local-colour", ChannelPalette.ChatColourOf(current) ?? Widgets.Muted, ImGuiColorEditFlags.NoTooltip | ImGuiColorEditFlags.NoAlpha,
+                new Vector2(swatch, swatch))) {
+            this._localCustomOpen = false;
+            ImGui.OpenPopup("local-colours");
+        }
+
+        Widgets.Tooltip(current == null ? "Default: only the [Local] tag is coloured, in the usual colour." : "The colour of local chat's lines.");
+        ImGui.PushTextWrapPos();
+        ImGui.TextColored(Widgets.Muted, LocalChatWords.Usage.For(this._config.AdvancedMode));
+        ImGui.PopTextWrapPos();
+        this.DrawLocalColourPopup(current);
+    }
+
+    private void DrawLocalColourPopup(ChannelColour? current) {
+        if (!ImGui.BeginPopup("local-colours")) {
+            return;
+        }
+
+        if (this._localCustomOpen) {
+            var width = 260 * Widgets.Scale;
+            var rgb = this._localWheel.Draw(ColourWords.CustomTitle, ColourWords.CustomExplanation, width, this._config.AdvancedMode, (colour, previewWidth) => {
+                var shown = ChannelPalette.OfRgb(colour);
+                ColourWheel.DrawSampleLine(previewWidth, (LocalChat.Tag + " ", shown),
+                    ("<You> " + ColourWords.SampleText, this._config.ColourWholeLine ? shown : new Vector4(0.85f, 0.85f, 0.85f, 1)));
+            });
+            ImGui.BeginDisabled(this._localWheel.CodeBad);
+            if (ImGui.Button(ColourWords.Use) && !this._localWheel.CodeBad) {
+                this.SetLocalColour(ChannelColour.Custom(rgb));
+                ImGui.CloseCurrentPopup();
+            }
+
+            ImGui.EndDisabled();
+            ImGui.SameLine();
+            if (Widgets.GhostButton(ColourWords.Back)) {
+                this._localCustomOpen = false;
+            }
+
+            ImGui.EndPopup();
+            return;
+        }
+
+        ImGui.TextUnformatted("Local chat colour");
+        ImGui.TextColored(Widgets.Muted, "For its lines in chat.");
+        ImGuiHelpers.ScaledDummy(4);
+        var swatch = 22 * Widgets.Scale;
+        var swatches = ChannelPalette.Swatches;
+        for (var i = 0; i < swatches.Count; i++) {
+            var (row, colour) = swatches[i];
+            if (i % ChannelPalette.Columns != 0) {
+                ImGui.SameLine();
+            }
+
+            if (ImGui.ColorButton($"##local-swatch{row}", colour, ImGuiColorEditFlags.NoTooltip | ImGuiColorEditFlags.NoAlpha, new Vector2(swatch, swatch))) {
+                this.SetLocalColour(ChannelColour.OfRow(row));
+                ImGui.CloseCurrentPopup();
+            }
+        }
+
+        ImGuiHelpers.ScaledDummy(4);
+        if (Widgets.GhostButton(current == null ? "Default (selected)" : "Default", "Only the tag is coloured, in the usual colour.")) {
+            this.SetLocalColour(null);
+            ImGui.CloseCurrentPopup();
+        }
+
+        ImGui.SameLine();
+        if (Widgets.GhostButton(ColourWords.CustomButton, ColourWords.CustomTooltip)) {
+            this._localCustomOpen = true;
+            this._localWheel.Start(ChannelPane.StartingRgb(current));
+        }
+
+        ImGui.EndPopup();
+    }
+
+    private void SetLocalColour(ChannelColour? colour) {
+        this._config.SetLocalChatColour(colour);
+        this._config.Save();
     }
 
     /// <summary>

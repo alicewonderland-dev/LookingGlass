@@ -45,7 +45,10 @@ public sealed class ClientConnection {
     private readonly ILogger _logger;
     private readonly Channel<byte[]> _outbound;
     private readonly CancellationTokenSource _cts = new();
+    // The last event's number, and the lock that keeps numbers in the order events are queued (see TrySendDroppable).
     private long _eventSeq;
+    private readonly Lock _eventLock = new();
+    private readonly int _queueLength;
     private string? _abortReason;
     private WebSocketCloseStatus _abortStatus = WebSocketCloseStatus.NormalClosure;
     // Requests this connection may make now (see WaitForRequestBudgetAsync); only the receive loop uses them.
@@ -66,6 +69,7 @@ public sealed class ClientConnection {
         this._requestsPerSecond = requestsPerSecond;
         this._requestBurst = Math.Max(1, requestBurst);
         this._requestTokens = this._requestBurst;
+        this._queueLength = queueLength;
         this._outbound = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(queueLength) {
             SingleReader = true,
             FullMode = BoundedChannelFullMode.Wait,
@@ -84,6 +88,13 @@ public sealed class ClientConnection {
 
     public string RemoteAddress { get; }
     public bool HelloDone { get; set; }
+
+    /// <summary>
+    /// The client offered local chat ("local.v1") in Hello and the server agreed: only such a connection may send a local
+    /// message, and only to such a connection is one passed on, so an older plugin never sees one.
+    /// </summary>
+    public bool LocalChatAgreed { get; set; }
+
     public UserRow? User { get; set; }
 
     /// <summary>The hash of the device token <see cref="User"/> logged in with (what RetireIdentity's signature covers).</summary>
@@ -224,9 +235,44 @@ public sealed class ClientConnection {
 
     /// <summary>Queues an event. Each connection numbers its own events, so the event is copied.</summary>
     public void SendEvent(Event ev) {
+        bool queued;
+        lock (this._eventLock) {
+            queued = this._outbound.Writer.TryWrite(this.Numbered(ev));
+        }
+
+        if (!queued) {
+            this.Abort("Too slow to receive messages");
+        }
+    }
+
+    /// <summary>
+    /// Queues an event that can be lost (a local message), only while the queue is less than half full: a connection too
+    /// slow to take it loses it rather than being closed, and what it is sent this way never fills the room other events
+    /// need. Numbered only if queued, so the numbers have no gap.
+    /// </summary>
+    /// <returns>Whether it was queued.</returns>
+    public bool TrySendDroppable(Event ev) {
+        lock (this._eventLock) {
+            if (this._outbound.Reader.Count * 2 >= this._queueLength) {
+                return false;
+            }
+
+            var copy = ev.Clone();
+            copy.Seq = (ulong) (this._eventSeq + 1);
+            if (!this._outbound.Writer.TryWrite(new ServerFrame { Event = copy }.ToByteArray())) {
+                return false;
+            }
+
+            this._eventSeq++;
+            return true;
+        }
+    }
+
+    /// <summary>An event copied with this connection's next number, ready to queue. Call inside <see cref="_eventLock"/>.</summary>
+    private byte[] Numbered(Event ev) {
         var copy = ev.Clone();
-        copy.Seq = (ulong) Interlocked.Increment(ref this._eventSeq);
-        this.Enqueue(new ServerFrame { Event = copy });
+        copy.Seq = (ulong) ++this._eventSeq;
+        return new ServerFrame { Event = copy }.ToByteArray();
     }
 
     /// <summary>

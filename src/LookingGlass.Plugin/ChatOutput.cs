@@ -26,18 +26,36 @@ public sealed class ChatOutput(Configuration config) {
             // sender's name in its own colour if it has one; a custom colour layered over its closest game colour (see
             // ColouredText, which also cleans the sender's name and world: everything from other users is sanitised).
             var parts = ColouredText.Message(tag, colour, sentAt, config.ColourWholeLine, GameText.Nearest, message.Sender.Name, message.Sender.WorldName, nameColour);
-            var line = GameText.Append(new SeStringBuilder(), parts, builder => {
-                if (message.Unsupported) {
-                    builder.AddItalics("(a message type this version can't show)");
-                } else if (message.Links.Count == 0) {
-                    builder.AddText(TextSanitizer.Clean(message.Text));
-                } else {
-                    AddLinked(builder, message.Linked);
-                }
-            });
-
-            Services.Chat.Print(new XivChatEntry { Type = config.ChatType, Message = line.Build() });
+            this.Print(parts, message.Unsupported, message.Linked);
         });
+    }
+
+    /// <summary>
+    /// A local chat message (see <see cref="LocalChat"/>): as a channel's, tagged <see cref="LocalChat.Tag"/>, in local chat's
+    /// own colour (<see cref="Configuration.LocalChatColour"/>), sanitised and with its links rebuilt in the same way.
+    /// </summary>
+    /// <param name="colour">Local chat's colour, or null for the default: only the tag coloured, in LookingGlass blue.</param>
+    /// <param name="nameColour">The sender's name colour (0xRRGGBB; see <see cref="NameColours"/>), or null.</param>
+    public void LocalMessage(IncomingLocalMessage message, ChannelColour? colour, uint? nameColour) {
+        RunOnFramework(() => {
+            var parts = ColouredText.Message(LocalChat.Tag, colour, null, config.ColourWholeLine, GameText.Nearest, message.Sender.Name, message.Sender.WorldName, nameColour);
+            this.Print(parts, message.Unsupported, message.Linked);
+        });
+    }
+
+    /// <summary>Prints a message's line: its tag and sender, then the message (or a note that it can't be shown). Framework thread.</summary>
+    private void Print(IReadOnlyList<TextPart> parts, bool unsupported, LinkedText linked) {
+        var line = GameText.Append(new SeStringBuilder(), parts, builder => {
+            if (unsupported) {
+                builder.AddItalics("(a message type this version can't show)");
+            } else if (linked.Links.Count == 0) {
+                builder.AddText(TextSanitizer.Clean(linked.Text));
+            } else {
+                AddLinked(builder, linked);
+            }
+        });
+
+        Services.Chat.Print(new XivChatEntry { Type = config.ChatType, Message = line.Build() });
     }
 
     /// <summary>

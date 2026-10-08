@@ -266,7 +266,7 @@ public static class ChannelCrypto {
 
     // ------------------------------------------------------------ AEAD helpers
 
-    private static byte[] EncryptWithNonce(byte[] rawKey, byte[] associatedData, ReadOnlySpan<byte> plaintext) {
+    internal static byte[] EncryptWithNonce(byte[] rawKey, byte[] associatedData, ReadOnlySpan<byte> plaintext) {
         using var key = Key.Import(Aead, rawKey, KeyBlobFormat.RawSymmetricKey);
         var nonce = RandomNumberGenerator.GetBytes(Aead.NonceSize);
         var ciphertext = Aead.Encrypt(key, nonce, associatedData, plaintext);
@@ -276,7 +276,7 @@ public static class ChannelCrypto {
         return result;
     }
 
-    private static byte[]? DecryptWithNonce(byte[] rawKey, byte[] associatedData, ReadOnlySpan<byte> data) {
+    internal static byte[]? DecryptWithNonce(byte[] rawKey, byte[] associatedData, ReadOnlySpan<byte> data) {
         if (rawKey.Length != EpochKeySize || data.Length < Aead.NonceSize + Aead.TagSize) {
             return null;
         }

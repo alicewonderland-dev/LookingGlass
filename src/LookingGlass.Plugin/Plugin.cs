@@ -29,6 +29,7 @@ public sealed class Plugin : IDalamudPlugin {
         this._player = new PlayerTracker();
         this._sessions = new SessionManager(this._config, this._player, chat);
         var sender = new ChannelSender(this._sessions, chat);
+        var local = new LocalSender(this._sessions, chat);
         this._sticky = new StickyMode(this._config, this._player, this._sessions, chat, sender);
 
         // One action runner for both windows, so the main window's status line shows what Settings started too.
@@ -45,7 +46,7 @@ public sealed class Plugin : IDalamudPlugin {
         this._windows.AddWindow(this._settingsWindow);
         this._windows.AddWindow(this._debugWindow);
 
-        this._commands = new Commands(this._sessions, chat, sender, this._sticky, this._mainWindow.Toggle, this._debugWindow.Toggle);
+        this._commands = new Commands(this._sessions, chat, sender, local, this._sticky, this._mainWindow.Toggle, this._debugWindow.Toggle);
 
         // "Invite to LookingGlass" when right-clicking a player, in the game's menus and in ChatTwo's.
         var inviter = new ContextInviter(this._config, this._sessions, chat);

@@ -228,6 +228,28 @@ public sealed record IncomingMessage(
 }
 
 /// <summary>
+/// A local chat message (see <see cref="LocalChat"/>) that opened and was signed by the key this client holds for its sender,
+/// or one of the player's own once the server took it. The session doesn't know where anyone is: the plugin shows one from
+/// someone else only if <see cref="LocalChat.Judge"/> says the sender is near and a friend.
+/// </summary>
+public sealed record IncomingLocalMessage(User Sender, bool IsOwn, string? Text, bool Unsupported, DateTimeOffset Timestamp) {
+    /// <summary>The links in <see cref="Text"/> that passed the checks every received link must, as for a channel's message.</summary>
+    public IReadOnlyList<MessageLink> Links { get; init; } = [];
+
+    /// <summary>The text and its links (see <see cref="LinkedText.Parts"/>).</summary>
+    public LinkedText Linked => new(this.Text ?? "", this.Links);
+
+    /// <summary>
+    /// The sender's identity as the server sent it, when no key was held for them as it arrived: it was checked against
+    /// these, which <see cref="ClientSession.ConfirmLocalSender"/> pins once it is shown. Null if their keys were held.
+    /// </summary>
+    internal UserIdentity? FirstSeen { get; init; }
+
+    /// <summary>The message's ID (hex), for <see cref="ClientSession.ConfirmLocalSender"/> to record it against replays once shown. Null for the player's own.</summary>
+    internal string? MessageId { get; init; }
+}
+
+/// <summary>
 /// The messages of one channel sent while this client was disconnected, caught up from the server when it came back,
 /// oldest first, each checked as a live message is and accepted once (see "Message catch-up" in docs/design.md).
 /// </summary>
@@ -372,4 +394,10 @@ public sealed class ClientSessionOptions {
     /// shows little again as missed. Only tests change it.
     /// </summary>
     internal TimeSpan ReplayStateSaveDelay { get; init; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Offer local chat (the "local.v1" capability) in Hello. Only tests turn it off, to play a plugin from before it, which
+    /// the server never sends local messages to.
+    /// </summary>
+    internal bool OfferLocalChat { get; init; } = true;
 }

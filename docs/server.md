@@ -211,9 +211,16 @@ All of these are under `LookingGlass`.
 | `Limits:MaxPendingInvitesFromOneInviter` | 25 | Of those, how many can be from any one inviter. 1 to one less than `MaxPendingInvitesPerUser` |
 | `Limits:LookupBurst` | 60 | Players one user may look up by name at once (each invite by name starts with one). 1 to 10,000 |
 | `Limits:LookupIntervalSeconds` | 1 | Seconds between their lookups once those are spent. 1 to 86,400 |
+| `Limits:MaxLocalRecipients` | 50 | Players one local chat message may go to (the sender's plugin picks the closest friends). 0 to 200; 0 turns local chat off: see [Local chat](#local-chat) |
+| `Limits:LocalMessageBurst` | 5 | Local chat messages one user may send at once, as for channel messages. 1 to 10,000 |
+| `Limits:LocalMessageIntervalSeconds` | 1 | Seconds between their local chat messages once those are spent. 1 to 86,400 |
+| `Limits:LocalMessagesReceivedBurst` | 120 | Local chat messages one user may be sent at once, by everyone together; past it their copies are dropped (the senders aren't told). 1 to 10,000 |
+| `Limits:LocalMessagesReceivedIntervalSeconds` | 1 | Seconds between local chat messages one user may be sent once those are spent. 1 to 86,400 |
+| `Limits:LocalMessagesBetweenBurst` | 30 | Local chat messages one user may send one other at once; past it those copies are dropped. 1 to 10,000, and less than `LocalMessagesReceivedBurst` |
+| `Limits:LocalMessagesBetweenIntervalSeconds` | 2 | Seconds between them once those are spent. 1 to 86,400, and more than `LocalMessagesReceivedIntervalSeconds` |
 | `Abuse:...` | | When an account or address refused by limits again and again is flagged, how bans are picked up, and automatic blocks (off): see [Flags and bans](#flags-and-bans) |
 
-The server won't start with an invite, lookup or registration lookup setting outside its range: see
+The server won't start with an invite, lookup, registration lookup or local chat setting outside its range: see
 [Limits worth knowing](#limits-worth-knowing).
 
 The address the server listens on is the top-level `Urls` setting
@@ -357,6 +364,20 @@ IPv6 clients are counted per /64.
   a second (`LookupBurst`, `LookupIntervalSeconds`), and the plugin reuses a
   lookup for 10 minutes (until an invite with it fails), so inviting one
   friend to many channels costs one.
+- **Local chat.** A local message goes to at most 50 players
+  (`MaxLocalRecipients`), and each user may send 5 at once, then one a second
+  (`LocalMessageBurst`, `LocalMessageIntervalSeconds`), as channel messages;
+  each user may be sent 120 at once, by everyone together, then one a second
+  (`LocalMessagesReceivedBurst`, `LocalMessagesReceivedIntervalSeconds`), and
+  30 at once from any one sender, then one every 2 seconds
+  (`LocalMessagesBetweenBurst`, `LocalMessagesBetweenIntervalSeconds`; checked
+  first, and smaller and slower, or the server doesn't start, so a couple of
+  accounts can't use up what someone's friends may send them), and
+  past that, or while their connection's queue is half full, their copies are
+  dropped rather than the connection closed.
+  Its friends are looked up by name with the lookup limits above (the plugin
+  reuses a lookup, and the answer that someone isn't registered, for 10
+  minutes). See [Local chat](#local-chat).
 - **The web server** (Kestrel, under `Kestrel:Limits` in `appsettings.json`)
   takes at most 12,000 connections, 12,000 of them WebSockets
   (`MaxConcurrentConnections`, `MaxConcurrentUpgradedConnections`: above
@@ -374,6 +395,30 @@ IPv6 clients are counted per /64.
 - **Stored messages** take disk space: see below.
 - The full list of protocol limits is in
   [design.md](design.md#abuse-limits).
+
+### Local chat
+
+Local chat (`/lgl` in the plugin) is a `/say`-like chat among friends who
+stand near each other in the game (see
+[design.md](design.md#local-chat-friends-only)). It is the server capability
+`local.v1`, on by default. The server keeps nothing of it and holds no
+locations: the sender's plugin names the user IDs of the friends near it, and the server checks the request (each copy signed by the sender for its
+recipient, each recipient once, at most `Limits:MaxLocalRecipients`, the
+message at most 4 KiB) and passes each copy to its recipient if they are
+online with a plugin that knows local chat. Nothing is stored for anyone
+offline, so it needs no disk and no database change. It does see who sent to
+whom and when, as it sees who is in which channel. And it learns who was
+near whom: before sending, the plugin looks up each friend near the sender by
+name (each at most once in 10 minutes), so the server sees which friends were
+near the sender, and when, even friends who don't use LookingGlass (an open
+decision of the owner's: see [design.md](design.md#local-chat-friends-only)).
+What one user may be sent by everyone together is limited too, and a
+recipient whose connection is slow loses local messages, not the connection.
+
+To turn it off, set `LookingGlass:Limits:MaxLocalRecipients` to 0
+(`LookingGlass__Limits__MaxLocalRecipients=0`): the server then doesn't agree
+to it, and plugins say local chat isn't available on this server. Older
+plugins never offer it and are never sent it.
 
 ### Stored messages
 
@@ -550,6 +595,9 @@ limits ("Invite from user 1 to user 2 refused by InviteBurstPerPair", named
 as its setting, or `MaxPendingInvitesPerChannel`), which is logged at most
 once a minute per inviter. An account or address refused by limits again and
 again is flagged with a Warning line (see [Flags and bans](#flags-and-bans)).
+At Debug level only, each local chat message is logged with the sender's user
+ID and how many copies there were, were delivered and were over their
+recipient's limit; never who they were, nor what was said.
 Client addresses appear only in lines about registrations and key logins
 (refused ones, and key logins that add a device), flags, bans (a banned
 account refused, a banned connection closed, an address blocked
@@ -879,6 +927,11 @@ table for stored messages; nothing else changes. Messages are kept from the
 upgrade on. Plugins from before (0.2.5) keep working: they just don't ask for
 what they missed. A plugin with catch-up connecting to an older server doesn't
 ask either.
+
+**Local chat.** Nothing to do: no database change and no new setting is
+needed (it is on by default; see [Local chat](#local-chat)). A plugin with
+local chat connecting to an older server is told local chat isn't available
+there when it tries `/lgl`; an older plugin never sees it.
 
 **From a server without bans (schema 9).** The database gains two tables,
 for bans and flags; nothing else changes. The new settings (`Abuse:...`, see
