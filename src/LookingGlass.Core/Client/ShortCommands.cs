@@ -20,10 +20,17 @@ namespace LookingGlass.Core.Client;
 /// <param name="FromMainInput">The main input holds this very line, so it was typed there.</param>
 /// <param name="InputLength">The main input's length as typed, for the diagnostic log, or null if not known.</param>
 /// <param name="LineLength">The line's length, for the diagnostic log, or null if not known.</param>
-public sealed record ChatTwoLine(string? Prefix, bool FromMainInput, int? InputLength = null, int? LineLength = null) {
+/// <param name="AsTyped">
+/// The main input's text is the whole line as typed ("/s hi"), not plain text ChatTwo put its channel's command in front
+/// of ("hi", sent as "/s hi" on Say). Only ever true with the text read: by length alone the two can't be told apart ("hi"
+/// and three spaces is as long as "/p hi").
+/// </param>
+/// <param name="TextRead">The decision was made by the input's text, not only its length, for the diagnostic log.</param>
+public sealed record ChatTwoLine(
+    string? Prefix, bool FromMainInput, int? InputLength = null, int? LineLength = null, bool AsTyped = false, bool TextRead = false) {
     /// <summary>
-    /// The most spaces ChatTwo may have trimmed off its input's line (before and after together) for it still to count as
-    /// that line. ChatTwo sends <c>chatInput.Trim()</c> but its typing IPC says the input's length as typed, so a stray
+    /// With only the input's length (its text unreadable; with the text, any number of spaces counts): the most spaces
+    /// ChatTwo may have trimmed off its input's line (before and after together) for it still to count as that line. ChatTwo sends <c>chatInput.Trim()</c> but its typing IPC says the input's length as typed, so a stray
     /// space made "/s hi " look like another input's line, and every short command go to the channel. Two (one stray space
     /// at each end), not any number: the more room, the likelier a pop-out's line is taken for a main input draft of nearly
     /// its length.
@@ -34,11 +41,30 @@ public sealed record ChatTwoLine(string? Prefix, bool FromMainInput, int? InputL
     /// <param name="hasText">The main input isn't empty (ChatTwo's own test: its length is more than 0).</param>
     /// <param name="textLength">The main input's length, as typed (untrimmed).</param>
     /// <param name="lineText">The line's text, as it reached <c>ProcessChatBoxEntry</c>.</param>
-    public static ChatTwoLine Of(int chatType, bool hasText, int textLength, string lineText) {
+    /// <param name="typedText">
+    /// The text of the input typed in last, as ImGui keeps it after the input lets go (shared by every plugin's windows), or
+    /// null if it couldn't be read. ChatTwo sends its main input's line as the input lets go, so this is that input's text
+    /// when it is the main input's length; of another length, another input was typed in last (a pop-out's).
+    /// </param>
+    public static ChatTwoLine Of(int chatType, bool hasText, int textLength, string lineText, string? typedText = null) {
         var prefix = ChatChannelPrefixes.OfChatTwoType(chatType);
-        // A command, sent as typed (trimmed).
+        if (hasText && typedText != null) {
+            if (typedText.Length != textLength) {
+                return new ChatTwoLine(prefix, false, textLength, lineText.Length, TextRead: true);
+            }
+
+            // ChatTwo sends its input trimmed: a command as typed, or plain text after its channel's command and a space.
+            var trimmed = typedText.Trim();
+            var asTyped = trimmed.Length > 0 && string.Equals(trimmed, lineText, StringComparison.Ordinal);
+            var plain = trimmed.Length > 0 && prefix != null && lineText.Length == prefix.Length + 1 + trimmed.Length
+                        && lineText.StartsWith(prefix + " ", StringComparison.OrdinalIgnoreCase)
+                        && lineText.EndsWith(trimmed, StringComparison.Ordinal);
+            return new ChatTwoLine(prefix, asTyped || plain, textLength, lineText.Length, asTyped && !plain, TextRead: true);
+        }
+
+        // Only its length: a command, sent as typed (trimmed); or plain text, sent (trimmed) after the channel's command
+        // and a space. Which of the two it is stays unknown, so ChatTwo's own channel's command counts as plain text.
         var typedAsIs = hasText && Trimmed(textLength, lineText.Length);
-        // Plain text, sent (trimmed) after the channel's command and a space.
         var prefixed = hasText && prefix != null && lineText.StartsWith(prefix + " ", StringComparison.OrdinalIgnoreCase)
                        && Trimmed(textLength, lineText.Length - prefix.Length - 1);
         return new ChatTwoLine(prefix, typedAsIs || prefixed, textLength, lineText.Length);
@@ -59,12 +85,13 @@ public sealed record ShortCommands(IReadOnlyCollection<string> AsText, string Wh
 /// once, whatever channel the chat box is on, and players type it that way (almost nobody types "/party"), so a short
 /// command followed by text goes to that game channel once, and talking in the LookingGlass channel goes on. The one
 /// exception is ChatTwo: it sends plain text typed in it as "&lt;its channel's short command&gt; text" ("hi" typed in an
-/// input on Party is sent as "/p hi"), which can't be told apart from the player typing "/p hi" there. So:
+/// input on Party is sent as "/p hi"), which only what its main input holds tells apart from the player typing "/p hi"
+/// there. So:
 /// <list type="bullet">
 /// <item>A line from the game itself (its own chat box, a macro line, a gear set): short commands go to the game once.</item>
-/// <item>A line from ChatTwo's main input (see <see cref="ChatTwoLine"/>): only the short command of ChatTwo's current
-/// channel stands for plain text; any other short command goes to the game once. The cost, accepted: "/p hi" typed in
-/// ChatTwo while it is on Party goes to the LookingGlass channel (the long form, "/party hi", goes to Party).</item>
+/// <item>A line from ChatTwo's main input (see <see cref="ChatTwoLine"/>): typed as it is, every short command goes to
+/// the game once, ChatTwo's own channel's included; plain text ChatTwo sent after its channel's command goes to the
+/// LookingGlass channel. (Before 0.2.10 "/p hi" typed in ChatTwo while it was on Party went to the channel too.)</item>
 /// <item>Anything else from a plugin, or a line whose way in isn't known: every short command stands for plain text, as
 /// it did before (fail safe: a pop-out's typing, sent with the pop-out's own channel's command, never reaches game chat).</item>
 /// </list>
@@ -78,11 +105,16 @@ public static class ShortCommandRule {
                 null => new ShortCommands(all, "ChatTwo's input unreadable: short commands are text"),
                 { Prefix: null } => new ShortCommands(all, "ChatTwo's channel unknown: short commands are text"),
                 { FromMainInput: false, InputLength: { } input, LineLength: { } line } =>
-                    new ShortCommands(all, $"not ChatTwo's main input (it holds {input} characters, the line {line}): short commands are text"),
+                    new ShortCommands(all, $"not ChatTwo's main input (it holds {input} characters, the line {line}{(chatTwo.TextRead ? ", by its text" : "")}): short commands are text"),
                 { FromMainInput: false } => new ShortCommands(all, "not ChatTwo's main input: short commands are text"),
+                // Typed as it is, ChatTwo's own channel's command too ("/s hi" on Say): the player's one-off.
+                { AsTyped: true, Prefix: { } typedOn } =>
+                    new ShortCommands([], $"ChatTwo's main input on {typedOn}, a command as typed: short commands go to the game once"),
+                // Plain text, sent after the channel's command.
                 { Prefix: { } prefix } when all.Contains(prefix) =>
-                    new ShortCommands(new[] { prefix }.ToHashSet(StringComparer.OrdinalIgnoreCase),
-                        $"ChatTwo's main input on {prefix}: only {prefix} is text, other short commands go to the game once"),
+                    new ShortCommands(new[] { prefix }.ToHashSet(StringComparer.OrdinalIgnoreCase), chatTwo.TextRead
+                        ? $"ChatTwo's main input on {prefix}, plain text sent as {prefix}: only {prefix} is text"
+                        : $"ChatTwo's main input on {prefix}, by its length only: only {prefix} is text, other short commands go to the game once"),
                 // On echo (no channel), a tell or an ExtraChat channel: none of the game's short commands is its typing.
                 { Prefix: { } other } => new ShortCommands([], $"ChatTwo's main input on {other}: short commands go to the game once"),
             },

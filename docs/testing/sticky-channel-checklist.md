@@ -25,10 +25,9 @@ What changed last round:
 
 - Short channel commands work as usual again: `/s hi`, `/p brb`, `/fc hi`
   typed while you talk in [sky] go to that game channel once, and you stay in
-  [sky]. Only plain text goes to LookingGlass. The one exception is in ChatTwo:
-  the short command of ChatTwo's own channel (`/p hi` while ChatTwo is on
-  Party) goes to LookingGlass, because that is exactly how ChatTwo sends plain
-  typing; use `/party hi` for that one.
+  [sky]. Only plain text goes to LookingGlass. Since 0.2.10 that holds in
+  ChatTwo's main input too, for the short command of ChatTwo's own channel
+  (`/p hi` while ChatTwo is on Party); before, that one went to LookingGlass.
 - Colours: LookingGlass's own lines are blue (information, like "Now talking
   in", "Stopped talking in", "Not sent"), light red (warnings) or dark red
   (critical warnings). A channel's tag in them keeps its own colour.
@@ -210,10 +209,9 @@ second character, checks every step: the label alone proves nothing.
 
 - [ ] 28. **(changed)** **(verbose: setting on)** Switch ChatTwo to Party. Type `/lgc1`.
   - "Now talking in [sky]." in blue. One more line follows once, even if you
-    saw last round's: ChatTwo's "(Warning: …)" names its own channel, typing
-    still goes to [sky], and so does that channel's short command (`/p hi` on
-    Party), so use `/party hi`. `/lgc1` again: only "Now talking in [sky]."
-    this time.
+    saw an earlier round's: ChatTwo's "(Warning: …)" names its own channel,
+    typing still goes to [sky], and a short command like `/p hi` talks in that
+    game channel once. `/lgc1` again: only "Now talking in [sky]." this time.
   - ChatTwo's channel name reads "LookingGlass [sky] (Warning: Party)". On a
     tab with a channel of its own, ChatTwo shows that tab's channel ("Party")
     instead; that's ChatTwo's choice, and the safe way round. Then the info
@@ -228,9 +226,16 @@ second character, checks every step: the label alone proves nothing.
 
 ### Short and long commands (ChatTwo still on Party)
 
-- [ ] 30. Type `/p hi`. It goes only to LookingGlass (as "hi"), not to Party.
-      This is the one expected exception: ChatTwo sends what you type as
-      `/p …` while it is on Party, so LookingGlass can't tell them apart.
+- [ ] 30. **(changed, 0.2.10)** Type `/p hi`. It goes to Party once (B sees it
+      in Party), and you're still in [sky], even though ChatTwo is on Party.
+      Then type `hi`: only LookingGlass, though ChatTwo sends it as `/p hi`.
+      (Before 0.2.10, `/p hi` here went to LookingGlass.) Also switch ChatTwo
+      to Say, `/lgc1`, and type `/s hi`: Say once; `hi`: only LookingGlass.
+- [ ] 30b. **(new, 0.2.10)** ChatTwo still on Party: type `hi` followed by
+      three spaces. It goes only to LookingGlass, never Party. (Afterwards,
+      the diagnostic log's lines for these say "plain text sent as /p" and "a
+      command as typed", not "by its length only": that shows LookingGlass
+      read what you typed.)
 - [ ] 31. Type `/party hi`. It goes to Party. You're still in [sky].
 - [ ] 32. **(changed)** Type `/s hi`. It goes to Say once (B sees it in Say),
       and you're still in [sky]. `/say hi` goes to Say too.

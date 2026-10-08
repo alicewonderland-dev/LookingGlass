@@ -102,9 +102,9 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
             this._chat.ChannelNotice(start.Text, tag, this._sessions.ColourOf(channelId));
         }
 
-        if (StickyMessages.ChatTwoNoteFor(tag, chatTwo, this._config.ChatTwoOwnCommandNoteShown) is { } note) {
+        if (StickyMessages.ChatTwoNoteFor(tag, chatTwo, this._config.ChatTwoLabelNoteShown) is { } note) {
             this._chat.Notice(NoticeTone.Info, note, tag, this._sessions.ColourOf(channelId));
-            this._config.ChatTwoOwnCommandNoteShown = true;
+            this._config.ChatTwoLabelNoteShown = true;
             this._config.Save();
         }
 
@@ -139,7 +139,7 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
         var typed = GameLinks.ReadLine(message);
         var line = new ChatBoxLine(message, typed.Text) { Links = typed.Links };
         var chatTwo = this._chatTwo.Loaded;
-        // Short commands: the player's one-off in the game's chat box; in ChatTwo's main input, all but its own channel's.
+        // Short commands: the player's one-off, typed in the game's chat box or in ChatTwo's main input (not ChatTwo's plain text).
         var rule = ShortCommandRule.For(source, chatTwoLine);
         var (route, reason) = StickyRoute.Decide(channelId, tag, line, rule.AsText, this._switches);
         // Before acting on it, so the log has the line even if acting fails. Never the text itself.
@@ -177,8 +177,41 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
     /// <inheritdoc/>
     ChatTwoLine? IChatBoxListener.PluginLine(byte[] message) =>
         this._chatTwo.InputState() is { } state
-            ? ChatTwoLine.Of(state.ChatType, state.HasText, state.TextLength, SeString.Parse(message).TextValue)
+            ? ChatTwoLine.Of(state.ChatType, state.HasText, state.TextLength, SeString.Parse(message).TextValue, LastTypedText())
             : null;
+
+    /// <summary>
+    /// The text of the input typed in last, as ImGui keeps it (its input text state lasts until another input is typed
+    /// in, and every plugin's windows share Dalamud's ImGui context), or null if there is none or it can't be read. Read
+    /// as ChatTwo sends its main input's line, it is that input's text (see <see cref="ChatTwoLine.Of"/>), which tells a
+    /// command typed as it is from plain text ChatTwo put its channel's command in front of. Never logged.
+    /// </summary>
+    private static string? LastTypedText() {
+        try {
+            return ReadLastTypedText();
+        } catch (Exception ex) {
+            // Also a field this Dalamud's ImGui no longer has (ImGui 1.91.3 dropped TextW), which is thrown as the method
+            // reading it is compiled, so outside its own try. Then the length alone decides, as before.
+            Services.Log.Debug(ex, "Couldn't read the text last typed in");
+            return null;
+        }
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private static unsafe string? ReadLastTypedText() {
+        var context = Dalamud.Bindings.ImGui.ImGui.GetCurrentContext();
+        if (context.IsNull) {
+            return null;
+        }
+
+        ref var typed = ref context.InputTextState;
+        var length = typed.CurLenW;
+        if (typed.ID == 0 || length < 0 || length > typed.TextW.Size || (length > 0 && typed.TextW.Data == null)) {
+            return null;
+        }
+
+        return new string((char*) typed.TextW.Data, 0, length);
+    }
 
     /// <inheritdoc/>
     void IChatBoxListener.LinePassed() {

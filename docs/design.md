@@ -1948,10 +1948,11 @@ a stop the player didn't choose, refusals to start ("No channel is on /lgc3"),
 the ChatTwo note, every "Not sent", the ExtraChat warning and every other
 warning. The diagnostic log has every start and stop either way. The first time ever that it
 starts with ChatTwo loaded, one more sentence follows (a saved setting,
-`ChatTwoOwnCommandNoteShown`; a new name, so players who saw the last round's
+`ChatTwoLabelNoteShown`; a new name, so players who saw an earlier round's
 note see the new one once): ChatTwo's "(Warning: …)" names its own channel,
-typing still goes to the channel, and so does that channel's short command
-(`/p hi` on Party), so use the long form (`/party hi`) for it. A message kept
+typing still goes to the channel, and a short command like `/p hi` talks in
+that game channel once. (Until 0.2.10 it said ChatTwo's own channel's short
+command went to the channel, and to use `/party hi`.) A message kept
 from the game says "Not sent to [sky] or game chat: *reason*", in blue: it is
 information, nothing went where it shouldn't. Only "Not sent … something went
 wrong" (deciding threw) is a warning.
@@ -2063,15 +2064,19 @@ Sticky:
   | The line came from | Short command with text | Plain text |
   |--------------------|-------------------------|------------|
   | the game itself (its own chat box, a macro line, a gear set) | the game, once | LookingGlass |
-  | ChatTwo's main input, on Party (its current tab's channel, or its one-off channel) | `/p hi`: LookingGlass (that is how ChatTwo sends "hi"); any other (`/s hi`, `/fc hi`): the game, once | LookingGlass |
+  | ChatTwo's main input, on Party (its current tab's channel, or its one-off channel) | typed as it is (`/p hi`, `/s hi`, `/fc hi`): the game, once | LookingGlass (ChatTwo sends "hi" as `/p hi`, while its input holds only "hi") |
   | ChatTwo's main input on echo (no channel), a tell or an ExtraChat channel | the game, once | (ChatTwo sends it as `/e …`, a tell or `/ecl…`: not game chat) |
   | a plugin, but not ChatTwo's main input (a ChatTwo pop-out with its own input, ChatTwo's web interface, another plugin), or ChatTwo didn't answer, or named a channel LookingGlass doesn't know | LookingGlass (the strict rule: it may be ChatTwo's typing in an input whose channel isn't known) | LookingGlass |
   | unknown (the `ProcessChatBoxEntry` hook is missing) | LookingGlass (strict) | LookingGlass |
 
-  The accepted edge: with ChatTwo on Party, typing `/p hi` explicitly goes to
-  the LookingGlass channel, because it is exactly what ChatTwo sends for "hi";
-  `/party hi`, or another channel's command, talks in a game channel once.
-  How ChatTwo's main input is recognised is under ChatTwo (*Sending*), below.
+  With ChatTwo on Party, `/p hi` typed and "hi" typed are sent as the same
+  line, but the main input's text tells them apart: the whole line for the
+  first, only "hi" for the second. Its length alone can't ("hi" and three
+  spaces is as long as "/p hi", and ChatTwo trims the spaces off), so the
+  plugin reads the text itself (under ChatTwo, *Sending*, below); when it
+  can't, ChatTwo's own channel's command goes to the LookingGlass channel, as
+  before. Until 0.2.10 that was always so (an accepted edge); a tester on Say
+  kept hitting it with `/s`.
   A short command whose line goes to LookingGlass is sent without it, like
   plain text. Only the bare command is a switch (above). The command ends at
   the first space or control byte, so a payload straight after it still
@@ -2309,22 +2314,35 @@ about it:
   typed, so up to two spaces more (`ChatTwoLine.MostTrimmed`, before and
   after together) still count as the line: "/s hi " is the main input's, and
   goes to Say once. (Before 0.2.9 the lengths had to match exactly, and a
-  stray space sent "/s hi " to the channel.) The plugin reads the IPC in its
-  `ProcessChatBoxEntry` hook, so
+  stray space sent "/s hi " to the channel.) Since 0.2.10 it also reads the
+  input's text: ImGui keeps the text of the input typed in last (its input
+  text state, until another input is typed in), every plugin's windows share
+  Dalamud's ImGui context, and ChatTwo sends its main input's line as that
+  input lets go. Text of the main input's length is that input's: trimmed, it
+  is either the line (a command as typed: every short command goes to the
+  game once, ChatTwo's own channel's too) or the line without ChatTwo's
+  command (plain text: the channel), and anything else (an auto-translate
+  phrase, sent as something else) is held to the strict rule. Text of another
+  length means another input was typed in last (a pop-out's): not the main
+  input's line, strict. Only when the text can't be read does the length
+  alone decide, as before, with ChatTwo's own channel's command as text. The
+  text is never logged; the log says whether it decided ("by its text"). The
+  plugin reads the IPC (and the text) in its `ProcessChatBoxEntry` hook, so
   before any other plugin's hook on the gate (GagSpeak's, on the owner's
   machine) can change the line, and keeps it for that line only, not for
   lines run inside it (`ChatTwoLine`). A line from a pop-out, the web
   interface or another plugin finds the main input empty, or holding a draft
   of another length, and is held to the strict rule (every short command is
-  text); a draft of that length or up to two characters longer is the one
-  way to mistake it, and only for a short command other than the main
-  input's. A main-input line whose length doesn't match (more than two spaces
+  text); with the text unreadable, a draft of that length or up to two
+  characters longer is the one way to mistake it (with the text read, the
+  pop-out's text is the last typed, so it isn't). A main-input line whose
+  length doesn't match (more than two spaces
   around a command, an auto-translate phrase, another plugin changing it on
   the way in) also gets the strict rule: it goes to the channel, never to game
   chat. The diagnostic log then gives both lengths ("not ChatTwo's main input
-  (it holds 14 characters, the line 5)"). So with ChatTwo: plain text and the main
-  input's own channel's short command go to the LookingGlass channel; another
-  short command typed in the main input goes to the game once; in a pop-out,
+  (it holds 14 characters, the line 5)"). So with ChatTwo: plain text goes to
+  the LookingGlass channel; a short command typed in the main input goes to
+  the game once, its own channel's included; in a pop-out,
   every short command goes to the LookingGlass channel (use the long form
   there). Three of ChatTwo's prefixes are never text: `/t` (it sends tells to a
   known player itself, below), `/e` (echo, for an input with no channel, seen
@@ -2389,9 +2407,9 @@ about it:
   Party)". The ChatTwo sentence said once at a start (after "Now talking in"
   with verbose channel messages on, on its own with them off) says what
   it means: ChatTwo's own channel underneath; what is typed still goes to the
-  LookingGlass channel (from any ChatTwo input not set to a tell), and so does
-  that channel's short command, so `/party hi` is the way to talk in Party
-  once there. Making it go away needs a change in ChatTwo, such as an override
+  LookingGlass channel (from any ChatTwo input not set to a tell), and a
+  short command typed in the main input talks in that game channel once.
+  Making the label go away needs a change in ChatTwo, such as an override
   that names a command to send plain text with (`/lgc3`) and no warning.
 - *Why ExtraChat's sticky channel was unreliable with ChatTwo (inferred from
   ChatTwo's side only).* Typing `/ecl1` in ChatTwo sends the command, and the
@@ -2441,8 +2459,9 @@ the leading command if it is a known one (otherwise "(text)", "(payload)",
 whether it held payloads, the decision with a reason in fixed words ("short
 command, to the game once", "short command with text", "plain text" …), and
 the short-command rule used ("rule: typed in the game: short commands go to
-the game once", "rule: ChatTwo's main input on /p: only /p is text, other
-short commands go to the game once", "rule: not ChatTwo's main input: short
+the game once", "rule: ChatTwo's main input on /p, a command as typed: short
+commands go to the game once", "rule: ChatTwo's main input on /p, plain text
+sent as /p: only /p is text", "rule: not ChatTwo's main input: short
 commands are text (it holds 14 characters, the line 5)", and so on: a known
 command and lengths at most). A message sent
 adds a "sending" entry: sizes and counts only (bytes typed, characters
