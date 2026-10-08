@@ -40,10 +40,10 @@ character doesn't need LookingGlass unless the task says so.
 
 ### Local chat (`/lgl`), needs 0.2.11
 
-- [ ] **Is `/lgl` free, and what does it say** ([local-chat](local-chat-checklist.md): steps 1–3). Type `/xlhelp`: `/lgl` is listed once, by LookingGlass. Turn LookingGlass off and type `/lgl`: the game says that command doesn't exist. Turn it back on: `/lgl`'s line in `/xlhelp` explains it (friends near you who use LookingGlass, about 20 yalms, and, in a build newer than 0.2.11, that `/lgl` alone talks in local chat until `/s` on its own). Settings, under Chat, has **Local chat colour ([Local])** with the same explanation. Needs: nothing extra.
+- [ ] **Is `/lgl` free, and what does it say** ([local-chat](local-chat-checklist.md): steps 1–3). Type `/xlhelp`: `/lgl` is listed once, by LookingGlass. Turn LookingGlass off and type `/lgl`: the game says that command doesn't exist. Turn it back on: `/lgl`'s line in `/xlhelp` explains it (friends near you who use LookingGlass, about 20 yalms, and, in 0.2.12, that `/lgl` alone talks in local chat until `/s` on its own). Settings, under Chat, has **Local chat colour ([Local])** with the same explanation. Needs: nothing extra.
 - [ ] **The "ask first" window** ([local-chat](local-chat-checklist.md): steps 3a–3c). Type `/lgl hello` for the first time → nothing is sent, a blue line says local chat asks first, and a window explains what the server learns, in plain words. **Not now** closes it, and the next `/lgl` asks again. **Accept and use local chat** turns it on. Settings then shows you've accepted, with **What it tells the server** and **Withdraw** (Withdraw makes it ask again). Accept again at the end. Needs: nobody else. Every tester who will do the group 2 local chat tasks should do this first, except the B in "Receiving before accepting" (see group 2).
 
-### Talking in local chat (`/lgl` alone), needs a build newer than 0.2.11
+### Talking in local chat (`/lgl` alone), needs 0.2.12
 
 Setup for all of these: you have accepted local chat (the "ask first" task
 above), you're in a channel `sky` on `/lgc1`, you've picked a swatch as
@@ -148,7 +148,7 @@ with it on.
 - [ ] **No line when out of range, or from a stranger** ([local-chat](local-chat-checklist.md): step 27). **Needs 3 players** for the C part. Same as the task above, but with B out of range, or with C (not a friend) having re-registered → no line at all. Needs: do right after "B resets their identity".
 - [x] **Name or world change** ([local-chat](local-chat-checklist.md): step 28). **Not tested: a rename or world transfer costs real money, so this is left until it comes up after public release.** Optional, only if one is happening anyway. After A has had a local message from B, B is renamed or moved. B's next `/lgl` isn't shown, and one blue line says B may have changed name or world. A's `/lgl` to B then fixes it. Needs: a rename or world transfer.
 
-### Talking in local chat (`/lgl` alone), needs a build newer than 0.2.11 on A
+### Talking in local chat (`/lgl` alone), needs 0.2.12 on A
 
 - [ ] **Talking to a friend near you** ([local-chat](local-chat-checklist.md): step 47). Setup as for the local chat tasks above (both accepted, both opened the Friends window). A types `/lgl` alone, then `hello there` → B sees `[Local] <A@World> hello there`, nobody sees it in Say. A line with only an item link, and one with `<t>`, arrive as a link and the target's name. B walks beyond 20 yalms → A's next line says nobody is near enough, and nothing goes to Say. A types `/s` alone, then `bye` → B sees it in Say. Needs: B, A's friend, with LookingGlass.
 
@@ -233,7 +233,7 @@ internet connection**.
 
 ### Local chat: server side, needs 0.2.11
 
-- [ ] **Local chat turned off on the server** ([local-chat](local-chat-checklist.md): step 24). Set `LookingGlass:Limits:MaxLocalRecipients` to 0 and restart → `/lgl hi` says local chat isn't available on this server, and (in a build newer than 0.2.11) so does `/lgl` alone, which doesn't start talking in local chat. Put it back. Needs: a server settings change and restart.
+- [ ] **Local chat turned off on the server** ([local-chat](local-chat-checklist.md): step 24). Set `LookingGlass:Limits:MaxLocalRecipients` to 0 and restart → `/lgl hi` says local chat isn't available on this server, and (in 0.2.12) so does `/lgl` alone, which doesn't start talking in local chat. Put it back. Needs: a server settings change and restart.
 - [ ] **Server log keeps names out** ([local-chat](local-chat-checklist.md): step 25, server part). After the group 2 local chat tasks, check the server's log: local chat lines give counts only (friends near, sent, dropped, why), never a name or message. Needs: journal access, the times testers report.
 
 ### Right-click invites: limits, needs 0.2.8
