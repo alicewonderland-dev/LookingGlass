@@ -177,8 +177,34 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
     /// <inheritdoc/>
     ChatTwoLine? IChatBoxListener.PluginLine(byte[] message) =>
         this._chatTwo.InputState() is { } state
-            ? ChatTwoLine.Of(state.ChatType, state.HasText, state.TextLength, SeString.Parse(message).TextValue)
+            ? ChatTwoLine.Of(state.ChatType, state.HasText, state.TextLength, SeString.Parse(message).TextValue, LastTypedText())
             : null;
+
+    /// <summary>
+    /// The text of the input typed in last, as ImGui keeps it (its input text state lasts until another input is typed
+    /// in, and every plugin's windows share Dalamud's ImGui context), or null if there is none or it can't be read. Read
+    /// as ChatTwo sends its main input's line, it is that input's text (see <see cref="ChatTwoLine.Of"/>), which tells a
+    /// command typed as it is from plain text ChatTwo put its channel's command in front of. Never logged.
+    /// </summary>
+    private static unsafe string? LastTypedText() {
+        try {
+            var context = Dalamud.Bindings.ImGui.ImGui.GetCurrentContext();
+            if (context.IsNull) {
+                return null;
+            }
+
+            ref var typed = ref context.InputTextState;
+            var length = typed.CurLenW;
+            if (typed.ID == 0 || length < 0 || length > typed.TextW.Size || (length > 0 && typed.TextW.Data == null)) {
+                return null;
+            }
+
+            return new string((char*) typed.TextW.Data, 0, length);
+        } catch (Exception ex) {
+            Services.Log.Debug(ex, "Couldn't read the text last typed in");
+            return null;
+        }
+    }
 
     /// <inheritdoc/>
     void IChatBoxListener.LinePassed() {

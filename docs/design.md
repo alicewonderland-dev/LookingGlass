@@ -2070,12 +2070,13 @@ Sticky:
   | unknown (the `ProcessChatBoxEntry` hook is missing) | LookingGlass (strict) | LookingGlass |
 
   With ChatTwo on Party, `/p hi` typed and "hi" typed are sent as the same
-  line, but the main input tells them apart: it holds the whole line for the
-  first, and only "hi" for the second (a command and its space are longer
-  than the two spaces ChatTwo may trim, so the two can't be confused). Until
-  0.2.10 this was an accepted edge, and `/p hi` typed there went to the
-  LookingGlass channel; a tester on Say kept hitting it with `/s`. How
-  ChatTwo's main input is recognised is under ChatTwo (*Sending*), below.
+  line, but the main input's text tells them apart: the whole line for the
+  first, only "hi" for the second. Its length alone can't ("hi" and three
+  spaces is as long as "/p hi", and ChatTwo trims the spaces off), so the
+  plugin reads the text itself (under ChatTwo, *Sending*, below); when it
+  can't, ChatTwo's own channel's command goes to the LookingGlass channel, as
+  before. Until 0.2.10 that was always so (an accepted edge); a tester on Say
+  kept hitting it with `/s`.
   A short command whose line goes to LookingGlass is sent without it, like
   plain text. Only the bare command is a switch (above). The command ends at
   the first space or control byte, so a payload straight after it still
@@ -2313,15 +2314,29 @@ about it:
   typed, so up to two spaces more (`ChatTwoLine.MostTrimmed`, before and
   after together) still count as the line: "/s hi " is the main input's, and
   goes to Say once. (Before 0.2.9 the lengths had to match exactly, and a
-  stray space sent "/s hi " to the channel.) The plugin reads the IPC in its
-  `ProcessChatBoxEntry` hook, so
+  stray space sent "/s hi " to the channel.) Since 0.2.10 it also reads the
+  input's text: ImGui keeps the text of the input typed in last (its input
+  text state, until another input is typed in), every plugin's windows share
+  Dalamud's ImGui context, and ChatTwo sends its main input's line as that
+  input lets go. Text of the main input's length is that input's: trimmed, it
+  is either the line (a command as typed: every short command goes to the
+  game once, ChatTwo's own channel's too) or the line without ChatTwo's
+  command (plain text: the channel), and anything else (an auto-translate
+  phrase, sent as something else) is held to the strict rule. Text of another
+  length means another input was typed in last (a pop-out's): not the main
+  input's line, strict. Only when the text can't be read does the length
+  alone decide, as before, with ChatTwo's own channel's command as text. The
+  text is never logged; the log says whether it decided ("by its text"). The
+  plugin reads the IPC (and the text) in its `ProcessChatBoxEntry` hook, so
   before any other plugin's hook on the gate (GagSpeak's, on the owner's
   machine) can change the line, and keeps it for that line only, not for
   lines run inside it (`ChatTwoLine`). A line from a pop-out, the web
   interface or another plugin finds the main input empty, or holding a draft
   of another length, and is held to the strict rule (every short command is
-  text); a draft of that length or up to two characters longer is the one
-  way to mistake it. A main-input line whose length doesn't match (more than two spaces
+  text); with the text unreadable, a draft of that length or up to two
+  characters longer is the one way to mistake it (with the text read, the
+  pop-out's text is the last typed, so it isn't). A main-input line whose
+  length doesn't match (more than two spaces
   around a command, an auto-translate phrase, another plugin changing it on
   the way in) also gets the strict rule: it goes to the channel, never to game
   chat. The diagnostic log then gives both lengths ("not ChatTwo's main input
