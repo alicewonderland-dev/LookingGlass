@@ -11,7 +11,8 @@ namespace LookingGlass.Server.Hosting;
 /// <list type="bullet">
 /// <item><c>--ban &lt;name@world | user ID | address or prefix&gt; [--days N] [--reason "..."]</c> bans a registered character
 /// by name, any character by its user ID (its Lodestone ID; one not registered yet then can't register), or an address
-/// or prefix (see <see cref="ClientAddresses.BanPrefix"/>), until lifted or for N days.</item>
+/// or prefix (see <see cref="ClientAddresses.BanPrefix"/>), until lifted or for N days. Not the server's own or its proxy's address,
+/// which would shut out every player, unless <c>--force</c> says it is meant.</item>
 /// <item><c>--unban &lt;the same&gt;</c> lifts it.</item>
 /// <item><c>--bans</c> lists the bans in force, the accounts and addresses flagged (see <see cref="Services.AbuseMonitor"/>),
 /// and the bans lifted or ended lately.</item>
@@ -26,7 +27,8 @@ public static class BanCommand {
 
     /// <param name="Target">Whom to ban or unban, as given.</param>
     /// <param name="Days">How long the ban lasts; null until lifted.</param>
-    public sealed record Request(BanAction Action, string? Target, int? Days, string? Reason);
+    /// <param name="Force">Ban even the server's own or its proxy's address (see <see cref="ClientAddresses.ProxyProblem"/>).</param>
+    public sealed record Request(BanAction Action, string? Target, int? Days, string? Reason, bool Force = false);
 
     /// <summary>The longest reason, in characters: the player is shown it.</summary>
     public const int MaxReasonLength = 300;
@@ -43,6 +45,7 @@ public static class BanCommand {
         var actions = new[] { ("--ban", BanAction.Ban), ("--unban", BanAction.Unban), ("--bans", BanAction.List) }
             .Where(option => Array.IndexOf(args, option.Item1) >= 0).ToList();
         var days = Array.IndexOf(args, "--days");
+        var force = Array.IndexOf(args, "--force") >= 0;
         var reason = Array.IndexOf(args, "--reason");
         if (actions.Count == 0) {
             return null;
@@ -53,8 +56,8 @@ public static class BanCommand {
         }
 
         var (option, action) = actions[0];
-        if (action != BanAction.Ban && (days >= 0 || reason >= 0)) {
-            throw new ArgumentException("--days and --reason go with --ban.");
+        if (action != BanAction.Ban && (days >= 0 || reason >= 0 || force)) {
+            throw new ArgumentException("--days, --reason and --force go with --ban.");
         }
 
         if (action == BanAction.List) {
@@ -87,12 +90,14 @@ public static class BanCommand {
             }
         }
 
-        return new Request(action, args[at + 1].Trim(), dayCount, because);
+        return new Request(action, args[at + 1].Trim(), dayCount, because, force);
     }
 
     /// <param name="now">The time it is (for tests); by default, now.</param>
     /// <returns>The process's exit code: 0 if it was done, 1 if it couldn't be.</returns>
-    public static int Run(Request request, string databasePath, AbuseOptions settings, TextWriter output, TextWriter errors, DateTimeOffset? now = null) {
+    /// <param name="trustedProxies">The server's <c>LookingGlass:TrustedProxies</c>, whose addresses are banned only with <see cref="Request.Force"/>.</param>
+    public static int Run(Request request, string databasePath, AbuseOptions settings, TextWriter output, TextWriter errors, DateTimeOffset? now = null,
+        IReadOnlyList<string>? trustedProxies = null) {
         var at = (now ?? DateTimeOffset.UtcNow).ToUnixTimeSeconds();
         if (!File.Exists(databasePath)) {
             // Never made here: a wrong data folder would otherwise get an empty database of its own.
@@ -104,7 +109,7 @@ public static class BanCommand {
         try {
             var db = new Database(databasePath);
             return request.Action switch {
-                BanAction.Ban => Ban(db, request, settings, at, output, errors),
+                BanAction.Ban => Ban(db, request, settings, at, output, errors, trustedProxies),
                 BanAction.Unban => Unban(db, request, settings, at, output, errors),
                 _ => List(db, settings, at, output),
             };
@@ -115,8 +120,15 @@ public static class BanCommand {
         }
     }
 
-    private static int Ban(Database db, Request request, AbuseOptions settings, long now, TextWriter output, TextWriter errors) {
+    private static int Ban(Database db, Request request, AbuseOptions settings, long now, TextWriter output, TextWriter errors, IReadOnlyList<string>? trustedProxies) {
         if (Resolve(db, request.Target!, errors) is not { } subject) {
+            return 1;
+        }
+
+        // Where every player's connections come from when a proxy's forwarded address goes missing: almost surely a mistake.
+        if (subject.Address != null && !request.Force && ClientAddresses.ProxyProblem(subject.Address, trustedProxies) is { } problem) {
+            errors.WriteLine($"{problem} Nothing was banned. A flag on it means the proxy isn't passing the client's address on (see \"Behind a reverse proxy\" " +
+                             "in docs/server.md). If you really mean to ban it, add --force.");
             return 1;
         }
 
@@ -142,7 +154,7 @@ public static class BanCommand {
         }
 
         output.WriteLine($"Lifted the ban on {subject.Name}. A running server lets them back within {settings.BanCheckSeconds} seconds; " +
-                         "the plugin tries again by itself within 5 minutes (or at once with Reconnect).");
+                         "the plugin tries again by itself within 5 minutes (or at once with \"Try again now\").");
         return 0;
     }
 

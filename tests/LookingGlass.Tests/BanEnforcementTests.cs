@@ -67,6 +67,8 @@ public sealed class BanEnforcementTests {
         Assert.Contains("Spamming invites", notice.Text);
         Assert.Contains("Spamming invites", notice.TextFor(advanced: false));
         Assert.Contains("operator", notice.Text);
+        // Named as the button the player sees.
+        Assert.Contains("Try again now", notice.Text);
         Assert.Contains("Spamming invites", alice.Session.Snapshot.StatusFor(advanced: false));
 
         // Not hammering: no new connection for a while (an ordinary drop reconnects within 100 ms here).
@@ -237,5 +239,148 @@ public sealed class BanEnforcementTests {
         await Assert.ThrowsAnyAsync<Exception>(() => server.ConnectRawAsync(remoteAddress: "198.51.100.40", hello: false));
         Assert.Equal("ConnectionsPerMinutePerIp", (await WaitFor(() => server.Database.GetFlag("address 198.51.100.40"))).Limits);
         Assert.True(server.Database.GetFlags(now - 60).Count >= 2);
+    }
+
+    /// <summary>
+    /// The requests that read a lot share one budget, which a plugin reconnecting with many channels can spend: refused
+    /// across all five kinds, that is one limit (ReadBudget), not five, so it can't flag an innocent player by the
+    /// different-limits rule. (Here 2 different limits flag.)
+    /// </summary>
+    [Fact]
+    public async Task TheSharedReadBudgetCountsAsOneLimit() {
+        await using var server = new Harness(settings: [
+            ("LookingGlass:Abuse:FlagAfterLimits", "2"),
+            ("LookingGlass:Limits:LookupBurst", "1"),
+            ("LookingGlass:Limits:LookupIntervalSeconds", "86400"),
+        ]);
+        var alice = await server.RegisterAsync("Alice Reader");
+        var channelId = Guid.NewGuid().ToString("N");
+        ClientFrame[] reads = [
+            new() { GetIdentities = new GetIdentities { UserIds = { alice.UserId } } },
+            new() { ListChannels = new ListChannels() },
+            new() { FetchMembershipLog = new FetchMembershipLog { ChannelId = channelId } },
+            new() { ForgetChannel = new ForgetChannel { ChannelId = channelId } },
+            new() { FetchEpochKeys = new FetchEpochKeys { ChannelId = channelId } },
+        ];
+        foreach (var read in reads) {
+            var refused = false;
+            for (var i = 0; i < 500 && !refused; i++) {
+                try {
+                    await alice.Session.SendRawAsync(read, Ct);
+                } catch (ServerErrorException ex) {
+                    refused = ex.Code == ErrorCode.RateLimited;
+                }
+            }
+
+            Assert.True(refused, $"{read.BodyCase} was never refused.");
+        }
+
+        Assert.Null(server.Database.GetFlag($"user {alice.UserId}"));
+
+        // A second, different limit: now flagged, by the two.
+        var lookup = new ClientFrame { LookupUser = new LookupUser { Name = alice.Name, WorldName = ProtocolInfo.DebugWorldName } };
+        await alice.Session.SendRawAsync(lookup, Ct);
+        await Assert.ThrowsAsync<ServerErrorException>(() => alice.Session.SendRawAsync(lookup, Ct));
+        Assert.Equal("LookupBurst, ReadBudget", (await WaitFor(() => server.Database.GetFlag($"user {alice.UserId}"))).Limits);
+    }
+
+    /// <summary>
+    /// An address blocked automatically (a flood) is refused when it asks to connect, before any WebSocket is opened for it;
+    /// an operator's ban still lets it say hello, to be told why.
+    /// </summary>
+    [Fact]
+    public async Task AnAutomaticBlockIsRefusedBeforeTheConnectionOpens() {
+        await using var server = new Harness(settings: [
+            CheckEverySecond,
+            ("LookingGlass:Abuse:AutoBlockMinutes", "5"),
+            ("LookingGlass:Abuse:AutoBlockAfterRefusals", "100"),
+        ]);
+        var abuse = server.Factory.Services.GetRequiredService<AbuseMonitor>();
+        for (var i = 0; i < 100; i++) {
+            abuse.Refused("SendMessage", null, "203.0.113.70");
+        }
+
+        Assert.True(Assert.Single(server.Database.GetActiveBans(DateTimeOffset.UtcNow.ToUnixTimeSeconds())).Automatic);
+        await Assert.ThrowsAnyAsync<Exception>(() => server.ConnectRawAsync(remoteAddress: "203.0.113.70", hello: false));
+
+        Assert.Equal(0, Ban(server, "203.0.113.71"));
+        server.Factory.Services.GetRequiredService<BanList>().Refresh();
+        var raw = await server.ConnectRawAsync(remoteAddress: "203.0.113.71", hello: false);
+        Assert.Equal(ErrorCode.Blocked, (await raw.SendAsync(new ClientFrame { Hello = new Hello { ProtocolVersions = { ProtocolInfo.CurrentVersion } } })).Error?.Code);
+    }
+
+    /// <summary>
+    /// Behind a proxy on the same machine, bans and flags go by the client address it forwards, never the proxy's; and a
+    /// forwarded address from a peer that isn't a trusted proxy is ignored, so it can't put a ban on someone else, or dodge one.
+    /// </summary>
+    [Fact]
+    public async Task BansAndFlagsGoByTheForwardedAddressFromATrustedProxyOnly() {
+        await using var server = new Harness(settings: [
+            CheckEverySecond,
+            ("LookingGlass:Abuse:FlagAfterMinutesRefused", "1"),
+            ("LookingGlass:Limits:ConnectionsPerMinutePerIp", "2"),
+        ]);
+        Assert.Equal(0, Ban(server, "198.51.100.23", "Flooding"));
+        server.Factory.Services.GetRequiredService<BanList>().Refresh();
+        var hello = new ClientFrame { Hello = new Hello { ProtocolVersions = { ProtocolInfo.CurrentVersion } } };
+
+        // Through the local proxy: the forwarded address is banned.
+        var proxied = await server.ConnectRawAsync(remoteAddress: "127.0.0.1", forwardedFor: ("198.51.100.23", "https"), hello: false);
+        Assert.Equal(ErrorCode.Blocked, (await proxied.SendAsync(hello)).Error?.Code);
+
+        // From a peer that isn't a proxy, the header is ignored: neither banned by it, nor let off by it.
+        var forged = await server.ConnectRawAsync(remoteAddress: "198.51.100.40", forwardedFor: ("198.51.100.23", "https"), hello: false);
+        Assert.NotNull((await forged.SendAsync(hello)).Welcome);
+        var dodging = await server.ConnectRawAsync(remoteAddress: "198.51.100.23", forwardedFor: ("192.0.2.1", "https"), hello: false);
+        Assert.Equal(ErrorCode.Blocked, (await dodging.SendAsync(hello)).Error?.Code);
+
+        // Flags too: the proxied client's own address, never the proxy's (a third connection in a minute is refused).
+        for (var i = 0; i < 2; i++) {
+            await server.ConnectRawAsync(remoteAddress: "127.0.0.1", forwardedFor: ("203.0.113.99", "https"), hello: false);
+        }
+
+        await Assert.ThrowsAnyAsync<Exception>(() => server.ConnectRawAsync(remoteAddress: "127.0.0.1", forwardedFor: ("203.0.113.99", "https"), hello: false));
+        await WaitFor(() => server.Database.GetFlag("address 203.0.113.99"));
+        Assert.Null(server.Database.GetFlag("address 127.0.0.1"));
+
+        await server.ConnectRawAsync(remoteAddress: "198.51.100.40", forwardedFor: ("203.0.113.98", "https"), hello: false);
+        await Assert.ThrowsAnyAsync<Exception>(() => server.ConnectRawAsync(remoteAddress: "198.51.100.40", forwardedFor: ("203.0.113.98", "https"), hello: false));
+        await WaitFor(() => server.Database.GetFlag("address 198.51.100.40"));
+        Assert.Null(server.Database.GetFlag("address 203.0.113.98"));
+    }
+
+    /// <summary>
+    /// With Debug logging on, each connection's address is logged as the server sees it: how an operator checks, before
+    /// banning any address, that the proxy passes the client's own address on.
+    /// </summary>
+    [Fact]
+    public async Task TheAddressTheServerSeesCanBeChecked() {
+        var logs = new CapturingLoggerProvider();
+        await using var server = new Harness(logs: logs, settings: ("Logging:LogLevel:LookingGlass", "Debug"));
+        await server.ConnectRawAsync(remoteAddress: "127.0.0.1", forwardedFor: ("198.51.100.77", "https"));
+        var seen = await WaitFor(() => logs.Entries.Select(entry => entry.Message).FirstOrDefault(message => message.StartsWith("Connection from ")));
+        Assert.Equal("Connection from 198.51.100.77", seen);
+    }
+
+    /// <summary>
+    /// A block that, by this computer's clock, has already ended (its clock is ahead of the server's) is still not tried again
+    /// at once and over and over: the plugin waits at least half a minute between tries while blocked.
+    /// </summary>
+    [Fact]
+    public async Task ABlockedPluginWaitsAtLeastHalfAMinuteWhateverItsClockSays() {
+        await using var server = new Harness(settings: CheckEverySecond);
+        var attempts = 0;
+        var options = server.Options(time: new ManualClock { Offset = TimeSpan.FromDays(3) }, beforeConnect: _ => {
+            Interlocked.Increment(ref attempts);
+            return Task.CompletedTask;
+        });
+        var alice = await server.RegisterAsync("Alice Ahead", options: options);
+        Assert.Equal(0, Ban(server, "Alice Ahead@Debug", days: 1));
+        await WaitForState(alice, ConnectionState.Blocked);
+
+        var seen = Volatile.Read(ref attempts);
+        await Task.Delay(TimeSpan.FromSeconds(1.5), Ct);
+        Assert.Equal(seen, Volatile.Read(ref attempts));
+        Assert.Equal(ConnectionState.Blocked, alice.Session.Snapshot.State);
     }
 }

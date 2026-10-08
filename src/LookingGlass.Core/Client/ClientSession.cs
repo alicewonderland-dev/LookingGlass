@@ -1340,10 +1340,12 @@ public sealed partial class ClientSession : IAsyncDisposable {
         this.SetState(ConnectionState.Blocked, wording);
         var wait = this._options.BlockedRetryDelay;
         if (block.UntilUnix > 0) {
-            // A few seconds after it ends, so the server's clock has passed it too.
+            // A few seconds after it ends, so the server's clock has passed it too; but never sooner than the least wait, as this
+            // computer's clock may be ahead of the server's (and the block then seem over when it isn't).
             var left = DateTimeOffset.FromUnixTimeSeconds(block.UntilUnix) - this._options.TimeProvider.GetUtcNow() + TimeSpan.FromSeconds(5);
+            var least = this._options.BlockedRetryMinDelay < wait ? this._options.BlockedRetryMinDelay : wait;
             if (left < wait) {
-                wait = left > this._options.ReconnectMinDelay ? left : this._options.ReconnectMinDelay;
+                wait = left > least ? left : least;
             }
         }
 

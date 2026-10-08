@@ -367,17 +367,17 @@ public static class PlainMessages {
             ? new Wording(NoticeKind.Blocked,
                 $"This server's operator has blocked connections from your internet address{until} (everyone who shares it, such as a household or " +
                 $"a shared network), so LookingGlass can't connect to it.{why} Your places in your channels stay. LookingGlass tries again {every}, " +
-                "or now with Reconnect. If you think it's a mistake, ask whoever runs the server.",
+                "or at once with \"Try again now\". If you think it's a mistake, ask whoever runs the server.",
                 $"The people who run this LookingGlass server have blocked your internet connection{until} (everyone on it, such as your household), " +
                 $"so you can't chat in your LookingGlass channels here for now.{why} You keep your places in your channels. LookingGlass tries " +
-                $"again {every}. If you think it's a mistake, ask the people who run the server.")
+                $"again {every}, or at once with \"Try again now\". If you think it's a mistake, ask the people who run the server.")
             : new Wording(NoticeKind.Blocked,
                 $"This server's operator has blocked this character{until}, so it can't sign in, and you can't chat in your channels here or be " +
-                $"reached in them.{why} Your places in your channels stay. LookingGlass tries again {every}, or now with Reconnect. If you think " +
-                "it's a mistake, ask whoever runs the server.",
+                $"reached in them.{why} Your places in your channels stay. LookingGlass tries again {every}, or at once with \"Try again now\". " +
+                "If you think it's a mistake, ask whoever runs the server.",
                 $"The people who run this LookingGlass server have blocked this character from it{until}, so you can't chat in your LookingGlass " +
-                $"channels here for now.{why} You keep your places in your channels. LookingGlass tries again {every}. If you think it's a " +
-                "mistake, ask the people who run the server.");
+                $"channels here for now.{why} You keep your places in your channels. LookingGlass tries again {every}, or at once with \"Try again now\". " +
+                "If you think it's a mistake, ask the people who run the server.");
     }
 
     /// <summary>A server that sent another server's registration code (see <see cref="RelayedRegistrationCodeException"/>). Plain words already.</summary>

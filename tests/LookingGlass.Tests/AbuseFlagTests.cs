@@ -24,8 +24,8 @@ public sealed class AbuseFlagTests : IDisposable {
 
     public void Dispose() => DeleteDirectory(this._directory);
 
-    private AbuseMonitor NewMonitor(Action<AbuseOptions>? configure = null) {
-        var settings = new ServerOptions();
+    private AbuseMonitor NewMonitor(Action<AbuseOptions>? configure = null, string[]? trustedProxies = null) {
+        var settings = new ServerOptions { TrustedProxies = trustedProxies ?? [] };
         configure?.Invoke(settings.Abuse);
         var options = Microsoft.Extensions.Options.Options.Create(settings);
         var logger = LoggerFactory.Create(logging => logging.AddProvider(this._logs)).CreateLogger<AbuseMonitor>();
@@ -219,6 +219,32 @@ public sealed class AbuseFlagTests : IDisposable {
 
         Assert.Null(this._db.GetActiveBans(this.Now).Single(row => row.Address == "198.51.100.0/24").ExpiresAt);
         Assert.DoesNotContain(this._db.GetActiveBans(this.Now), row => row.Address == "198.51.100.5");
+    }
+
+    /// <summary>
+    /// Refusals from the server's own or its proxy's address (here loopback, and a trusted proxy) are every player's when the
+    /// forwarded client address is missing: that address is never flagged or blocked, and the warning says what is wrong
+    /// rather than suggesting a ban. The account is still counted and flagged.
+    /// </summary>
+    [Theory]
+    [InlineData("127.0.0.1")]
+    [InlineData("::/64")]
+    [InlineData("10.0.0.5")]
+    public void TheProxysAddressIsNeverFlaggedOrBlocked(string address) {
+        var monitor = this.NewMonitor(abuse => {
+            abuse.FlagAfterMinutesRefused = 1;
+            abuse.AutoBlockMinutes = 15;
+            abuse.AutoBlockAfterRefusals = 100;
+        }, trustedProxies: ["10.0.0.5"]);
+        for (var i = 0; i < 500; i++) {
+            monitor.Refused("SendMessage", 42, address);
+        }
+
+        Assert.Equal(["user 42"], this.Flagged());
+        Assert.Empty(this._db.GetActiveBans(this.Now));
+        var proxy = Assert.Single(this.Warnings, warning => !warning.Contains("user 42"));
+        Assert.Contains("this is the proxy's address: the forwarded client address is missing", proxy);
+        Assert.DoesNotContain("--ban", proxy);
     }
 
     [Fact]

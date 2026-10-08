@@ -305,6 +305,12 @@ public sealed class ClientSessionOptions {
     public TimeSpan BlockedRetryDelay { get; init; } = TimeSpan.FromMinutes(5);
 
     /// <summary>
+    /// The least time between tries while blocked, even when the block is said to end sooner: a clock ahead of the server's
+    /// would otherwise see it as over, and try again and again.
+    /// </summary>
+    public TimeSpan BlockedRetryMinDelay { get; init; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
     /// How long to wait, at first, before trying a saved login the server didn't recognise again on the same
     /// connection. The wait doubles after every try, up to <see cref="LoginRetryMaxDelay"/>.
     /// </summary>

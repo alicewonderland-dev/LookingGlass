@@ -21,6 +21,13 @@ public sealed class ServerOptions {
     /// </summary>
     public string[] PublicUrls { get; set; } = [];
 
+    /// <summary>
+    /// Proxies, besides this machine, whose X-Forwarded-For is believed: addresses or CIDR networks (see
+    /// <see cref="Hosting.ClientAddresses.AddTrustedProxies"/>). Their addresses, like this machine's, are never banned (unless
+    /// forced), flagged or blocked: every player's connections come from there if the forwarded address goes missing.
+    /// </summary>
+    public string[] TrustedProxies { get; set; } = [];
+
     public LodestoneOptions Lodestone { get; set; } = new();
     public DevOptions Dev { get; set; } = new();
     public LimitOptions Limits { get; set; } = new();

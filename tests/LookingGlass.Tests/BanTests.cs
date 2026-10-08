@@ -147,6 +147,49 @@ public sealed class BanTests : IDisposable {
         Assert.False(string.IsNullOrEmpty(problem));
     }
 
+    /// <summary>
+    /// The server's own addresses, and its proxy's, are where every player's connections come from when the forwarded client
+    /// address is missing: loopback, the unspecified address and the configured trusted proxies (or a prefix holding one).
+    /// </summary>
+    [Theory]
+    [InlineData("127.0.0.1", true)]
+    [InlineData("127.0.0.0/16", true)]
+    [InlineData("::1", true)]
+    [InlineData("::/64", true)]
+    [InlineData("0.0.0.0", true)]
+    [InlineData("10.0.0.5", true)]
+    [InlineData("10.0.0.0/16", true)]
+    [InlineData("172.17.3.4", true)]
+    [InlineData("2001:db8:aa:1::/64", true)]
+    [InlineData("10.1.0.5", false)]
+    [InlineData("203.0.113.5", false)]
+    [InlineData("2001:db8:1:2::/64", false)]
+    public void TheServersOwnAndItsProxysAddressesAreKnown(string prefix, bool proxy) {
+        string[] trusted = ["10.0.0.5", "172.17.0.0/16", "2001:db8:aa:1::7"];
+        Assert.Equal(proxy, ClientAddresses.ProxyProblem(prefix, trusted) != null);
+    }
+
+    /// <summary>
+    /// <c>--ban</c> refuses the server's own or its proxy's address (banning it would ban every player), saying so, unless
+    /// <c>--force</c> says it is meant.
+    /// </summary>
+    [Theory]
+    [InlineData("127.0.0.1")]
+    [InlineData("::1")]
+    [InlineData("10.0.0.0/24")]
+    public void TheProxysAddressIsOnlyBannedWithForce(string target) {
+        var (code, _, errors) = this.Run(new BanCommand.Request(BanCommand.BanAction.Ban, target, null, null), trustedProxies: ["10.0.0.5"]);
+        Assert.Equal(1, code);
+        Assert.Contains("proxy", errors);
+        Assert.Contains("every player", errors);
+        Assert.Contains("--force", errors);
+        Assert.Empty(this._db.GetActiveBans(this.Now));
+
+        (code, _, _) = this.Run(new BanCommand.Request(BanCommand.BanAction.Ban, target, null, null, Force: true), trustedProxies: ["10.0.0.5"]);
+        Assert.Equal(0, code);
+        Assert.Single(this._db.GetActiveBans(this.Now));
+    }
+
     /// <summary>A prefix covers the addresses limits count (an IPv4 address, or an IPv6 /64) inside it.</summary>
     [Theory]
     [InlineData("203.0.113.5", "203.0.113.5", true)]
@@ -204,6 +247,7 @@ public sealed class BanTests : IDisposable {
             BanCommand.Parse(["--ban", "203.0.113.5", "--days", "7", "--reason", "Spamming invites"]));
         Assert.Equal(new BanCommand.Request(BanCommand.BanAction.Unban, "31337", null, null), BanCommand.Parse(["--unban", "31337"]));
         Assert.Equal(new BanCommand.Request(BanCommand.BanAction.List, null, null, null), BanCommand.Parse(["--bans", "--LookingGlass:DataDirectory=/x"]));
+        Assert.Equal(new BanCommand.Request(BanCommand.BanAction.Ban, "127.0.0.1", null, null, Force: true), BanCommand.Parse(["--ban", "127.0.0.1", "--force"]));
     }
 
     [Theory]
@@ -220,6 +264,8 @@ public sealed class BanTests : IDisposable {
     [InlineData("--bans", "--reason", "why")]
     [InlineData("--ban", "31337", "--bans")]
     [InlineData("--ban", "1", "--unban", "1")]
+    [InlineData("--unban", "127.0.0.1", "--force")]
+    [InlineData("--bans", "--force")]
     public void WrongCommandsSayWhatsWrong(params string[] args) {
         var error = Assert.Throws<ArgumentException>(() => BanCommand.Parse(args));
         Assert.False(string.IsNullOrWhiteSpace(error.Message));
@@ -331,10 +377,10 @@ public sealed class BanTests : IDisposable {
         }
     }
 
-    private (int Code, string Output, string Errors) Run(BanCommand.Request request) {
+    private (int Code, string Output, string Errors) Run(BanCommand.Request request, string[]? trustedProxies = null) {
         var output = new StringWriter();
         var errors = new StringWriter();
-        var code = BanCommand.Run(request, this._path, new AbuseOptions(), output, errors, Start);
+        var code = BanCommand.Run(request, this._path, new AbuseOptions(), output, errors, Start, trustedProxies);
         return (code, output.ToString(), errors.ToString());
     }
 

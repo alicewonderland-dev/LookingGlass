@@ -15,6 +15,8 @@ namespace LookingGlass.Server.Services;
 /// in the database that <c>--bans</c> lists. A flag lasts <see cref="AbuseOptions.FlagExpiresAfterHours"/> after the last
 /// refusal, then expires by itself. Nothing is banned for it, except, if the operator turns it on, an address refused
 /// <see cref="AbuseOptions.AutoBlockAfterRefusals"/> times within the window, for <see cref="AbuseOptions.AutoBlockMinutes"/>.
+/// The server's own or its proxy's address (see <see cref="ClientAddresses.ProxyProblem"/>) is never flagged or blocked:
+/// refusals from there mean the proxy's forwarded client address is missing, and the warning says so instead.
 /// <para>
 /// Memory stays bounded: at most <see cref="AbuseOptions.MaxTrackedKeys"/> accounts and addresses are counted, each keeping
 /// one count per minute of the window and the time of its last refusal by each limit (there are a few dozen limits). Past
@@ -52,28 +54,31 @@ public sealed class AbuseMonitor(Database db, BanList bans, IOptions<ServerOptio
     /// <param name="address">The address, as <see cref="ClientAddresses.LimitKey"/> gives it.</param>
     public void Refused(string limit, long? userId, string? address) {
         try {
-            var subjects = new List<(string Subject, long? UserId, string? Address)>(3);
+            var subjects = new List<(string Subject, long? UserId, string? Address, bool Proxy)>(3);
             if (userId is { } id) {
-                subjects.Add(($"user {id}", id, null));
+                subjects.Add(($"user {id}", id, null, false));
             }
 
             if (!string.IsNullOrEmpty(address) && address != "unknown") {
-                subjects.Add(($"address {address}", null, address));
+                // The server's own or its proxy's address: every player's, if the proxy's forwarded address is missing. Counted,
+                // to say so, but never flagged or blocked; and its /56 not at all (nor a /56 that holds a proxy's address).
+                var proxy = ClientAddresses.ProxyProblem(address, options.Value.TrustedProxies) != null;
+                subjects.Add(($"address {address}", null, address, proxy));
                 var widened = ClientAddresses.WidenToConnectionKey(address);
-                if (widened != address) {
-                    subjects.Add(($"address {widened}", null, widened));
+                if (widened != address && !proxy && ClientAddresses.ProxyProblem(widened, options.Value.TrustedProxies) == null) {
+                    subjects.Add(($"address {widened}", null, widened, false));
                 }
             }
 
-            foreach (var (subject, user, prefix) in subjects) {
-                this.Count(subject, user, prefix, limit);
+            foreach (var (subject, user, prefix, proxy) in subjects) {
+                this.Count(subject, user, prefix, limit, proxy);
             }
         } catch (Exception ex) {
             logger.LogWarning(ex, "Counting a refusal by {Limit} failed", limit);
         }
     }
 
-    private void Count(string subject, long? userId, string? address, string limit) {
+    private void Count(string subject, long? userId, string? address, string limit, bool proxy) {
         var now = this._time.GetUtcNow();
         Decision decision;
         lock (this._lock) {
@@ -87,7 +92,20 @@ public sealed class AbuseMonitor(Database db, BanList bans, IOptions<ServerOptio
                 this._tracked[subject] = tracked;
             }
 
-            decision = this.CountLocked(tracked, now, limit, address != null);
+            decision = this.CountLocked(tracked, now, limit, address != null && !proxy);
+        }
+
+        if (proxy) {
+            if (decision.Flag is { } over) {
+                logger.LogWarning(
+                    "Refusals by limits from address {Address} would flag it ({Why}, by {Limits}), but this is the proxy's address: the forwarded " +
+                    "client address is missing, so every player's connections seem to come from there. Check that the proxy passes the client's " +
+                    "address on (X-Forwarded-For) and that LookingGlass:TrustedProxies lists it: see \"Behind a reverse proxy\" in docs/server.md. " +
+                    "It isn't flagged or blocked; accounts still are.",
+                    address, over, decision.Limits);
+            }
+
+            return;
         }
 
         if (decision.Flag is { } why) {

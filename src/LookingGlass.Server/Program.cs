@@ -44,7 +44,7 @@ if (backup != null || banning != null) {
     var configured = builder.Configuration.GetSection(ServerOptions.Section).Get<ServerOptions>() ?? new ServerOptions();
     Environment.ExitCode = backup != null
         ? BackupCommand.Run(backup, DatabasePath(configured), Console.Out, Console.Error)
-        : BanCommand.Run(banning!, DatabasePath(configured), configured.Abuse, Console.Out, Console.Error);
+        : BanCommand.Run(banning!, DatabasePath(configured), configured.Abuse, Console.Out, Console.Error, trustedProxies: configured.TrustedProxies);
     return;
 }
 
@@ -230,6 +230,7 @@ var gate = new ConnectionGate(options.Limits.MaxConnections, options.Limits.Conn
     options.Limits.ConnectionsPerMinutePerIp);
 var acceptor = new WebSocketAcceptor(app.Services.GetRequiredService<ILoggerFactory>().CreateLogger<WebSocketAcceptor>());
 var abuse = app.Services.GetRequiredService<AbuseMonitor>();
+var bans = app.Services.GetRequiredService<BanList>();
 
 // Whether the server is up, and its version: nothing about who uses it.
 app.MapGet("/health", () => Results.Ok(new { status = "ok", version = RequestHandler.ServerVersion }));
@@ -238,6 +239,13 @@ app.Map(ProtocolInfo.WebSocketPath, async (HttpContext context, RequestHandler h
     if (!context.WebSockets.IsWebSocketRequest) {
         context.Response.StatusCode = StatusCodes.Status400BadRequest;
         await context.Response.WriteAsync("LookingGlass WebSocket endpoint.");
+        return;
+    }
+
+    // An address blocked automatically is flooding: refused before anything else, not even let in to be told why (the
+    // operator's own bans let it say hello, and answer that).
+    if (bans.ForAddress(ClientAddresses.LimitKey(context.Connection.RemoteIpAddress)) is { Automatic: true }) {
+        context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
         return;
     }
 

@@ -261,6 +261,38 @@ public sealed class ServerLimitTests : IAsyncLifetime {
     }
 
     /// <summary>
+    /// An invite refused because the invitee has been sent too many (by everyone together) isn't the inviter's doing, so it
+    /// doesn't count towards flagging them; their own limits do. (Here a single refusal flags.)
+    /// </summary>
+    [Fact]
+    public async Task TheInviteesLimitsDontCountAgainstTheInviter() {
+        await this.StopTheClockAsync(settings: [
+            ("LookingGlass:Abuse:FlagAfterMinutesRefused", "1"),
+            ("LookingGlass:Limits:InviteBurstPerInvitee", "2"),
+            ("LookingGlass:Limits:InviteBurstPerPair", "1"),
+            ("LookingGlass:Limits:LookupBurst", "1"),
+        ]);
+        var bob = await this._server.RegisterAsync("Bob Much Invited");
+        var invitee = new Invitee(bob.UserId, bob.Keys());
+        foreach (var name in new[] { "Alice Inviting", "Carol Inviting" }) {
+            var inviter = await this._server.RegisterAsync(name);
+            Assert.Equal((1, (ServerErrorException?) null), await this.InviteUntilLimitedAsync(inviter, [(this.SeedChannels(inviter, 1)[0], invitee)]));
+        }
+
+        var dave = await this._server.RegisterAsync("Dave Inviting");
+        var (sent, refused) = await this.InviteUntilLimitedAsync(dave, [(this.SeedChannels(dave, 1)[0], invitee)]);
+        Assert.Equal(0, sent);
+        Assert.StartsWith("Bob Much Invited@Debug has been sent a lot of invites recently", refused?.ServerMessage);
+        Assert.Null(this._server.Database.GetFlag($"user {dave.UserId}"));
+
+        // His own limit (a lookup, here) does.
+        var lookup = new ClientFrame { LookupUser = new LookupUser { Name = bob.Name, WorldName = ProtocolInfo.DebugWorldName } };
+        await dave.Session.SendRawAsync(lookup, Ct);
+        await Assert.ThrowsAsync<ServerErrorException>(() => dave.Session.SendRawAsync(lookup, Ct));
+        Assert.Equal("LookupBurst", (await WaitFor(() => this._server.Database.GetFlag($"user {dave.UserId}"))).Limits);
+    }
+
+    /// <summary>
     /// An invite the server refuses for its log entry (made before someone else's change landed: the client fetches the log
     /// and tries again) spends nothing: not the inviter's, the pair's or the invitee's allowance. Otherwise one invite,
     /// retried, could use up all of the pair's, and enough retries all of the inviter's and invitee's.

@@ -117,6 +117,69 @@ public static class ClientAddresses {
     }
 
     /// <summary>
+    /// Whether an address or prefix is, or holds, the server's own address or its proxy's: loopback, the unspecified address,
+    /// or one of <c>LookingGlass:TrustedProxies</c>. When a proxy's forwarded client address goes missing, every player's
+    /// connections come from there, so such an address is never flagged or blocked, and banned only when forced.
+    /// </summary>
+    /// <param name="addressOrPrefix">An address, a prefix, or an address as <see cref="LimitKey"/> gives it.</param>
+    /// <returns>Why, for the operator; or null if it is neither (or isn't an address at all).</returns>
+    public static string? ProxyProblem(string addressOrPrefix, IEnumerable<string>? trustedProxies) {
+        if (!TryNetwork(addressOrPrefix, out var network)) {
+            return null;
+        }
+
+        var own = new List<(string Entry, string What)> {
+            ("127.0.0.0/8", "this machine's own (loopback) address"),
+            ("::1/128", "this machine's own (loopback) address"),
+            ("0.0.0.0/32", "the unspecified address"),
+            ("::/128", "the unspecified address"),
+        };
+        own.AddRange((trustedProxies ?? []).Where(entry => !string.IsNullOrWhiteSpace(entry))
+            .Select(entry => (entry.Trim(), $"a trusted proxy's (LookingGlass:TrustedProxies lists {entry.Trim()})")));
+        foreach (var (entry, what) in own) {
+            if (TryNetwork(entry, out var proxy) && network.BaseAddress.AddressFamily == proxy.BaseAddress.AddressFamily
+                && (network.Contains(proxy.BaseAddress) || proxy.Contains(network.BaseAddress))) {
+                return $"{addressOrPrefix.Trim()} is or holds {what}: when a proxy's forwarded client address is missing, every player's connections " +
+                       "come from there, so a ban on it would shut out every player.";
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>An address (alone, a /32 or /128; IPv4 mapped to IPv6 as IPv4) or a CIDR prefix, as a network.</summary>
+    private static bool TryNetwork(string text, out System.Net.IPNetwork network) {
+        network = default;
+        var trimmed = text.Trim();
+        var slash = trimmed.IndexOf('/');
+        if (!IPAddress.TryParse(slash < 0 ? trimmed : trimmed[..slash], out var address)) {
+            return false;
+        }
+
+        var length = address.AddressFamily == AddressFamily.InterNetworkV6 ? 128 : 32;
+        if (slash >= 0 && !int.TryParse(trimmed[(slash + 1)..], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out length)) {
+            return false;
+        }
+
+        if (address.IsIPv4MappedToIPv6) {
+            address = address.MapToIPv4();
+            length = Math.Max(0, length - 96);
+        }
+
+        if (length > (address.AddressFamily == AddressFamily.InterNetworkV6 ? 128 : 32)) {
+            return false;
+        }
+
+        var bytes = address.GetAddressBytes();
+        for (var bit = length; bit < bytes.Length * 8; bit++) {
+            bytes[bit / 8] &= (byte) ~(0x80 >> (bit % 8));
+        }
+
+        network = new System.Net.IPNetwork(new IPAddress(bytes), length);
+        return true;
+    }
+
+    /// <summary>
     /// Whether a ban's prefix (as <see cref="BanPrefix"/> writes it) covers an address as <see cref="LimitKey"/> gives it (an
     /// IPv4 address, or an IPv6 /64, which a prefix of /64 or wider covers whole or not at all).
     /// </summary>

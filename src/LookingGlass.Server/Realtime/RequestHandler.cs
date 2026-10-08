@@ -310,15 +310,24 @@ public sealed class RequestHandler(
 
     /// <summary>
     /// An invite refused by one of the invite limits (named as its setting): logged, with the user IDs only, so refusals can be
-    /// traced, though at most once a minute per inviter; and counted towards flagging (see <see cref="AbuseMonitor"/>), every time.
+    /// traced, though at most once a minute per inviter; and counted towards flagging the inviter (see <see cref="AbuseMonitor"/>),
+    /// every time, unless it is one of <see cref="NotTheInvitersDoing"/>.
     /// </summary>
     private RequestException InviteRefused(ErrorCode code, string limit, long inviter, long invitee, string message) {
         if (this._inviteRefusalLogs.TryTake(inviter)) {
             logger.LogInformation("Invite from user {Inviter} to user {Invitee} refused by {Limit}", inviter, invitee, limit);
         }
 
-        return new RequestException(code, message) { Limit = limit };
+        return new RequestException(code, message) { Limit = limit, NotTheirDoing = NotTheInvitersDoing.Contains(limit) };
     }
+
+    /// <summary>
+    /// The invite limits that are full because of what others did (everyone inviting the invitee, or the channel's pending
+    /// invites), not this inviter: refusals by them aren't counted towards flagging the inviter.
+    /// </summary>
+    private static readonly HashSet<string> NotTheInvitersDoing = [
+        nameof(LimitOptions.MaxPendingInvitesPerUser), nameof(LimitOptions.InviteBurstPerInvitee), "MaxPendingInvitesPerChannel",
+    ];
 
     /// <summary>
     /// Refuses a connection the operator banned (its account, or its address), and has it closed once that is answered. The
@@ -1950,7 +1959,8 @@ public sealed class RequestHandler(
 
     private void RequireReadBudget(UserRow me) {
         if (!this._reads.TryTake(me.UserId)) {
-            throw new RequestException(ErrorCode.RateLimited, "Too many requests; slow down.");
+            // One budget for all of them, so one limit however many kinds of request spent it (a plugin reconnecting asks several).
+            throw new RequestException(ErrorCode.RateLimited, "Too many requests; slow down.") { Limit = "ReadBudget" };
         }
     }
 
