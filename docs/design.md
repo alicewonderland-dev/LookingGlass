@@ -3082,10 +3082,11 @@ anyone they blocked, and only if:
 - its copy opens with the player's identity key and is signed for them by the
   key held for the sender. The server sends the sender's identity with each
   message; it is used only if no key is held for them yet (trust on first use,
-  as for a lookup) and pinned. If it differs from the key held, the new key is
-  taken (pinned, with the usual warning that their keys changed, at most once
-  a minute per sender) and the message that brought it is dropped; their next
-  one, under the new key, shows. So a key change is never silent;
+  as for a lookup), and pinned once the message checks out, so one that fails
+  pins nobody. If it differs from the key held, the new key is taken (pinned,
+  with the usual warning that their keys changed, at most once a minute per
+  sender) and the message that brought it is dropped; their next one, under
+  the new key, shows. So a key change is never silent;
 - it is dated within 10 minutes of the player's clock, and isn't one already
   had (the seen-set channel messages use, apart from them) or more than 2
   minutes older than the newest from that sender this session.

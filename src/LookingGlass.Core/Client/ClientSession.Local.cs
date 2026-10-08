@@ -63,6 +63,11 @@ public sealed partial class ClientSession {
             throw new ArgumentException("A link in the message isn't one LookingGlass can send.", nameof(linked));
         }
 
+        // Checked before anyone is looked up: the ciphertext is the content, a 24-byte nonce and a 16-byte tag.
+        if (content.CalculateSize() + 40 > maxBytes) {
+            throw new InvalidOperationException("That message is too long.");
+        }
+
         var recipients = new Dictionary<long, byte[]>();
         int notUsingIt = 0, couldntCheck = 0;
         foreach (var (name, worldName) in friends) {
@@ -105,10 +110,6 @@ public sealed partial class ClientSession {
 
         var timestamp = this.NowMs();
         var message = LocalCrypto.Seal(content, identity, me.UserId, recipients.Select(pair => (pair.Key, pair.Value)), timestamp);
-        if (message.Ciphertext.Length > maxBytes) {
-            throw new InvalidOperationException("That message is too long.");
-        }
-
         await this.RequestAsync(new ClientFrame { SendLocalMessage = message }, ct);
         lock (this._lock) {
             this.MarkSeen(LocalSeenId(message.MessageId));
@@ -125,9 +126,10 @@ public sealed partial class ClientSession {
     /// <summary>
     /// A local message from the server: shown (passed on to the plugin) only if the server agreed to local chat with this
     /// connection, it isn't from the player themselves or anyone blocked, it opens for this player, it is signed by the key
-    /// held for the sender (the one the server sends with it only if none is held yet: trust on first use, as for a lookup),
-    /// and it is recent and new. Keys other than those held are taken, with the usual warning that the sender's keys
-    /// changed, but the message that brought them is dropped. Anything dropped is only counted, in the diagnostic log.
+    /// held for the sender (the one the server sends with it only if none is held yet: trust on first use, as for a lookup,
+    /// pinned once the message checks out), and it is recent and new. Keys other than those held are taken, with the usual
+    /// warning that the sender's keys changed, but the message that brought them is dropped. Anything dropped is only
+    /// counted, in the diagnostic log.
     /// </summary>
     private void ProcessLocalMessage(LocalMessage message) {
         var sender = message.Sender?.User;
@@ -149,33 +151,16 @@ public sealed partial class ClientSession {
 
         var offered = MemberKeys.Of(message.Sender.Identity);
         var now = this._options.TimeProvider.GetUtcNow();
-        var (held, takeOffered) = this.Read(() => {
-            var pinned = this._secrets.PinnedIdentities.GetValueOrDefault(sender.UserId);
-            var keys = pinned == null ? null : new MemberKeys(pinned.SigningPublicKey, pinned.AgreementPublicKey);
-            if (keys == null || keys == offered) {
-                return (keys, true);
-            }
-
-            // Other keys than those held: taken (with the warning) at most once a minute per sender.
-            if (this._localKeysTakenAt.TryGetValue(sender.UserId, out var last) && now - last < LocalKeyChangeInterval) {
-                return (keys, false);
-            }
-
-            foreach (var expired in this._localKeysTakenAt.Where(entry => now - entry.Value >= LocalKeyChangeInterval).Select(entry => entry.Key).ToList()) {
-                this._localKeysTakenAt.Remove(expired);
-            }
-
-            this._localKeysTakenAt[sender.UserId] = now;
-            return (keys, true);
-        });
-
-        if (takeOffered) {
-            // Pinned as any identity from the server is: trust on first use, the "key changed" warning on a change, and the
-            // sender's name and world kept up to date (with a warning if they moved to another account).
-            this.AcceptIdentities([message.Sender]);
-        }
-
+        var held = this.Read(() => this._secrets.PinnedIdentities.GetValueOrDefault(sender.UserId) is { } pinned
+            ? new MemberKeys(pinned.SigningPublicKey, pinned.AgreementPublicKey)
+            : null);
         if (held != null && held != offered) {
+            // Other keys than those held: taken as any identity from the server is, with the warning that their keys changed
+            // (at most once a minute per sender), but this message isn't shown.
+            if (this.Read(() => this.TakeLocalKeysNow(sender.UserId, now))) {
+                this.AcceptIdentities([message.Sender]);
+            }
+
             this.DropLocal("keys other than those held");
             return;
         }
@@ -210,11 +195,28 @@ public sealed partial class ClientSession {
             return;
         }
 
+        // Only now, once it checked out, are the sender's keys pinned (trust on first use, as for a lookup) and their name
+        // and world kept up to date (warned about if they moved to another account): a message that fails pins nobody.
+        this.AcceptIdentities([message.Sender]);
         var user = this.Read(() => this.UserOf(sender.UserId));
         // Links only as the checks in MessageContent leave them, as for a channel's message.
         this.InvokeSafely(this.LocalMessageReceived, MessageContent.Decode(content) is { } text
             ? new IncomingLocalMessage(Shown(user), false, text.Text, false, timestamp) { Links = text.Links }
             : new IncomingLocalMessage(Shown(user), false, null, true, timestamp));
+    }
+
+    /// <summary>Whether a sender's other keys may be taken from a local message now (see <see cref="LocalKeyChangeInterval"/>). Call inside the lock.</summary>
+    private bool TakeLocalKeysNow(long senderId, DateTimeOffset now) {
+        if (this._localKeysTakenAt.TryGetValue(senderId, out var last) && now - last < LocalKeyChangeInterval) {
+            return false;
+        }
+
+        foreach (var expired in this._localKeysTakenAt.Where(entry => now - entry.Value >= LocalKeyChangeInterval).Select(entry => entry.Key).ToList()) {
+            this._localKeysTakenAt.Remove(expired);
+        }
+
+        this._localKeysTakenAt[senderId] = now;
+        return true;
     }
 
     /// <summary>Counts a local message dropped, and logs the count (never who, nor what).</summary>

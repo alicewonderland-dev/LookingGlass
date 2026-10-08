@@ -136,6 +136,17 @@ public sealed class LocalChatEndToEndTests : IAsyncLifetime {
     }
 
     [Fact]
+    public async Task ATooLongMessageIsRefusedBeforeAnyoneIsLookedUp() {
+        var alice = await this._server.RegisterAsync("Alice Wordy Local");
+        var bob = await this._server.RegisterAsync("Bob Wordy Local");
+
+        var refused = await Assert.ThrowsAsync<InvalidOperationException>(() => alice.Session.SendLocalAsync([Near(bob)], Say(new string('x', 5000)), Ct));
+
+        Assert.Equal("That message is too long.", refused.Message);
+        Assert.DoesNotContain(alice.Session.GetTrace(), entry => entry.Outgoing && entry.Summary.EndsWith(nameof(ClientFrame.BodyOneofCase.LookupUser)));
+    }
+
+    [Fact]
     public async Task ItCanCarryLinks() {
         var alice = await this._server.RegisterAsync("Alice Linking Local");
         var bob = await this._server.RegisterAsync("Bob Linking Local");
@@ -217,6 +228,8 @@ public sealed class LocalChatEndToEndTests : IAsyncLifetime {
         await this._server.SendAndSettleAsync(bob, Forge(alice, carol, "for carol"));
 
         Assert.Empty(bob.LocalMessages);
+        // And one that fails pins nobody: the keys that came with it aren't taken on first use.
+        Assert.False(bob.Store.Load().PinnedIdentities.ContainsKey(alice.UserId));
     }
 
     [Fact]
