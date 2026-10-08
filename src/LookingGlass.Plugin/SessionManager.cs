@@ -29,6 +29,8 @@ public sealed class SessionManager : IDisposable {
     // and how many local messages weren't shown, by why (for the diagnostic log).
     private bool _toldOpenFriendsList;
     private readonly Dictionary<LocalVerdict, int> _localNotShown = new();
+    // Local messages that couldn't be checked, hinted at once a session per sender (a friend near only).
+    private readonly LocalHints _localHints = new();
     // Framework thread only. Bumped by every start and stop, so a start that was
     // waiting for the previous session to close is dropped if anything changed meanwhile.
     private int _generation;
@@ -546,14 +548,43 @@ public sealed class SessionManager : IDisposable {
                     return;
                 }
 
-                // Shown: a sender seen for the first time is held from now on (and one whose other keys were held meanwhile isn't shown).
-                if (!session.ConfirmLocalSender(message)) {
-                    Services.Log.Debug("Local message not shown (other keys held for its sender meanwhile)");
+                // Shown: recorded against replays, and a sender seen for the first time held from now on; unless another account is
+                // held under their name, or other keys for them meanwhile (then a hint instead), or it was shown already.
+                var confirmation = session.ConfirmLocalSender(message);
+                if (confirmation != LocalConfirmation.Show) {
+                    Services.Log.Debug($"Local message not shown ({confirmation})");
+                    var reason = confirmation == LocalConfirmation.NameHeldByAnother ? LocalUncheckedReason.NameHeldByAnother : LocalUncheckedReason.KeysChanged;
+                    if (confirmation != LocalConfirmation.Replayed && this._localHints.For(new LocalUnchecked(message.Sender, reason), verdict) is { } hint) {
+                        this.Tell(NoticeLevel.Info, hint);
+                    }
+
                     return;
                 }
             }
 
             this._chat.LocalMessage(message, this._config.LocalChatColour(), this.NameColourOf(message.Sender));
+        });
+    }
+
+    /// <summary>
+    /// A local message the session couldn't check (see <see cref="LocalUnchecked"/>): one information line, once a session
+    /// for that sender, and only if, as the game shows it now, they are near and on the friends list (<see cref="LocalHints"/>);
+    /// otherwise nothing at all. From any thread.
+    /// </summary>
+    private void HintLocal(LocalUnchecked unchecked_, int generation) {
+        _ = Services.Framework.RunOnFrameworkThread(() => {
+            if (generation != this.History.Generation) {
+                return;
+            }
+
+            try {
+                var verdict = LocalChat.Judge(LocalChatGame.Read(), unchecked_.Sender.Name, unchecked_.Sender.WorldName);
+                if (this._localHints.For(unchecked_, verdict) is { } hint) {
+                    this.Tell(NoticeLevel.Info, hint);
+                }
+            } catch (Exception ex) {
+                Services.Log.Error(ex, "Couldn't read who is near for a local message that couldn't be checked");
+            }
         });
     }
 
@@ -635,6 +666,11 @@ public sealed class SessionManager : IDisposable {
                 this.DeliverLocal(session, message, history);
             }
         };
+        session.LocalMessageUnchecked += unchecked_ => {
+            if (this.Session == session) {
+                this.HintLocal(unchecked_, history);
+            }
+        };
         session.Notice += notice => {
             if (this.Session == session) {
                 this.OnNotice(notice, history);
@@ -650,6 +686,7 @@ public sealed class SessionManager : IDisposable {
         this._sessionPlayer = player;
         this._toldOpenFriendsList = false;
         this._localNotShown.Clear();
+        this._localHints.Clear();
         this.RefreshCommandCache();
         // A new session (relog, another character or server) counts from zero; reconnects keep counting.
         this.Unread.Reset();

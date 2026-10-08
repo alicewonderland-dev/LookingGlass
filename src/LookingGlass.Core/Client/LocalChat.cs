@@ -1,3 +1,5 @@
+using LookingGlass.Core.Util;
+
 namespace LookingGlass.Core.Client;
 
 /// <summary>A player near this one in the game, as the plugin reads them from the object table.</summary>
@@ -116,6 +118,58 @@ public static class LocalChat {
 /// <summary>How a local message went: how many friends got a copy, how many don't use LookingGlass here, and how many couldn't be checked.</summary>
 public sealed record LocalSendResult(int Sent, int NotUsingIt, int CouldntCheck);
 
+/// <summary>Why a local message couldn't be checked, and so wasn't shown (see <see cref="LocalUnchecked"/>).</summary>
+public enum LocalUncheckedReason {
+    /// <summary>It came with other keys than those held for its sender: perhaps they set up LookingGlass again.</summary>
+    KeysChanged,
+
+    /// <summary>It checked out, but the sender's keys are held under another name or world: perhaps a rename or a world transfer.</summary>
+    Renamed,
+
+    /// <summary>It came from an account other than the one held under the name it gives.</summary>
+    NameHeldByAnother,
+}
+
+/// <summary>
+/// A local message that couldn't be checked against what is held for its sender, so it isn't shown: the sender as the server
+/// names them, and why. Never its content. The plugin says so once a session per sender, and only if they are near and a
+/// friend (<see cref="LocalHints"/>), so the player knows to update what is held for them (a /lgl to them looks them up).
+/// </summary>
+public sealed record LocalUnchecked(Protocol.User Sender, LocalUncheckedReason Reason);
+
+/// <summary>What <see cref="ClientSession.ConfirmLocalSender"/> says about showing a local message.</summary>
+public enum LocalConfirmation {
+    /// <summary>Show it.</summary>
+    Show,
+
+    /// <summary>It was shown already, or is older than one shown from its sender: drop it.</summary>
+    Replayed,
+
+    /// <summary>Other keys than the ones it was checked against are held for its sender by now: hint, don't show.</summary>
+    OtherKeysHeld,
+
+    /// <summary>Another account is held under the name it gives: hint, don't show, and hold nothing for it.</summary>
+    NameHeldByAnother,
+}
+
+/// <summary>
+/// The hints about local messages that couldn't be checked (see <see cref="LocalUnchecked"/>): one line per sender a
+/// session, and only for a sender near the player and on their friends list, so a stranger (or a server naming anyone it
+/// likes) gets nothing said. Kept by the plugin for a session, on the framework thread.
+/// </summary>
+public sealed class LocalHints {
+    private readonly HashSet<long> _told = new();
+
+    /// <summary>The line to show, or null if nothing is said (not near, not a friend, or said already this session).</summary>
+    public Wording? For(LocalUnchecked unchecked_, LocalVerdict verdict) =>
+        verdict == LocalVerdict.Show && this._told.Add(unchecked_.Sender.UserId)
+            ? LocalChatWords.Unchecked($"{TextSanitizer.Name(unchecked_.Sender.Name)}@{TextSanitizer.Name(unchecked_.Sender.WorldName)}", unchecked_.Reason)
+            : null;
+
+    /// <summary>A new session: every sender may be hinted at again.</summary>
+    public void Clear() => this._told.Clear();
+}
+
 /// <summary>
 /// What local chat says, in both modes' words (see <see cref="Wording"/>). Nothing in it is technical, so each is the same in
 /// both. Everything is information (LookingGlass blue): nothing went anywhere it shouldn't.
@@ -155,6 +209,29 @@ public static class LocalChatWords {
         _ => null,
     };
 
+    /// <summary>
+    /// A local message from <paramref name="who"/> wasn't shown because it couldn't be checked (see <see cref="LocalUnchecked"/>):
+    /// information, with what may have happened and what to do. Advanced mode names the keys.
+    /// </summary>
+    public static Wording Unchecked(string who, LocalUncheckedReason reason) => reason switch {
+        LocalUncheckedReason.KeysChanged => new Wording(NoticeKind.General,
+            $"{who} sent you a local message under other identity keys than the ones held for them, so it wasn't shown: they may have " +
+            "registered again. Send them a local message with /lgl, or share a channel, to look their keys up again (you'll be warned " +
+            "that they changed).",
+            $"{who} sent you a local message that couldn't be checked: they may have set up LookingGlass again. Talk to them with /lgl, " +
+            "or share a channel, to update it."),
+        LocalUncheckedReason.Renamed => new Wording(NoticeKind.General,
+            $"{who} sent you a local message, but their identity keys are held under another name or world, so it wasn't shown: they may " +
+            "have changed their name or world. Send them a local message with /lgl, or share a channel, to update the name held.",
+            $"{who} sent you a local message that couldn't be checked: they may have changed their name or world. Talk to them with /lgl, " +
+            "or share a channel, to update it."),
+        _ => new Wording(NoticeKind.General,
+            $"A local message from {who} wasn't shown: it came from another account than the one whose keys are held under that name. " +
+            "If you think it was them, check with them over /tell.",
+            $"A local message from {who} couldn't be checked: LookingGlass knows someone else by that name. If you think it was them, " +
+            "check with them over /tell."),
+    };
+
     /// <summary>Every wording here, for the check that none uses jargon.</summary>
     internal static IEnumerable<Wording> All() {
         yield return Usage;
@@ -166,5 +243,8 @@ public static class LocalChatWords {
         yield return NotOnThisServer;
         yield return Sent(new LocalSendResult(0, 0, 3))!;
         yield return Sent(new LocalSendResult(2, 0, 1))!;
+        foreach (var reason in Enum.GetValues<LocalUncheckedReason>()) {
+            yield return Unchecked("Bob Hatter@Lich", reason);
+        }
     }
 }

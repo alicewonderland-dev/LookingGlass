@@ -131,6 +131,10 @@ public sealed class RequestHandler(
     // And what one user may be sent, by everyone together, so many senders can't flood one person (LocalMessagesReceived...).
     private readonly UserRateLimits _localReceived = new(
         PerSecond(options.Value.Limits.LocalMessagesReceivedIntervalSeconds), Burst(options.Value.Limits.LocalMessagesReceivedBurst), time);
+    // And between each sender and recipient, checked first and smaller (the startup check sees to it), so a couple of accounts
+    // can't use up what everyone together may send someone (LocalMessagesBetween...).
+    private readonly KeyedRateLimits<(long Sender, long Recipient)> _localBetween = new(
+        PerSecond(options.Value.Limits.LocalMessagesBetweenIntervalSeconds), Burst(options.Value.Limits.LocalMessagesBetweenBurst), time);
     // Invites are limited on both ends: an inviter can't spam many people, and many inviters (or invite, cancel, invite
     // loops) can't flood one person. Operator settings (LookingGlass:Limits:Invite...), checked at startup.
     private readonly UserRateLimits _invitesSent = new(
@@ -1598,7 +1602,7 @@ public sealed class RequestHandler(
     /// sender's plugin chose them (friends near them in the game); the server never knows where anyone is, and doesn't say
     /// who got a copy, so naming user IDs can't be used to see who is online. Every copy must be signed by the sender for
     /// its recipient, each recipient named once (never the sender), as many as the operator allows; the message as large as
-    /// a channel message. Rate limited as channel messages are, and what each recipient may be sent by everyone together too
+    /// a channel message. Rate limited as channel messages are, and what each recipient may be sent by each sender and by everyone together too
     /// (past it, or with their connection too slow, their copy is dropped). Logged with the sender's user ID and counts only.
     /// </summary>
     private Response SendLocalMessage(ClientConnection connection, SendLocalMessage request) {
@@ -1646,14 +1650,14 @@ public sealed class RequestHandler(
         var sender = me.ToIdentity();
         int delivered = 0, overLimit = 0;
         foreach (var copy in request.Copies) {
-            // What each recipient may be sent, by everyone together, is limited too, and spent only by copies that would reach
-            // them. Past it, or with their connection too slow to take more, their copy is dropped: the sender isn't told, as
+            // What each recipient may be sent, by this sender and by everyone together, is limited too (the pair first, so past it
+            // nothing of the recipient's is spent), and spent only by copies that would reach them. Past it, or with their connection too slow to take more, their copy is dropped: the sender isn't told, as
             // that would say whether they are online.
             if (!registry.AcceptsLocal(copy.RecipientId)) {
                 continue;
             }
 
-            if (!this._localReceived.TryTake(copy.RecipientId)) {
+            if (!this._localBetween.TryTake((me.UserId, copy.RecipientId)) || !this._localReceived.TryTake(copy.RecipientId)) {
                 overLimit++;
                 continue;
             }

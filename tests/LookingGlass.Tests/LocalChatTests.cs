@@ -114,6 +114,43 @@ public sealed class LocalChatTests {
         Assert.Null(LocalChat.NobodyToSendTo(Around(true, Player("Near Friend", 3, true))));
     }
 
+    // ================================================================ a message that couldn't be checked
+
+    private static readonly LookingGlass.Protocol.User Bob = new() { UserId = 7, Name = "Bob Hatter", WorldName = "Lich" };
+
+    [Fact]
+    public void AMessageThatCouldntBeCheckedIsHintedOnlyForAFriendNear() {
+        var hints = new LocalHints();
+        var unchecked_ = new LocalUnchecked(Bob, LocalUncheckedReason.KeysChanged);
+
+        // From a stranger, or someone not near: nothing at all.
+        Assert.Null(hints.For(unchecked_, LocalVerdict.NotFriend));
+        Assert.Null(hints.For(unchecked_, LocalVerdict.NotNear));
+        Assert.Null(hints.For(unchecked_, LocalVerdict.FriendsListNotLoaded));
+
+        // From a friend near: one line, once a session for them.
+        var hint = hints.For(unchecked_, LocalVerdict.Show);
+        Assert.NotNull(hint);
+        Assert.Contains("Bob Hatter@Lich", hint.Plain);
+        Assert.Null(hints.For(unchecked_, LocalVerdict.Show));
+        Assert.Null(hints.For(unchecked_ with { Reason = LocalUncheckedReason.Renamed }, LocalVerdict.Show));
+        Assert.NotNull(hints.For(new LocalUnchecked(new LookingGlass.Protocol.User { UserId = 8, Name = "Carol Queen", WorldName = "Odin" }, LocalUncheckedReason.Renamed), LocalVerdict.Show));
+
+        // A new session starts again.
+        hints.Clear();
+        Assert.NotNull(hints.For(unchecked_, LocalVerdict.Show));
+    }
+
+    [Fact]
+    public void TheHintsSayWhatMayHaveHappenedAndWhatToDo() {
+        var keys = LocalChatWords.Unchecked("Bob Hatter@Lich", LocalUncheckedReason.KeysChanged);
+        Assert.Contains("set up LookingGlass again", keys.Plain);
+        Assert.Contains("/lgl", keys.Plain);
+        Assert.Contains("changed their name or world", LocalChatWords.Unchecked("Bob Hatter@Lich", LocalUncheckedReason.Renamed).Plain);
+        Assert.Contains("/tell", LocalChatWords.Unchecked("Bob Hatter@Lich", LocalUncheckedReason.NameHeldByAnother).Plain);
+        Assert.All(Enum.GetValues<LocalUncheckedReason>(), reason => PlainLanguage.AssertPlain(LocalChatWords.Unchecked("Bob Hatter@Lich", reason).Plain));
+    }
+
     // ================================================================ colour
 
     [Fact]

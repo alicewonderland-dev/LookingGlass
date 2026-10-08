@@ -238,6 +238,9 @@ public sealed record IncomingLocalMessage(User Sender, bool IsOwn, string? Text,
     /// these, which <see cref="ClientSession.ConfirmLocalSender"/> pins once it is shown. Null if their keys were held.
     /// </summary>
     internal UserIdentity? FirstSeen { get; init; }
+
+    /// <summary>The message's ID (hex), for <see cref="ClientSession.ConfirmLocalSender"/> to record it against replays once shown. Null for the player's own.</summary>
+    internal string? MessageId { get; init; }
 }
 
 /// <summary>

@@ -665,6 +665,7 @@ public sealed class TestClient {
 
     private readonly ConcurrentQueue<CaughtUpMessages> _caughtUp = new();
     private readonly ConcurrentQueue<IncomingLocalMessage> _localMessages = new();
+    private readonly ConcurrentQueue<LocalUnchecked> _localUnchecked = new();
 
     public TestClient(string name, ClientSession session, ISecretStore store) {
         this.Name = name;
@@ -672,6 +673,7 @@ public sealed class TestClient {
         this.Store = store;
         session.MessageReceived += this._messages.Enqueue;
         session.LocalMessageReceived += this._localMessages.Enqueue;
+        session.LocalMessageUnchecked += this._localUnchecked.Enqueue;
         session.Notice += this._notices.Enqueue;
         // Caught-up messages are in Messages too (flagged CaughtUp), in the order they were raised.
         session.MessagesCaughtUp += batch => {
@@ -694,6 +696,9 @@ public sealed class TestClient {
 
     /// <summary>Local chat messages the session passed on (its own included, flagged), in the order it raised them.</summary>
     public IReadOnlyCollection<IncomingLocalMessage> LocalMessages => this._localMessages.ToArray();
+
+    /// <summary>Local messages the session couldn't check (and didn't open), passed on for the plugin to hint at.</summary>
+    public IReadOnlyCollection<LocalUnchecked> LocalUnchecked => this._localUnchecked.ToArray();
 
     /// <summary>This client's private identity keys, read back from its secret store (as an attacker with the keys would have).</summary>
     public IdentityKeys LoadIdentity() {
