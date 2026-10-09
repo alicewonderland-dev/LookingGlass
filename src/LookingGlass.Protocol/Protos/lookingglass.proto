@@ -146,6 +146,9 @@ message Error {
   // registered again through the Lodestone. Only the key's holder is told. Added without a version change: an older plugin
   // reads it as any refused key login.
   bool signed_out = 4;
+  // With signed_out: the ID (Device.id) of the device that signed out everywhere else, so the client can tell whether it was
+  // one it has seen (one of the player's own computers), itself, or one it never saw. Empty if the server doesn't know.
+  bytes signed_out_by = 5;
 }
 
 // A block (ban) made by the server's operator.
@@ -311,6 +314,11 @@ message Authenticate {
 message AuthenticateOk {
   User user = 1;
   uint32 key_version = 2;
+  // When this login was used before this time (the device's last use, before this one), and the time the server recorded
+  // for this one, in Unix seconds. A client that remembers the time of its own last login, and is told another, knows its
+  // login was used elsewhere meanwhile (a copy of it). 0 from an older server. Added without a version change.
+  int64 previous_used_unix = 3;
+  int64 used_unix = 4;
 }
 
 // Key login: a user the server knows gets a new device token by signing a challenge with
@@ -372,16 +380,30 @@ message RetireIdentity {
 // Capability "devices.v1" (ProtocolInfo.Capabilities.Devices): the logins (devices) an account has, so a player is told when
 // their character signs in somewhere new, and can sign every other computer out (see the design doc, "Other computers
 // signing in"). A client only sends these to a server that agreed to the capability, and the server only sends DeviceAdded
-// to connections that did. Nothing about a device is kept or shown beyond when it was added and last used.
+// to connections that did. Nothing about a device is kept or shown beyond when it was added and last used, and a random ID.
 
 // The account's devices. Needs a login; answered with Devices.
 message ListDevices {}
 
-// "Sign out everywhere else": the server deletes every device of the account but the one this connection logged in with, and
-// from then on refuses key login for the account (Error.signed_out) until the character is registered again through the
-// Lodestone, so a copy of the identity key can't simply sign back in. This connection stays logged in. Answered with Devices
-// (just this one, then).
-message SignOutOtherDevices {}
+// "Sign out everywhere else". In one transaction the server gives the device this connection logged in with a new login
+// (new_device_token, which the client made and saved before sending, so a lost answer doesn't lose it), deletes every other
+// device of the account, and from then on refuses key login for the account (Error.signed_out) until the character is
+// registered again through the Lodestone: so neither a copy of the identity key nor a copy of this computer's login can
+// simply sign back in. Then it closes any other connection of the account that logged in meanwhile. This connection stays
+// logged in, now with the new login. Answered with Devices.
+//
+// A login alone (which a copy of the secrets file holds) isn't enough: it must be signed by the account's current identity
+// key (see LookingGlass.Core.Crypto.SignOutProof) over the user ID, the SHA-256 of the login this connection logged in
+// with, the SHA-256 of new_device_token, server_url, and nonce.
+message SignOutOtherDevices {
+  bytes signature = 1;
+  // The server's address exactly as the client connected to it, checked as for RetireIdentity.
+  string server_url = 2;
+  // "lgt_" and 43 characters of base64url (32 random bytes), as the server makes them.
+  string new_device_token = 3;
+  // The sign_out_nonce of a Devices recently sent on this connection (one of the last few, for a few minutes), once.
+  bytes nonce = 4;
+}
 
 message Device {
   // When the server added it (a registration or a key login gave out its login), in Unix seconds.
@@ -390,8 +412,8 @@ message Device {
   int64 last_used_unix = 2;
   // The device this connection logged in with.
   bool this_device = 3;
-  // 8 bytes that tell the account's devices apart (a hash of its login's hash: no use for anything else), so a client
-  // remembers which it has seen.
+  // 8 random bytes the server gave the device when it added it (kept when its login is replaced), so a client remembers
+  // which devices it has seen. Nothing else.
   bytes id = 4;
 }
 
@@ -400,6 +422,9 @@ message Devices {
   repeated Device list = 1;
   // In answer to SignOutOtherDevices: how many devices it signed out.
   uint32 signed_out = 2;
+  // 32 random bytes for one SignOutOtherDevices on this connection to sign and name, within a few minutes (the last few given
+  // are good, so lists asked for at once don't spoil each other's).
+  bytes sign_out_nonce = 3;
 }
 
 // The account just got a new device (a key login, or a registration), not this connection's: sent to the account's

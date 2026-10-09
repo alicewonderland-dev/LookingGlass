@@ -80,6 +80,8 @@ public enum NoticeKind {
     SignedInElsewhere,
     /// <summary>Another computer used "Sign out everywhere else": this one's login and key login are refused.</summary>
     SignedOutElsewhere,
+    /// <summary>This computer's own login was used elsewhere since it last logged in (a copy of it may be in use).</summary>
+    LoginUsedElsewhere,
 
     // ---- Servers
     /// <summary>The server lists its addresses, without the one this client uses.</summary>

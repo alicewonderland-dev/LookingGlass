@@ -389,6 +389,7 @@ public sealed partial class ClientSession : IAsyncDisposable {
 
             lock (this._lock) {
                 this._secrets.DeviceToken = complete.DeviceToken;
+                this.NewLogin();
                 this._secrets.UserId = complete.User.UserId;
                 this._challenge = null;
                 this._secretsVersion++;
@@ -568,6 +569,7 @@ public sealed partial class ClientSession : IAsyncDisposable {
     public void ForgetAccount() {
         lock (this._lock) {
             this._secrets.DeviceToken = null;
+            this.NewLogin();
             this._secrets.UserId = null;
             this._loginRejected = false;
             this._secretsVersion++;
@@ -1585,6 +1587,7 @@ public sealed partial class ClientSession : IAsyncDisposable {
 
             lock (this._lock) {
                 this._secrets.DeviceToken = complete.DeviceToken;
+                this.NewLogin();
                 this._secretsVersion++;
             }
 
@@ -1611,7 +1614,7 @@ public sealed partial class ClientSession : IAsyncDisposable {
     }
 
     private async Task AuthenticateAsync(Connection connection, CancellationToken ct) {
-        var token = this.Read(() => this._secrets.DeviceToken) ?? throw new InvalidOperationException("Not registered.");
+        _ = this.Read(() => this._secrets.DeviceToken) ?? throw new InvalidOperationException("Not registered.");
         // Live messages are held back from before the login (the server relays to a connection as soon as it is logged in)
         // until each channel's missed messages are in, so a channel's messages are taken in the server's order.
         var catchUp = this.HoldLiveMessages(connection);
@@ -1622,8 +1625,8 @@ public sealed partial class ClientSession : IAsyncDisposable {
 
         AuthenticateOk ok;
         try {
-            var response = await this.RequestAsync(connection, new ClientFrame { Authenticate = new Authenticate { DeviceToken = token } }, ct);
-            ok = response.AuthenticateOk ?? throw Unexpected(response);
+            // The login a "Sign out everywhere else" whose answer was lost replaced it with first, if there is one.
+            ok = await this.AuthenticateWithSavedLoginAsync(connection, ct);
         } catch {
             lock (this._lock) {
                 this._loginSyncing = false;
@@ -1638,7 +1641,7 @@ public sealed partial class ClientSession : IAsyncDisposable {
             this._users[ok.User.UserId] = ok.User;
             this._secrets.UserId = ok.User.UserId;
             this._loginRejected = false;
-            this._signedOutElsewhere = false;
+            this._signedOutBy = SignedOutBy.None;
             // Logged in: a registration under way (from before a saved login worked again) is moot, and so is any block.
             this._challenge = null;
             this._blockedReported = null;
@@ -1648,6 +1651,8 @@ public sealed partial class ClientSession : IAsyncDisposable {
             this._status = Wording.Same($"Connected as {ok.User.Name}@{ok.User.WorldName}");
         }
 
+        // Whether this computer's login was used elsewhere since it last logged in (see ClientSession.Devices).
+        this.NoteLogin(ok);
         this.Publish();
         try {
             // Identities cached before a disconnect may be stale: someone may have registered again meanwhile.
@@ -3694,7 +3699,7 @@ public sealed partial class ClientSession : IAsyncDisposable {
                 addressNotListed?.Plain) {
                 Devices = this._devices,
                 DevicesAvailable = this._devicesAgreed && this._state == ConnectionState.Ready,
-                SignedOutElsewhere = this._signedOutElsewhere && this._loginRejected && this._state is ConnectionState.LoginNotRecognized or ConnectionState.Registering,
+                SignedOutBy = this._loginRejected && this._state is ConnectionState.LoginNotRecognized or ConnectionState.Registering ? this._signedOutBy : SignedOutBy.None,
             };
             this._snapshot = snapshot;
         }
@@ -3765,7 +3770,7 @@ public sealed partial class ClientSession : IAsyncDisposable {
         if (response.Error != null) {
             // A block is noted as the answer arrives (see OnResponse).
             throw new ServerErrorException(response.Error.Code, response.Error.Message, this.ShownCode()) {
-                Block = response.Error.Block, SignedOut = response.Error.SignedOut,
+                Block = response.Error.Block, SignedOut = response.Error.SignedOut, SignedOutBy = response.Error.SignedOutBy.ToByteArray(),
             };
         }
 

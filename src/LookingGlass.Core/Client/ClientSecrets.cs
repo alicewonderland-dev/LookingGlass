@@ -25,6 +25,30 @@ public sealed class ClientSecrets {
     public byte[]? SigningPrivateKey { get; set; }
     public byte[]? AgreementPrivateKey { get; set; }
     public string? DeviceToken { get; set; }
+
+    /// <summary>
+    /// The login "Sign out everywhere else" is replacing <see cref="DeviceToken"/> with, saved before the request is sent, so
+    /// an answer lost on the way doesn't lose the only login the server still knows for this computer. The next login tries
+    /// it first: if it works it becomes <see cref="DeviceToken"/>, and if the old one works instead it is dropped.
+    /// </summary>
+    public string? PendingDeviceToken { get; set; }
+
+    /// <summary>The server's ID (hex) of this computer's device, as its list of devices last said.</summary>
+    public string? ThisDeviceId { get; set; }
+
+    /// <summary>
+    /// When the server says this computer's login was last used by this computer (AuthenticateOk.used_unix, Unix seconds): if
+    /// its next login says the login was used at another time since, a copy of it was used elsewhere. Null until this login
+    /// was used once (a new login starts afresh).
+    /// </summary>
+    public long? LastLoginUnix { get; set; }
+
+    /// <summary>
+    /// This computer used "Sign out everywhere else" (with this identity's current registration): if it is later signed out by
+    /// its own device's ID, it lost its own login, rather than a copy of it signing everyone else out.
+    /// </summary>
+    public bool SignedOutOthers { get; set; }
+
     public long? UserId { get; set; }
 
     /// <summary>Identity keys seen for other users (trust on first use).</summary>
@@ -140,8 +164,12 @@ public sealed class ClientSecrets {
         this.AgreementPrivateKey = null;
         this.DeviceToken = null;
         this.UserId = null;
-        // The new identity registers afresh: its first list of devices is taken as it is.
+        // The new identity registers afresh: its first list of devices is taken as it is, and its logins are new.
         this.KnownDevices = null;
+        this.PendingDeviceToken = null;
+        this.ThisDeviceId = null;
+        this.LastLoginUnix = null;
+        this.SignedOutOthers = false;
         this.EpochKeys.Clear();
         this.EpochKeyPositions.Clear();
     }

@@ -45,6 +45,8 @@ public sealed class ClientConnection {
     private readonly ILogger _logger;
     private readonly Channel<byte[]> _outbound;
     private readonly CancellationTokenSource _cts = new();
+    // The loop sending what is queued, once RunAsync started it.
+    private Task? _sendLoop;
     // The last event's number, and the lock that keeps numbers in the order events are queued (see TrySendDroppable).
     private long _eventSeq;
     private readonly Lock _eventLock = new();
@@ -101,6 +103,12 @@ public sealed class ClientConnection {
     /// </summary>
     public bool DevicesAgreed { get; set; }
 
+    /// <summary>
+    /// The nonces the last few lists of devices sent on this connection gave, each for one "Sign out everywhere else" to sign,
+    /// and until when. Only the request being handled uses them (one at a time per connection).
+    /// </summary>
+    public List<(byte[] Nonce, DateTimeOffset Expires)> SignOutNonces { get; } = [];
+
     public UserRow? User { get; set; }
 
     /// <summary>The hash of the device token <see cref="User"/> logged in with (what RetireIdentity's signature covers).</summary>
@@ -132,6 +140,7 @@ public sealed class ClientConnection {
         // Debug only, as closing is: for an operator checking the server sees each client's own address, not its proxy's.
         this._logger.LogDebug("Connection from {Address}", this.RemoteAddress);
         var sendLoop = Task.Run(this.SendLoop);
+        this._sendLoop = sendLoop;
         // Disposed when the connection ends, so a closed connection isn't kept alive for the full lifetime. Started only once
         // assigned: a callback running before that (a thread held up past a short lifetime) couldn't put itself off for a
         // registration, and the connection would never close.
@@ -184,6 +193,11 @@ public sealed class ClientConnection {
                     break;
                 } finally {
                     frame.SetLength(0);
+                }
+
+                if (Volatile.Read(ref this._abortReason) != null) {
+                    // Closing (see CloseAfterQueued): a replaced connection does nothing more.
+                    break;
                 }
 
                 await this.WaitForRequestBudgetAsync(this._cts.Token);
@@ -305,6 +319,51 @@ public sealed class ClientConnection {
             this._cts.Cancel();
         } catch (Exception ex) {
             this._logger.LogWarning(ex, "Closing connection from {Address} ({Reason}): a cancellation callback failed", this.RemoteAddress, reason);
+        }
+    }
+
+    /// <summary>How long <see cref="CloseAfterQueued"/> waits for what is queued to go out, at most.</summary>
+    public static readonly TimeSpan FlushGrace = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// Closes the connection once what is queued for it has gone out (for at most <see cref="FlushGrace"/>), rather than at
+    /// once as <see cref="Abort"/> does: for a connection replaced by a newer login of its user, whose queue may hold what the
+    /// newer login's own requests just told it (that the account has a new device, say). Nothing more is read from it, or
+    /// queued for it.
+    /// </summary>
+    public void CloseAfterQueued(string reason) {
+        if (Interlocked.CompareExchange(ref this._abortReason, reason, null) != null) {
+            return;
+        }
+
+        this._logger.LogDebug("Closing connection from {Address} once its queue is sent: {Reason}", this.RemoteAddress, reason);
+        this._abortStatus = WebSocketCloseStatus.PolicyViolation;
+        // The send loop sends what is queued and ends; then the close goes out after it (cancelling a receive would tear the
+        // socket down at once, queue and all), and the client's answer to it ends the receive loop.
+        this._outbound.Writer.TryComplete();
+        _ = this.CloseWhenSentAsync(reason);
+    }
+
+    private async Task CloseWhenSentAsync(string reason) {
+        try {
+            if (this._sendLoop is { } sending) {
+                await sending.WaitAsync(FlushGrace);
+            }
+
+            if (this._socket.State == WebSocketState.Open) {
+                using var timeout = new CancellationTokenSource(FlushGrace);
+                await this._socket.CloseOutputAsync(this._abortStatus, reason.Length > 120 ? reason[..120] : reason, timeout.Token);
+            }
+        } catch (Exception ex) when (ex is TimeoutException or OperationCanceledException or WebSocketException or ObjectDisposedException or IOException) {
+            // Not sent in time, or gone already: closed below either way.
+        }
+
+        // A client that doesn't take what is queued, or answer the close, doesn't hold the connection open.
+        await Task.Delay(FlushGrace);
+        try {
+            this._cts.Cancel();
+        } catch (Exception) {
+            // Its callbacks' problem (see Abort); the connection is closed anyway.
         }
     }
 

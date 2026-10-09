@@ -78,7 +78,8 @@ public sealed class ConnectionRegistry(Database db, ILogger<ConnectionRegistry> 
         }
 
         if (previous != null && previous != connection) {
-            previous.Abort("Logged in from another connection");
+            // What its queue holds still goes out first: what this login's own requests just told it, say (DeviceAdded).
+            previous.CloseAfterQueued("Logged in from another connection");
         }
     }
 
@@ -146,6 +147,13 @@ public sealed class ConnectionRegistry(Database db, ILogger<ConnectionRegistry> 
 
     public void Disconnect(long userId, string reason) {
         if (this._online.TryGetValue(userId, out var connection)) {
+            connection.Abort(reason);
+        }
+    }
+
+    /// <summary>Closes the user's connection that is logged in, unless it is <paramref name="keep"/>.</summary>
+    public void DisconnectOthers(long userId, ClientConnection keep, string reason) {
+        if (this._online.TryGetValue(userId, out var connection) && connection != keep) {
             connection.Abort(reason);
         }
     }

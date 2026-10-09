@@ -86,10 +86,14 @@ public sealed record SessionSnapshot(
     public bool DevicesAvailable { get; init; }
 
     /// <summary>
-    /// With <see cref="LoginRejected"/>: the server refused the identity key because another computer used "Sign out everywhere
-    /// else" (<see cref="DeviceWords.SignedOutElsewhere"/>), not because it doesn't know the login or the key.
+    /// With <see cref="LoginRejected"/>: the server refused the identity key because the account used "Sign out everywhere
+    /// else" (see <see cref="DeviceWords.SignedOutStatus"/>), and which computer did, as this one can tell; not because it
+    /// doesn't know the login or the key. <see cref="Client.SignedOutBy.None"/> otherwise.
     /// </summary>
-    public bool SignedOutElsewhere { get; init; }
+    public SignedOutBy SignedOutBy { get; init; }
+
+    /// <summary>Whether <see cref="SignedOutBy"/> says the account signed out everywhere else.</summary>
+    public bool SignedOutElsewhere => this.SignedOutBy != SignedOutBy.None;
 
     /// <summary>The status in a mode's words. Never null where <see cref="StatusText"/> isn't: a missing plain text falls back to it.</summary>
     public string? StatusFor(bool advanced) => advanced ? this.StatusText : this.PlainStatusText ?? this.StatusText;
@@ -321,6 +325,9 @@ public sealed class ServerErrorException(ErrorCode code, string message, string?
 
     /// <summary>A refused key login: another computer used "Sign out everywhere else" (see <see cref="Protocol.Error.SignedOut"/>).</summary>
     public bool SignedOut { get; init; }
+
+    /// <summary>With <see cref="SignedOut"/>: the ID of the device that did, as the server says (empty if it doesn't).</summary>
+    public byte[] SignedOutBy { get; init; } = [];
 }
 
 /// <summary>The connection closed before the request was answered.</summary>
@@ -430,4 +437,16 @@ public sealed class ClientSessionOptions {
     /// it, which the server never tells of a new device.
     /// </summary>
     internal bool OfferDevices { get; init; } = true;
+
+    /// <summary>
+    /// After telling the player about new computers, how long to hold back the next such notice (those in between are told
+    /// together after it), so a stream of them is a notice now and then, not a flood. Only tests change it.
+    /// </summary>
+    internal TimeSpan DeviceNoticeInterval { get; init; } = TimeSpan.FromMinutes(1);
+
+    /// <summary>
+    /// The least time between lists of devices fetched in the background (at login, when told of a new device, when Settings
+    /// opens): within the server's limit, so the client never runs into it by itself. Only tests change it.
+    /// </summary>
+    internal TimeSpan DeviceListInterval { get; init; } = TimeSpan.FromSeconds(6);
 }

@@ -13,6 +13,7 @@ public enum SettingHelp {
     ChatHistory,
     AdvancedMode,
     ResetIdentity,
+    SignedInComputers,
 }
 
 /// <summary>
@@ -63,7 +64,7 @@ public static class SettingsWords {
         ServerAddress, ConnectAutomatically, ShowMessagesIn, ColourWholeLine, NicknameTags, SayWhenTalking, WindowsOnly.SettingName,
         NewChannelsOpen, WindowsOnly.NameOf(WindowOpening.AddToLastUsed), WindowsOnly.NameOf(WindowOpening.NewWindow), LocalChatHeading,
         LocalColour, PrivacyAccepted, PrivacyNotAccepted, ReadPrivacy, WithdrawPrivacy, ChatLogWords.KeepIt.Plain,
-        ChatLogWords.SizeLimit.Plain, AdvancedMode, ResetIdentity,
+        ChatLogWords.SizeLimit.Plain, AdvancedMode, ResetIdentity, DeviceWords.Label, DeviceWords.SignOutButton,
     ];
 
     /// <summary>What a setting's "?" bubble says, in both modes' words.</summary>
@@ -87,6 +88,7 @@ public static class SettingsWords {
         SettingHelp.ResetIdentity => Wording.Same(
             "Sets LookingGlass up again for this character, if its files were lost or someone may have copied them. Your " +
             "channels come back when you register again."),
+        SettingHelp.SignedInComputers => DeviceWords.Explanation,
         _ => throw new ArgumentOutOfRangeException(nameof(setting), setting, null),
     };
 }

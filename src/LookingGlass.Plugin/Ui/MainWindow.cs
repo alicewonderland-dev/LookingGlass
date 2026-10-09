@@ -154,7 +154,7 @@ public sealed class MainWindow : Window {
             ConnectionState.Ready => ("Connected", ImGuiColors.HealerGreen, status ?? "Connected to the server."),
             ConnectionState.Connecting => ("Connecting...", ImGuiColors.DalamudOrange, status ?? "Waiting for the server."),
             ConnectionState.Reconnecting => ("Reconnecting...", ImGuiColors.DalamudOrange, status ?? "The connection to the server dropped. Trying again."),
-            ConnectionState.LoginNotRecognized when snapshot.SignedOutElsewhere => ("Signed out", Widgets.Warning, status ?? DeviceWords.SignedOutElsewhere.For(advanced)),
+            ConnectionState.LoginNotRecognized when snapshot.SignedOutElsewhere => ("Signed out", Widgets.Warning, status ?? DeviceWords.SignedOutStatus(snapshot.SignedOutBy).For(advanced)),
             ConnectionState.LoginNotRecognized => ("Login not recognised", Widgets.Warning, status ?? PlainMessages.LoginNotRecognized.For(advanced)),
             ConnectionState.Blocked => ("Blocked by the server", Widgets.Warning, status ?? "This server's operator has blocked you from it."),
             ConnectionState.Registering when snapshot.LoginRejected => ("Registering again", Widgets.Warning,
@@ -380,7 +380,13 @@ public sealed class MainWindow : Window {
         // sight (below the window's bottom at its usual size, which testers took for no Verify button at all).
         if (rejected && challenge == null) {
             if (snapshot.SignedOutElsewhere) {
-                this.DrawSignedOut(advanced);
+                this.DrawSignedOut(snapshot.SignedOutBy, player, advanced);
+                if (snapshot.SignedOutBy == SignedOutBy.UnknownComputer) {
+                    // Registering again would keep the key a thief may hold: resetting is what to do, so registering isn't offered here.
+                    ImGui.PopTextWrapPos();
+                    ImGui.Unindent(indent);
+                    return;
+                }
             } else {
                 this.DrawLoginNotRecognised(session, advanced);
             }
@@ -535,11 +541,26 @@ public sealed class MainWindow : Window {
     /// Another computer used "Sign out everywhere else": this one's login and identity key are refused until the character is
     /// registered again (below). Trying again can't help, so there's no Retry, only what to do.
     /// </summary>
-    private void DrawSignedOut(bool advanced) {
-        Widgets.IconText(FontAwesomeIcon.ExclamationTriangle, DeviceWords.SignedOutTitle, Widgets.Warning);
-        ImGui.TextUnformatted(DeviceWords.SignedOutElsewhere.For(advanced));
+    private void DrawSignedOut(SignedOutBy by, PlayerInfo player, bool advanced) {
+        Widgets.IconText(FontAwesomeIcon.ExclamationTriangle, DeviceWords.SignedOutTitle(by), Widgets.Warning);
+        ImGui.TextUnformatted(DeviceWords.SignedOutStatus(by).For(advanced));
         ImGui.TextColored(Widgets.Muted, $"Server: {this._config.ServerUrl}");
         ImGui.Spacing();
+        if (by == SignedOutBy.UnknownComputer) {
+            // The main action here: someone else may have this computer's files.
+            ImGui.BeginDisabled(this._actions.Busy);
+            if (ImGui.Button(SettingsWords.ResetIdentity + "...")) {
+                var serverUrl = this._config.ServerUrl;
+                this._modals.Confirm(SettingsWords.ResetIdentity, SettingsWindow.ResetText(player.Name, serverUrl, loggedIn: false, advanced), SettingsWords.ResetIdentity, () => {
+                    var reset = this._sessions.ResetIdentity();
+                    this._actions.Run("Resetting your identity", () => reset);
+                });
+            }
+
+            ImGui.EndDisabled();
+            ImGui.SameLine();
+        }
+
         if (Widgets.GhostButton("Open settings", "Reset my identity is under Your identity. Also behind the gear in the title bar.")) {
             this._openSettings();
         }
