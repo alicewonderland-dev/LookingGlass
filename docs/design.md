@@ -50,8 +50,7 @@ membership log, online indicators, blocking, channel windows (pop-out chat),
 message catch-up (what was sent while you were away), an opt-in chat log on the
 player's computer, local chat with friends near you (`/lgl`), flags for abuse
 and the operator's bans, and debug tooling. ChatTwo integration and the import
-wizard come next. A move to MLS is planned (see
-[Planned features](#planned-features)).
+wizard come next. LookingGlass isn't moving to MLS (see [MLS](#mls)).
 
 ## Glossary
 
@@ -534,7 +533,9 @@ and login to another.
 **Encryption.** The file is encrypted with Windows DPAPI, which doesn't move
 between machines. Where DPAPI is unavailable (Wine, Proton) it uses a random
 local key file instead, which guards against accidental sharing rather than a
-local attacker. Settings shows which is in use.
+local attacker. Settings shows which is in use. An optional passphrase for
+the key file is planned (see
+[A passphrase for the key file on Wine and Proton](#a-passphrase-for-the-key-file-on-wine-and-proton)).
 
 **Backups.** Every save keeps the previous version next to it as
 `secrets-….bin.bak`. If the file is missing or damaged, the plugin loads the
@@ -1535,7 +1536,9 @@ again.
   invite someone by name, the server supplies their key and could substitute
   its own. Each member shows "not compared" until you compare fingerprints
   over /tell and mark them verified. There is no strict mode yet that refuses
-  to invite, or seal keys to, anyone not compared.
+  to invite, or seal keys to, anyone not compared (planned after the public
+  release; see
+  [Strict mode for keys not compared](#strict-mode-for-keys-not-compared)).
 - **The server vouches for re-verified keys.** See
   [The trust this needs](#the-trust-this-needs).
 - **A removal takes effect when the remover's client publishes it.** The
@@ -1565,6 +1568,13 @@ again.
   on. Before, nothing was kept to fetch. The server still can't read them, and a
   member who leaves or is removed fetches nothing more. "Reset my identity"
   stops the stolen keys signing in, and their place moves to the new keys.
+- **No forward secrecy or post-compromise security.** Epoch keys are sealed
+  to each member's long-term X25519 key, and the server keeps them, sealed,
+  while it keeps messages under them. Someone who copies a member's identity
+  keys can open every epoch key sealed to that member, old ones the server
+  still holds and new ones as they are made, until the member resets their
+  identity; nothing locks them out on its own. 1.0 promises neither property
+  (owner, 2026-10-09; see [MLS](#mls)).
 - **Metadata is kept, not only seen.** With each stored message the server
   keeps what it saw when relaying it: who sent it, when, in which channel, under
   which epoch, and its size, for as long as it keeps the message (7 days by
@@ -3826,26 +3836,69 @@ out.
   keep the old part as it was), and how the size cap and deletion work across
   both.
 
+### Strict mode for keys not compared
+
+Status: planned, after the public release (owner, 2026-10-09; H4 in
+[the MLS evaluation](mls-evaluation.md)). An optional setting, for a player or
+a channel, that refuses to invite, or seal keys to, anyone whose fingerprint
+hasn't been compared (see [Known limitations](#known-limitations)). Warn and
+continue stays the default: most key changes in a game community are new
+computers, and blocking by default would teach players to click through.
+
+### A passphrase for the key file on Wine and Proton
+
+Status: planned, after the public release (owner, 2026-10-09; H5 in
+[the MLS evaluation](mls-evaluation.md)). Where DPAPI is unavailable, the
+secrets file and the chat log are protected by a local key file in the same
+folder, so a copied plugin folder gives away everything. An optional
+passphrase would protect that key file. Off by default, since a forgotten
+passphrase means re-verifying through the Lodestone with new keys and losing
+the chat log. The details are to decide when it's built.
+
 ### MLS
 
-MLS (RFC 9420) solves the same problems as the membership log and epoch keys,
-with an audited standard, and scales better. There is no mature C#
-implementation, so adopting it means shipping a Rust library (OpenMLS)
-through native interop in both the plugin and the server.
+Status: not moving to MLS (owner, 2026-10-09). The full evaluation, with its
+sources, is in [mls-evaluation.md](mls-evaluation.md).
 
-The group-key and membership layers sit behind interfaces
-(`IGroupKeyProvider`, `IMembershipProvider`), so the switch replaces them
-without touching chat, UI or server routing.
+MLS (RFC 9420) would replace only the epoch-key layer, the smallest and
+simplest part of LookingGlass's cryptography. The membership log (ranks,
+invites, removals), recovery through the Lodestone, message catch-up and local
+chat would all stay custom, with a new layer binding them to MLS, and two
+sources of truth (the log and MLS's tree) to keep in lockstep. Contrary to
+what this section used to say, the switch wouldn't stay behind
+`IGroupKeyProvider` and `IMembershipProvider`: those are shaped around sealed
+keys, the log stays, and the server's routing would change (it would have to
+order and keep commits, store each channel's GroupInfo, and accept frames over
+today's limit). What MLS adds, forward secrecy and post-compromise security,
+is worth little while a stolen secrets file also lets the thief sign in and
+read a week of stored messages, and it would cost a native Rust library in
+the game process and in the server. Instead, smaller hardening comes first: a
+notice when the identity signs in from another device, with a list of devices
+and **Sign out everywhere else** (H1), members' log heads gossiped inside
+messages (H2), and a maximum epoch age of about 7 days (H3), all in progress
+for the public release; then the two features above after it. 1.0 promises
+no post-compromise security.
+
+Look at MLS again if:
+
+- clients outside the game, or several devices per character, become goals;
+- channels need to grow well beyond 500 members;
+- forward secrecy and post-compromise security are to become promised
+  properties;
+- the adversarial reviews find structural problems in the epoch-key layer
+  that are better fixed by replacing it than by patching it;
+- a mature, maintained, audited MLS library with a stable C interface or a
+  managed .NET binding appears.
 
 ## Milestones
 
 | Milestone | Contents | Gate after it |
 | --- | --- | --- |
-| M0 Foundations | Repository, schema, CI, core library | The cryptography spec is reviewed |
+| M0 Foundations | Repository, schema, CI, core library | |
 | M1 Identity | Registration, identity keys, tokens | |
 | M2 Channels and chat | Invites, rekeying, signed messages | Two clients chat while a hostile test server tries to read, forge and replay |
 | M3 Integrations and UI | ChatTwo, import wizard, key-verification UI | |
-| M4 Hardening and beta | Hardening, beta testing | No open high-severity findings, then the 1.0 release |
+| M4 Hardening and beta | Hardening (H1 to H3 in [MLS](#mls)), beta testing | Adversarial reviews by several models of the finalized design and its implementation, with no open high-severity findings, then the 1.0 release |
 
 Version 0.2 covers M1 and M2 and the key-verification UI of M3. Of M3's
 ChatTwo integration, sticky mode's (sending through ChatTwo's input, and
@@ -3853,11 +3906,20 @@ naming the channel in it) and the invite item in its right-click menu are
 built, as is M0's CI. The rest of the ChatTwo integration (channel names and
 colours for ChatTwo's own use) and the import wizard aren't built yet.
 
+M0's gate used to be "the cryptography spec is reviewed". The review now comes
+once the design is finalized, as M4's gate (decided 2026-10-09): a compact
+protocol specification is written for the reviewers, and the design and code
+are run past adversarial reviews by several different AI models, rather than
+a commissioned review (see
+[How the review is done](mls-evaluation.md#how-the-review-is-done)). MLS is no
+longer a milestone.
+
 ## Decisions
 
 The owner's decisions, and why.
 
-- **Sealed epoch keys now, MLS later (2026-10-03).** Build the signed
+- **Sealed epoch keys now, MLS later (2026-10-03; the MLS part superseded on
+  2026-10-09, see the decision not to move to MLS below).** Build the signed
   membership log for v0.2 as an interim step, then move to MLS once core
   functionality is confirmed in real use. The second code review had shown the
   first design unsound: trust only ever grew, and ranks and removals weren't
@@ -3981,14 +4043,28 @@ The owner's decisions, and why.
   too, is accepted; the player is told what the server learns and accepts it
   before the first `/lgl` (see
   [Local chat (friends only)](#local-chat-friends-only)).
+- **Not moving to MLS; reviewed by models, not a paid firm (2026-10-09).**
+  After an evaluation ([mls-evaluation.md](mls-evaluation.md)), the owner
+  decided: no move to MLS and no MLS milestone or spike, with the conditions
+  for looking again recorded under [MLS](#mls); no commissioned, paid review
+  ("we're making an FFXIV plugin, not Signal"), but adversarial reviews by
+  several AI models of the finalized design and its implementation; the
+  hardening H1 to H3 (sign-in notices and a device list, log heads in
+  messages, a maximum epoch age) before the public release, and H4 (strict
+  mode) and H5 (a passphrase on Wine and Proton) after it; and no promise of
+  post-compromise security in 1.0.
 
 ## Open questions
 
 - **Secret storage on Wine and Proton:** is the local key-file fallback
-  enough?
+  enough? Answered (2026-10-09): not on its own; an optional passphrase comes
+  after the public release (see
+  [A passphrase for the key file on Wine and Proton](#a-passphrase-for-the-key-file-on-wine-and-proton)).
 - **Key-change policy:** warn and continue (current), or block until
   re-verified? (Decided for keys re-verified through the Lodestone; see
-  Decisions.)
+  Decisions.) Answered (2026-10-09): warn and continue stays the default, and
+  an optional strict mode comes after the public release (see
+  [Strict mode for keys not compared](#strict-mode-for-keys-not-compared)).
 - **ChatTwo IPC names:** reuse `ExtraChat.*`, or use `LookingGlass.*` and ask
   ChatTwo to support them? Sticky mode already sends on
   `ExtraChat.OverrideChannelColour`, the only one ChatTwo listens to for its
@@ -3998,5 +4074,5 @@ The owner's decisions, and why.
 - **Limits:** confirm after beta load testing.
 - **Public hosting:** who runs it, the cost, a privacy note, and an acceptable
   Lodestone volume.
-- **Moving to MLS:** plan the switch as its own milestone, including how
-  existing channels migrate.
+- **Moving to MLS:** decided (2026-10-09): not moving, and no longer a
+  milestone (see [MLS](#mls)).
