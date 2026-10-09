@@ -229,14 +229,14 @@ public sealed class ChannelWindowLayoutTests {
         unread.Add(From("aaa"));
         unread.Add(From("bbb"));
 
-        // The main window shows one channel, a focused channel window another: both are read, and stay so.
+        // The main window shows one channel, a channel window another (its selected tab): both are read, and stay so.
         unread.Viewing("bbb");
         unread.Viewing("window:one", "aaa");
         Assert.Equal(0, unread.Total);
         Assert.False(unread.Add(From("aaa")));
         Assert.False(unread.Add(From("bbb")));
 
-        // The window lost the focus (or closed): what arrives counts again; the main window still reads its channel.
+        // The window closed (or shows no tab): what arrives counts again; the main window still reads its channel.
         unread.Viewing("window:one", null);
         Assert.True(unread.Add(From("aaa")));
         Assert.False(unread.Add(From("bbb")));

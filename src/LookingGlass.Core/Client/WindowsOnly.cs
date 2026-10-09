@@ -24,8 +24,11 @@ public sealed record WindowPlacement(ChannelWindowLayout Window, bool Created);
 /// invite's "Invited Bob@Lich to [sky]". Those are printed by the plugin directly, never through these rules.</item>
 /// </list>
 /// A line it keeps out of game chat asks for a window (<see cref="PendingWindows"/>): one for a channel no window shows
-/// opens one, or a tab in one (<see cref="Place"/>), so nothing is shown nowhere. A channel turned off game chat on its own
-/// ("Show in game chat") is in windows only by itself, by the same rules (<see cref="MessageWantsWindow"/>).
+/// opens one, or a tab in one (<see cref="Place"/>), once the game isn't busy, even if the settings change meanwhile. A
+/// channel turned off game chat on its own ("Show in game chat") is in windows only by itself, by the same rules
+/// (<see cref="MessageWantsWindow"/>). One gap: lines still waiting for a window when the session stops (logging out, Disconnect,
+/// another character or server) get none, as the session's history goes with it; they are only in the chat log on this
+/// computer, if the player keeps one.
 /// </summary>
 public static class WindowsOnly {
     /// <summary>The setting, as the settings window names it.</summary>
@@ -50,35 +53,34 @@ public static class WindowsOnly {
         !windowsOnly && GameChatChannels.Shows(off, channelId);
 
     /// <summary>
-    /// Where a notice goes besides the channel's history. Off, as before (<see cref="GameChatChannels.NoticeToGameChat"/>). On,
-    /// to game chat only if it is shown light or dark red (<see cref="NoticeColours.ToneOf"/>: a warning or a critical line is
-    /// never kept from game chat), or no window can show it: it is about no channel, or one the player isn't in (an invite
-    /// to it, as "Bob invited you to sky"), or a place from their old keys (see <see cref="CanHaveWindow"/>).
+    /// Where a notice goes besides the channel's history. Either way, to game chat if no window can show it: it is about no
+    /// channel, or one the player isn't in (an invite to it, as "Bob invited you to sky", or any line before the channel list
+    /// is in at login), or a place from their old keys (see <see cref="CanHaveWindow"/>), so a channel turned off game chat
+    /// never sends a line nowhere. Otherwise: off, as its channel's setting says (<see cref="GameChatChannels.NoticeToGameChat"/>);
+    /// on, only if it is shown light or dark red (<see cref="NoticeColours.ToneOf"/>: a warning or a critical line is never
+    /// kept from game chat).
     /// </summary>
     /// <param name="snapshot">The session's now: which channels the player is in.</param>
     public static bool NoticeToGameChat(bool windowsOnly, IReadOnlySet<string> off, SessionNotice notice, SessionSnapshot snapshot) =>
-        !windowsOnly
-            ? GameChatChannels.NoticeToGameChat(off, notice)
-            : notice.ChannelId is not { } channelId || NoticeColours.ToneOf(notice.Level, notice.Kind) != NoticeTone.Info
-              || !CanHaveWindow(snapshot, channelId);
+        notice.ChannelId is not { } channelId || !CanHaveWindow(snapshot, channelId)
+        || (windowsOnly ? NoticeColours.ToneOf(notice.Level, notice.Kind) != NoticeTone.Info : GameChatChannels.NoticeToGameChat(off, notice));
 
     /// <summary>
     /// Whether a channel's message asks for a window: one kept out of game chat, by windows only or by the channel's own
-    /// "Show in game chat" (a channel turned off there that no window shows is in windows only on its own). Asked again when
-    /// the window is found, as either may have changed meanwhile.
+    /// "Show in game chat" (a channel turned off there that no window shows is in windows only on its own). The player's own
+    /// messages too: they come back from the server like everyone's. Once asked, the window opens even if the settings change
+    /// while it waits, as the line was never in game chat.
     /// </summary>
     public static bool MessageWantsWindow(bool windowsOnly, IReadOnlySet<string> off, string channelId) =>
         !MessageToGameChat(windowsOnly, off, channelId);
 
     /// <summary>
     /// Whether a notice asks for a window for its channel: only one kept out of game chat, by windows only or by its channel's
-    /// own setting (one that goes there anyway is seen there; a debug one is shown nowhere), and not about a place from the
-    /// player's old keys. One about a channel not in the list yet (at login) asks too: the window waits for the complete list,
-    /// and only a channel in it opens (<see cref="PendingWindows.Take"/>).
+    /// own setting (one that goes there anyway is seen there; a debug one is shown nowhere). One kept out is always about a
+    /// channel a window can show (see <see cref="NoticeToGameChat"/>).
     /// </summary>
     public static bool NoticeWantsWindow(bool windowsOnly, IReadOnlySet<string> off, SessionNotice notice, SessionSnapshot snapshot) =>
-        notice.ChannelId is { } channelId && notice.Level != NoticeLevel.Debug && snapshot.FindChannel(channelId) is not { OldKeyMembership: true }
-        && !NoticeToGameChat(windowsOnly, off, notice, snapshot);
+        notice.ChannelId != null && notice.Level != NoticeLevel.Debug && !NoticeToGameChat(windowsOnly, off, notice, snapshot);
 
     /// <summary>Whether a channel can be a window's tab: one in the player's channel list, not a place from their old keys.</summary>
     public static bool CanHaveWindow(SessionSnapshot snapshot, string channelId) => snapshot.FindChannel(channelId) is { OldKeyMembership: false };

@@ -234,19 +234,19 @@ public sealed class ChannelHistoryTests {
         var history = new ChannelHistory();
         history.Add(From(Bob, "aaa"));
         var seen = history.LastSeq("aaa");
-        Assert.Equal(0, history.FromOthersAfter("aaa", seen));
+        Assert.Equal(0, history.UnreadAfter("aaa", seen));
 
         history.Add(From(Bob, "aaa"));
-        history.Add(From(Alice, "aaa", own: true));
         history.AddNotice(new SessionNotice(NoticeLevel.Info, "Bob left.", "aaa"));
         history.AddFeedback("aaa", NoticeTone.Info, "Not sent.");
         history.Add(From(Bob, "aaa"));
         history.Add(From(Bob, "bbb"));
 
-        Assert.Equal(2, history.FromOthersAfter("aaa", seen));
-        Assert.Equal(3, history.FromOthersAfter("aaa", 0));
-        Assert.Equal(0, history.FromOthersAfter("aaa", history.LastSeq("aaa")));
-        Assert.Equal(0, history.FromOthersAfter("ccc", 0));
+        // Notices and feedback don't count; nor do other channels' messages.
+        Assert.Equal(2, history.UnreadAfter("aaa", seen));
+        Assert.Equal(3, history.UnreadAfter("aaa", 0));
+        Assert.Equal(0, history.UnreadAfter("aaa", history.LastSeq("aaa")));
+        Assert.Equal(0, history.UnreadAfter("ccc", 0));
     }
 
     [Fact]

@@ -4,7 +4,8 @@ namespace LookingGlass.Core.Client;
 /// Counts the messages from others in each channel since it was last read, for the main
 /// window's unread markers. A channel is read when a window shows it (<see cref="Viewing(string?)"/>:
 /// the main window, every frame it's drawn, if its messages go to game chat (<see cref="MainWindowReads"/>); or a
-/// channel window, every frame it has the focus with that channel's tab selected) or when you send to it
+/// channel window, every frame it's drawn with that channel's tab selected, focused or not, the same rule as the tabs'
+/// own counts (<see cref="TabUnread.WindowShows"/>)) or when you send to it
 /// (<see cref="MarkRead"/>). Counts live only in
 /// memory. Safe from any thread: messages arrive on the session's threads, the window reads on
 /// the draw thread.

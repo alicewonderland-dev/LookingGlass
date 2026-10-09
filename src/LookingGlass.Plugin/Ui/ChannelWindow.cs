@@ -142,7 +142,8 @@ public sealed class ChannelWindow : Window {
         }
 
         // Flashing: the title bar (open, focused or not, or collapsed) tinted toward the channel's colour; the border is drawn
-        // in Draw. Popped in PostDraw, which follows whatever Begin did.
+        // in Draw. ImGui draws the title bar in Begin, so they are popped first thing in Draw (before anything there could
+        // throw), or in PostDraw when Begin drew no body (collapsed).
         this._flashPushed = 0;
         this._flashStrength = this._flashChannel == null ? 0
             : this._flash.StrengthAt(DateTimeOffset.UtcNow, Services.PluginInterface.UiBuilder.ShouldUseReducedMotion);
@@ -160,7 +161,10 @@ public sealed class ChannelWindow : Window {
         }
     }
 
-    public override void PostDraw() {
+    public override void PostDraw() => this.PopFlashColours();
+
+    /// <summary>The title bar colours PreDraw pushed, if they are still pushed.</summary>
+    private void PopFlashColours() {
         if (this._flashPushed > 0) {
             ImGui.PopStyleColor(this._flashPushed);
             this._flashPushed = 0;
@@ -193,12 +197,14 @@ public sealed class ChannelWindow : Window {
     }
 
     public override void Draw() {
+        // The title bar is drawn by now: its flash colours go before anything else, so nothing that throws below leaves them pushed.
+        this.PopFlashColours();
         var snapshot = this.Sessions.Snapshot;
         var advanced = this.Sessions.AdvancedMode;
         var history = this.Sessions.History;
         var focused = ImGui.IsWindowFocused(ImGuiFocusedFlags.RootAndChildWindows);
         if (focused) {
-            // The window a channel is added to while only windows show messages.
+            // The window a channel is added to when it opens by itself.
             this._windows.Used(this);
         }
 
@@ -277,19 +283,16 @@ public sealed class ChannelWindow : Window {
 
         this.DrawAddPopup(snapshot, advanced);
 
-        if (shown != null) {
-            // The tab shown is read here (and its tabs in other windows); in the channel list too while this window has the focus.
-            this._windows.TabCounts.Shown(shown, history.LastSeq(shown));
-            if (this._selectRequest == shown) {
-                this._selectRequest = null;
-            }
+        if (shown != null && this._selectRequest == shown) {
+            this._selectRequest = null;
         }
 
         if (this._selectRequest != null && !this.Layout.Tabs.Contains(this._selectRequest)) {
             this._selectRequest = null;
         }
 
-        this.Sessions.Unread.Viewing(this.Viewer, focused ? shown : null);
+        // The tab shown is read, for the tabs' counts (in every window) and the channel list alike, focused or not: it is on screen.
+        TabUnread.WindowShows(this.Sessions.Unread, this._windows.TabCounts, history, this.Viewer, shown);
         this.DrawFlashBorder();
         this.Remember(shown, order, closing);
     }

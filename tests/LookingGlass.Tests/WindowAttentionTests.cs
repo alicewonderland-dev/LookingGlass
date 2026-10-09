@@ -81,6 +81,40 @@ public sealed class WindowAttentionTests {
         Assert.Equal(1, tabs.CountOf(history, "aaa"));
     }
 
+    [Fact]
+    public void ATabShownInAWindowIsReadForTheTabsAndTheChannelListAlikeFocusedOrNot() {
+        // One rule for both counts: the selected tab of a window that is drawn (whether it has the focus or not).
+        var clock = new ManualClock();
+        var unread = new UnreadCounter(clock);
+        var history = new ChannelHistory();
+        var tabs = new TabUnread();
+        foreach (var message in new[] { From(Bob, "aaa"), From(Bob, "bbb") }) {
+            history.Add(message);
+            unread.Add(message);
+        }
+
+        TabUnread.WindowShows(unread, tabs, history, "window:one", "aaa");
+        Assert.Equal(0, unread.CountOf("aaa"));
+        Assert.Equal(0, tabs.CountOf(history, "aaa"));
+        Assert.Equal(1, unread.CountOf("bbb"));
+        Assert.Equal(1, tabs.CountOf(history, "bbb"));
+
+        // What arrives while it is shown counts in neither.
+        var later = From(Bob, "aaa");
+        history.Add(later);
+        Assert.False(unread.Add(later));
+        TabUnread.WindowShows(unread, tabs, history, "window:one", "aaa");
+        Assert.Equal(0, tabs.CountOf(history, "aaa"));
+
+        // Nothing shown (the window closed or collapsed): both count again.
+        TabUnread.WindowShows(unread, tabs, history, "window:one", null);
+        var after = From(Bob, "aaa");
+        history.Add(after);
+        Assert.True(unread.Add(after));
+        Assert.Equal(1, unread.CountOf("aaa"));
+        Assert.Equal(1, tabs.CountOf(history, "aaa"));
+    }
+
     // ================================================================ the flash
 
     private static DateTimeOffset At(double milliseconds) => Start.AddMilliseconds(milliseconds);

@@ -3,11 +3,23 @@ namespace LookingGlass.Core.Client;
 /// <summary>
 /// The counts on channel windows' tabs: on a tab not selected, the messages from others in its channel since a window last
 /// showed it (in any window: a channel can be a tab in several) or the player last talked in it
-/// (<see cref="ChannelHistory.UnreadAfter"/>). A tab never shown counts what came since login. Apart from the channel
-/// list's counts (<see cref="UnreadCounter"/>): a tab shown in a window without the focus is read here, as it is on screen.
-/// For the session only; draw thread only.
+/// (<see cref="ChannelHistory.UnreadAfter"/>). A tab never shown counts what came since login. Read by the same rule as the
+/// channel list's counts (<see cref="UnreadCounter"/>), through <see cref="WindowShows"/>: a channel is read while it is the
+/// selected tab of a window that is drawn, whether that window has the focus or not. For the session only; draw thread only.
 /// </summary>
 public sealed class TabUnread {
+    /// <summary>
+    /// A channel window draws, showing <paramref name="channelId"/> as its selected tab (null: none, it is closing): read for
+    /// the tabs' counts and the channel list's alike, the one rule for both. Call every frame the window draws.
+    /// </summary>
+    /// <param name="viewer">The window's name as a viewer (see <see cref="UnreadCounter.Viewing(string, string?)"/>).</param>
+    public static void WindowShows(UnreadCounter unread, TabUnread tabs, ChannelHistory history, string viewer, string? channelId) {
+        unread.Viewing(viewer, channelId);
+        if (channelId != null) {
+            tabs.Shown(channelId, history.LastSeq(channelId));
+        }
+    }
+
     // The newest history line of each channel when a window last showed it.
     private readonly Dictionary<string, long> _shown = new();
 

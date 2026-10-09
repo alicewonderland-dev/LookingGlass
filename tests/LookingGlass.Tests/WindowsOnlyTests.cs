@@ -105,26 +105,53 @@ public sealed class WindowsOnlyTests {
         // While windows only is on, every channel asks, whatever its own setting.
         Assert.True(WindowsOnly.MessageWantsWindow(true, NoneOff, "bbb"));
         Assert.True(WindowsOnly.MessageWantsWindow(true, off, "aaa"));
-        // Asked again when the window is found (the setting may have changed meanwhile): turned back on in game chat, and
-        // windows only off, it needs none.
-        Assert.False(WindowsOnly.MessageWantsWindow(false, NoneOff, "aaa"));
     }
 
     [Fact]
-    public void AnInformationLineAtLoginForAChannelOffGameChatWaitsForTheListRatherThanBeingShownNowhere() {
-        // Before the channel list is in, a line about a channel turned off game chat stays out of game chat (its own
-        // setting), and asks for a window; the window waits for the complete list.
+    public void AChannelThatAskedGetsItsWindowEvenIfItsLinesGoToGameChatNow() {
+        // A line kept out of game chat asked for a window; then windows only was turned off (or the channel's "Show in
+        // game chat" back on) while it waited for combat to end. That line was never in game chat, so the window still
+        // opens: what waits is handed out whatever the settings say now.
+        var off = new HashSet<string> { "aaa" };
+        var pending = new PendingWindows();
+        Assert.True(WindowsOnly.MessageWantsWindow(false, off, "aaa"));
+        pending.Want("aaa");
+        Assert.True(WindowsOnly.MessageWantsWindow(true, NoneOff, "bbb"));
+        pending.Want("bbb");
+
+        off.Clear();
+        Assert.False(WindowsOnly.MessageWantsWindow(false, off, "aaa"));
+        Assert.Empty(pending.Take(Joined, busy: true));
+        Assert.Equal(["aaa", "bbb"], Ids(pending.Take(Joined, busy: false)));
+    }
+
+    [Fact]
+    public void AnInformationLineAtLoginBeforeTheChannelListGoesToGameChatInEitherMode() {
+        // No window could show it yet (the same rule as windows only's), so it is never kept from game chat and shown nowhere.
         var off = new HashSet<string> { "aaa" };
         var joined = new SessionNotice(NoticeLevel.Info, "Bob joined.", "aaa");
         var loading = Snapshot(ConnectionState.Ready, false);
 
-        Assert.False(WindowsOnly.NoticeToGameChat(false, off, joined, loading));
-        Assert.True(WindowsOnly.NoticeWantsWindow(false, off, joined, loading));
+        foreach (var windowsOnly in new[] { false, true }) {
+            Assert.True(WindowsOnly.NoticeToGameChat(windowsOnly, off, joined, loading));
+            Assert.False(WindowsOnly.NoticeWantsWindow(windowsOnly, off, joined, loading));
+        }
+    }
 
-        var pending = new PendingWindows();
-        pending.Want("aaa");
-        Assert.Empty(pending.Take(loading, busy: false));
-        Assert.Equal(["aaa"], Ids(pending.Take(Joined, busy: false)));
+    [Fact]
+    public void APlaceFromOldKeysOffGameChatStillGetsItsInformationLinesInGameChat() {
+        // Turned off game chat while it was the player's, it can't have a window now: its lines go to game chat in either mode.
+        var withOld = Joined with { Channels = [Joined.Channels[0], Joined.Channels[1] with { OldKeyMembership = true }] };
+        var off = new HashSet<string> { "bbb" };
+        var joined = new SessionNotice(NoticeLevel.Info, "Bob joined.", "bbb");
+
+        foreach (var windowsOnly in new[] { false, true }) {
+            Assert.True(WindowsOnly.NoticeToGameChat(windowsOnly, off, joined, withOld));
+            Assert.False(WindowsOnly.NoticeWantsWindow(windowsOnly, off, joined, withOld));
+        }
+
+        // A channel of the list off game chat keeps its lines out of it, as before.
+        Assert.False(WindowsOnly.NoticeToGameChat(false, new HashSet<string> { "aaa" }, joined with { ChannelId = "aaa" }, withOld));
     }
 
     // ================================================================ where a window is found

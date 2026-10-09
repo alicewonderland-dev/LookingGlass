@@ -141,7 +141,8 @@ public sealed class ChannelWindows(WindowSystem system, Configuration config, Se
     /// focus from the game, and opens a step below and right of the one opened this way before it (else the one used last),
     /// on the screen (<see cref="WindowsOnly.NextPlace"/>). Either way the window flashes briefly (<see cref="WindowFlash"/>).
     /// A channel whose lines go to game chat now (windows only turned off, or its "Show in game chat" back on, while it
-    /// waited) needs none. The settings are saved once, after all of them.
+    /// waited) still gets its window: the line it waited with was never in game chat. The settings are saved once, after all
+    /// of them.
     /// </summary>
     private void OpenWaiting(SessionSnapshot snapshot) {
         if (sessions.SessionPlayer is not { } player) {
@@ -153,16 +154,10 @@ public sealed class ChannelWindows(WindowSystem system, Configuration config, Se
             return;
         }
 
-        var on = config.MessagesOnlyInWindows;
-        var off = sessions.GameChatOff;
         var settings = config.ForCharacter(player.ContentId);
         var windows = settings.WindowsOn(sessions.ServerUrl);
         var changed = false;
         foreach (var wanted in taken) {
-            if (!WindowsOnly.MessageWantsWindow(on, off, wanted.ChannelId)) {
-                continue;
-            }
-
             if (WindowsOnly.Place(windows, wanted.ChannelId, config.WindowOpening, this._lastUsed, wanted.CaughtUp, this._catchUpWindow) is not { } placed) {
                 continue;
             }
@@ -202,6 +197,10 @@ public sealed class ChannelWindows(WindowSystem system, Configuration config, Se
     /// waits for it. One whose window was closed meanwhile is dropped.
     /// </summary>
     private void StartFlashes() {
+        if (this._flashes.Count == 0) {
+            return;
+        }
+
         // Read again: a window opened just now may have made the list.
         var layouts = this.Layouts ?? [];
         foreach (var (layoutId, (pulses, channelId)) in this._flashes.ToList()) {
