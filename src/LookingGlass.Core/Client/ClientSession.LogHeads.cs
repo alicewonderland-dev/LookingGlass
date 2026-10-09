@@ -28,14 +28,17 @@ public enum HeadDisagreement {
 /// another entry than the one verified here, the fork check every log sync uses (<see cref="CheckForkAsync"/>) looks into it;
 /// if it shows none, the same check fetches its whole log. When that check blames the server (the critical fork warning, or
 /// the server hiding the membership), that warning stands. Otherwise (the server shows the entry verified here, shows junk,
-/// fails, or the check has to wait), the user is told, naming the sender, and the sender is marked in the member list.</item>
+/// fails, or the check has to wait), the user is told, naming the sender. Either way the sender is marked in the member
+/// list.</item>
 /// <item><b>A position this client hasn't reached.</b> The log is fetched and verified as always, then compared. If the
 /// server's log ends before it, or several tries in a row don't reach it, the same: the sender is named.</item>
 /// </list>
 ///
 /// Never holds a message up: it is shown first, and anything that asks the server runs in the background, at most once per
-/// sender and channel per <see cref="ClientSessionOptions.ForkCheckInterval"/>, and once per claim. Each member is told about
-/// once per channel until their messages agree again; the mark on them stays until then, or until they leave.
+/// sender and channel per <see cref="ClientSessionOptions.ForkCheckInterval"/>, and once per claim. The mark on a member
+/// stays until a message of theirs agrees at the entry where they disagreed or a later one (an older head that agrees, such
+/// as a message the server held back, says nothing about where they part), or they leave; they are told about once until
+/// then.
 /// </summary>
 public sealed partial class ClientSession {
     // Hashes of verified entries remembered per channel for comparing heads, on top of the membership's own recent ones
@@ -48,8 +51,9 @@ public sealed partial class ClientSession {
     // ---- state guarded by _lock
     // Channel ID → hashes of the entries this client verified most recently, by sequence number (see OnMembershipSet).
     private readonly Dictionary<string, HeadHashes> _headHashes = new();
-    // Heads claimed in messages that were looked into ("channel/seq/hash"), whatever came of it: each is looked into once.
-    private readonly HashSet<string> _headClaimsLookedInto = new();
+    // Heads claimed in a sender's messages that were looked into (claim: "seq/hash"), whatever came of it: each is looked into
+    // once, until the sender's mark is taken off.
+    private readonly HashSet<(string ChannelId, long SenderId, string Claim)> _headClaimsLookedInto = new();
     // When the server was last asked about a head in a sender's message in a channel.
     private readonly Dictionary<(string ChannelId, long SenderId), DateTimeOffset> _headLooksAt = new();
     // Tries in a row that didn't reach a sender's head (see MaxHeadCatchUpFailures).
@@ -130,11 +134,17 @@ public sealed partial class ClientSession {
         }
 
         if (this._channels.TryGetValue(channelId, out var channel)) {
-            foreach (var gone in channel.SeeOtherMembership.Where(userId => membership.FindMember(userId) == null).ToList()) {
-                channel.SeeOtherMembership.Remove(gone);
-                this._toldOtherMembership.Remove((channelId, gone));
+            foreach (var gone in channel.SeeOtherMembership.Keys.Where(userId => membership.FindMember(userId) == null).ToList()) {
+                this.ForgetDisagreement(channel, gone);
             }
         }
+    }
+
+    /// <summary>Takes the mark off a member, with what was told and looked into about their heads. Call inside the lock.</summary>
+    private void ForgetDisagreement(ChannelState channel, long senderId) {
+        channel.SeeOtherMembership.Remove(senderId);
+        this._toldOtherMembership.Remove((channel.Id, senderId));
+        this._headClaimsLookedInto.RemoveWhere(claim => claim.ChannelId == channel.Id && claim.SenderId == senderId);
     }
 
     /// <summary>The hash of the entry this client verified at <paramref name="seq"/>, if it is remembered. Call inside the lock.</summary>
@@ -161,9 +171,11 @@ public sealed partial class ClientSession {
         var agreesAgain = false;
         lock (this._lock) {
             look = this.HeadLookFor(channelId, senderId, claimed, rateLimited: true);
-            if (look == HeadLook.Same && this._channels.TryGetValue(channelId, out var channel) && channel.SeeOtherMembership.Remove(senderId)) {
-                // Their messages agree with this client's log again: the mark goes, and a new disagreement is told again.
-                this._toldOtherMembership.Remove((channelId, senderId));
+            // Agreeing where they disagreed, or later: the mark goes, and a new disagreement is looked into and told again. An older
+            // head that agrees (a message sent before, delivered late or held back) says nothing about where they part.
+            if (look == HeadLook.Same && this._channels.TryGetValue(channelId, out var channel)
+                && channel.SeeOtherMembership.TryGetValue(senderId, out var disagreedAt) && claimed.Seq >= disagreedAt) {
+                this.ForgetDisagreement(channel, senderId);
                 agreesAgain = true;
             }
         }
@@ -199,7 +211,7 @@ public sealed partial class ClientSession {
             look = HeadLook.Differs;
         }
 
-        if (this._headClaimsLookedInto.Contains(ClaimKey(channelId, claimed))) {
+        if (this._headClaimsLookedInto.Contains((channelId, senderId, ClaimKey(claimed)))) {
             return HeadLook.Nothing;
         }
 
@@ -216,7 +228,7 @@ public sealed partial class ClientSession {
         return look;
     }
 
-    private static string ClaimKey(string channelId, LogPosition claimed) => $"{channelId}/{claimed.Seq}/{Convert.ToHexString(claimed.Hash.Span)}";
+    private static string ClaimKey(LogPosition claimed) => $"{claimed.Seq}/{Convert.ToHexString(claimed.Hash.Span)}";
 
     /// <summary>
     /// A member's head names a position this client verified, with another hash. The disagreement is certain (they signed it);
@@ -225,7 +237,7 @@ public sealed partial class ClientSession {
     /// </summary>
     private async Task LookIntoHeadAsync(string channelId, long senderId, LogPosition claimed, CancellationToken ct) {
         lock (this._lock) {
-            this._headClaimsLookedInto.Add(ClaimKey(channelId, claimed));
+            this._headClaimsLookedInto.Add((channelId, senderId, ClaimKey(claimed)));
         }
 
         var how = HeadDisagreement.Differs;
@@ -251,7 +263,7 @@ public sealed partial class ClientSession {
             this.Log(NoticeLevel.Warning, $"Couldn't look into a membership log head in a message in {channelId}: {ex.Message}");
         }
 
-        this.TellOtherMembership(channelId, senderId, claimed.Seq, how);
+        this.TellOtherMembership(channelId, senderId, claimed, how);
     }
 
     /// <summary>
@@ -287,36 +299,41 @@ public sealed partial class ClientSession {
 
             if (tell) {
                 this._headCatchUpFailures.Remove((channelId, senderId));
-                this._headClaimsLookedInto.Add(ClaimKey(channelId, claimed));
+                this._headClaimsLookedInto.Add((channelId, senderId, ClaimKey(claimed)));
             }
         }
 
         if (look == HeadLook.Differs) {
             await this.LookIntoHeadAsync(channelId, senderId, claimed, ct);
         } else if (tell) {
-            this.TellOtherMembership(channelId, senderId, claimed.Seq, HeadDisagreement.Ahead);
+            this.TellOtherMembership(channelId, senderId, claimed, HeadDisagreement.Ahead);
         }
     }
 
     /// <summary>
-    /// Unless the server is blamed for the channel's membership already (a fork, or a membership it hides, which says more),
-    /// marks the member as seeing another membership and tells the user (once, until their messages agree again). It names the
-    /// member and blames neither: see <see cref="PlainMessages.MemberSeesOtherMembership"/>.
+    /// Marks the member as seeing another membership (from <paramref name="claimed"/>'s entry on), and tells the user, once
+    /// until the mark goes, unless the server is blamed for the channel's membership already (a fork, or a membership it
+    /// hides): that warning says more. It names the member and blames neither, with both check codes to compare: see
+    /// <see cref="PlainMessages.MemberSeesOtherMembership"/>.
     /// </summary>
-    private void TellOtherMembership(string channelId, long senderId, ulong seq, HeadDisagreement how) {
+    private void TellOtherMembership(string channelId, long senderId, LogPosition claimed, HeadDisagreement how) {
+        var seq = claimed.Seq;
         Wording? text = null;
         lock (this._lock) {
-            if (!this._channels.TryGetValue(channelId, out var channel)
-                || channel.MembershipWarning?.Kind is NoticeKind.MembershipForked or NoticeKind.MembershipHidden or NoticeKind.MembersShownDifferently
-                || this.MembershipOf(channelId).FindMember(senderId) == null) {
+            if (!this._channels.TryGetValue(channelId, out var channel) || this.MembershipOf(channelId).FindMember(senderId) == null) {
                 return;
             }
 
-            channel.SeeOtherMembership.Add(senderId);
-            if (this._toldOtherMembership.Add((channelId, senderId))) {
+            channel.SeeOtherMembership[senderId] = Math.Max(seq, channel.SeeOtherMembership.GetValueOrDefault(senderId));
+            var serverBlamed = channel.MembershipWarning?.Kind is NoticeKind.MembershipForked or NoticeKind.MembershipHidden or NoticeKind.MembersShownDifferently;
+            if (!serverBlamed && this._toldOtherMembership.Add((channelId, senderId))) {
                 var sender = Shown(this.UserOf(senderId));
+                // Theirs at that entry, and this client's there; for a head ahead, this client's newest (it hasn't got theirs).
+                var mine = how == HeadDisagreement.Ahead
+                    ? MembershipCheckCode.Of(this.MembershipOf(channelId).Head)
+                    : MembershipCheckCode.Of(seq, this.VerifiedHashAt(channelId, seq));
                 text = PlainMessages.MemberSeesOtherMembership($"{sender.Name}@{sender.WorldName}", channel.DisplayName, seq, how,
-                    MembershipCheckCode.Of(this.MembershipOf(channelId).Head));
+                    MembershipCheckCode.Of(claimed)!, mine);
             }
         }
 

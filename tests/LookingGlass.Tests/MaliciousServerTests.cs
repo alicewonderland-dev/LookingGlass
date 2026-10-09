@@ -661,9 +661,14 @@ public sealed class MaliciousServerTests : IAsyncLifetime {
         var carolView = carol.Session.Snapshot.FindChannel(channelId)!;
         var aliceView = alice.Session.Snapshot.FindChannel(channelId)!;
         Assert.NotEqual(carolView.CheckCode, aliceView.CheckCode);
-        Assert.Contains(carolView.CheckCode!, toCarol.Text);
-        Assert.Contains(carolView.CheckCode!, toCarol.Plain);
-        Assert.Contains(aliceView.CheckCode!, toAlice.Text);
+        // Each warning gives both codes at that number: what the other's message names, and one's own.
+        foreach (var (notice, theirs, mine) in new[] { (toCarol, aliceView.CheckCode!, carolView.CheckCode!), (toAlice, carolView.CheckCode!, aliceView.CheckCode!) }) {
+            Assert.Contains(mine, notice.Text);
+            Assert.Contains(theirs, notice.Text);
+            Assert.Contains(mine, notice.Plain);
+            Assert.Contains(theirs, notice.Plain);
+        }
+
         Assert.True(carolView.Members.Single(m => m.User.UserId == alice.UserId).SeesOtherMembership);
         Assert.True(aliceView.Members.Single(m => m.User.UserId == carol.UserId).SeesOtherMembership);
         Assert.Contains(ChannelAttention.Of(carolView, advanced: false).Reasons, reason => reason.Contains("Alice Careful@"));
@@ -671,6 +676,19 @@ public sealed class MaliciousServerTests : IAsyncLifetime {
             Assert.DoesNotContain(client.Notices, n => n.Kind is NoticeKind.MembershipForked or NoticeKind.MembershipHidden);
             Assert.Null(view.MembershipWarning);
         }
+
+        // The server held back one of Alice's messages from before the split (its head, the entry before it, agrees with
+        // Carol's log) and delivers it now. That proves nothing about where they part: the mark on Alice stays, and Alice's
+        // next message (the same disagreeing head as before) still finds it there.
+        var epoch = carolView.Epoch;
+        await this._server.SendAndSettleAsync(carol, new Event { ChatMessage = alice.ForgeMessage(channelId, epoch, "held back", DateTimeOffset.UtcNow.AddSeconds(-30), forkPoint) });
+        Assert.Contains(carol.Messages, m => m.Text == "held back");
+        Assert.True(carol.Session.Snapshot.FindChannel(channelId)!.Members.Single(m => m.User.UserId == alice.UserId).SeesOtherMembership);
+        await alice.Session.SendTextAsync(channelId, "still my side", Ct);
+        await WaitFor(() => carol.Messages.FirstOrDefault(m => m.Text == "still my side"));
+        await this._server.SendAndSettleAsync(carol);
+        Assert.True(carol.Session.Snapshot.FindChannel(channelId)!.Members.Single(m => m.User.UserId == alice.UserId).SeesOtherMembership);
+        Assert.Single(carol.Notices, n => n.Kind == NoticeKind.MemberSeesOtherMembership);
     }
 
     public enum TargetedAnswer {
@@ -738,7 +756,8 @@ public sealed class MaliciousServerTests : IAsyncLifetime {
     /// <summary>
     /// Bob's head names another entry where Carol verified hers, and the server shows no entry there, nor (asked for its whole
     /// log) anything from there on: it is hiding the membership Carol verified. That says more than Bob's word: she gets the
-    /// warning that the server won't show the membership as she verified it, and Bob isn't named.
+    /// warning that the server won't show the membership as she verified it. Bob is still marked in the member list (his word
+    /// disagrees with her log too), but she isn't told about him as well: the warning on the server says more.
     /// </summary>
     [Fact]
     public async Task AServerShowingNoEntryWhereAMemberDisagreesIsBlamedForHidingTheMembership() {
@@ -768,9 +787,9 @@ public sealed class MaliciousServerTests : IAsyncLifetime {
         var notice = await WaitFor(() => carol.Notices.FirstOrDefault(n => n.Kind == NoticeKind.MembershipHidden));
         Assert.Equal(NoticeKind.MembershipHidden, notice.Kind);
         Assert.NotNull(carol.Session.Snapshot.FindChannel(channelId)!.MembershipWarning);
+        await WaitFor(() => carol.Session.Snapshot.FindChannel(channelId)!.Members.Single(m => m.User.UserId == bob.UserId).SeesOtherMembership ? new object() : null);
         await this._server.SendAndSettleAsync(carol);
         Assert.DoesNotContain(carol.Notices, n => n.Kind == NoticeKind.MemberSeesOtherMembership);
-        Assert.False(carol.Session.Snapshot.FindChannel(channelId)!.Members.Single(m => m.User.UserId == bob.UserId).SeesOtherMembership);
     }
 
     /// <summary>

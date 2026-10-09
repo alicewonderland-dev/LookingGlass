@@ -3717,7 +3717,7 @@ public sealed partial class ClientSession : IAsyncDisposable {
                     : this._presence.GetValueOrDefault(member.UserId));
                 return new MemberView(Shown(user), member.Rank, member.Keys.Fingerprint, pinned is { KeyChangeUnacknowledged: true }, compared, replaced,
                     replaced ? current!.Fingerprint : null, online, recovered,
-                    member.Rank >= Rank.Member && channel.SeeOtherMembership.Contains(member.UserId));
+                    member.Rank >= Rank.Member && channel.SeeOtherMembership.ContainsKey(member.UserId));
             })
             .OrderByDescending(member => member.Rank)
             .ThenBy(member => member.User.Name, StringComparer.OrdinalIgnoreCase)
@@ -3960,9 +3960,10 @@ public sealed partial class ClientSession : IAsyncDisposable {
 
         /// <summary>
         /// Members whose messages say they verified a different membership than the server shows this client (see
-        /// ClientSession.LogHeads): marked on them until their messages agree again, or they leave.
+        /// ClientSession.LogHeads), with the newest entry at which they disagree: marked on them until a message of theirs agrees
+        /// at that entry or a later one, or they leave.
         /// </summary>
-        public HashSet<long> SeeOtherMembership { get; } = new();
+        public Dictionary<long, ulong> SeeOtherMembership { get; } = new();
 
         /// <summary>The newest name the server offered. Only shown once <see cref="TryDecryptName"/> accepts it.</summary>
         public EncryptedName? EncryptedName { get; set; }

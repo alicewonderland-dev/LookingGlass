@@ -40,7 +40,7 @@ public sealed class LogHeadTests : IAsyncLifetime {
 
         // Both see the same check code, made from it, to compare over /tell.
         var code = alice.Session.Snapshot.FindChannel(channelId)!.CheckCode;
-        Assert.Matches(@"^#\d+ \d{5} \d{5} \d{5} \d{5}$", code);
+        Assert.Matches(@"^#\d+( \d{5}){5}$", code);
         Assert.StartsWith($"#{content.LogHead.Seq} ", code);
         Assert.Equal(code, bob.Session.Snapshot.FindChannel(channelId)!.CheckCode);
         Assert.Equal(code, MembershipCheckCode.Of(content.LogHead));

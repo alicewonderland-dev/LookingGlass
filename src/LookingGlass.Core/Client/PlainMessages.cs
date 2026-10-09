@@ -248,8 +248,12 @@ public static class PlainMessages {
     /// <param name="channel">The channel's name.</param>
     /// <param name="seq">The entry their message names.</param>
     /// <param name="how">How it disagrees, as far as can be told.</param>
-    /// <param name="checkCode">This user's check code for the channel (<see cref="MembershipCheckCode"/>), to compare.</param>
-    public static Wording MemberSeesOtherMembership(string who, string channel, ulong seq, HeadDisagreement how, string? checkCode) =>
+    /// <param name="theirCode">The check code (<see cref="MembershipCheckCode"/>) of the head their message names.</param>
+    /// <param name="yourCode">
+    /// This user's check code at that entry; for <see cref="HeadDisagreement.Ahead"/>, at their newest entry (they don't have
+    /// that one yet). Null if it isn't known.
+    /// </param>
+    public static Wording MemberSeesOtherMembership(string who, string channel, ulong seq, HeadDisagreement how, string theirCode, string? yourCode) =>
         new(NoticeKind.MemberSeesOtherMembership,
             how switch {
                 HeadDisagreement.Ahead => $"{who}'s message in {channel} says they have verified membership log entry #{seq}, but the server " +
@@ -261,10 +265,11 @@ public static class PlainMessages {
                 _ => $"{who}'s message in {channel} says they verified a different membership log entry #{seq} from yours, and the server " +
                      "doesn't show you theirs. Either the server is showing them a different version of the membership, or their client is " +
                      "wrong or misbehaving.",
-            } + (checkCode == null
-                ? " Compare the member list with them over /tell."
-                : $" Compare check codes with them over /tell: yours is {checkCode} (log head, above the channel's member list), and at the " +
-                  "same entry number theirs should be the same."),
+            } + (how == HeadDisagreement.Ahead
+                ? $" Compare check codes (log heads) with them over /tell: their message names {theirCode}, and you don't have entry #{seq} " +
+                  "yet" + (yourCode == null ? "." : $" (your newest is {yourCode}).")
+                : $" Compare check codes (log heads) with them over /tell: their message names {theirCode}" +
+                  (yourCode == null ? "." : $"; yours at #{seq} is {yourCode}.")),
             how switch {
                 HeadDisagreement.Ahead => $"{who} seems to see newer changes to the members of {channel} than the server shows you. Either " +
                                           "the server is hiding a change from you, or something is wrong with their LookingGlass.",
@@ -273,10 +278,12 @@ public static class PlainMessages {
                                              "with their LookingGlass.",
                 _ => $"{who} seems to see a different member list for {channel} from yours. Either the server is showing them different " +
                      "members, or something is wrong with their LookingGlass.",
-            } + (checkCode == null
-                ? " Check with them over /tell before trusting who's in it."
-                : $" Check with them over /tell: your check code is {checkCode} (above the channel's member list), and theirs should be " +
-                  "the same once the number at the start is."));
+            } + (how == HeadDisagreement.Ahead
+                ? $" Check with them over /tell. Their message gives the check code {theirCode}; you don't have that number yet" +
+                  (yourCode == null ? "." : $" (yours is {yourCode}, above the channel's member list).")
+                : $" Check with them over /tell. Their message gives the check code {theirCode}" +
+                  (yourCode == null ? "." : $"; yours at the same number is {yourCode}.") +
+                  " Each of you sees your own above the channel's member list."));
 
     /// <summary>A short warning about members who seem to see a different member list, for a channel at a glance.</summary>
     /// <param name="names">Their names, joined.</param>
@@ -692,8 +699,8 @@ public static class PlainMessages {
         yield return ChannelKeyRejected("it failed signature or decryption checks", "Tea party");
         yield return CantSealTo(who, "invalid point");
         foreach (var how in Enum.GetValues<HeadDisagreement>()) {
-            yield return MemberSeesOtherMembership(who, "Tea party", 9, how, "#9 48213 90412 33187 00921");
-            yield return MemberSeesOtherMembership(who, "Tea party", 9, how, null);
+            yield return MemberSeesOtherMembership(who, "Tea party", 9, how, "#9 48213 90412 33187 00921 55102", "#9 10394 77120 05881 31337 90210");
+            yield return MemberSeesOtherMembership(who, "Tea party", 9, how, "#9 48213 90412 33187 00921 55102", null);
         }
 
         yield return SeesOtherMembersIn(who);

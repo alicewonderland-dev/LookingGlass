@@ -308,6 +308,10 @@ public sealed class MaliciousMemberTests : IAsyncLifetime {
         var notice = await WaitFor(() => carol.Notices.FirstOrDefault(n => n.Kind == NoticeKind.MemberSeesOtherMembership));
         Assert.StartsWith("Bob Far Ahead@", notice.Text);
         Assert.Contains($"#{head.Seq + 1_000_000}", notice.Text);
+        // The code his message names, to compare with his, and that Carol has no entry with that number yet.
+        Assert.Contains(MembershipCheckCode.Of(Junk(head.Seq + 1_000_000, 1))!, notice.Text);
+        Assert.Contains(MembershipCheckCode.Of(Junk(head.Seq + 1_000_000, 1))!, notice.Plain);
+        Assert.Contains(MembershipCheckCode.Of(head)!, notice.Plain);
         Assert.Equal(fetches + 1, LogFetches(carol));
         AssertNothingBlamesTheServer(carol, channelId);
         Assert.Equal(head, PositionOf(carol, channelId));
@@ -327,6 +331,48 @@ public sealed class MaliciousMemberTests : IAsyncLifetime {
         var notice = await WaitFor(() => back.Notices.FirstOrDefault(n => n.Kind == NoticeKind.MemberSeesOtherMembership));
         Assert.StartsWith("Bob Stored Head@", notice.Text);
         AssertNothingBlamesTheServer(back, channelId);
+    }
+
+    /// <summary>
+    /// Bob is marked for a head that disagrees with Carol's log at her newest entry. A message of his whose head is an older
+    /// entry, which agrees (one sent before, delivered late, or held back by the server), proves nothing about where they
+    /// part: the mark stays, and his next disagreeing head (the same as before) finds it still there. Only a head that agrees
+    /// at that entry or later takes it off; a disagreement after that is looked into and told again.
+    /// </summary>
+    [Fact]
+    public async Task AnOlderAgreeingHeadDoesntTakeTheMarkOff() {
+        var alice = await this._server.RegisterAsync("Alice Mark Stays");
+        var bob = await this._server.RegisterAsync("Bob Mark Stays");
+        // Asking the server again is allowed at once here: what is tested is when the mark goes.
+        var carol = await this._server.RegisterAsync("Carol Mark Stays", options: this._server.Options(forkCheckInterval: TimeSpan.FromMilliseconds(1)));
+        var channelId = await alice.Session.CreateChannelAsync("Mark Stays", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        var older = PositionOf(alice, channelId);
+        await AddMemberAsync(alice, channelId, carol);
+        var epoch = carol.Session.Snapshot.FindChannel(channelId)!.Epoch;
+        await WaitFor(() => bob.Store.Load().EpochKeys.GetValueOrDefault(channelId)?.ContainsKey(epoch) == true ? new object() : null);
+        var head = PositionOf(carol, channelId);
+        Assert.True(older.Seq < head.Seq);
+        bool Marked() => carol.Session.Snapshot.FindChannel(channelId)!.Members.Single(m => m.User.UserId == bob.UserId).SeesOtherMembership;
+        Task SendAsync(string text, LogPosition claimed, int secondsAgo = 0) =>
+            this._server.SendAndSettleAsync(carol, new Event { ChatMessage = bob.ForgeMessage(channelId, epoch, text, DateTimeOffset.UtcNow.AddSeconds(-secondsAgo), claimed) });
+
+        await SendAsync("wrong", Junk(head.Seq, 0x31));
+        await WaitFor(() => Marked() ? new object() : null);
+
+        await SendAsync("from before", older, secondsAgo: 30);
+        Assert.Contains(carol.Messages, m => m.Text == "from before");
+        Assert.True(Marked());
+        await SendAsync("wrong again", Junk(head.Seq, 0x31));
+        Assert.True(Marked());
+        Assert.Single(carol.Notices, n => n.Kind == NoticeKind.MemberSeesOtherMembership);
+
+        // Agreeing at that entry: the mark goes. The same wrong head after that is a new disagreement, looked into and told.
+        await SendAsync("right", head);
+        Assert.False(Marked());
+        await SendAsync("wrong once more", Junk(head.Seq, 0x31));
+        await WaitFor(() => Marked() ? new object() : null);
+        await WaitFor(() => carol.Notices.Count(n => n.Kind == NoticeKind.MemberSeesOtherMembership) == 2 ? new object() : null);
     }
 
     /// <summary>
