@@ -11,7 +11,7 @@ public static class ChannelTag {
 
     /// <param name="slot">The channel's command number (1 to <see cref="CommandSlots.Count"/>), if it has one.</param>
     /// <param name="nickname">The channel's nickname, if it has one.</param>
-    /// <param name="useNickname">False to always tag with the number, as with the setting "Show nicknames in chat tags" off.</param>
+    /// <param name="useNickname">False to always tag with the number, as with the setting "Use nicknames in tags" off.</param>
     public static string For(int? slot, string? nickname, bool useNickname) {
         // Nicknames are checked when set, but the settings file can be edited by hand: only a valid one
         // (a few ASCII letters, digits, - and _) is shown, so it can't carry formatting or look like a number.

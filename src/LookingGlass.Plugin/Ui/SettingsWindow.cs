@@ -78,6 +78,7 @@ public sealed class SettingsWindow : Window {
     public override void Draw() {
         this.DrawServer();
         this.DrawChat();
+        this.DrawLocalChat();
         this.DrawChatLog();
         this.DrawIdentity();
         this.DrawBlockedUsers();
@@ -233,7 +234,7 @@ public sealed class SettingsWindow : Window {
     private void DrawServer() {
         Widgets.Heading("Server");
 
-        ImGui.TextUnformatted("Server URL");
+        this.Label(SettingsWords.ServerAddress, SettingHelp.ServerAddress);
         var apply = Widgets.ButtonWidth("Apply");
         ImGui.SetNextItemWidth(ImGui.GetContentRegionAvail().X - apply - ImGui.GetStyle().ItemSpacing.X);
         var enter = ImGui.InputTextWithHint("##server-url", "ws://host:5180/ws", ref this._serverUrl, 256, ImGuiInputTextFlags.EnterReturnsTrue);
@@ -246,7 +247,6 @@ public sealed class SettingsWindow : Window {
         }
 
         ImGui.EndDisabled();
-        Widgets.Tooltip("Saves the URL and reconnects. If you have an identity on the current server, it first asks that server, and the new address, whether they are the same server, to keep your identity.");
         ImGui.PushTextWrapPos();
         if (checking) {
             // Closing the window drops the change (OnClose), and asking a server that's gone can take a while.
@@ -265,37 +265,50 @@ public sealed class SettingsWindow : Window {
             ImGui.TextColored(Widgets.Warning, addressHint);
         }
 
-        ImGui.TextColored(Widgets.Muted, "For example ws://my-vm:5180/ws over Tailscale, or wss://chat.example.com/ws.");
         ImGui.PopTextWrapPos();
         this.FinishMoveCheck();
         ImGui.Spacing();
 
         var autoConnect = this._config.AutoConnect;
-        if (ImGui.Checkbox("Connect automatically when logging in", ref autoConnect)) {
+        if (ImGui.Checkbox(SettingsWords.ConnectAutomatically, ref autoConnect)) {
             this._config.AutoConnect = autoConnect;
             this._config.Save();
         }
 
+        // On the same line, at its right edge, if it fits; else under it.
         var session = this._sessions.Session;
         if (this._sessions.Player != null) {
+            var label = session == null ? "Connect now" : "Disconnect";
+            Widgets.SameLineRightIfFits(Widgets.ButtonWidth(label));
             ImGui.BeginDisabled(this._actions.Busy);
-            if (session == null) {
-                if (ImGui.Button("Connect now")) {
+            if (ImGui.Button(label)) {
+                if (session == null) {
                     this._sessions.Connect();
+                } else {
+                    this._sessions.Disconnect();
                 }
-            } else if (ImGui.Button("Disconnect")) {
-                this._sessions.Disconnect();
             }
 
             ImGui.EndDisabled();
         }
     }
 
+    /// <summary>A label, with the "?" of <paramref name="help"/> after it if it has one (see <see cref="Widgets.Help"/>).</summary>
+    private void Label(string text, SettingHelp? help = null, Vector4? colour = null) {
+        Widgets.Label(text, colour: colour);
+        if (help is { } setting) {
+            this.Help(setting);
+        }
+    }
+
+    /// <summary>The "?" of a setting its name doesn't explain, right after the last item, in the current mode's words.</summary>
+    private void Help(SettingHelp setting) =>
+        Widgets.Help(setting.ToString(), SettingsWords.Help(setting, ProtectedSecretStore.Protection).For(this._config.AdvancedMode));
+
     private void DrawChat() {
         Widgets.Heading("Chat");
 
-        ImGui.AlignTextToFramePadding();
-        ImGui.TextUnformatted("Show messages in the chat channel");
+        this.Label(SettingsWords.ShowMessagesIn, SettingHelp.ShowMessagesIn);
         ImGui.SameLine();
         ImGui.SetNextItemWidth(Math.Max(120 * Widgets.Scale, ImGui.GetContentRegionAvail().X));
         if (ImGui.BeginCombo("##chat-type", this._config.ChatType.ToString())) {
@@ -309,47 +322,36 @@ public sealed class SettingsWindow : Window {
             ImGui.EndCombo();
         }
 
-        Widgets.Tooltip("Which of the game's chat channels LookingGlass messages appear in, so your chat tabs can show or hide them.");
-
         var wholeLine = this._config.ColourWholeLine;
-        if (ImGui.Checkbox("Colour the whole line in a channel's colour", ref wholeLine)) {
+        if (ImGui.Checkbox(SettingsWords.ColourWholeLine, ref wholeLine)) {
             this._config.ColourWholeLine = wholeLine;
             this._config.Save();
         }
 
-        Widgets.Tooltip("Off: only the tag ([LGC1] or [nickname]) takes the channel's colour. Channels without a colour of their own always colour only the tag.");
-
         var nicknameTags = this._config.NicknameTags;
-        if (ImGui.Checkbox("Show nicknames in chat tags", ref nicknameTags)) {
+        if (ImGui.Checkbox(SettingsWords.NicknameTags, ref nicknameTags)) {
             this._config.NicknameTags = nicknameTags;
             this._config.Save();
         }
 
-        Widgets.Tooltip("On: a channel with a nickname is tagged [nickname] in chat, as in [sky]. Off: always by its number, as in [LGC1].");
-
         var verbose = this._config.VerboseChannelMessages;
-        if (ImGui.Checkbox("Verbose channel messages", ref verbose)) {
+        if (ImGui.Checkbox(SettingsWords.SayWhenTalking, ref verbose)) {
             this._config.VerboseChannelMessages = verbose;
             this._config.Save();
         }
 
-        ImGui.PushTextWrapPos();
-        ImGui.TextColored(Widgets.Muted, "Say in chat when you start or stop talking in a channel (the server info bar and the chat box label always show it). " +
-                                         "Stops you didn't choose, like a disconnect, are always said.");
-        ImGui.PopTextWrapPos();
-
         this.DrawWindowsOnly();
-        this.DrawLocalChat();
     }
 
     /// <summary>
-    /// Local chat's colour (see <see cref="LocalChat"/>): a button in the colour, opening the same swatches, Default and
-    /// Custom... as a channel's colour menu, and under it what /lgl does.
+    /// Local chat (see <see cref="LocalChat"/>): its colour, a button in the colour opening the same swatches, Default and
+    /// Custom... as a channel's colour menu; and whether its privacy notice is accepted.
     /// </summary>
     private void DrawLocalChat() {
+        Widgets.Heading(SettingsWords.LocalChatHeading);
+
         var current = this._config.LocalChatColour();
-        ImGui.AlignTextToFramePadding();
-        ImGui.TextUnformatted($"Local chat colour ({LocalChat.Tag})");
+        this.Label(SettingsWords.LocalColour, SettingHelp.LocalChat);
         ImGui.SameLine();
         var swatch = 18 * Widgets.Scale;
         if (ImGui.ColorButton("##local-colour", ChannelPalette.ChatColourOf(current) ?? Widgets.Muted, ImGuiColorEditFlags.NoTooltip | ImGuiColorEditFlags.NoAlpha,
@@ -358,35 +360,22 @@ public sealed class SettingsWindow : Window {
             ImGui.OpenPopup("local-colours");
         }
 
-        Widgets.Tooltip(current == null ? "Default: only the [Local] tag is coloured, in the usual colour." : "The colour of local chat's lines.");
-        ImGui.PushTextWrapPos();
-        ImGui.TextColored(Widgets.Muted, LocalChatWords.Usage.For(this._config.AdvancedMode));
-        ImGui.PopTextWrapPos();
+        // Which colour it is now: a state, not an explanation.
+        Widgets.Tooltip(current == null ? $"Default: only the {LocalChat.Tag} tag is coloured, in the usual colour." : "The colour of local chat's lines.");
         this.DrawLocalColourPopup(current);
 
-        // What sending tells the server, accepted before the first /lgl; withdrawn here (then /lgl asks again).
-        // The words wrap on a line of their own and the buttons go under them: side by side, the last button ran past the
-        // right edge of the window at its usual width, out of sight.
+        // What sending tells the server, accepted before the first /lgl; withdrawn here (then /lgl asks again). Each button
+        // goes beside what's before it if it fits, else under it: past the right edge of the window, it would be out of sight.
         var accepted = this._config.LocalChatPrivacyAccepted;
-        ImGui.Spacing();
-        ImGui.PushTextWrapPos();
-        ImGui.TextColored(Widgets.Muted, accepted
-            ? "You've accepted what local chat tells the server."
-            : "Local chat asks you to accept what it tells the server before you first send.");
-        ImGui.PopTextWrapPos();
-        if (Widgets.GhostButton("What it tells the server", "Which names the LookingGlass server learns when you use /lgl, and what it never sees.")) {
+        this.Label(accepted ? SettingsWords.PrivacyAccepted : SettingsWords.PrivacyNotAccepted, SettingHelp.LocalPrivacy, Widgets.Muted);
+        Widgets.SameLineIfFits(Widgets.ButtonWidth(SettingsWords.ReadPrivacy));
+        if (Widgets.GhostButton(SettingsWords.ReadPrivacy)) {
             this._reviewLocalPrivacy();
         }
 
         if (accepted) {
-            const string withdraw = "Withdraw";
-            // Beside it if it fits, else under it.
-            var room = ImGui.GetContentRegionMax().X - ImGui.GetItemRectMax().X + ImGui.GetWindowPos().X;
-            if (room > Widgets.ButtonWidth(withdraw) + ImGui.GetStyle().ItemSpacing.X) {
-                ImGui.SameLine();
-            }
-
-            if (Widgets.GhostButton(withdraw, "Stop sending local messages (and talking in local chat) until you accept again. Receiving them doesn't need it.")) {
+            Widgets.SameLineIfFits(Widgets.ButtonWidth(SettingsWords.WithdrawPrivacy));
+            if (Widgets.GhostButton(SettingsWords.WithdrawPrivacy)) {
                 this._config.LocalChatPrivacyAccepted = false;
                 this._config.Save();
             }
@@ -459,8 +448,9 @@ public sealed class SettingsWindow : Window {
     }
 
     /// <summary>
-    /// "Show LookingGlass messages only in windows" (off by default; see <see cref="WindowsOnly"/>), and under it how a channel
-    /// that no window shows gets one, which counts only while it is on.
+    /// "Show LookingGlass only in windows" (off by default; see <see cref="WindowsOnly"/>), and under it how a channel
+    /// that no window shows gets one, which counts only while it is on: "New channels open", then each way, on the same
+    /// line while they fit.
     /// </summary>
     private void DrawWindowsOnly() {
         var on = this._config.MessagesOnlyInWindows;
@@ -469,21 +459,18 @@ public sealed class SettingsWindow : Window {
             this._config.Save();
         }
 
-        Widgets.Tooltip(WindowsOnly.SettingTooltip, "Each channel's own \"Show in game chat\" is kept, for when you turn this off.");
-        ImGui.PushTextWrapPos();
-        ImGui.TextColored(Widgets.Muted, WindowsOnly.SettingNote);
-        ImGui.PopTextWrapPos();
+        this.Help(SettingHelp.WindowsOnly);
 
         ImGui.Indent();
         ImGui.BeginDisabled(!on);
-        ImGui.TextUnformatted("For a channel no window shows:");
+        Widgets.Label(SettingsWords.NewChannelsOpen);
         foreach (var how in Enum.GetValues<WindowOpening>()) {
-            if (ImGui.RadioButton(WindowsOnly.NameOf(how), this._config.WindowOpening == how)) {
+            var name = WindowsOnly.NameOf(how);
+            Widgets.SameLineIfFits(ImGui.GetFrameHeight() + ImGui.GetStyle().ItemInnerSpacing.X + ImGui.CalcTextSize(name).X);
+            if (ImGui.RadioButton(name, this._config.WindowOpening == how)) {
                 this._config.WindowOpening = how;
                 this._config.Save();
             }
-
-            Widgets.Tooltip(WindowsOnly.TooltipOf(how));
         }
 
         ImGui.EndDisabled();
@@ -514,13 +501,10 @@ public sealed class SettingsWindow : Window {
             this.MeasureLog();
         }
 
-        ImGui.PushTextWrapPos();
-        ImGui.TextColored(Widgets.Muted, ChatLogWords.Explanation(ProtectedSecretStore.Protection).For(advanced));
-        ImGui.PopTextWrapPos();
+        this.Help(SettingHelp.ChatHistory);
 
         if (keep) {
-            ImGui.AlignTextToFramePadding();
-            ImGui.TextUnformatted(ChatLogWords.SizeLimit.For(advanced));
+            Widgets.Label(ChatLogWords.SizeLimit.For(advanced));
             ImGui.SameLine();
             ImGui.SetNextItemWidth(Math.Max(120 * Widgets.Scale, ImGui.GetContentRegionAvail().X * 0.5f));
             // A slider (Ctrl+click to type a number); applied once let go, not at every step of a drag.
@@ -532,8 +516,6 @@ public sealed class SettingsWindow : Window {
                 this._sessions.SetChatLogMegabytes(megabytes);
                 this.MeasureLog();
             }
-
-            Widgets.Tooltip(ChatLogWords.SizeLimitTooltip.For(advanced));
         }
 
         if (this._sessions.ChatLog is { State: ChatLogState.Unreadable } unreadable) {
@@ -586,15 +568,12 @@ public sealed class SettingsWindow : Window {
         Widgets.Heading("Your identity");
 
         var advanced = this._config.AdvancedMode;
-        if (ImGui.Checkbox("Advanced mode: show encryption details (fingerprints, keys)", ref advanced)) {
+        if (ImGui.Checkbox(SettingsWords.AdvancedMode, ref advanced)) {
             this._config.AdvancedMode = advanced;
             this._config.Save();
         }
 
-        ImGui.PushTextWrapPos();
-        ImGui.TextColored(Widgets.Muted, "For checking that your chats are private: compare fingerprints with people over /tell. " +
-                                         "Warnings show either way; this only adds the technical details.");
-        ImGui.PopTextWrapPos();
+        this.Help(SettingHelp.AdvancedMode);
         ImGui.Spacing();
 
         if (advanced) {
@@ -619,10 +598,10 @@ public sealed class SettingsWindow : Window {
         var player = this._sessions.Player;
         this.DrawDevices(player, advanced);
         ImGui.BeginDisabled(this._actions.Busy || player == null);
-        if (ImGui.Button("Reset my identity...") && player != null) {
+        if (ImGui.Button(SettingsWords.ResetIdentity + "...") && player != null) {
             var serverUrl = this._config.ServerUrl;
             var loggedIn = this._sessions.Snapshot.State == ConnectionState.Ready;
-            this._modals.Confirm("Reset my identity", ResetText(player.Name, serverUrl, loggedIn, advanced), "Reset my identity", () => {
+            this._modals.Confirm(SettingsWords.ResetIdentity, ResetText(player.Name, serverUrl, loggedIn, advanced), SettingsWords.ResetIdentity, () => {
                 // On the framework thread (the dialog's button); the returned task finishes the reset.
                 var reset = this._sessions.ResetIdentity();
                 this._actions.Run("Resetting your identity", () => reset);
@@ -633,11 +612,8 @@ public sealed class SettingsWindow : Window {
         }
 
         ImGui.EndDisabled();
-        Widgets.Tooltip(advanced
-            ? "New identity keys for this character on this server, for a key that was lost or may have been stolen. " +
-              "Your channels come along when you register them."
-            : "Set up LookingGlass afresh for this character on this server, if its files were lost or someone may have copied them. " +
-              "Your channels come along when you register again.");
+        // Outside the disabled part: it explains the button even while it can't be used.
+        this.Help(SettingHelp.ResetIdentity);
         this.DrawBackup(player, advanced);
     }
 
@@ -777,7 +753,7 @@ public sealed class SettingsWindow : Window {
         var blocked = this._sessions.Snapshot.BlockedUsers;
         if (blocked.IsEmpty) {
             ImGui.PushTextWrapPos();
-            ImGui.TextColored(Widgets.Muted, "Nobody. Block someone from an invite, or from a member's menu in a channel.");
+            ImGui.TextColored(Widgets.Muted, SettingsWords.NobodyBlocked);
             ImGui.PopTextWrapPos();
             return;
         }

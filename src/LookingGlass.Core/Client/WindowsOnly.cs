@@ -13,7 +13,7 @@ public enum WindowOpening {
 public sealed record WindowPlacement(ChannelWindowLayout Window, bool Created);
 
 /// <summary>
-/// "Show LookingGlass messages only in windows" (off by default): one setting that keeps every channel's messages and
+/// "Show LookingGlass only in windows" (off by default): one setting that keeps every channel's messages and
 /// information lines out of game chat, whatever each channel's own "Show in game chat" says. What still goes there:
 /// <list type="bullet">
 /// <item>warnings and critical lines (light and dark red), as for a channel kept out of game chat, so none is ever hidden;</item>
@@ -28,37 +28,20 @@ public sealed record WindowPlacement(ChannelWindowLayout Window, bool Created);
 /// </summary>
 public static class WindowsOnly {
     /// <summary>The setting, as the settings window names it.</summary>
-    public const string SettingName = "Show LookingGlass messages only in windows";
+    public const string SettingName = "Show LookingGlass only in windows";
 
-    /// <summary>What the setting does, in a line under it.</summary>
-    public const string SettingNote =
-        "Channel messages show only in channel windows, never in game chat. A channel that no window shows opens in one, " +
-        "after any fight or cutscene. Warnings, and answers to what you type in the chat box, still show in game chat.";
-
-    /// <summary>What the setting does, for its tooltip.</summary>
-    public const string SettingTooltip =
-        "On: no channel's messages, and none of its information lines (someone joined or left, an invite accepted), show in game chat, " +
-        "whatever each channel's \"Show in game chat\" says. Your own messages show only in windows too. A channel that no window shows " +
-        "opens in one, without taking the keyboard from the game: in combat, a cutscene or a loading screen, once it's over. " +
-        "Warnings, and answers to what you type in the chat box (a /lgc command, \"Now talking in\"), still show in game chat. " +
-        "So does local chat with friends near you (/lgl), which no window shows.";
+    /// <summary>What the setting does, in the bubble of its "?" (see <see cref="SettingsWords"/>).</summary>
+    public const string HelpText =
+        "Channel messages appear only in channel windows, not game chat. Warnings and replies to your commands still show in game chat.";
 
     /// <summary>The tooltip of a channel's "Show in game chat" while this is on, and the item can't be changed.</summary>
     public const string GameChatItemTooltip =
         "\"" + SettingName + "\" is on, so no channel shows in game chat now (warnings still do). Change it in Settings, under Chat.";
 
-    /// <summary>The words for each way of opening, for the settings window.</summary>
+    /// <summary>The words for each way of opening, for the settings window, after "New channels open".</summary>
     public static string NameOf(WindowOpening how) => how switch {
-        WindowOpening.NewWindow => "Open a new window each time",
-        _ => "Add it as a tab to the window used last",
-    };
-
-    /// <summary>What each way of opening does, for its tooltip.</summary>
-    public static string TooltipOf(WindowOpening how) => how switch {
-        WindowOpening.NewWindow => "Every channel that no window shows gets a window of its own. Channels with messages from while you " +
-                                   "were away share one new window, so logging in doesn't open a window for each.",
-        _ => "The channel window you clicked in last, or if it's closed, the one opened last. The tab is added behind the one you're " +
-             "reading, and shows how many new messages it has.",
+        WindowOpening.NewWindow => "In a new window",
+        _ => "As a tab",
     };
 
     /// <summary>Whether a channel's message goes to game chat: never while windows only is on; else as its own setting says.</summary>

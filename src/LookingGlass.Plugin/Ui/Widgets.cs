@@ -288,6 +288,118 @@ internal static class Widgets {
         return clicked;
     }
 
+    // ================================================================ labels and their "?"
+
+    /// <summary>How wide a "?" bubble's text may get, in ems.</summary>
+    private const float HelpWrapEms = 24;
+
+    /// <summary>The "?" whose bubble was open as it was pressed (its popup's ID), so that click closes it rather than opening it again.</summary>
+    private static uint helpOpenAtPress;
+
+    /// <summary>
+    /// A label lined up with framed items beside it (in <paramref name="colour"/>, or the text colour), then, if it has
+    /// <paramref name="help"/>, its "?" (see <see cref="Help"/>).
+    /// </summary>
+    public static void Label(string text, string? help = null, Vector4? colour = null) {
+        ImGui.AlignTextToFramePadding();
+        if (colour is { } c) {
+            ImGui.TextColored(c, text);
+        } else {
+            ImGui.TextUnformatted(text);
+        }
+
+        if (help != null) {
+            Help(text, help);
+        }
+    }
+
+    /// <summary>
+    /// A small round "?" right after the last item (a label, a checkbox, a button), for a setting its name doesn't explain.
+    /// Clicking it opens a small bubble beside it with <paramref name="text"/>, which closes on a click anywhere else (the
+    /// "?" too), or on Escape. Not a tooltip: it stays while read, and is there for touch and keyboard alike.
+    /// </summary>
+    /// <param name="id">Unique among the window's "?"s, such as the label it explains.</param>
+    public static void Help(string id, string text) {
+        var style = ImGui.GetStyle();
+        ImGui.SameLine(0, style.ItemInnerSpacing.X);
+        ImGui.PushID(id);
+        const string bubble = "help-bubble";
+        var popup = ImGui.GetID(bubble);
+        var open = ImGui.IsPopupOpen(bubble);
+
+        // A circle a little smaller than the text, centred in a line as high as a framed item.
+        var diameter = MathF.Round(ImGui.GetFontSize() * 0.95f);
+        var height = ImGui.GetFrameHeight();
+        var pos = ImGui.GetCursorScreenPos();
+        var clicked = ImGui.InvisibleButton("?", new Vector2(diameter, height));
+        if (ImGui.IsItemActivated()) {
+            // Pressing anywhere outside the bubble closes it (ImGui does, at the end of this frame): note whether it was open.
+            helpOpenAtPress = open ? popup : 0;
+        }
+
+        var hovered = ImGui.IsItemHovered();
+        if (hovered) {
+            ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
+        }
+
+        if (clicked) {
+            if (helpOpenAtPress != popup) {
+                ImGui.OpenPopup(bubble);
+            }
+
+            helpOpenAtPress = 0;
+        }
+
+        var lit = hovered || open || ImGui.IsItemActive();
+        var centre = new Vector2(pos.X + diameter / 2, pos.Y + height / 2);
+        var drawList = ImGui.GetWindowDrawList();
+        drawList.AddCircleFilled(centre, diameter / 2, ImGui.GetColorU32(lit ? ImGuiCol.FrameBgHovered : ImGuiCol.FrameBg));
+        var mark = ImGui.CalcTextSize("?");
+        drawList.AddText(Snap(centre - mark / 2), ImGui.GetColorU32(lit ? Text : Muted), "?");
+
+        DrawHelpBubble(bubble, text, ImGui.GetItemRectMin(), ImGui.GetItemRectMax());
+        ImGui.PopID();
+    }
+
+    /// <summary>
+    /// The bubble of a "?" between <paramref name="min"/> and <paramref name="max"/>, if open: to its right, or to its left
+    /// if there's no room on the screen there, at its height or as high as it must be to fit.
+    /// </summary>
+    private static void DrawHelpBubble(string id, string text, Vector2 min, Vector2 max) {
+        var padding = new Vector2(10, 8) * Scale;
+        var wrap = ImGui.GetFontSize() * HelpWrapEms;
+        // Its size is known before it is drawn, so even its first frame is in the right place.
+        var size = ImGui.CalcTextSize(text, false, wrap) + padding * 2;
+        var viewport = ImGui.GetWindowViewport();
+        var screenMin = viewport.WorkPos;
+        var screenMax = viewport.WorkPos + viewport.WorkSize;
+        var gap = ImGui.GetStyle().ItemInnerSpacing.X;
+        var x = max.X + gap;
+        if (x + size.X > screenMax.X) {
+            x = min.X - gap - size.X;
+        }
+
+        var y = Math.Min(min.Y, screenMax.Y - size.Y);
+        ImGui.SetNextWindowPos(new Vector2(Math.Max(screenMin.X, x), Math.Max(screenMin.Y, y)));
+
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, padding);
+        ImGui.PushStyleVar(ImGuiStyleVar.PopupRounding, 6 * Scale);
+        var shown = ImGui.BeginPopup(id, ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoMove | ImGuiWindowFlags.NoSavedSettings);
+        ImGui.PopStyleVar(2);
+        if (!shown) {
+            return;
+        }
+
+        ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + wrap);
+        ImGui.TextUnformatted(text);
+        ImGui.PopTextWrapPos();
+        if (ImGui.IsKeyPressed(ImGuiKey.Escape)) {
+            ImGui.CloseCurrentPopup();
+        }
+
+        ImGui.EndPopup();
+    }
+
     // ================================================================ badges
 
     /// <summary>A small rounded count (unread messages, invites) with its right edge at <paramref name="right"/>, centred on its Y.</summary>
@@ -324,6 +436,14 @@ internal static class Widgets {
         var gap = spacing >= 0 ? spacing : ImGui.GetStyle().ItemSpacing.X;
         if (ImGui.GetItemRectMax().X + gap + width <= right) {
             ImGui.SameLine(0, spacing);
+        }
+    }
+
+    /// <summary>Puts the next item, <paramref name="width"/> wide, at the right edge of the last item's line if it fits there.</summary>
+    public static void SameLineRightIfFits(float width) {
+        var right = ImGui.GetWindowContentRegionMax().X;
+        if (ImGui.GetItemRectMax().X - ImGui.GetWindowPos().X + ImGui.GetStyle().ItemSpacing.X + width <= right) {
+            ImGui.SameLine(right - width);
         }
     }
 

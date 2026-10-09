@@ -103,7 +103,7 @@ yours.
 1. Allow TCP port 5180 from the tailnet in the machine's firewall.
 2. List the server's addresses (see [The server's addresses](#the-servers-addresses)).
 3. In game, open `/lookingglass` and click the gear in its title bar (or the
-   plugin's settings button in Dalamud's plugin list). Set **Server URL** to
+   plugin's settings button in Dalamud's plugin list). Set **Server address** to
    `ws://<machine>:5180/ws`, using the machine's MagicDNS name or its 100.x IP.
    Use exactly one of the addresses you listed: the plugin warns as soon as it
    connects through any other.
