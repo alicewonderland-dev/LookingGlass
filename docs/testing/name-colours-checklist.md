@@ -10,7 +10,7 @@ another PC or client, registered on the same server) in both. Steps marked
 **(A and B)** need B to send messages; on a test server the echo bot can stand
 in for B in one channel (`/lgdebug` > Channel tools > Simulate incoming also
 works without anyone, as "Simulated Sender"). Unless a step says otherwise,
-**Colour the whole line in a channel's colour** is on, `sky` has the custom
+**Colour the whole line** is on, `sky` has the custom
 colour `#33DDAA` (teal) and `fc` the default colour. Do steps 1 to 15 without
 ChatTwo, then 16 to 19 with ChatTwo on.
 
@@ -53,7 +53,7 @@ person together with a colour.
       item link as the game shows item links (clickable), and " here" after
       it still teal. Hover and click the link: it works as before.
 - [ ] 10. A sends a message in `sky`: A's name orange, the rest teal.
-- [ ] 11. Settings: turn **Colour the whole line in a channel's colour** off.
+- [ ] 11. Settings: turn **Colour the whole line** off.
       **(A and B)** B says something in `sky`: `[sky]` teal, B's name pink,
       everything else (brackets, message, an item link's surrounding text) in
       the chat channel's own colour. Turn the setting back on.

@@ -1760,16 +1760,16 @@ These are plugin settings, kept per character, and never sent to the server.
   tagged by its number instead. A channel's nickname goes away when the user
   leaves it.
 - **Chat tags.** A channel with a nickname is tagged with it, as in `[sky]`,
-  unless **Show nicknames in chat tags** is off; otherwise with its number, as
+  unless **Use nicknames in tags** is off; otherwise with its number, as
   in `[LGC3]`. A channel with neither (more than fifty channels, or a message
   that arrives before the channel list is in) is tagged `[LGC]`.
 - **Colours.** One of 40 of the game's own chat colours, or a custom colour,
   any RGB value (see [Custom colours](#custom-colours)). The channel's lines
-  take the colour, or only the tag if **Colour the whole line in a channel's
-  colour** is off. The bar beside the channel in the list takes it too.
-  **Default** colours only the tag.
+  take the colour, or only the tag if **Colour the whole line** is off. The
+  bar beside the channel in the list takes it too. **Default** colours only
+  the tag.
 - **Chat channel.** Messages appear in one of the game's chat channels, chosen
-  in Settings, so chat tabs can show or hide them.
+  in Settings (**Show messages in**), so chat tabs can show or hide them.
 - **LookingGlass's own lines.** Everything LookingGlass itself says in the
   chat log starts with "[LookingGlass]" in LookingGlass blue, and is in one of
   three colours (rows of the game's UIColor sheet, chosen in one place,
@@ -1964,7 +1964,8 @@ chosen in Settings (the same one for every line, so a ChatTwo tab that shows
 talking in [sky]." with a few words of reason where they help (": you logged
 out.", ": disconnected.", ": you're no longer in it.", ": LookingGlass was
 turned off.", ": the connection started over."). Most of these only with
-**Verbose channel messages** on (Settings, under Chat; `VerboseChannelMessages`,
+**Say when I start or stop talking in a channel** on (Settings, under Chat;
+called "Verbose channel messages" before 2026-10-09; `VerboseChannelMessages`,
 off by default, also for settings saved before it existed): off, "Now talking
 in" isn't said, nor "Stopped talking in" when the player chose the stop (see
 Leaving). A player who switches between LookingGlass and game channels often
@@ -2705,9 +2706,11 @@ library (`WindowsOnly`, `PendingWindows`) and unit tested; the plugin's
 to make in game are in
 [docs/testing/windows-only-checklist.md](testing/windows-only-checklist.md).
 
-- **One setting, "Show LookingGlass messages only in windows"**, in Settings
-  under Chat (`Configuration.MessagesOnlyInWindows`), with a dimmed line under
-  it saying what it does; off by default, also for settings saved before it.
+- **One setting, "Show LookingGlass only in windows"** ("Show LookingGlass
+  messages only in windows" before 2026-10-09), in Settings under Chat
+  (`Configuration.MessagesOnlyInWindows`), with a "?" saying what it does (see
+  [The Settings window](#the-settings-window)); off by default, also for
+  settings saved before it.
   While on, no channel's messages, and none of its information lines (someone
   was invited, joined, left or was removed; a catch-up's "N messages while you
   were away"), go to game chat, whatever each
@@ -2734,8 +2737,10 @@ to make in game are in
   - When in doubt about a line about a channel, it goes to windows only.
 - **A channel no window shows opens in one.** A line kept out of game chat
   asks for a window (`PendingWindows`); if no channel window has the channel,
-  a second setting (`Configuration.WindowOpening`) chooses where it goes:
-  - **Add it as a tab to the window used last** (the default): the channel
+  a second setting (`Configuration.WindowOpening`, **New channels open** in
+  Settings) chooses where it goes:
+  - **As a tab** (the default; "Add it as a tab to the window used last"
+    before 2026-10-09), in the window used last: the channel
     window that last had the focus, or, if it has been closed or none has had
     the focus this session, the one opened last. "Used last" is kept for the
     session only; nothing new is saved. The tab is added at the end, not
@@ -2743,12 +2748,12 @@ to make in game are in
     one shows its count of new messages (from others since login), as a tab
     reopened at login behind another does. A tab opened by an information line
     alone (someone joined) shows no count: only messages are counted.
-  - **Open a new window each time**: a new window with the channel as its only
-    tab. Except for channels with messages from while the player was away
-    (message catch-up, mostly at login): those share one new window, the first
-    opening it and the others added as tabs behind it, for the rest of the
-    session while it is open, so a login never opens a window for every
-    channel. The setting's tooltip says so.
+  - **In a new window** ("Open a new window each time" before 2026-10-09): a
+    new window with the channel as its only tab. Except for channels with
+    messages from while the player was away (message catch-up, mostly at
+    login): those share one new window, the first opening it and the others
+    added as tabs behind it, for the rest of the session while it is open, so
+    a login never opens a window for every channel.
   - With no window open, a new one either way; several channels at once share
     the window opened for the first (or get one each, with a new window each
     time). Each new window opens a step (30 pixels, scaled) below and right of
@@ -2814,10 +2819,11 @@ are in [docs/testing/chat-log-checklist.md](testing/chat-log-checklist.md).
 **The owner's decisions.**
 
 - **Opt-in**, off by default: one setting, **Keep a chat log on this
-  computer** (simple mode: "chat history"), logs **every channel**, with no
-  per-channel choice.
-- **A size limit, not an age**: 50 MB by default, from 5 MB to 1 GB (a slider
-  in Settings while it's on). When the log would pass it, the oldest messages
+  computer** (simple mode: **Keep chat history on this computer**, in a
+  section of its own; its "?" says what it does), logs **every channel**, with
+  no per-channel choice.
+- **A size limit, not an age**: 50 MB by default, from 5 MB to 1 GB (the
+  **Size limit** slider in Settings while it's on). When the log would pass it, the oldest messages
   go first. The limit applies to each character's log on each server.
 - **Shown in channel windows**, above the lines since login. **No export.**
 - **Nothing readable leaves the player's computer**: the log is never sent,
@@ -3194,11 +3200,11 @@ friends.
 **Shown in game chat** as a channel's message is (`ChatOutput.LocalMessage`):
 the tag `[Local]`, then `<Name@World>` and the message, sanitised, with links
 rebuilt from the player's own game data; the sender's name colour if they have
-one. Its colour is a setting of its own (Settings, under Chat, **Local chat
-colour**: the channel colour menu's swatches, **Default** and **Custom...**;
+one. Its colour is a setting of its own (Settings, under Local chat,
+**Colour**: the channel colour menu's swatches, **Default** and **Custom...**;
 `LocalChatColourRow` and `LocalChatCustomColour`, none by default, also for
 settings saved before; one for every character), used for the tag, or the
-whole line as **Colour the whole line in a channel's colour** says. It goes to
+whole line as **Colour the whole line** says. It goes to
 the chat channel chosen in Settings, like every LookingGlass line.
 
 **Talking in local chat** (the owner's decisions, built 2026-10-08). `/lgl`
@@ -3277,11 +3283,12 @@ built around channels; it is now built into sticky mode rather than beside it:
   kept from game chat, ends talking in local chat at once and opens the notice:
   once, as nothing is talked in after it. Nothing is looked up meanwhile.
 - **How to use it stays findable.** `/lgl` alone no longer prints the usage,
-  so the usage (`LocalChatWords.Usage`: Dalamud's command help and Settings,
-  under Chat) says both forms and how to stop, and the first time ever that
-  talking in local chat starts, one more line says where typing goes and to
-  type `/s` (or another channel) on its own to stop (a saved setting,
-  `LocalChatTalkNoteShown`), whatever **Verbose channel messages** says.
+  so the usage (`LocalChatWords.Usage`: Dalamud's command help; Settings,
+  under Local chat, says it more briefly in the "?" of **Colour**) says both
+  forms and how to stop, and the first time ever that talking in local chat
+  starts, one more line says where typing goes and to type `/s` (or another
+  channel) on its own to stop (a saved setting, `LocalChatTalkNoteShown`),
+  whatever **Say when I start or stop talking in a channel** says.
 - **The diagnostic log** is the channels' (`[sticky]` lines), tagged
   `[Local]`; `/lgl` is a known command in it. Never what was typed, nor who is
   near.
@@ -3381,9 +3388,10 @@ lookups (another operator could change that), and that receiving needs none
 of it, with **Accept and use local chat** and **Not now**. The message typed
 isn't kept: once accepted, game chat says to send it again. The choice is one
 setting for every character (`LocalChatPrivacyAccepted`, off by default, also
-for settings saved before it), shown in Settings under Chat with **What it
-tells the server** and **Withdraw** under it (then `/lgl` asks again, and
-talking in local chat ends; the window has a **Withdraw** too, once accepted).
+for settings saved before it), shown in Settings under Local chat as
+**Privacy notice accepted** (or **not accepted yet**), with a "?", **Read it**
+(the window) and **Withdraw** (then `/lgl` asks again, and talking in local
+chat ends; the window has a **Withdraw** too, once accepted).
 
 **What is checked in game** (the checklist has it): that `/lgl` is free (no
 game command and no common plugin uses it); that 20 yalms is about `/say`'s
@@ -3427,6 +3435,53 @@ How it works:
   encrypted, and the like), and that every notice raised anywhere in the test
   suite is shown in both modes.
 - The debug window (`/lgdebug`) always shows the technical details.
+
+### The Settings window
+
+Opened from the main window's gear, or Dalamud's plugin settings button
+(`SettingsWindow`). Redesigned at the owner's request (approved 2026-10-09):
+testers skimmed past the long tooltips and dimmed paragraphs under each
+setting. Now every setting has a **short label**, and only a setting its label
+doesn't explain has a small round **"?"** right after the label (or after the
+checkbox or button). Clicking the "?" opens a small bubble beside it, a few
+sentences about 24 em wide, to its right or, with no room on the screen
+there, to its left. It isn't a hover tooltip and doesn't push the settings
+below it down. A click anywhere else (the "?" too) or Escape closes it.
+
+The sections, in order, with the settings that have a "?" marked (?):
+
+- **Server**: **Server address** (?) with **Apply**, the "Not saved yet"
+  warning and the line while the address change is checked (they are state,
+  not explanations); **Connect automatically**, with **Connect now** or
+  **Disconnect** at the right of the same line if it fits.
+- **Chat**: **Show messages in** (?) the game's chat channel; **Colour the
+  whole line**; **Use nicknames in tags**; **Say when I start or stop talking
+  in a channel** (`VerboseChannelMessages`); **Show LookingGlass only in
+  windows** (?), and under it **New channels open** **As a tab** / **In a new
+  window**, greyed out while it is off.
+- **Local chat**: **Colour** (?, about `/lgl`), the swatch opening the colour
+  menu; **Privacy notice accepted** (or **not accepted yet**) (?), with **Read
+  it** (the privacy window) and, once accepted, **Withdraw**, each beside what
+  is before it if it fits, else under it.
+- **Chat history** ("Chat log" in advanced mode): **Keep chat history on this
+  computer** (?, naming the protection in advanced mode), **Size limit**, how
+  much room it takes, and **Delete my chat history**.
+- **Your identity**: **Advanced mode** (?), the fingerprint (advanced mode
+  only), **Reset my identity...** (?), and the backup offer if there is one.
+- **Blocked users**: the list, or "Nobody blocked. Block someone from a
+  member's menu in a channel."
+
+The words are in the core library, so they are tested like every other: the
+labels and each "?"'s words in `SettingsWords` (by `SettingHelp`, in both
+modes' words), windows only's in `WindowsOnly`, the chat history's in
+`ChatLogWords`. Tests (`SettingsWordsTests`) check that every "?" has words in
+both modes, at most 180 characters and three sentences, plain in simple mode
+(Advanced mode's own "?" is the one exception: it names what advanced mode
+shows), and that labels are short and plain. The plugin draws a label and its
+"?" with `Widgets.Label` and `Widgets.Help`, for every "?". Tooltips stay only
+where they say a state (the local chat colour swatch: default or not). The
+checks to make in game are in
+[docs/testing/settings-checklist.md](testing/settings-checklist.md).
 
 ## Server design
 
@@ -3932,7 +3987,8 @@ The owner's decisions, and why.
   [Chat log on this computer](#chat-log-on-this-computer).
 - **Quiet start and stop lines (2026-10-07).** "Now talking in" and the
   "Stopped talking in" lines for stops the player chose are off by default
-  (Settings, **Verbose channel messages**): someone who moves between
+  (Settings, **Say when I start or stop talking in a channel**, once called
+  "Verbose channel messages"): someone who moves between
   LookingGlass and game channels often found them a bother, and the server
   info bar and chat box labels have proven reliable. Stops the player didn't
   choose are always said. See
@@ -3947,8 +4003,8 @@ The owner's decisions, and why.
   the two options. Through Dalamud's `IContextMenu` and ChatTwo's context menu
   IPC, with no game hooks, no protocol change and no server change. See
   [Context menu invites](#context-menu-invites).
-- **Windows only (2026-10-07).** One setting, "Show LookingGlass messages
-  only in windows", keeps every channel's messages and information lines out
+- **Windows only (2026-10-07).** One setting, "Show LookingGlass only in
+  windows", keeps every channel's messages and information lines out
   of game chat; warnings and critical lines still go there, as do answers to
   what the player typed in the chat box. A channel no window shows gets a tab
   in the window used last, or a new window, as a second setting says, without
@@ -3981,6 +4037,11 @@ The owner's decisions, and why.
   too, is accepted; the player is told what the server learns and accepts it
   before the first `/lgl` (see
   [Local chat (friends only)](#local-chat-friends-only)).
+- **Settings: short labels, and a "?" only where needed (2026-10-09).** Long
+  tooltips and dimmed paragraphs gave way to short labels; a setting its label
+  doesn't explain gets a "?" that opens a small bubble on click, not on hover.
+  Local chat and the chat history have sections of their own. See
+  [The Settings window](#the-settings-window).
 
 ## Open questions
 

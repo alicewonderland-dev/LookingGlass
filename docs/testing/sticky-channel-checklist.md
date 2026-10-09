@@ -9,8 +9,9 @@ the hooks, the chat box label and ChatTwo behave as the design says
 **(new)** marks a step that wasn't there before. Those are the ones to test
 again; the rest passed last round.
 
-**(verbose)** marks what is new this round (October 7): a setting, **Verbose
-channel messages** (Settings, under Chat), off by default. Off, LookingGlass
+**(verbose)** marks what is new this round (October 7): a setting, **Say when
+I start or stop talking in a channel** (Settings, under Chat; "Verbose channel
+messages" in older builds), off by default. Off, LookingGlass
 no longer says "Now talking in [sky]." nor "Stopped talking in [sky]." when
 you stopped it yourself (`/s`, Tab, ChatTwo's picker or tabs, a one-off
 switch, clicking the info bar, `/lgc2`); the label and the info bar show it
@@ -52,7 +53,8 @@ did a step that went wrong (and its number), and we read the log from there.
       `/lgc1`. Give it the nickname `sky`. A is also in a second channel,
       **moon**, on `/lgc2`.
 - [ ] **(verbose)** Open `/lg`, the gear (Settings), and under Chat tick
-      **Verbose channel messages**. It is off by default, and Parts 1 to 3
+      **Say when I start or stop talking in a channel** (once called "Verbose
+      channel messages"). It is off by default, and Parts 1 to 3
       expect the "Now talking in" and "Stopped talking in" lines, so it must
       be on until Part 4.
 - [ ] Turn ExtraChat off (it is tested on its own at the end).
@@ -67,8 +69,8 @@ second character, checks every step: the label alone proves nothing.
 
 ### Starting
 
-- [ ] 1. **(changed)** In Say, type `/lgc1`. (**(verbose)** With Verbose
-      channel messages on, as set up above. Off, the first line isn't said:
+- [ ] 1. **(changed)** In Say, type `/lgc1`. (**(verbose)** With **Say when I
+      start or stop talking in a channel** on, as set up above. Off, the first line isn't said:
       Part 4.)
   - One short line: "Now talking in [sky]." in LookingGlass blue, with `[sky]`
     in sky's own colour.
@@ -326,10 +328,10 @@ Skip this part if none of your pop-outs has an input box.
       shows.
 - [ ] 49. Turn ExtraChat off again.
 
-## Part 4: Verbose channel messages off
+## Part 4: Saying when you start or stop talking, off
 
-**(verbose)** All new. In Settings, under Chat, untick **Verbose channel
-messages** (the default). Do this part with ChatTwo off, then steps 50 to 53
+**(verbose)** All new. In Settings, under Chat, untick **Say when I start or
+stop talking in a channel** (the default). Do this part with ChatTwo off, then steps 50 to 53
 again with it on (in 53, also switch to a ChatTwo tab with another channel,
 and pick another channel in ChatTwo's picker). B checks as before: nothing
 here changes where typing goes, only which lines are said.
@@ -359,7 +361,7 @@ here changes where typing goes, only which lines are said.
       its own, without "Now talking in".
 - [ ] 59. With ExtraChat on, `/lgc1`: the ExtraChat warning (light red) is
       still said, on its own. Turn ExtraChat off again.
-- [ ] 60. Turn **Verbose channel messages** back on: `/lgc1` says "Now talking
+- [ ] 60. Turn **Say when I start or stop talking in a channel** back on: `/lgc1` says "Now talking
       in [sky].", `/s` says "Stopped talking in [sky]." The setting is kept
       after reloading the plugin.
 
