@@ -1136,6 +1136,85 @@ someone else's key arriving late) doesn't.
 Clients send with the newest key they hold, whatever epoch the server claims,
 and rekey first if that key predates the last join or leave.
 
+### Keys have a maximum age
+
+Built at the owner's request (2026-10-09, before the public release). A channel
+whose members don't change used to keep one epoch key for ever, so one key that
+leaked (a crash dump, a debug log, someone reading the game's memory) read every
+message sent from then on. Now a key is replaced once it is **7 days** old
+(`ClientSession.EpochMaxAge`), which bounds a leaked key to about a week of new
+messages.
+
+**Who makes it.** As for any automatic rekey, a member who is online: while
+connected, a client looks at its channels' keys at login and every 10 minutes.
+For a channel whose newest key is older than 7 days, it makes the next one if
+it could make any automatic rekey: a member under the keys it has (not a place
+under old keys, not a forgotten place), holding the channel's current key and
+name (not waiting for a key), with no rekey for a membership change waiting
+(that one goes as it always does). Not in a channel it is alone in: nobody else
+could read what a leaked key opens, and anyone joining brings a new key anyway.
+The server isn't asked to choose, so it needs no change.
+
+**How old a key is.** By the time its maker signed into it
+(`SealedEpochKey.created_unix_ms`, `epoch-key-created/v1`), never the server's
+word: a server that changes the time breaks the signature, and the time isn't
+believed. Capped by when this client got the key (it was made before then), so
+a time ahead can't keep a key in use longer. A key that doesn't say (an older
+plugin made it, or its time didn't check out) counts from when this client got
+it (`KeyPosition.HeldSinceMs`, saved). Keys kept by a version from before this
+saved neither, and count from the update, so updating doesn't make every
+channel's key look old at once.
+
+**No rekey storm.** Each client waits a random time of up to 10 minutes before
+trying, then checks again that the key is still old and it still may: members
+online together pick different waits, so the first one makes the key and the
+others hold it by the time their wait ends, and stop. Two that try at once are
+settled as any rekeys at once: the server takes only the next epoch, so the
+first wins, and the other is refused ("no longer at that epoch"), fetches the new
+key and gives up. A client tries at most once per channel an hour, whatever happens
+(a refusal, a lost connection), and the server's rekey rate limit (5, then 1
+every 2 seconds) still applies.
+
+**Nothing else changes.** It is an ordinary rekey: the new key is sealed to
+every member at the log's head, signed with that position and the time it was
+made, and carries the channel's name over. It is silent, like every automatic
+rekey: no notice, nothing in game chat, the channel windows or the chat log on
+this computer; the diagnostic log notes it at Debug, without names. Messages in
+flight under the old key are taken for 2 minutes, as after any rekey. Members
+who were away fetch the new key at login, as for any rekey; the stored
+messages under the old key (up to 7 days of them) stay readable to those who
+were sealed it, by the rules of [Message catch-up](#message-catch-up) (the
+new key's signed time ends the old epoch, and nobody's first epoch changes).
+On their own, age rekeys put at most two epochs within the 7 days of stored
+messages, well inside the 64 the server keeps keys for.
+
+**Decisions.**
+
+- **A client constant, not a server setting.** The server sends limits in
+  `Welcome`, but it isn't trusted with this: a client would have to refuse any
+  value longer than 7 days, so a server setting could only shorten it. Shorter
+  means more rekeys (each costs every member's client work) and more epochs
+  within the 7 days of stored messages, for little gain. If a shorter age is
+  wanted later, it can be added as an advertised value the client accepts
+  between a day and 7 days.
+- **Jitter in the client, not a server choice.** The server already picks a
+  rekeyer for membership changes, but the age is the client's to judge (by the
+  signed time), and the existing refusal of a second rekey for one epoch makes
+  concurrent tries harmless.
+- **Compatibility.** No protocol change and no new capability. A plugin from
+  before never starts one; it takes the new key as it takes any rekey (a member
+  could always "Force rekey"). A channel whose members online all run older
+  plugins keeps its key as before.
+
+**Limits.** A server can keep an old key in use by refusing every new key, or
+not passing them on (it can withhold, not forge); a refusing server costs each
+client one try per channel an hour, silently. Nobody makes a key while no
+member who could is online. A member whose clock is days slow sees keys as
+younger, and leaves it to another; one whose clock is days fast has its keys
+refused by the server for their time, as any rekey of theirs. Not testable in
+game (it takes a week): automated tests (`EpochMaxAgeTests`) cover it with a
+moved clock.
+
 ### Channel names
 
 - The name is encrypted with the current epoch key, and re-encrypted on each
@@ -1549,6 +1628,11 @@ again.
   up as messages some members can't decrypt.
 - **Rekeys seal to every member in the log**, including one whose "key
   changed" warning you haven't cleared.
+- **A server can keep an old key in use.** Keys are replaced once they are a
+  week old, but a server that refuses (or doesn't pass on) every new key keeps
+  the old one in use, and with it whatever a leaked copy reads. It can't make
+  a key look old to have it replaced over and over: the age is signed by the
+  key's maker (see [Keys have a maximum age](#keys-have-a-maximum-age)).
 - **Old places linger.** A place under a key its owner no longer has stays
   with that key until its owner registers new keys again (which moves it) or
   a moderator removes it. Its owner can remove it from their own list
@@ -3679,7 +3763,8 @@ How to build, configure, deploy, back up and restore a server is in
   and a server that repeats, reorders or forges what it sends back), flags and
   bans (the thresholds, the commands, and what a ban refuses),
   end-to-end flows, local chat (who gets it, what the server checks and what
-  a receiver shows), and malicious-server and malicious-member suites that
+  a receiver shows), keys' maximum age (with a moved clock: a week is too long
+  to wait in game), and malicious-server and malicious-member suites that
   inject forged and replayed events.
 
 Acceptance tests for the membership log:
@@ -3976,6 +4061,9 @@ The owner's decisions, and why.
   can't be found in time (see [The code is bound too](#the-code-is-bound-too)).
 - **First deployment.** The first tester server runs as a systemd service on
   a Linux machine behind Tailscale Funnel; a cloud host comes later.
+- **Keys have a maximum age (2026-10-09).** A channel's key is replaced once it
+  is 7 days old, by a member online, silently; a client constant, not a server
+  setting (see [Keys have a maximum age](#keys-have-a-maximum-age)).
 - **Local chat looks up the friends near, and asks first (2026-10-08).** The
   server learning friends near the sender, those who don't use LookingGlass
   too, is accepted; the player is told what the server learns and accepts it

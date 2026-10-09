@@ -113,3 +113,19 @@ read back.
       renamed to the new address's, and after reconnecting, **Show older
       messages** shows the lines from before. Choosing **Start afresh there**
       moves nothing.
+
+## A new channel key
+
+A channel's key is now replaced once it is a week old (see
+[Keys have a maximum age](../design.md#keys-have-a-maximum-age)). Waiting a
+week isn't practical in game, so automated tests cover it (`EpochMaxAgeTests`:
+not before a week, once after, one member's key when several are online, catch-up
+across it, older plugins, a server lying about it). This only checks that a new
+key, made by hand the same way, changes nothing you can see.
+
+- [ ] 22. With B online in `sky`, open `/lgdebug`, choose `sky` and press
+      **Force rekey**: the key epoch shown goes up by one. Nothing appears in
+      game chat, in `sky`'s window or anywhere else, for A or for B.
+- [ ] 23. Send a line each way: both show as usual. Log out and in: **Show
+      older messages** shows the lines from before and after the new key.
+      `/xllog`: the rekey's lines show no names and no channel names.
