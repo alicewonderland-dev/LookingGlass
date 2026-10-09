@@ -4580,3 +4580,14 @@ The owner's decisions, and why.
   Lodestone volume.
 - **Moving to MLS:** decided (2026-10-09): not moving, and no longer a
   milestone (see [MLS](#mls)).
+- **The official Dalamud plugin repository, or only our own** (raised by the
+  owner, 2026-10-09): it may be decided at some point not to seek inclusion in
+  the official repository. Being there means following its rules and review
+  for every update, which limits what the plugin can do and how quickly it can
+  change, and gives up some control over the plugin itself. Distributing only
+  through LookingGlass's own repository (as now, through the Wonderland
+  catalog) keeps that control; players are used to adding a custom repository
+  for common plugins such as Penumbra, so what is mainly lost is visibility
+  (being found in the plugin installer by people not already looking for it).
+  Undecided; the AI-use disclosure for an official submission is prepared for
+  either way.
