@@ -30,6 +30,9 @@ public sealed partial class ClientSession {
     // The most bytes a device's ID may have (the server's have 8).
     private const int MaxDeviceIdBytes = 32;
 
+    // The most nonces of unanswered logins remembered (see ClientSecrets.UnansweredLoginNonces).
+    private const int MaxUnansweredLoginNonces = 8;
+
     // ---- state guarded by _lock
     // The server agreed to "devices.v1" on the current connection.
     private bool _devicesAgreed;
@@ -38,6 +41,11 @@ public sealed partial class ClientSession {
     // The server refused the identity key because the account signed out everywhere else (Error.signed_out), and who did, as
     // this computer can tell; until a login works again.
     private SignedOutBy _signedOutBy;
+    // With it: when the device that did it was added, as the server said.
+    private DateTimeOffset? _signedOutByAdded;
+    // The login a "Sign out everywhere else" whose answer was lost gave this computer was taken at login: this computer did
+    // it, at a time the next list of devices says (Devices.signed_out_at_unix).
+    private bool _learnSignOutTime;
 
     // New computers not told yet (held back after a notice), the newest one's time, when the last notice was, and whether
     // telling the held ones is due.
@@ -101,8 +109,12 @@ public sealed partial class ClientSession {
                     this._secrets.PendingDeviceToken = pending;
                     this._secretsVersion++;
                 }
+            }
 
-                this.SaveSecrets();
+            // Only once it is on disk: if the answer were lost with it unsaved (and the plugin closed), this computer would be
+            // left with no login the server knows.
+            if (!this.SaveSecrets()) {
+                throw PlainMessages.Failure(DeviceWords.CouldntSaveNewLogin);
             }
 
             var serverUrl = this._options.ServerUri.AbsoluteUri;
@@ -126,7 +138,7 @@ public sealed partial class ClientSession {
             lock (this._lock) {
                 this._secrets.DeviceToken = pending;
                 this._secrets.PendingDeviceToken = null;
-                this._secrets.SignedOutOthers = true;
+                this._secrets.SignedOutOthersAt = devices.SignedOutAtUnix > 0 ? devices.SignedOutAtUnix : null;
                 this._secretsVersion++;
             }
 
@@ -224,13 +236,14 @@ public sealed partial class ClientSession {
         var (token, pending) = this.Read(() => (this._secrets.DeviceToken, this._secrets.PendingDeviceToken));
         if (pending != null) {
             try {
-                var renewed = await this.RequestAsync(connection, new ClientFrame { Authenticate = new Authenticate { DeviceToken = pending } }, ct);
+                var renewed = await this.AuthenticateRequestAsync(connection, pending, ct);
                 var accepted = renewed.AuthenticateOk ?? throw Unexpected(renewed);
                 lock (this._lock) {
                     this._secrets.DeviceToken = pending;
                     this._secrets.PendingDeviceToken = null;
-                    // It took it: the sign-out was done.
-                    this._secrets.SignedOutOthers = true;
+                    // It took it: the sign-out was done, by this computer, at the time the next list says.
+                    this._secrets.SignedOutOthersAt = null;
+                    this._learnSignOutTime = true;
                     this._secretsVersion++;
                 }
 
@@ -242,7 +255,7 @@ public sealed partial class ClientSession {
             }
         }
 
-        var response = await this.RequestAsync(connection, new ClientFrame { Authenticate = new Authenticate { DeviceToken = token } }, ct);
+        var response = await this.AuthenticateRequestAsync(connection, token!, ct);
         var ok = response.AuthenticateOk ?? throw Unexpected(response);
         if (pending != null) {
             lock (this._lock) {
@@ -259,20 +272,40 @@ public sealed partial class ClientSession {
     }
 
     /// <summary>
+    /// Asks to log in with <paramref name="token"/>, with a fresh nonce for this try, remembered (and saved) first as one not
+    /// answered yet: if the answer is lost, the next login's previous use names it, and it is known for this computer's own.
+    /// </summary>
+    private Task<Response> AuthenticateRequestAsync(Connection connection, string token, CancellationToken ct) {
+        var nonce = System.Security.Cryptography.RandomNumberGenerator.GetBytes(16);
+        lock (this._lock) {
+            this._secrets.UnansweredLoginNonces = [Convert.ToHexStringLower(nonce), .. (this._secrets.UnansweredLoginNonces ?? []).Take(MaxUnansweredLoginNonces - 1)];
+            this._secretsVersion++;
+        }
+
+        this.SaveSecrets();
+        return this.RequestAsync(connection, new ClientFrame { Authenticate = new Authenticate { DeviceToken = token, LoginNonce = ByteString.CopyFrom(nonce) } }, ct);
+    }
+
+    /// <summary>
     /// A login worked: if the server says this computer's login was last used at another time than this computer last logged
-    /// in, a copy of it was used elsewhere meanwhile, and the player is told (gently: a server restored from a backup, or an
-    /// answer to a login lost on the way, does the same). Then this login's time is remembered.
+    /// in, and not with a nonce of one of this computer's own logins whose answer was lost, a copy of it was used elsewhere
+    /// meanwhile, and the player is told (gently: a server restored from a backup does the same). Then this login's time is
+    /// remembered, and the logins not answered are settled.
     /// </summary>
     private void NoteLogin(AuthenticateOk ok) {
         lock (this._lock) {
-            if (this._secrets.LastLoginUnix is { } last && ok.PreviousUsedUnix > 0 && ok.PreviousUsedUnix != last) {
+            var previousNonce = ok.PreviousLoginNonce.Length > 0 ? Convert.ToHexStringLower(ok.PreviousLoginNonce.Span) : null;
+            var ours = previousNonce != null && this._secrets.UnansweredLoginNonces?.Contains(previousNonce) == true;
+            if (this._secrets.LastLoginUnix is { } last && ok.PreviousUsedUnix > 0 && ok.PreviousUsedUnix != last && !ours) {
                 this._pendingNotices.Add(SessionNotice.Of(NoticeLevel.Warning, DeviceWords.LoginUsedElsewhere(TimeOf(ok.PreviousUsedUnix))));
             }
 
             if (ok.UsedUnix > 0) {
                 this._secrets.LastLoginUnix = ok.UsedUnix;
-                this._secretsVersion++;
             }
+
+            this._secrets.UnansweredLoginNonces = null;
+            this._secretsVersion++;
         }
 
         this.SaveSecrets();
@@ -285,7 +318,9 @@ public sealed partial class ClientSession {
     private void NewLogin() {
         this._secrets.PendingDeviceToken = null;
         this._secrets.LastLoginUnix = null;
-        this._secrets.SignedOutOthers = false;
+        this._secrets.SignedOutOthersAt = null;
+        this._secrets.UnansweredLoginNonces = null;
+        this._learnSignOutTime = false;
     }
 
     /// <summary>Takes a list of the account's devices: shown in Settings, and other computers' not seen before told about.</summary>
@@ -296,6 +331,11 @@ public sealed partial class ClientSession {
                 return;
             }
 
+
+            if (this._learnSignOutTime && devices.SignedOutAtUnix > 0) {
+                this._secrets.SignedOutOthersAt = devices.SignedOutAtUnix;
+                this._learnSignOutTime = false;
+            }
 
             var known = this._secrets.KnownDevices;
             var shown = new List<DeviceView>();
@@ -431,26 +471,28 @@ public sealed partial class ClientSession {
         }
 
         lock (this._lock) {
-            this._signedOutBy = ex.SignedOut ? this.WhoSignedOut(ex.SignedOutBy) : SignedOutBy.None;
+            this._signedOutBy = ex.SignedOut ? this.WhoSignedOut(ex.SignedOutBy, ex.SignedOutAtUnix) : SignedOutBy.None;
+            this._signedOutByAdded = ex.SignedOut ? TimeOf(ex.SignedOutByAddedUnix) : null;
         }
     }
 
     /// <summary>
-    /// Which kind of computer the device that signed out everywhere else is, as this one can tell: itself, if it did that and
-    /// has lost its login since; one it has seen; or one it never saw, or a copy of its own login (it is this computer's ID,
-    /// but this computer never did it). Call inside the lock.
+    /// Which kind of computer the device that signed out everywhere else is, as this one can tell: itself, if it did that then
+    /// (the server's time of it is the one it was told when it did) and has lost its login since; one it has seen; or one it
+    /// never saw, or a copy of its own login (this computer's ID, but not this computer's sign-out). Call inside the lock.
     /// </summary>
-    private SignedOutBy WhoSignedOut(byte[] deviceId) {
+    private SignedOutBy WhoSignedOut(byte[] deviceId, long at) {
         var id = deviceId.Length is > 0 and <= MaxDeviceIdBytes ? Convert.ToHexStringLower(deviceId) : null;
         if (id != null && id == this._secrets.ThisDeviceId) {
-            return this._secrets.SignedOutOthers ? SignedOutBy.ThisComputer : SignedOutBy.UnknownComputer;
+            return at > 0 && this._secrets.SignedOutOthersAt == at ? SignedOutBy.ThisComputer : SignedOutBy.UnknownComputer;
         }
 
         return id != null && this._secrets.KnownDevices?.Contains(id) == true ? SignedOutBy.YourOtherComputer : SignedOutBy.UnknownComputer;
     }
 
     /// <summary>The status while the server refuses the saved login and the identity key. Call inside the lock.</summary>
-    private Wording RejectedStatus() => this._signedOutBy != SignedOutBy.None ? DeviceWords.SignedOutStatus(this._signedOutBy) : PlainMessages.LoginNotRecognized;
+    private Wording RejectedStatus() =>
+        this._signedOutBy != SignedOutBy.None ? DeviceWords.SignedOutStatus(this._signedOutBy, this._signedOutByAdded) : PlainMessages.LoginNotRecognized;
 
     /// <summary>A device's ID as remembered (hex), or null if it isn't one.</summary>
     private static string? IdOf(ByteString id) =>

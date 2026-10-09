@@ -3771,13 +3771,16 @@ public sealed partial class ClientSession : IAsyncDisposable {
             // A block is noted as the answer arrives (see OnResponse).
             throw new ServerErrorException(response.Error.Code, response.Error.Message, this.ShownCode()) {
                 Block = response.Error.Block, SignedOut = response.Error.SignedOut, SignedOutBy = response.Error.SignedOutBy.ToByteArray(),
+                SignedOutByAddedUnix = response.Error.SignedOutByAddedUnix, SignedOutAtUnix = response.Error.SignedOutAtUnix,
             };
         }
 
         return response;
     }
 
-    private void SaveSecrets() {
+    /// <summary>Saves the secrets if they changed since they were last saved.</summary>
+    /// <returns>Whether what they hold now is on disk (false if saving failed, which is logged).</returns>
+    private bool SaveSecrets() {
         ClientSecrets copy;
         long version;
         lock (this._lock) {
@@ -3790,7 +3793,7 @@ public sealed partial class ClientSession : IAsyncDisposable {
 
             version = this._secretsVersion;
             if (version == Interlocked.Read(ref this._savedSecretsVersion)) {
-                return;
+                return true;
             }
 
             copy = this._secrets.Clone();
@@ -3798,14 +3801,16 @@ public sealed partial class ClientSession : IAsyncDisposable {
 
         lock (this._saveLock) {
             if (version <= this._savedSecretsVersion) {
-                return;
+                return true;
             }
 
             try {
                 this._store.Save(copy);
                 Interlocked.Exchange(ref this._savedSecretsVersion, version);
+                return true;
             } catch (Exception ex) {
                 this.Log(NoticeLevel.Error, $"Couldn't save keys: {ex.Message}");
+                return false;
             }
         }
     }

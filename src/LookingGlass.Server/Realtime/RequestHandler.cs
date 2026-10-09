@@ -34,8 +34,8 @@ public sealed class RequestException(ErrorCode code, string message) : Exception
     /// <summary>A key login signed correctly, refused because the account signed out everywhere else (see <see cref="Protocol.Error.SignedOut"/>).</summary>
     public bool SignedOut { get; init; }
 
-    /// <summary>With <see cref="SignedOut"/>: the ID of the device that signed out everywhere else (see <see cref="Protocol.Error.SignedOutBy"/>).</summary>
-    public byte[]? SignedOutBy { get; init; }
+    /// <summary>With <see cref="SignedOut"/>: which device signed out everywhere else, and when (see <see cref="Protocol.Error.SignedOutBy"/>).</summary>
+    public SignOutRow? SignedOutBy { get; init; }
 }
 
 /// <summary>
@@ -302,8 +302,10 @@ public sealed class RequestHandler(
             var error = Error(ex.Code, ex.Message);
             error.Error.Block = ex.Block;
             error.Error.SignedOut = ex.SignedOut;
-            if (ex.SignedOutBy != null) {
-                error.Error.SignedOutBy = ByteString.CopyFrom(ex.SignedOutBy);
+            if (ex.SignedOutBy is { } by) {
+                error.Error.SignedOutBy = ByteString.CopyFrom(by.DeviceId);
+                error.Error.SignedOutByAddedUnix = by.DeviceAddedAt;
+                error.Error.SignedOutAtUnix = by.At;
             }
             return error;
         } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
@@ -805,8 +807,8 @@ public sealed class RequestHandler(
         }
 
         var tokenHash = string.IsNullOrEmpty(request.DeviceToken) ? null : HashToken(request.DeviceToken);
-        long previousUse = 0, thisUse = 0;
-        var userId = tokenHash == null ? null : db.FindDevice(tokenHash, out previousUse, out thisUse);
+        // Not a use of the login yet: that is recorded once every check below has passed (a refused login isn't one).
+        var userId = tokenHash == null ? null : db.DeviceOwner(tokenHash);
         var user = userId == null ? null : db.GetUser(userId.Value);
         // A retired key has no devices (retiring deletes them, and none are added for it); checked here too, so that holds
         // whatever adds a device.
@@ -832,8 +834,12 @@ public sealed class RequestHandler(
         // A retirement or registration (each revokes every device, then disconnects the account) that landed after the
         // checks above, and disconnected the account before this connection was online, would leave it logged in with a
         // deleted login. Checked again now that it is online: anything revoking the login from here on disconnects it.
-        // (Without recording another use: the client compares the one recorded above with its next login's previous one.)
-        var current = db.DeviceOwner(tokenHash!) == user.UserId ? db.GetUser(user.UserId) : null;
+        // And now, with everything checked, the use is recorded, with the client's nonce for it: the client compares when the
+        // login was used before, and with which nonce, with its own last login (see AuthenticateOk.previous_used_unix).
+        var nonce = request.LoginNonce.Length is > 0 and <= MaxLoginNonceBytes ? request.LoginNonce.ToByteArray() : [];
+        var current = db.FindDevice(tokenHash!, nonce, out var previousUse, out var previousNonce, out var thisUse) == user.UserId
+            ? db.GetUser(user.UserId)
+            : null;
         if (current == null || db.IsKeyRetired(current.UserId, current.SigningKey)) {
             connection.User = null;
             connection.DeviceTokenHash = null;
@@ -842,7 +848,10 @@ public sealed class RequestHandler(
         }
 
         return new Response {
-            AuthenticateOk = new AuthenticateOk { User = user.ToProto(), KeyVersion = user.KeyVersion, PreviousUsedUnix = previousUse, UsedUnix = thisUse },
+            AuthenticateOk = new AuthenticateOk {
+                User = user.ToProto(), KeyVersion = user.KeyVersion, PreviousUsedUnix = previousUse, UsedUnix = thisUse,
+                PreviousLoginNonce = ByteString.CopyFrom(previousNonce),
+            },
         };
     }
 
@@ -951,7 +960,7 @@ public sealed class RequestHandler(
             throw this.BlockedAccount(connection, user!.UserId, ban);
         }
 
-        if (refusal == null && db.SignedOutBy(user!.UserId) is { } signedOutBy) {
+        if (refusal == null && db.SignedOut(user!.UserId) is { } signedOut) {
             // "Sign out everywhere else": signed by the account's key, so only its holder learns why (as for a ban), and no login
             // is made. Answered correctly, so no failure either: a computer signed out tries again on every connection.
             if (pending!.CountedForAddress) {
@@ -959,7 +968,7 @@ public sealed class RequestHandler(
             }
 
             logger.LogInformation("Key login for {User} from {Address} refused: the account signed out its other devices", user.UserId, connection.RemoteAddress);
-            throw new RequestException(ErrorCode.NotAuthenticated, KeyLoginSignedOut) { SignedOut = true, SignedOutBy = signedOutBy };
+            throw new RequestException(ErrorCode.NotAuthenticated, KeyLoginSignedOut) { SignedOut = true, SignedOutBy = signedOut };
         }
 
         if (refusal == null) {
@@ -1104,6 +1113,9 @@ public sealed class RequestHandler(
     /// <summary>The most sign-out nonces a connection holds at once (the newest).</summary>
     private const int MaxSignOutNonces = 4;
 
+    /// <summary>The longest Authenticate.login_nonce kept (a client sends 16 bytes); a longer one is taken as none.</summary>
+    private const int MaxLoginNonceBytes = 32;
+
     /// <summary>
     /// The account's devices, oldest first: when each was added and last used, its ID, and which this connection logged in
     /// with; and a fresh nonce for a "Sign out everywhere else" on this connection to sign.
@@ -1200,7 +1212,7 @@ public sealed class RequestHandler(
         }
 
         connection.SignOutNonces.Add((nonce, now + SignOutNonceLifetime));
-        var devices = new Devices { SignOutNonce = ByteString.CopyFrom(nonce) };
+        var devices = new Devices { SignOutNonce = ByteString.CopyFrom(nonce), SignedOutAtUnix = db.SignedOut(userId)?.At ?? 0 };
         var thisTokenHash = connection.DeviceTokenHash;
         devices.List.AddRange(db.GetDevices(userId).Select(device => new Device {
             Id = ByteString.CopyFrom(device.DeviceId),

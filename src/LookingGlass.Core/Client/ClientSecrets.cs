@@ -44,10 +44,17 @@ public sealed class ClientSecrets {
     public long? LastLoginUnix { get; set; }
 
     /// <summary>
-    /// This computer used "Sign out everywhere else" (with this identity's current registration): if it is later signed out by
-    /// its own device's ID, it lost its own login, rather than a copy of it signing everyone else out.
+    /// When this computer last used "Sign out everywhere else", as the server dated it (Devices.signed_out_at_unix), with this
+    /// login. If it is later signed out by its own device's ID at that same time, it lost its own login since; at another
+    /// time, a copy of its login did it.
     /// </summary>
-    public bool SignedOutOthers { get; set; }
+    public long? SignedOutOthersAt { get; set; }
+
+    /// <summary>
+    /// The nonces (hex) of this computer's logins whose answers haven't come (yet), at most a few: if the server says the login
+    /// was last used with one of them, that was this computer, not a copy of its login elsewhere. Cleared once a login is answered.
+    /// </summary>
+    public List<string>? UnansweredLoginNonces { get; set; }
 
     public long? UserId { get; set; }
 
@@ -169,7 +176,8 @@ public sealed class ClientSecrets {
         this.PendingDeviceToken = null;
         this.ThisDeviceId = null;
         this.LastLoginUnix = null;
-        this.SignedOutOthers = false;
+        this.SignedOutOthersAt = null;
+        this.UnansweredLoginNonces = null;
         this.EpochKeys.Clear();
         this.EpochKeyPositions.Clear();
     }

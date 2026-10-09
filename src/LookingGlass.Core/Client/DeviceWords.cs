@@ -78,8 +78,27 @@ public static class DeviceWords {
         $"This computer's saved LookingGlass login may have been used somewhere else {When(when)}, since you last played here. If that " +
         "wasn't you, use \"Sign out everywhere else\" in Settings; if it happens again, use \"Reset my identity\".");
 
+    /// <summary>"Sign out everywhere else" wasn't sent: the new login it would give this computer couldn't be saved first.</summary>
+    public static readonly Wording CouldntSaveNewLogin = new(NoticeKind.General,
+        "Nothing was signed out: LookingGlass couldn't save this computer's new login to its secrets file first (see /xllog), and " +
+        "without it saved, a lost answer could leave this computer with no login the server knows. Check that the plugin's config " +
+        "folder can be written to, then try again.",
+        "Nothing was signed out: LookingGlass couldn't save this computer's new login to its files first. Check that the plugin's " +
+        "config folder can be written to, then try again.");
+
     /// <summary>The status of a computer whose login and identity key the server refuses after "Sign out everywhere else".</summary>
-    public static Wording SignedOutStatus(SignedOutBy by) => by switch {
+    /// <param name="signerAdded">
+    /// When the computer that did it was added, if the server says: one the player set up lately may be theirs, and they can
+    /// tell by when. Not said when it was this computer.
+    /// </param>
+    public static Wording SignedOutStatus(SignedOutBy by, DateTimeOffset? signerAdded = null) {
+        var status = StatusOf(by);
+        return signerAdded is { } added && by != SignedOutBy.ThisComputer
+            ? status.Map(text => $"{text} The computer that did it was added {When(added)}.")
+            : status;
+    }
+
+    private static Wording StatusOf(SignedOutBy by) => by switch {
         SignedOutBy.ThisComputer => new Wording(NoticeKind.SignedOutElsewhere,
             "This computer used \"Sign out everywhere else\", which stops your identity key signing in, and the server has lost this " +
             "computer's login since. Register again through the Lodestone (below): that lets the key sign in again.",
@@ -88,10 +107,11 @@ public static class DeviceWords {
         SignedOutBy.UnknownComputer => new Wording(NoticeKind.SignedOutElsewhere,
             "A device this computer has never seen used \"Sign out everywhere else\" (or a copy of this computer's own login did): someone " +
             "else may hold your identity key. Use \"Reset my identity\" (below): it retires the key, and registering moves your channels " +
-            "to a new one. Don't just register again with this key: that would let them sign in again.",
+            "to a new one. Only register again with this key if that device was yours (one you set up lately, say): otherwise it would " +
+            "let them sign in again.",
             "You were signed out by a computer this one has never seen (with \"Sign out everywhere else\"). Someone else may have a copy " +
             "of your LookingGlass files. Use \"Reset my identity\" (below): it sets LookingGlass up afresh and takes your channels back. " +
-            "Don't just register again: that would keep the setup they copied."),
+            "Only register again if that computer was yours (one you set up lately, say): registering keeps the setup they may have copied."),
         _ => new Wording(NoticeKind.SignedOutElsewhere,
             "Another of your computers used \"Sign out everywhere else\": the server revoked this computer's login, and your identity key " +
             "can't sign in again until this character is registered again through the Lodestone. Register again (below) to use " +
@@ -160,7 +180,10 @@ public static class DeviceWords {
         yield return LoginUsedElsewhere(null);
         foreach (var by in new[] { SignedOutBy.ThisComputer, SignedOutBy.YourOtherComputer, SignedOutBy.UnknownComputer }) {
             yield return SignedOutStatus(by);
+            yield return SignedOutStatus(by, when);
         }
+
+        yield return CouldntSaveNewLogin;
 
         yield return SignedOutOthers(0);
         yield return SignedOutOthers(1);

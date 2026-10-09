@@ -354,16 +354,17 @@ public sealed class ClientConnection {
                 using var timeout = new CancellationTokenSource(FlushGrace);
                 await this._socket.CloseOutputAsync(this._abortStatus, reason.Length > 120 ? reason[..120] : reason, timeout.Token);
             }
-        } catch (Exception ex) when (ex is TimeoutException or OperationCanceledException or WebSocketException or ObjectDisposedException or IOException) {
-            // Not sent in time, or gone already: closed below either way.
-        }
 
-        // A client that doesn't take what is queued, or answer the close, doesn't hold the connection open.
-        await Task.Delay(FlushGrace);
-        try {
-            this._cts.Cancel();
+            // A client that doesn't take what is queued, or answer the close, doesn't hold the connection open.
+            await Task.Delay(FlushGrace);
         } catch (Exception) {
-            // Its callbacks' problem (see Abort); the connection is closed anyway.
+            // Not sent in time, or gone already (whatever the socket throws): closed below either way.
+        } finally {
+            try {
+                this._cts.Cancel();
+            } catch (Exception) {
+                // Its callbacks' problem (see Abort); the connection is closed anyway.
+            }
         }
     }
 

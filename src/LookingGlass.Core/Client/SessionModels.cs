@@ -328,6 +328,12 @@ public sealed class ServerErrorException(ErrorCode code, string message, string?
 
     /// <summary>With <see cref="SignedOut"/>: the ID of the device that did, as the server says (empty if it doesn't).</summary>
     public byte[] SignedOutBy { get; init; } = [];
+
+    /// <summary>With <see cref="SignedOut"/>: when that device was added, and when it did it (Unix seconds; 0 if not said).</summary>
+    public long SignedOutByAddedUnix { get; init; }
+
+    /// <inheritdoc cref="SignedOutByAddedUnix"/>
+    public long SignedOutAtUnix { get; init; }
 }
 
 /// <summary>The connection closed before the request was answered.</summary>

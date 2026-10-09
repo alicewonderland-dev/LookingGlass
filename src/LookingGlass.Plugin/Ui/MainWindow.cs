@@ -380,20 +380,17 @@ public sealed class MainWindow : Window {
         // sight (below the window's bottom at its usual size, which testers took for no Verify button at all).
         if (rejected && challenge == null) {
             if (snapshot.SignedOutElsewhere) {
-                this.DrawSignedOut(snapshot.SignedOutBy, player, advanced);
-                if (snapshot.SignedOutBy == SignedOutBy.UnknownComputer) {
-                    // Registering again would keep the key a thief may hold: resetting is what to do, so registering isn't offered here.
-                    ImGui.PopTextWrapPos();
-                    ImGui.Unindent(indent);
-                    return;
-                }
+                this.DrawSignedOut(snapshot, player, advanced);
             } else {
                 this.DrawLoginNotRecognised(session, advanced);
             }
         }
 
         const string howItChecks = "LookingGlass checks that the character is yours with a short code you put in your Lodestone profile for a few minutes.";
-        ImGui.TextUnformatted(rejected ? "Register again" : "Register this character");
+        // Signed out by a computer this one never saw: resetting is what to do (above); registering again keeps the key a
+        // thief may hold, so it is only offered second, for when that computer was the player's own.
+        ImGui.TextUnformatted(snapshot.SignedOutBy == SignedOutBy.UnknownComputer ? "Or register again, only if that computer was yours"
+            : rejected ? "Register again" : "Register this character");
         ImGui.TextColored(Widgets.Muted, !rejected || snapshot.SignedOutElsewhere ? howItChecks
             : advanced ? "Only needed if your identity key was lost or replaced, or this server has never known your account; it replaces your login but keeps the identity key the plugin has, so your channels keep working. " + howItChecks
             : "Only needed if your LookingGlass was reset or its files were lost, or this server has never known you; it replaces your login, and your channels keep working. " + howItChecks);
@@ -541,9 +538,11 @@ public sealed class MainWindow : Window {
     /// Another computer used "Sign out everywhere else": this one's login and identity key are refused until the character is
     /// registered again (below). Trying again can't help, so there's no Retry, only what to do.
     /// </summary>
-    private void DrawSignedOut(SignedOutBy by, PlayerInfo player, bool advanced) {
+    private void DrawSignedOut(SessionSnapshot snapshot, PlayerInfo player, bool advanced) {
+        var by = snapshot.SignedOutBy;
         Widgets.IconText(FontAwesomeIcon.ExclamationTriangle, DeviceWords.SignedOutTitle(by), Widgets.Warning);
-        ImGui.TextUnformatted(DeviceWords.SignedOutStatus(by).For(advanced));
+        // The session's status: it says when the computer that did it was added, if the server said.
+        ImGui.TextUnformatted(snapshot.StatusFor(advanced) ?? DeviceWords.SignedOutStatus(by).For(advanced));
         ImGui.TextColored(Widgets.Muted, $"Server: {this._config.ServerUrl}");
         ImGui.Spacing();
         if (by == SignedOutBy.UnknownComputer) {

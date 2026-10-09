@@ -4,6 +4,7 @@ using LookingGlass.Core.Crypto;
 using LookingGlass.Protocol;
 using LookingGlass.Server.Data;
 using LookingGlass.Server.Hosting;
+using Microsoft.Extensions.DependencyInjection;
 using static LookingGlass.Tests.Harness;
 
 namespace LookingGlass.Tests;
@@ -248,8 +249,9 @@ public sealed class DeviceNoticeTests : IAsyncLifetime {
         Assert.True(snapshot.LoginRejected);
         // It had seen the computer that did it: one of the player's own.
         Assert.Equal(SignedOutBy.YourOtherComputer, snapshot.SignedOutBy);
-        Assert.Equal(DeviceWords.SignedOutStatus(SignedOutBy.YourOtherComputer).Plain, snapshot.StatusFor(advanced: false));
-        Assert.Equal(DeviceWords.SignedOutStatus(SignedOutBy.YourOtherComputer).Technical, snapshot.StatusFor(advanced: true));
+        Assert.StartsWith(DeviceWords.SignedOutStatus(SignedOutBy.YourOtherComputer).Plain, snapshot.StatusFor(advanced: false));
+        Assert.StartsWith(DeviceWords.SignedOutStatus(SignedOutBy.YourOtherComputer).Technical, snapshot.StatusFor(advanced: true));
+        Assert.Contains("The computer that did it was added on ", snapshot.StatusFor(advanced: false));
         Assert.Equal(signedOutToken, otherStore.Load().DeviceToken);
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => signedOut.Session.RetryLoginAsync(Ct));
@@ -547,6 +549,11 @@ public sealed class DeviceNoticeTests : IAsyncLifetime {
         var snapshot = await WaitFor(() => back.Session.Snapshot is { SignedOutBy: SignedOutBy.UnknownComputer } s ? s : null);
         Assert.Equal(ConnectionState.LoginNotRecognized, snapshot.State);
         Assert.Contains("Reset my identity", snapshot.StatusFor(advanced: false));
+        // It may be the player's own new computer: said when that one was added, for them to recognise.
+        var thiefAdded = this._server.Database.GetDevices(userId).Single().AddedAt;
+        var addedText = DateTimeOffset.FromUnixTimeSeconds(thiefAdded).ToLocalTime().ToString("g");
+        Assert.Contains($"was added on {addedText}", snapshot.StatusFor(advanced: false));
+        Assert.Contains($"was added on {addedText}", snapshot.StatusFor(advanced: true));
         Assert.Equal(token, store.Load().DeviceToken);
         await back.Session.DisposeAsync();
 
@@ -602,6 +609,150 @@ public sealed class DeviceNoticeTests : IAsyncLifetime {
         Assert.Equal(ErrorCode.NotAuthenticated, refused?.Code);
         Assert.False(refused!.SignedOut);
         Assert.Equal(ConnectionState.Ready, renewed.Session.Snapshot.State);
+    }
+
+    /// <summary>
+    /// "This computer did it" goes by when: a copy of this computer's login signing out everywhere else after this computer
+    /// once did isn't taken for this computer's own sign-out.
+    /// </summary>
+    [Fact]
+    public async Task AnEarlierSignOutOfThisComputersIsntTakenForALaterOne() {
+        var store = new InMemorySecretStore();
+        var alice = await this._server.RegisterAsync("Alice Twice Out", store);
+        using var keys = alice.LoadIdentity();
+        var userId = alice.UserId;
+        Assert.Equal(0, await alice.Session.SignOutOtherDevicesAsync(Ct));
+        await alice.Session.DisposeAsync();
+        var mine = store.Load();
+        Assert.NotNull(mine.SignedOutOthersAt);
+        // This computer's sign-out was a while ago.
+        mine.SignedOutOthersAt -= 100;
+        store.Save(mine);
+
+        // Later, a copy of this computer's login signs out everywhere else.
+        await using (var copy = await this.LogInRawAsync(mine.DeviceToken!, offerDevices: true)) {
+            Assert.NotNull((await this.SignOutRawAsync(copy, keys, userId, mine.DeviceToken!, DeviceTokens.New())).Devices);
+        }
+
+        var back = this._server.StartClient(alice.Name, store);
+        await WaitFor(() => back.Session.Snapshot is { SignedOutBy: SignedOutBy.UnknownComputer } s ? s : null);
+    }
+
+    // ================================================================ signing out: saving first, and copies of the login
+
+    /// <summary>
+    /// The new login must be on disk before it is sent: if it can't be saved, nothing is sent (an answer lost then would leave
+    /// this computer with no login the server knows), and the player is told plainly.
+    /// </summary>
+    [Fact]
+    public async Task AFailedSaveSendsNoSignOut() {
+        var store = new FailingSecretStore();
+        var alice = await this._server.RegisterAsync("Alice Cant Save", store);
+        await DevicesShown(alice);
+        store.Fail = true;
+
+        var refused = await Assert.ThrowsAsync<InvalidOperationException>(() => alice.Session.SignOutOtherDevicesAsync(Ct));
+        Assert.Contains("couldn't save", PlainMessages.MessageOf(refused, advanced: false));
+        Assert.DoesNotContain(alice.Session.GetTrace(), entry => entry.Outgoing && entry.Summary.EndsWith(" SignOutOtherDevices"));
+        Assert.False(this._server.Database.IsKeyLoginOff(alice.UserId));
+        Assert.Equal(ConnectionState.Ready, alice.Session.Snapshot.State);
+
+        // Once it can save again, it works.
+        store.Fail = false;
+        Assert.Equal(0, await alice.Session.SignOutOtherDevicesAsync(Ct));
+        Assert.Null(store.Load().PendingDeviceToken);
+    }
+
+    /// <summary>A login the server refused (a ban, say) isn't a use of it: no "used elsewhere" once it is let in again.</summary>
+    [Fact]
+    public async Task ARefusedLoginIsntAUseOfIt() {
+        var store = new InMemorySecretStore();
+        var alice = await this._server.RegisterAsync("Alice Banned Once", store);
+        await DevicesShown(alice);
+        await alice.Session.DisposeAsync();
+        var token = store.Load().DeviceToken!;
+        this.LastUsedAnHourAgo(store, token);
+
+        var bans = this._server.Factory.Services.GetRequiredService<LookingGlass.Server.Services.BanList>();
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        this._server.Database.AddBan(alice.UserId, null, "", null, false, now, out _);
+        bans.Refresh();
+        await using (var refused = await this._server.ConnectRawAsync()) {
+            Assert.Equal(ErrorCode.Blocked, (await refused.SendAsync(new ClientFrame { Authenticate = new Authenticate { DeviceToken = token } })).Error?.Code);
+        }
+
+        this._server.Database.LiftBans(alice.UserId, null, now);
+        bans.Refresh();
+        var back = await this._server.RestartAsync(alice);
+        await DevicesShown(back);
+        await Task.Delay(100, Ct);
+        Assert.DoesNotContain(back.Notices, notice => notice.Kind == NoticeKind.LoginUsedElsewhere);
+    }
+
+    /// <summary>
+    /// A login of this computer's whose answer was lost on the way is still its own: the next login isn't taken for a copy
+    /// used elsewhere. One made elsewhere still is.
+    /// </summary>
+    [Fact]
+    public async Task ALoginWhoseAnswerWasLostIsntTakenForACopy() {
+        var store = new InMemorySecretStore();
+        var alice = await this._server.RegisterAsync("Alice Lost Login", store);
+        await DevicesShown(alice);
+        await alice.Session.DisposeAsync();
+        var token = store.Load().DeviceToken!;
+        this.LastUsedAnHourAgo(store, token);
+
+        var drop = new[] { 1 };
+        var options = this._server.Options(wrap: socket => new RewritingWebSocket(socket, frame => {
+            if (frame.Response?.AuthenticateOk != null && Interlocked.Exchange(ref drop[0], 0) == 1) {
+                throw new IOException("The answer was lost on the way.");
+            }
+
+            return frame;
+        }));
+        var back = await this._server.RestartAsync(alice, options);
+        await DevicesShown(back);
+        Assert.True(back.Session.GetTrace().Count(entry => entry.Outgoing && entry.Summary.EndsWith(" Authenticate")) >= 2);
+        await Task.Delay(100, Ct);
+        Assert.DoesNotContain(back.Notices, notice => notice.Kind == NoticeKind.LoginUsedElsewhere);
+        await back.Session.DisposeAsync();
+
+        // A copy of the login used elsewhere (it sends no nonce of this computer's), later: told.
+        this.LastUsedAnHourAgo(store, token);
+        await using (var copy = await this.LogInRawAsync(token, offerDevices: true)) {
+        }
+
+        var again = await this._server.RestartAsync(back);
+        await WaitFor(() => again.Notices.FirstOrDefault(notice => notice.Kind == NoticeKind.LoginUsedElsewhere));
+    }
+
+    /// <summary>
+    /// This computer's login was last used an hour ago, as far as both the server and this computer know: so a use recorded
+    /// now shows as one, whatever second it lands in.
+    /// </summary>
+    private void LastUsedAnHourAgo(InMemorySecretStore store, string token) {
+        var hourAgo = DateTimeOffset.UtcNow.AddHours(-1);
+        this._server.Database.SetDeviceLastUsedForTests(RetireIdentityProof.TokenHash(token), hourAgo);
+        var secrets = store.Load();
+        secrets.LastLoginUnix = hourAgo.ToUnixTimeSeconds();
+        store.Save(secrets);
+    }
+
+    /// <summary>A store whose saves fail while <see cref="Fail"/> is set, as a full disk or a file held open would.</summary>
+    private sealed class FailingSecretStore : ISecretStore {
+        private readonly InMemorySecretStore _inner = new();
+
+        public volatile bool Fail;
+
+        public ClientSecrets Load() => this._inner.Load();
+
+        public void Save(ClientSecrets secrets) {
+            if (this.Fail) {
+                throw new IOException("The disk is full.");
+            }
+
+            this._inner.Save(secrets);
+        }
     }
 
     // ================================================================ being told: timing and many at once
@@ -898,6 +1049,9 @@ public sealed class DeviceNoticeTests : IAsyncLifetime {
         Assert.Null(db.FindDevice(mine));
         Assert.True(db.IsKeyLoginOff(user.UserId));
         Assert.Equal(before.DeviceId, db.SignedOutBy(user.UserId));
+        var signedOut = db.SignedOut(user.UserId)!;
+        Assert.Equal(before.AddedAt, signedOut.DeviceAddedAt);
+        Assert.InRange(signedOut.At, DateTimeOffset.UtcNow.AddMinutes(-1).ToUnixTimeSeconds(), DateTimeOffset.UtcNow.AddMinutes(1).ToUnixTimeSeconds());
         Assert.False(db.AddDeviceForKey(user.UserId, user.SigningKey, user.KeyVersion, RandomHash()));
         Assert.Null(db.SignOutOtherDevices(user.UserId, theirs, RandomHash()));
 
@@ -924,7 +1078,9 @@ public sealed class DeviceNoticeTests : IAsyncLifetime {
             Assert.True(db.AddDeviceForKey(77, user.SigningKey, user.KeyVersion, token));
             Assert.True(db.AddDeviceForKey(77, user.SigningKey, user.KeyVersion, other));
             Execute(path, "ALTER TABLE users DROP COLUMN key_login_off; ALTER TABLE users DROP COLUMN signed_out_by; " +
-                          "ALTER TABLE devices DROP COLUMN device_id; DELETE FROM schema_version WHERE version >= 11;");
+                          "ALTER TABLE users DROP COLUMN signed_out_by_added; ALTER TABLE users DROP COLUMN signed_out_at; " +
+                          "ALTER TABLE devices DROP COLUMN device_id; ALTER TABLE devices DROP COLUMN last_login_nonce; " +
+                          "DELETE FROM schema_version WHERE version >= 11;");
             Database.ReleasePooledConnections(path);
 
             var migrated = new Database(path);
@@ -1029,6 +1185,10 @@ public sealed class DeviceNoticeTests : IAsyncLifetime {
         Assert.StartsWith("Your LookingGlass character signed in from 3 other computers, the last on ",
             DeviceWords.SignedInElsewhere(3, new DateTimeOffset(2026, 10, 9, 12, 0, 0, TimeSpan.Zero)).Plain);
         Assert.Contains("Reset my identity", DeviceWords.SignedOutStatus(SignedOutBy.UnknownComputer).Plain);
+        var added = new DateTimeOffset(2026, 10, 9, 12, 0, 0, TimeSpan.Zero);
+        Assert.EndsWith($"The computer that did it was added on {added.ToLocalTime():g}.", DeviceWords.SignedOutStatus(SignedOutBy.UnknownComputer, added).Plain);
+        Assert.DoesNotContain("was added", DeviceWords.SignedOutStatus(SignedOutBy.ThisComputer, added).Plain);
+        PlainLanguage.AssertPlain(DeviceWords.CouldntSaveNewLogin.Plain);
         Assert.DoesNotContain("another computer", DeviceWords.SignedOutStatus(SignedOutBy.ThisComputer).Plain, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Sign out everywhere else", DeviceWords.LoginUsedElsewhere(null).Plain);
     }

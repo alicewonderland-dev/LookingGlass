@@ -149,6 +149,10 @@ message Error {
   // With signed_out: the ID (Device.id) of the device that signed out everywhere else, so the client can tell whether it was
   // one it has seen (one of the player's own computers), itself, or one it never saw. Empty if the server doesn't know.
   bytes signed_out_by = 5;
+  // With signed_out: when that device was added (Unix seconds, 0 if not known), for the player to recognise it; and when it
+  // signed out everywhere else, which the device that did it was told (Devices.signed_out_at_unix).
+  int64 signed_out_by_added_unix = 6;
+  int64 signed_out_at_unix = 7;
 }
 
 // A block (ban) made by the server's operator.
@@ -309,6 +313,10 @@ message RegistrationComplete {
 
 message Authenticate {
   string device_token = 1;
+  // 16 random bytes, fresh for each try: the server keeps the one of the login's last use, and says it the next time
+  // (AuthenticateOk.previous_login_nonce), so a client can tell its own login whose answer it never got from a copy of its
+  // login used elsewhere. Empty from an older plugin. Added without a version change.
+  bytes login_nonce = 2;
 }
 
 message AuthenticateOk {
@@ -319,6 +327,8 @@ message AuthenticateOk {
   // login was used elsewhere meanwhile (a copy of it). 0 from an older server. Added without a version change.
   int64 previous_used_unix = 3;
   int64 used_unix = 4;
+  // The login_nonce that last use was made with (empty if none, or from an older plugin).
+  bytes previous_login_nonce = 5;
 }
 
 // Key login: a user the server knows gets a new device token by signing a challenge with
@@ -425,6 +435,9 @@ message Devices {
   // 32 random bytes for one SignOutOtherDevices on this connection to sign and name, within a few minutes (the last few given
   // are good, so lists asked for at once don't spoil each other's).
   bytes sign_out_nonce = 3;
+  // When the account last signed out everywhere else, while its key login is off (Unix seconds); 0 otherwise. In answer to
+  // SignOutOtherDevices, when this one did.
+  int64 signed_out_at_unix = 4;
 }
 
 // The account just got a new device (a key login, or a registration), not this connection's: sent to the account's
