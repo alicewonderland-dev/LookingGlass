@@ -859,8 +859,10 @@ word. A malicious or compromised server can therefore:
   head, which each of their messages carries (see
   [Log heads in messages](#log-heads-in-messages)). A server careful to show
   each member only their own version is then seen to split them, but not
-  proven to: each is told the other sees a different member list, and
-  comparing check codes over /tell settles it.
+  proven to: each is told the other sees a different member list, with check
+  codes to compare over /tell. Codes settle it only between two honest members
+  at the same entry number (see
+  [Log heads in messages](#log-heads-in-messages)).
 
 The new keys' signature stops it binding someone else's keys, not its own.
 
@@ -1079,26 +1081,38 @@ check code to compare over /tell, which is where the truth comes out.
     must wait for its once-a-minute turn) the sender is named: an ordinary
     warning (light red, not critical), "Bob seems to see a different member
     list for Tea party from yours. Either the server is showing them different
-    members, or something is wrong with their LookingGlass", with the user's
-    check code. When the server showed no entry there, it says so too.
+    members, or something is wrong with their LookingGlass", with both check
+    codes at that number: the one the sender's head names, and the user's own
+    there. When the server showed no entry there, it says so too.
   - **A position the client hasn't reached.** It fetches the log and verifies
     it as always (any problem found is reported as such), then compares as
     above. If the server's own log ends before that position, or three tries
     in a row (a minute apart at least) don't reach it, the sender is named the
-    same way.
-- **The mark on the member.** Whoever is named is also marked in the member
-  list (a warning sign: "Sees a different member list"), and the channel list
-  flags the channel for it, below a warning about the server. The mark stays
-  until their messages agree with this client's log again, or they leave; the
-  warning is said once until then.
+    same way, with the code their head names, and a note that the user doesn't
+    have that entry yet.
+- **The mark on the member.** Whoever's head disagrees is also marked in the
+  member list (a warning sign: "Sees a different member list"), and the
+  channel list flags the channel for it, below a warning about the server.
+  They are marked even when a warning about the server is already on the
+  channel; only the second warning is left out then. The mark remembers the
+  entry where they disagreed, and stays until a message of theirs agrees at
+  that entry or a later one, or they leave. An older head that agrees takes
+  nothing off: a message sent before the split and delivered late (or held
+  back by the server to be delivered just then) says nothing about where the
+  two part. When the mark goes, what was looked into about their heads is
+  forgotten, so a new disagreement is looked into and told again.
 - **Check codes.** Above every channel's member list is its check code: the
-  number of the newest entry this client verified and 20 digits from its hash
-  ("#12 48213 90412 33187 00921"; "Check code" in simple mode, "Log head" in
-  advanced). Members who verified the same log have the same code once their
-  numbers match. Comparing member lists isn't enough: when the server shows two
-  members different key recovered entries for Dave, both lists say "Dave".
-  The warning naming a member includes the user's own code, so the two compare
-  codes over /tell, which the server can't touch.
+  number of the newest entry this client verified and 25 digits from its hash
+  ("#12 48213 90412 33187 00921 55102"; "Check code" in simple mode, "Log
+  head" in advanced). Members who verified the same log have the same code at
+  the same number. Comparing member lists isn't enough: when the server shows
+  two members different key recovered entries for Dave, both lists say "Dave".
+  The warning naming a member gives the code at the number their message names
+  (theirs, and the user's own there), so the two compare over /tell, which the
+  server can't touch. That settles it only between two honest members at the
+  same number: if one is further on, the codes differ anyway, and if the
+  member is the one lying, their word over /tell is worth no more than their
+  head.
 - **Why a member can't do more harm with it.** A false head is signed by its
   sender, so it is evidence against them: it never brings the warning that
   blames the server, only the one naming them, and the mark on them. It can
@@ -1112,6 +1126,9 @@ check code to compare over /tell, which is where the truth comes out.
   answers each of them with their own version, so neither can blame it: both
   are told, naming the other, with codes that differ. That is the cue to compare
   over /tell.
+- **What it can't find.** A server that never delivers a member's messages to
+  someone gives them no head to compare: that is undetectable this way. The
+  people involved would notice the missing chat.
 - **Caught-up messages** are compared too, once their batch is shown: their
   heads are older, and are compared with what the client verified at their
   position (or let go if too far back). The chat log on this computer keeps no
@@ -1197,7 +1214,7 @@ knows it by, and a disband would end the channel for everyone.
 | A former member signs invites for ghosts | Invalid: the inviter isn't a member at that point in the log |
 | An ordinary member invites ghosts | Invalid: rank is part of the signed log |
 | The server hides a removal | The remover's client, and everyone who saw the removal, reject keys made for the older position, and warn that the server may be hiding a change |
-| The server shows different member lists to different clients | Needs a member to sign two different entries at the same position; a client that sees both reports a fork. Key recovered entries are the exception: the server can show different ones to different clients, which only comparing logs reveals. Members' messages carry their log heads, so the first message across the split shows that the two disagree, on both sides; unless the server's own answers give it away, each is told the other sees a different member list, with a check code to compare over /tell, which settles it (see [Log heads in messages](#log-heads-in-messages)) |
+| The server shows different member lists to different clients | Needs a member to sign two different entries at the same position; a client that sees both reports a fork. Key recovered entries are the exception: the server can show different ones to different clients, which only comparing logs reveals. Members' messages carry their log heads, so the first message across the split shows that the two disagree, on both sides; unless the server's own answers give it away, each is told the other sees a different member list, with check codes to compare over /tell, which settles it between two honest members at the same entry number. A server that never delivers someone's messages leaves nothing to compare, though the missing chat shows (see [Log heads in messages](#log-heads-in-messages)) |
 | An old key is reused after registering again | The old key stopped being a member when it was removed, or when a key recovered entry moved the place to the new key |
 | An old channel name is replayed | Names are bound to the log position and a revision counter |
 

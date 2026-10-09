@@ -99,7 +99,7 @@ same check code. Both A and B on this build unless a step says otherwise.
       A on this build and B on the older one chat both ways: every message
       arrives as before, with no error or warning on either side.
 - [ ] 19. Check codes. In the channel window, above the member list, A and B
-      each see a line "Check code: #12 48213 90412 33187 00921" (the numbers
+      each see a line "Check code: #12 48213 90412 33187 00921 55102" (the numbers
       will differ from these). Both see the same code. In advanced mode it is
       labelled "Log head", with the same code. Hovering it explains what it is
       for, in plain words in simple mode. After step 17's change, both codes
