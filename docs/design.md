@@ -49,8 +49,12 @@ channels, invites, ranks, automatic rekeys, encrypted messages, the signed
 membership log, online indicators, blocking, channel windows (pop-out chat),
 message catch-up (what was sent while you were away), an opt-in chat log on the
 player's computer, local chat with friends near you (`/lgl`), flags for abuse
-and the operator's bans, and debug tooling. ChatTwo integration and the import
-wizard come next. LookingGlass isn't moving to MLS (see [MLS](#mls)).
+and the operator's bans, and debug tooling. Part of the ChatTwo integration is
+built: sticky mode through ChatTwo's input (with its typed-text check) and
+**Invite to LookingGlass** in ChatTwo's right-click menu. Channel names and
+colours for ChatTwo's own tabs and filters aren't, as they need a change on
+ChatTwo's side, and the import wizard comes next. LookingGlass isn't moving to
+MLS (see [MLS](#mls)).
 
 ## Glossary
 
@@ -166,7 +170,13 @@ The client has three layers:
 - **The core library** does the protocol, cryptography and key handling. It
   keeps keys in an encrypted store on disk.
 
-ChatTwo will talk to the game-thread side over IPC.
+ChatTwo talks to the game-thread side over IPC. That is built for sticky mode
+(the plugin asks ChatTwo what its main input holds, and names the channel in
+its input) and for the right-click invite item. What isn't built is giving
+ChatTwo the channels' names and colours for its own tabs and filters, which
+needs a change on ChatTwo's side (see *ChatTwo* under
+[Client design](#client-design) and the
+[open question](#open-questions) on IPC names).
 
 The server has four:
 
@@ -2442,9 +2452,9 @@ arrow brings back a message that wasn't sent: the game's own chat box adds the
 line to its history before running it, and ChatTwo keeps its own. (The first
 version added kept lines itself, which would now add the game's twice.)
 
-**Leaving.** It ends when any of these happens. With verbose channel messages
-on, one line says so every time. Off, the line is said only for a stop the
-player didn't choose (`StickyMessages.ChosenByThePlayer`, a unit test lists
+**Leaving.** It ends when any of these happens. With **Say when I start or stop
+talking in a channel** on, one line says so every time. Off, the line is said
+only for a stop the player didn't choose (`StickyMessages.ChosenByThePlayer`, a unit test lists
 every `StickyEnd`, so a new one has to be put on one side on purpose, and one
 it doesn't know is said). The player's own, marked *(own)* below
 (`ChannelSwitched`, `ChatBoxSwitched`, `Stopped`), are quiet; the rest
@@ -2512,11 +2522,11 @@ at every tab switch, and when its input loses focus or Escape is pressed after
 a one-off channel. The cost: picking the current channel again in a picker
 doesn't end it either.
 
-With verbose channel messages on, the line is printed for a channel switch
-too, though the player usually made it. Before the setting it always was, as
-the line told them their typing goes to game chat again; the owner's testing
+With **Say when I start or stop talking in a channel** on, the line is printed
+for a channel switch too, though the player usually made it. Before the
+setting it always was, as the line told them their typing goes to game chat again; the owner's testing
 showed the labels already tell them that, so it is off by default. Moving to
-another LookingGlass channel says "Now talking in" instead (verbose on), or
+another LookingGlass channel says "Now talking in" instead (setting on), or
 nothing (off): the labels change to the new tag in the same frame.
 
 **The indicator.** While sticky, the channel's tag (`[sky]` or `[LGC3]`)
@@ -2669,7 +2679,8 @@ about it:
   `/ecl1` to `/ecl8` are registered Dalamud commands. LookingGlass doesn't
   register ExtraChat's commands, so ChatTwo shows "LookingGlass [sky] (Warning:
   Party)". The ChatTwo sentence said once at a start (after "Now talking in"
-  with verbose channel messages on, on its own with them off) says what
+  with **Say when I start or stop talking in a channel** on, on its own with
+  it off) says what
   it means: ChatTwo's own channel underneath; what is typed still goes to the
   LookingGlass channel (from any ChatTwo input not set to a tell), and a
   short command typed in the main input talks in that game channel once.
@@ -3462,9 +3473,9 @@ built around channels; it is now built into sticky mode rather than beside it:
   that holds channels (windows, unread counts, the chat log, slots, nicknames,
   colours, snapshots) is ever given it. Checking membership skips it, so it is
   never ended for not being in a channel.
-- **What it shows.** "Now talking in [Local]." (with **Verbose channel
-  messages** on, as for a channel), "LG [Local]" in the server info bar (its
-  tooltip names the friends near rather than a channel) and "LookingGlass
+- **What it shows.** "Now talking in [Local]." (with **Say when I start or
+  stop talking in a channel** on, as for a channel), "LG [Local]" in the
+  server info bar (its tooltip names the friends near rather than a channel) and "LookingGlass
   [Local]" in ChatTwo's input, both in local chat's colour, and `[Local]`
   where the game's chat input names its channel, uncoloured, as a channel's
   tag is there (`ChatInterop.SetChannelLabel` writes plain text). The ChatTwo
@@ -3534,9 +3545,9 @@ The checks to make in game are in
 **What it doesn't do (choices made when building it):**
 
 - **Not in channel windows, and always in game chat.** It isn't a channel, so
-  no channel window shows it, and **Show LookingGlass messages only in
+  no channel window shows it, and **Show LookingGlass only in
   windows** doesn't move it: like the other lines no window could show, it
-  stays in game chat (the setting's tooltip says so). There is no "Show in
+  stays in game chat. There is no "Show in
   game chat" for it. A tab for local chat could come later.
 - **Not kept.** Not in the chat log on this computer, not caught up (the
   server stores nothing), not counted as unread.
@@ -4160,9 +4171,10 @@ read a week of stored messages, and it would cost a native Rust library in
 the game process and in the server. Instead, smaller hardening comes first: a
 notice when the identity signs in from another device, with a list of devices
 and **Sign out everywhere else** (H1), members' log heads gossiped inside
-messages (H2), and a maximum epoch age of about 7 days (H3), all in progress
-for the public release; then the two features above after it. 1.0 promises
-no post-compromise security.
+messages (H2), and a maximum epoch age of about 7 days (H3), for the public
+release (H3 is built: see [Keys have a maximum age](#keys-have-a-maximum-age);
+H1 and H2 are still in progress); then the two features above after it. 1.0
+promises no post-compromise security.
 
 Look at MLS again if:
 
