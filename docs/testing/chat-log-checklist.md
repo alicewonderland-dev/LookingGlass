@@ -130,4 +130,5 @@ key, made by hand the same way, changes nothing you can see.
       game chat, in `sky`'s window or anywhere else, for A or for B.
 - [ ] 23. Send a line each way: both show as usual. Log out and in: **Show
       older messages** shows the lines from before and after the new key.
-      `/xllog`: the rekey's lines show no names and no channel names.
+      `/xllog`, with Dalamud's log level at Debug (the rekey's lines show only
+      then): they show no names and no channel names.

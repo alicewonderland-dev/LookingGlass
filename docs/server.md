@@ -451,7 +451,9 @@ back, a copy per member each, about 250 bytes a copy): at most about 8 MB for a
 channel of 500 members that was rekeyed 64 times in a week, normally a few KB.
 Plugins also rekey each channel whose key is a week old (see
 [Keys have a maximum age](design.md#keys-have-a-maximum-age)): about one
-rekey per active channel a week, which nothing on the server needs set for.
+rekey a week for each quiet channel with a member online who can make it
+(a channel whose members change gets new keys anyway), which nothing on the
+server needs set for.
 
 Lower `Messages:KeepDays` or `Messages:MaxPerChannel` (and restart) to use
 less; the next sweep, at startup, applies them. `0` for either turns catch-up

@@ -1147,8 +1147,10 @@ message sent from then on. Now a key is replaced once it is **7 days** old
 messages.
 
 **Who makes it.** As for any automatic rekey, a member who is online: while
-connected, a client looks at its channels' keys at login and every 10 minutes.
-For a channel whose newest key is older than 7 days, it makes the next one if
+connected, a client looks at its channels' keys once its login's catch-up is
+over, and every 10 minutes after. (Not before: live messages held back during
+the catch-up are taken under an older key only within 2 minutes of a newer one
+arriving, so a key made at login could cut them off.) For a channel whose newest key is older than 7 days, it makes the next one if
 it could make any automatic rekey: a member under the keys it has (not a place
 under old keys, not a forgotten place), holding the channel's current key and
 name (not waiting for a key), with no rekey for a membership change waiting
@@ -1162,9 +1164,10 @@ word: a server that changes the time breaks the signature, and the time isn't
 believed. Capped by when this client got the key (it was made before then), so
 a time ahead can't keep a key in use longer. A key that doesn't say (an older
 plugin made it, or its time didn't check out) counts from when this client got
-it (`KeyPosition.HeldSinceMs`, saved). Keys kept by a version from before this
-saved neither, and count from the update, so updating doesn't make every
-channel's key look old at once.
+it (`KeyPosition.HeldSinceMs`, saved). Keys kept by an earlier version have no
+such time: those from builds since 2026-10-07 saved their maker's signed time,
+and count from it; older ones saved neither, and count from the update, so
+updating doesn't make every channel's key look old at once.
 
 **No rekey storm.** Each client waits a random time of up to 10 minutes before
 trying, then checks again that the key is still old and it still may: members
@@ -1172,9 +1175,12 @@ online together pick different waits, so the first one makes the key and the
 others hold it by the time their wait ends, and stop. Two that try at once are
 settled as any rekeys at once: the server takes only the next epoch, so the
 first wins, and the other is refused ("no longer at that epoch"), fetches the new
-key and gives up. A client tries at most once per channel an hour, whatever happens
-(a refusal, a lost connection), and the server's rekey rate limit (5, then 1
-every 2 seconds) still applies.
+key and gives up. While the plugin runs, a client tries at most once per
+channel an hour, whatever happens (a refusal, a lost connection); this isn't
+saved, so reloading the plugin or restarting the game allows a try at once.
+The server's rekey rate limit (5, then 1 every 2 seconds) still applies. If a
+membership change arrives during the wait, the try makes the rekey it needs,
+and a failure of that one is told as any failed rekey is.
 
 **Nothing else changes.** It is an ordinary rekey: the new key is sealed to
 every member at the log's head, signed with that position and the time it was
@@ -1209,8 +1215,8 @@ messages, well inside the 64 the server keeps keys for.
 
 **Limits.** A server can keep an old key in use by refusing every new key, or
 not passing them on (it can withhold, not forge); a refusing server costs each
-client one try per channel an hour, silently. Nobody makes a key while no
-member who could is online. A member whose clock is days slow sees keys as
+client one try per channel an hour while the plugin runs, silently. Nobody
+makes a key while no member who could is online. A member whose clock is days slow sees keys as
 younger, and leaves it to another; one whose clock is days fast has its keys
 refused by the server for their time, as any rekey of theirs. Not testable in
 game (it takes a week): automated tests (`EpochMaxAgeTests`) cover it with a
