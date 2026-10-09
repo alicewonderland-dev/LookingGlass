@@ -24,8 +24,10 @@ review has been replaced by the review the owner chose.
 3. **Hardening as recommended.** Before the public release: H1 (a notice when
    the identity signs in from another device, a list of devices, and **Sign
    out everywhere else**), H2 (members' log heads gossiped inside messages)
-   and H3 (a maximum epoch age of about 7 days). These three are being built
-   now, and each gets its own section in [design.md](design.md). After the
+   and H3 (a maximum epoch age of about 7 days). H3 and H2 are built and merged (see
+   [Keys have a maximum age](design.md#keys-have-a-maximum-age) and
+   [Log heads in messages](design.md#log-heads-in-messages)); H1 is still being
+   built, and gets its own section in [design.md](design.md) when it is. After the
    public release: H4 (an optional strict mode) and H5 (an optional passphrase
    for the local key file on Wine and Proton).
 4. **No promise of post-compromise security in 1.0.**
@@ -170,8 +172,8 @@ is a good protocol.
    milestones this is now M4's gate, in place of M0's old one ("The
    cryptography spec is reviewed").
 3. **Make these hardening changes**, each small and additive. As decided, H1
-   to H3 come before the public release and are being built now; H4 and H5
-   come after it.
+   to H3 come before the public release (H2 and H3 are built and merged; H1 is
+   being built now); H4 and H5 come after it.
    - **H1. Tell players when their identity signs in elsewhere.** Today a key
      login issues a new device token and "other devices keep theirs", silently.
      Someone with a copy of the secrets file can sign in with the key and read
@@ -503,8 +505,8 @@ Kept short, since it isn't recommended.
 | --- | --- | --- |
 | 1 | Correct the MLS section of the design, record the decision and triggers | S (done 2026-10-09) |
 | 1, in parallel | H1 sign-in notices and device list | S to M (in progress) |
-| 1, in parallel | H2 log head in messages | S (in progress) |
-| 1, in parallel | H3 maximum epoch age | S (in progress) |
+| 1, in parallel | H2 log head in messages | S (done: merged) |
+| 1, in parallel | H3 maximum epoch age | S (done: merged) |
 | 2 | Protocol specification and threat model for the reviewers, drawn from the finalized design and the code | M |
 | 3 | Adversarial reviews by several models, against the specification and the code | The owner's time to run them and sort the findings |
 | 4 | Fix the findings, and review the fixes the same way | Unknown until the reviews; plan for M |

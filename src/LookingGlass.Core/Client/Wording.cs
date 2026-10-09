@@ -32,6 +32,11 @@ public enum NoticeKind {
     ChannelKeyRejected,
     /// <summary>A member's keys can't be sealed to, so the channel can't be rekeyed until they're removed.</summary>
     CantSealTo,
+    /// <summary>
+    /// A member's message says they verified a different membership than the server shows this client: the server shows them
+    /// another, or their client is wrong. Their word only, so a warning naming them, not one blaming the server.
+    /// </summary>
+    MemberSeesOtherMembership,
 
     // ---- Messages that were dropped
     /// <summary>From someone who isn't a member.</summary>

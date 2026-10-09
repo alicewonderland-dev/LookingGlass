@@ -545,4 +545,266 @@ public sealed class MaliciousServerTests : IAsyncLifetime {
         await WaitFor(() => alice.Notices.FirstOrDefault(n => n.Text.Contains("failed signature or decryption")));
         Assert.DoesNotContain(alice.Messages, m => m.Text == "who wrote this?");
     }
+
+    // ---------------------------------------------------------------- log heads in messages
+
+    /// <summary>
+    /// The server shows two members different versions of the log (here, two entries the admin signed at the same position:
+    /// it holds her keys, or showed her another log to sign after), each the one version only. Nothing in either version gives
+    /// it away. Alice's first message reaches Carol with Alice's log head inside, and does: the server's log at that
+    /// position isn't the one Carol verified, so she gets the same warning as for any fork, on the channel too. The message is
+    /// shown all the same, and Carol keeps what she verified.
+    /// </summary>
+    [Fact]
+    public async Task AForkShownToTwoMembersIsFoundThroughAMessage() {
+        var alice = await this._server.RegisterAsync("Alice Gossip");
+        var carol = await this._server.RegisterAsync("Carol Gossip");
+        var dave = await this._server.RegisterAsync("Dave Gossip");
+        var erin = await this._server.RegisterAsync("Erin Gossip");
+        var channelId = await alice.Session.CreateChannelAsync("Gossip", Ct);
+        await AddMemberAsync(alice, channelId, carol);
+        var forkPoint = this._server.Database.GetChannel(channelId)!.LogHead;
+
+        var forCarol = this._server.ForgeEntry(channelId, alice, MembershipEntryKind.Invite, dave.UserId, dave.Keys(), after: forkPoint);
+        var forAlice = this._server.ForgeEntry(channelId, alice, MembershipEntryKind.Invite, erin.UserId, erin.Keys(), after: forkPoint);
+        await this.ShowForkAsync(channelId, carol, forCarol, alice, forAlice);
+
+        await alice.Session.SendTextAsync(channelId, "hello from my side", Ct);
+        await WaitFor(() => carol.Messages.FirstOrDefault(m => m.Text == "hello from my side"));
+        var notice = await WaitFor(() => carol.Notices.FirstOrDefault(n => n.Kind == NoticeKind.MembershipForked));
+        Assert.Equal(NoticeTone.Critical, NoticeColours.ToneOf(notice.Level, notice.Kind));
+        Assert.Contains("two different versions", carol.Session.Snapshot.FindChannel(channelId)!.MembershipWarning);
+        // The server is blamed, not Alice; and Carol keeps the version she verified.
+        Assert.DoesNotContain(carol.Notices, n => n.Kind == NoticeKind.MemberSeesOtherMembership);
+        Assert.Equal(MembershipEntries.PositionOf(forCarol), PositionOf(carol, channelId));
+
+        // The other way round, the server shows Alice the version she verified: from her side, only Carol's word says
+        // otherwise. So Alice is told, naming Carol, that Carol sees another member list, and the server isn't blamed.
+        await carol.Session.SendTextAsync(channelId, "and from mine", Ct);
+        await WaitFor(() => alice.Messages.FirstOrDefault(m => m.Text == "and from mine"));
+        var told = await WaitFor(() => alice.Notices.FirstOrDefault(n => n.Kind == NoticeKind.MemberSeesOtherMembership));
+        Assert.StartsWith("Carol Gossip@", told.Text);
+        Assert.Equal(NoticeTone.Warning, NoticeColours.ToneOf(told.Level, told.Kind));
+        Assert.DoesNotContain(alice.Notices, n => n.Kind == NoticeKind.MembershipForked);
+        Assert.Null(alice.Session.Snapshot.FindChannel(channelId)!.MembershipWarning);
+    }
+
+    /// <summary>
+    /// A key recovered entry is the server's word, signed by the new keys over no position, so the server can show members
+    /// different ones and no entry of either version gives it away: before log heads, only comparing whole logs did. Here
+    /// Dave, invited (so nothing is rekeyed), "moved" to one set of keys for Carol and another for Alice. Alice's message
+    /// gives the server away.
+    /// </summary>
+    [Fact]
+    public async Task DifferentKeyRecoveredEntriesShownToTwoMembersAreFoundThroughAMessage() {
+        var alice = await this._server.RegisterAsync("Alice Recovered Gossip");
+        var carol = await this._server.RegisterAsync("Carol Recovered Gossip");
+        var dave = await this._server.RegisterAsync("Dave Recovered Gossip");
+        var channelId = await alice.Session.CreateChannelAsync("Recovered Gossip", Ct);
+        await AddMemberAsync(alice, channelId, carol);
+        await alice.Session.InviteAsync(channelId, dave.Name, ProtocolInfo.DebugWorldName, Ct);
+        var forkPoint = this._server.Database.GetChannel(channelId)!.LogHead;
+        await WaitFor(() => PositionOf(carol, channelId).Seq == forkPoint.Seq ? new object() : null);
+
+        using var one = IdentityKeys.Generate();
+        using var two = IdentityKeys.Generate();
+        var log = this._server.ServerMembership(channelId);
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var forCarol = log.CreateKeyRecovered(dave.UserId, MemberKeys.Of(one), KeyRecoveryProof.Sign(one, dave.UserId), now);
+        var forAlice = log.CreateKeyRecovered(dave.UserId, MemberKeys.Of(two), KeyRecoveryProof.Sign(two, dave.UserId), now);
+        await this.ShowForkAsync(channelId, carol, forCarol, alice, forAlice);
+
+        await alice.Session.SendTextAsync(channelId, "dave is back", Ct);
+        await WaitFor(() => carol.Messages.FirstOrDefault(m => m.Text == "dave is back"));
+        await WaitFor(() => carol.Notices.FirstOrDefault(n => n.Kind == NoticeKind.MembershipForked));
+        Assert.Contains("two different versions", carol.Session.Snapshot.FindChannel(channelId)!.MembershipWarning);
+        Assert.DoesNotContain(carol.Notices, n => n.Kind == NoticeKind.MemberSeesOtherMembership);
+    }
+
+    /// <summary>
+    /// A careful server: it shows Carol her version of the log in every answer (its log, its head, its events), and Alice
+    /// hers, so neither ever sees the other's entry. Each one's messages still carry their head: both are told, naming the
+    /// other, that they seem to see a different member list, with their own check code to compare (and the codes differ),
+    /// and each marks the other in the member list. Neither blames the server: from either side, only the other's word says so.
+    /// </summary>
+    [Fact]
+    public async Task ACarefulServerShowingEachMemberTheirOwnVersionIsFoundOnBothSides() {
+        MembershipEntry? forAlice = null, forCarol = null;
+        var alice = await this._server.RegisterAsync("Alice Careful");
+        var carol = await this._server.RegisterAsync("Carol Careful",
+            options: this._server.Options(wrap: socket => new RewritingWebSocket(socket, frame => SwapEntry(frame, forAlice, forCarol))));
+        var dave = await this._server.RegisterAsync("Dave Careful");
+        var erin = await this._server.RegisterAsync("Erin Careful");
+        var channelId = await alice.Session.CreateChannelAsync("Careful", Ct);
+        await AddMemberAsync(alice, channelId, carol);
+        var forkPoint = this._server.Database.GetChannel(channelId)!.LogHead;
+
+        forCarol = this._server.ForgeEntry(channelId, alice, MembershipEntryKind.Invite, dave.UserId, dave.Keys(), after: forkPoint);
+        forAlice = this._server.ForgeEntry(channelId, alice, MembershipEntryKind.Invite, erin.UserId, erin.Keys(), after: forkPoint);
+        Assert.True(this._server.Database.AppendEntry(channelId, forAlice, SomeBox(), new byte[64]));
+        var added = new Event { LogEntryAdded = new LogEntryAdded { ChannelId = channelId, Entry = forAlice } };
+        await this._server.SendAndSettleAsync(alice, added);
+        await this._server.SendAndSettleAsync(carol, added);
+        Assert.Equal(MembershipEntries.PositionOf(forCarol), PositionOf(carol, channelId));
+        Assert.Equal(MembershipEntries.PositionOf(forAlice), PositionOf(alice, channelId));
+        // Asked again, the server still shows Carol hers.
+        await carol.Session.RefreshAsync(Ct);
+        Assert.Null(carol.Session.Snapshot.FindChannel(channelId)!.MembershipWarning);
+
+        await alice.Session.SendTextAsync(channelId, "my side", Ct);
+        await carol.Session.SendTextAsync(channelId, "mine", Ct);
+        var toCarol = await WaitFor(() => carol.Notices.FirstOrDefault(n => n.Kind == NoticeKind.MemberSeesOtherMembership));
+        var toAlice = await WaitFor(() => alice.Notices.FirstOrDefault(n => n.Kind == NoticeKind.MemberSeesOtherMembership));
+        Assert.StartsWith("Alice Careful@", toCarol.Text);
+        Assert.StartsWith("Carol Careful@", toAlice.Text);
+
+        var carolView = carol.Session.Snapshot.FindChannel(channelId)!;
+        var aliceView = alice.Session.Snapshot.FindChannel(channelId)!;
+        Assert.NotEqual(carolView.CheckCode, aliceView.CheckCode);
+        // Each warning gives both codes at that number: what the other's message names, and one's own.
+        foreach (var (notice, theirs, mine) in new[] { (toCarol, aliceView.CheckCode!, carolView.CheckCode!), (toAlice, carolView.CheckCode!, aliceView.CheckCode!) }) {
+            Assert.Contains(mine, notice.Text);
+            Assert.Contains(theirs, notice.Text);
+            Assert.Contains(mine, notice.Plain);
+            Assert.Contains(theirs, notice.Plain);
+        }
+
+        Assert.True(carolView.Members.Single(m => m.User.UserId == alice.UserId).SeesOtherMembership);
+        Assert.True(aliceView.Members.Single(m => m.User.UserId == carol.UserId).SeesOtherMembership);
+        Assert.Contains(ChannelAttention.Of(carolView, advanced: false).Reasons, reason => reason.Contains("Alice Careful@"));
+        foreach (var (client, view) in new[] { (alice, aliceView), (carol, carolView) }) {
+            Assert.DoesNotContain(client.Notices, n => n.Kind is NoticeKind.MembershipForked or NoticeKind.MembershipHidden);
+            Assert.Null(view.MembershipWarning);
+        }
+
+        // The server held back one of Alice's messages from before the split (its head, the entry before it, agrees with
+        // Carol's log) and delivers it now. That proves nothing about where they part: the mark on Alice stays, and Alice's
+        // next message (the same disagreeing head as before) still finds it there.
+        var epoch = carolView.Epoch;
+        await this._server.SendAndSettleAsync(carol, new Event { ChatMessage = alice.ForgeMessage(channelId, epoch, "held back", DateTimeOffset.UtcNow.AddSeconds(-30), forkPoint) });
+        Assert.Contains(carol.Messages, m => m.Text == "held back");
+        Assert.True(carol.Session.Snapshot.FindChannel(channelId)!.Members.Single(m => m.User.UserId == alice.UserId).SeesOtherMembership);
+        await alice.Session.SendTextAsync(channelId, "still my side", Ct);
+        await WaitFor(() => carol.Messages.FirstOrDefault(m => m.Text == "still my side"));
+        await this._server.SendAndSettleAsync(carol);
+        Assert.True(carol.Session.Snapshot.FindChannel(channelId)!.Members.Single(m => m.User.UserId == alice.UserId).SeesOtherMembership);
+        Assert.Single(carol.Notices, n => n.Kind == NoticeKind.MemberSeesOtherMembership);
+    }
+
+    public enum TargetedAnswer {
+        Empty,
+        Junk,
+        Error,
+    }
+
+    /// <summary>
+    /// A server can't talk a member's disagreeing head away. Bob's head names another entry where Carol verified hers; asked
+    /// for its entry there, the server answers with none, junk or an error. Its whole log is still the one Carol verified, so
+    /// nothing proves it forked; but Bob's signed word still disagrees with her log, so she is told, naming him.
+    /// </summary>
+    [Theory]
+    [InlineData(TargetedAnswer.Empty)]
+    [InlineData(TargetedAnswer.Junk)]
+    [InlineData(TargetedAnswer.Error)]
+    public async Task AServerCantTalkAMembersDisagreeingHeadAway(TargetedAnswer answer) {
+        ulong? targetedSeq = null;
+        var targeted = new System.Collections.Concurrent.ConcurrentDictionary<uint, byte>();
+        var options = this._server.Options(wrap: socket => new RewritingWebSocket(socket, frame => {
+            if (frame.Response is { } response && targeted.ContainsKey(response.RequestId)) {
+                switch (answer) {
+                    case TargetedAnswer.Empty:
+                        response.MembershipLog.Entries.Clear();
+                        break;
+                    case TargetedAnswer.Junk:
+                        response.MembershipLog.Entries[0].Signature = ByteString.CopyFrom(new byte[64]);
+                        break;
+                    default:
+                        return new ServerFrame { Response = new Response { RequestId = response.RequestId, Error = new Error { Code = ErrorCode.NotFound, Message = "Gone." } } };
+                }
+            }
+
+            return frame;
+        }, sent => {
+            if (sent.FetchMembershipLog is { } fetch && fetch.FromSeq == targetedSeq) {
+                targeted[sent.RequestId] = 0;
+            }
+        }));
+        var alice = await this._server.RegisterAsync("Alice Talked Away " + answer);
+        var bob = await this._server.RegisterAsync("Bob Talked Away " + answer);
+        var carol = await this._server.RegisterAsync("Carol Talked Away " + answer, options: options);
+        var channelId = await alice.Session.CreateChannelAsync("Talked Away", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        await AddMemberAsync(alice, channelId, carol);
+        var epoch = carol.Session.Snapshot.FindChannel(channelId)!.Epoch;
+        await WaitFor(() => bob.Store.Load().EpochKeys.GetValueOrDefault(channelId)?.ContainsKey(epoch) == true ? new object() : null);
+        var head = PositionOf(carol, channelId);
+        targetedSeq = head.Seq;
+
+        var other = new LogPosition { Seq = head.Seq, Hash = ByteString.CopyFrom(Enumerable.Repeat((byte) 0x5A, MembershipEntries.HashSize).ToArray()) };
+        await this._server.SendAndSettleAsync(carol, new Event { ChatMessage = bob.ForgeMessage(channelId, epoch, "believe me", DateTimeOffset.UtcNow, other) });
+        var notice = await WaitFor(() => carol.Notices.FirstOrDefault(n => n.Kind == NoticeKind.MemberSeesOtherMembership));
+        Assert.NotEmpty(targeted);
+        Assert.StartsWith($"Bob Talked Away {answer}@", notice.Text);
+        if (answer == TargetedAnswer.Empty) {
+            Assert.Contains("won't show you its entry", notice.Text);
+        }
+
+        Assert.True(carol.Session.Snapshot.FindChannel(channelId)!.Members.Single(m => m.User.UserId == bob.UserId).SeesOtherMembership);
+        Assert.DoesNotContain(carol.Notices, n => n.Kind is NoticeKind.MembershipForked or NoticeKind.MembershipHidden);
+    }
+
+    /// <summary>
+    /// Bob's head names another entry where Carol verified hers, and the server shows no entry there, nor (asked for its whole
+    /// log) anything from there on: it is hiding the membership Carol verified. That says more than Bob's word: she gets the
+    /// warning that the server won't show the membership as she verified it. Bob is still marked in the member list (his word
+    /// disagrees with her log too), but she isn't told about him as well: the warning on the server says more.
+    /// </summary>
+    [Fact]
+    public async Task AServerShowingNoEntryWhereAMemberDisagreesIsBlamedForHidingTheMembership() {
+        ulong? cut = null;
+        var options = this._server.Options(wrap: socket => new RewritingWebSocket(socket, frame => {
+            if (cut is { } from && frame.Response?.MembershipLog is { } log) {
+                var kept = log.Entries.Where(entry => entry.Seq < from).ToList();
+                log.Entries.Clear();
+                log.Entries.AddRange(kept);
+            }
+
+            return frame;
+        }));
+        var alice = await this._server.RegisterAsync("Alice Cut");
+        var bob = await this._server.RegisterAsync("Bob Cut");
+        var carol = await this._server.RegisterAsync("Carol Cut", options: options);
+        var channelId = await alice.Session.CreateChannelAsync("Cut", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        await AddMemberAsync(alice, channelId, carol);
+        var epoch = carol.Session.Snapshot.FindChannel(channelId)!.Epoch;
+        await WaitFor(() => bob.Store.Load().EpochKeys.GetValueOrDefault(channelId)?.ContainsKey(epoch) == true ? new object() : null);
+        var head = PositionOf(carol, channelId);
+        cut = head.Seq;
+
+        var other = new LogPosition { Seq = head.Seq, Hash = ByteString.CopyFrom(Enumerable.Repeat((byte) 0x6B, MembershipEntries.HashSize).ToArray()) };
+        await this._server.SendAndSettleAsync(carol, new Event { ChatMessage = bob.ForgeMessage(channelId, epoch, "see?", DateTimeOffset.UtcNow, other) });
+        var notice = await WaitFor(() => carol.Notices.FirstOrDefault(n => n.Kind == NoticeKind.MembershipHidden));
+        Assert.Equal(NoticeKind.MembershipHidden, notice.Kind);
+        Assert.NotNull(carol.Session.Snapshot.FindChannel(channelId)!.MembershipWarning);
+        await WaitFor(() => carol.Session.Snapshot.FindChannel(channelId)!.Members.Single(m => m.User.UserId == bob.UserId).SeesOtherMembership ? new object() : null);
+        await this._server.SendAndSettleAsync(carol);
+        Assert.DoesNotContain(carol.Notices, n => n.Kind == NoticeKind.MemberSeesOtherMembership);
+    }
+
+    /// <summary>
+    /// Shows <paramref name="first"/> only <paramref name="firstEntry"/>, and <paramref name="second"/> (and the server's log)
+    /// only <paramref name="secondEntry"/>, two different entries at the same position, as a server forking the log would.
+    /// </summary>
+    private async Task ShowForkAsync(string channelId, TestClient first, MembershipEntry firstEntry, TestClient second, MembershipEntry secondEntry) {
+        await this._server.SendAndSettleAsync(first, new Event { LogEntryAdded = new LogEntryAdded { ChannelId = channelId, Entry = firstEntry } });
+        Assert.True(this._server.Database.AppendEntry(channelId, secondEntry, SomeBox(), new byte[64]));
+        await this._server.SendAndSettleAsync(second, new Event { LogEntryAdded = new LogEntryAdded { ChannelId = channelId, Entry = secondEntry } });
+        Assert.Equal(MembershipEntries.PositionOf(firstEntry), PositionOf(first, channelId));
+        Assert.Equal(MembershipEntries.PositionOf(secondEntry), PositionOf(second, channelId));
+        Assert.Null(first.Session.Snapshot.FindChannel(channelId)!.MembershipWarning);
+        Assert.Null(second.Session.Snapshot.FindChannel(channelId)!.MembershipWarning);
+    }
+
+    private static SealedBox SomeBox() => new() { EphemeralPublicKey = ByteString.CopyFrom(new byte[32]), Ciphertext = ByteString.CopyFrom(new byte[48]) };
 }

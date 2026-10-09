@@ -49,8 +49,12 @@ channels, invites, ranks, automatic rekeys, encrypted messages, the signed
 membership log, online indicators, blocking, channel windows (pop-out chat),
 message catch-up (what was sent while you were away), an opt-in chat log on the
 player's computer, local chat with friends near you (`/lgl`), flags for abuse
-and the operator's bans, and debug tooling. ChatTwo integration and the import
-wizard come next. LookingGlass isn't moving to MLS (see [MLS](#mls)).
+and the operator's bans, and debug tooling. Part of the ChatTwo integration is
+built: sticky mode through ChatTwo's input (with its typed-text check) and
+**Invite to LookingGlass** in ChatTwo's right-click menu. Channel names and
+colours for ChatTwo's own tabs and filters aren't, as they need a change on
+ChatTwo's side, and the import wizard comes next. LookingGlass isn't moving to
+MLS (see [MLS](#mls)).
 
 ## Glossary
 
@@ -166,7 +170,13 @@ The client has three layers:
 - **The core library** does the protocol, cryptography and key handling. It
   keeps keys in an encrypted store on disk.
 
-ChatTwo will talk to the game-thread side over IPC.
+ChatTwo talks to the game-thread side over IPC. That is built for sticky mode
+(the plugin asks ChatTwo what its main input holds, and names the channel in
+its input) and for the right-click invite item. What isn't built is giving
+ChatTwo the channels' names and colours for its own tabs and filters, which
+needs a change on ChatTwo's side (see *ChatTwo* under
+[Client design](#client-design) and the
+[open question](#open-questions) on IPC names).
 
 The server has four:
 
@@ -1016,8 +1026,15 @@ word. A malicious or compromised server can therefore:
 - after the next rekey, read that channel's messages and act as that member,
   with their rank (as admin, say);
 - show different members different recoveries, since these entries carry no
-  member's signature. A client only notices by comparing the whole log, not
-  from a single entry.
+  member's signature. A client doesn't notice from a single entry, only by
+  comparing logs: the server's whole log with its own, or another member's log
+  head, which each of their messages carries (see
+  [Log heads in messages](#log-heads-in-messages)). A server careful to show
+  each member only their own version is then seen to split them, but not
+  proven to: each is told the other sees a different member list, with check
+  codes to compare over /tell. Codes settle it only between two honest members
+  at the same entry number (see
+  [Log heads in messages](#log-heads-in-messages)).
 
 The new keys' signature stops it binding someone else's keys, not its own.
 
@@ -1186,6 +1203,120 @@ user re-verified their character (see
 - **Rollbacks.** If the server shows a client an older log than it has already
   verified (it may be hiding a change, such as a removal), the client does the
   same.
+- **Through messages.** A server that shows each member only their own version
+  never shows anyone two. Each message carries its sender's log head, so the
+  others see that they disagree, though not always who lied (next section).
+
+### Log heads in messages
+
+Added before the public release, with the owner's agreement (October 2026).
+Without it, a server that keeps showing each member one version of the log,
+their own, is only found out when it slips and shows someone the other. Key
+recovered entries make that easy: they are the server's word, so it can show
+different ones to different members with nobody signing anything twice. The
+code is `ClientSession.LogHeads`; the tests are in `LogHeadTests`,
+`MaliciousServerTests` and `MaliciousMemberTests`.
+
+What it does and doesn't do, in short: a split between two members shows as
+soon as a message crosses it, on both sides, but a server careful enough to
+show each of them only their own version can't be proven to have lied. The
+warning then names the other member, not the server, and gives the user a
+check code to compare over /tell, which is where the truth comes out.
+
+- **What is sent.** Every channel message carries, inside its encrypted,
+  signed content, the sender's verified log head for that channel: the
+  sequence number and hash of the newest entry their client verified
+  (`Content.log_head`, a `LogPosition`). The hash is the entry's hash as the log
+  chains it (`MembershipEntries.Hash`, over the signed fields and the
+  signature: what the next entry's previous hash is). The server can't read or
+  change it. It is a field added as links were: older clients skip it, and a
+  message without one is taken as before, with nothing compared. About 40
+  bytes, under the same 4 KiB limit. Local chat has no channel, and no head.
+- **Compared on receipt**, after the message is shown, never holding it up:
+  - **Same hash** at that position: nothing to do. This is the usual case,
+    and is one lookup: a client remembers the hashes of the last 1,024 entries
+    it verified per channel (in memory; after a restart it carries on from the
+    hashes the saved membership kept, those since its last join or leave). A
+    position older than that is let go: if the logs differ there, they differ
+    at every later position too, and the sender's later messages carry later
+    heads.
+  - **Another hash at a position the client verified.** That the two logs
+    disagree is certain: the sender signed their head. Who is to blame isn't.
+    The client asks the server for its entry there, which can only make it
+    the server's fault, never clear anyone. If the server shows another entry
+    than the one the client verified, the fork check every log sync uses looks
+    into it; if it shows none, the same check fetches its whole log. When that
+    check blames the server (the critical "two different versions" warning, or
+    "won't show the membership as you have verified it"), with the channel
+    marked "check members", that warning stands. Otherwise (the server shows
+    the entry the client verified, or shows junk, or fails, or the fork check
+    must wait for its once-a-minute turn) the sender is named: an ordinary
+    warning (light red, not critical), "Bob seems to see a different member
+    list for Tea party from yours. Either the server is showing them different
+    members, or something is wrong with their LookingGlass", with both check
+    codes at that number: the one the sender's head names, and the user's own
+    there. When the server showed no entry there, it says so too.
+  - **A position the client hasn't reached.** It fetches the log and verifies
+    it as always (any problem found is reported as such), then compares as
+    above. If the server's own log ends before that position, or three tries
+    in a row (a minute apart at least) don't reach it, the sender is named the
+    same way, with the code their head names, and a note that the user doesn't
+    have that entry yet.
+- **The mark on the member.** Whoever's head disagrees is also marked in the
+  member list (a warning sign: "Sees a different member list"), and the
+  channel list flags the channel for it, below a warning about the server.
+  They are marked even when a warning about the server is already on the
+  channel; only the second warning is left out then. The mark remembers the
+  entry where they disagreed, and stays until a message of theirs agrees at
+  that entry or a later one, or they leave. An older head that agrees takes
+  nothing off: a message sent before the split and delivered late (or held
+  back by the server to be delivered just then) says nothing about where the
+  two part. When the mark goes, what was looked into about their heads is
+  forgotten, so a new disagreement is looked into and told again.
+- **Check codes.** Above every channel's member list is its check code: the
+  number of the newest entry this client verified and 25 digits from its hash
+  ("#12 48213 90412 33187 00921 55102"; "Check code" in simple mode, "Log
+  head" in advanced). Members who verified the same log have the same code at
+  the same number. Comparing member lists isn't enough: when the server shows
+  two members different key recovered entries for Dave, both lists say "Dave".
+  The warning naming a member gives the code at the number their message names
+  (theirs, and the user's own there), so the two compare over /tell, which the
+  server can't touch. That settles it only between two honest members at the
+  same number: if one is further on, the codes differ anyway, and if the
+  member is the one lying, their word over /tell is worth no more than their
+  head.
+- **Why a member can't do more harm with it.** A false head is signed by its
+  sender, so it is evidence against them: it never brings the warning that
+  blames the server, only the one naming them, and the mark on them. It can
+  make a client ask the server one question (one page of the log, or a log
+  sync when it claims to be ahead), at most once a minute per sender and
+  channel, and once per head claimed. A member could already say anything in a
+  message.
+- **Both sides.** When the server shows Alice and Carol different versions,
+  whichever of them the server's own log disagrees with gets the fork warning;
+  the other is told the first sees a different member list. A careful server
+  answers each of them with their own version, so neither can blame it: both
+  are told, naming the other, with codes that differ. That is the cue to compare
+  over /tell.
+- **What it can't find.** A server that never delivers a member's messages to
+  someone gives them no head to compare: that is undetectable this way. The
+  people involved would notice the missing chat.
+- **Caught-up messages** are compared too, once their batch is shown: their
+  heads are older, and are compared with what the client verified at their
+  position (or let go if too far back). The chat log on this computer keeps no
+  heads: messages read back from it aren't compared again.
+- **Not compared: your own messages**, including those sent from your other
+  computers (the same account is skipped). A split between your own computers
+  isn't found this way; comparing their check codes is.
+- **A possible follow-up (not built): settling a disagreement between members.**
+  A reviewer suggested that two members who disagree could send each other the
+  entries their logs hold from the point they part, so each could verify the
+  other's version. Caveats, recorded for if it is built: a key recovered entry
+  can never be proof of anything (it is the server's word, signed over no
+  position), so a dispute that comes down to two of them blames nobody; only
+  an entry signed by a third party (a member other than the two, signing two
+  entries at one position) would let a client escalate to the critical fork
+  warning. Until then, the check code over /tell is the way to settle it.
 
 ### Stale places and "Remove from my list"
 
@@ -1255,7 +1386,7 @@ knows it by, and a disband would end the channel for everyone.
 | A former member signs invites for ghosts | Invalid: the inviter isn't a member at that point in the log |
 | An ordinary member invites ghosts | Invalid: rank is part of the signed log |
 | The server hides a removal | The remover's client, and everyone who saw the removal, reject keys made for the older position, and warn that the server may be hiding a change |
-| The server shows different member lists to different clients | Needs a member to sign two different entries at the same position; a client that sees both reports a fork. Key recovered entries are the exception: the server can show different ones to different clients, which only comparing whole logs reveals |
+| The server shows different member lists to different clients | Needs a member to sign two different entries at the same position; a client that sees both reports a fork. Key recovered entries are the exception: the server can show different ones to different clients, which only comparing logs reveals. Members' messages carry their log heads, so the first message across the split shows that the two disagree, on both sides; unless the server's own answers give it away, each is told the other sees a different member list, with check codes to compare over /tell, which settles it between two honest members at the same entry number. A server that never delivers someone's messages leaves nothing to compare, though the missing chat shows (see [Log heads in messages](#log-heads-in-messages)) |
 | An old key is reused after registering again | The old key stopped being a member when it was removed, or when a key recovered entry moved the place to the new key |
 | An old channel name is replayed | Names are bound to the log position and a revision counter |
 
@@ -1299,6 +1430,91 @@ someone else's key arriving late) doesn't.
 Clients send with the newest key they hold, whatever epoch the server claims,
 and rekey first if that key predates the last join or leave.
 
+### Keys have a maximum age
+
+Built at the owner's request (2026-10-09, before the public release). A channel
+whose members don't change used to keep one epoch key for ever, so one key that
+leaked (a crash dump, a debug log, someone reading the game's memory) read every
+message sent from then on. Now a key is replaced once it is **7 days** old
+(`ClientSession.EpochMaxAge`), which bounds a leaked key to about a week of new
+messages.
+
+**Who makes it.** As for any automatic rekey, a member who is online: while
+connected, a client looks at its channels' keys once its login's catch-up is
+over, and every 10 minutes after. (Not before: live messages held back during
+the catch-up are taken under an older key only within 2 minutes of a newer one
+arriving, so a key made at login could cut them off.) For a channel whose newest key is older than 7 days, it makes the next one if
+it could make any automatic rekey: a member under the keys it has (not a place
+under old keys, not a forgotten place), holding the channel's current key and
+name (not waiting for a key), with no rekey for a membership change waiting
+(that one goes as it always does). Not in a channel it is alone in: nobody else
+could read what a leaked key opens, and anyone joining brings a new key anyway.
+The server isn't asked to choose, so it needs no change.
+
+**How old a key is.** By the time its maker signed into it
+(`SealedEpochKey.created_unix_ms`, `epoch-key-created/v1`), never the server's
+word: a server that changes the time breaks the signature, and the time isn't
+believed. Capped by when this client got the key (it was made before then), so
+a time ahead can't keep a key in use longer. A key that doesn't say (an older
+plugin made it, or its time didn't check out) counts from when this client got
+it (`KeyPosition.HeldSinceMs`, saved). Keys kept by an earlier version have no
+such time: those from builds since 2026-10-07 saved their maker's signed time,
+and count from it; older ones saved neither, and count from the update, so
+updating doesn't make every channel's key look old at once.
+
+**No rekey storm.** Each client waits a random time of up to 10 minutes before
+trying, then checks again that the key is still old and it still may: members
+online together pick different waits, so the first one makes the key and the
+others hold it by the time their wait ends, and stop. Two that try at once are
+settled as any rekeys at once: the server takes only the next epoch, so the
+first wins, and the other is refused ("no longer at that epoch"), fetches the new
+key and gives up. While the plugin runs, a client tries at most once per
+channel an hour, whatever happens (a refusal, a lost connection); this isn't
+saved, so reloading the plugin or restarting the game allows a try at once.
+The server's rekey rate limit (5, then 1 every 2 seconds) still applies. If a
+membership change arrives during the wait, the try makes the rekey it needs,
+and a failure of that one is told as any failed rekey is.
+
+**Nothing else changes.** It is an ordinary rekey: the new key is sealed to
+every member at the log's head, signed with that position and the time it was
+made, and carries the channel's name over. It is silent, like every automatic
+rekey: no notice, nothing in game chat, the channel windows or the chat log on
+this computer; the diagnostic log notes it at Debug, without names. Messages in
+flight under the old key are taken for 2 minutes, as after any rekey. Members
+who were away fetch the new key at login, as for any rekey; the stored
+messages under the old key (up to 7 days of them) stay readable to those who
+were sealed it, by the rules of [Message catch-up](#message-catch-up) (the
+new key's signed time ends the old epoch, and nobody's first epoch changes).
+On their own, age rekeys put at most two epochs within the 7 days of stored
+messages, well inside the 64 the server keeps keys for.
+
+**Decisions.**
+
+- **A client constant, not a server setting.** The server sends limits in
+  `Welcome`, but it isn't trusted with this: a client would have to refuse any
+  value longer than 7 days, so a server setting could only shorten it. Shorter
+  means more rekeys (each costs every member's client work) and more epochs
+  within the 7 days of stored messages, for little gain. If a shorter age is
+  wanted later, it can be added as an advertised value the client accepts
+  between a day and 7 days.
+- **Jitter in the client, not a server choice.** The server already picks a
+  rekeyer for membership changes, but the age is the client's to judge (by the
+  signed time), and the existing refusal of a second rekey for one epoch makes
+  concurrent tries harmless.
+- **Compatibility.** No protocol change and no new capability. A plugin from
+  before never starts one; it takes the new key as it takes any rekey (a member
+  could always "Force rekey"). A channel whose members online all run older
+  plugins keeps its key as before.
+
+**Limits.** A server can keep an old key in use by refusing every new key, or
+not passing them on (it can withhold, not forge); a refusing server costs each
+client one try per channel an hour while the plugin runs, silently. Nobody
+makes a key while no member who could is online. A member whose clock is days slow sees keys as
+younger, and leaves it to another; one whose clock is days fast has its keys
+refused by the server for their time, as any rekey of theirs. Not testable in
+game (it takes a week): automated tests (`EpochMaxAgeTests`) cover it with a
+moved clock.
+
 ### Channel names
 
 - The name is encrypted with the current epoch key, and re-encrypted on each
@@ -1323,7 +1539,9 @@ and rekey first if that key predates the last join or leave.
   the key the log has for them. A message under an older epoch is accepted
   only within 2 minutes of the client getting the newer key.
 - Inside the ciphertext, each message has a content kind (text today). A
-  client shows a kind it doesn't know as an unsupported message.
+  client shows a kind it doesn't know as an unsupported message. Beside the
+  kind, a message carries its sender's membership log head (see
+  [Log heads in messages](#log-heads-in-messages)).
 - The plugin sanitises all remote text before it reaches the chat log.
 
 #### Links in messages
@@ -1714,6 +1932,11 @@ again.
   up as messages some members can't decrypt.
 - **Rekeys seal to every member in the log**, including one whose "key
   changed" warning you haven't cleared.
+- **A server can keep an old key in use.** Keys are replaced once they are a
+  week old, but a server that refuses (or doesn't pass on) every new key keeps
+  the old one in use, and with it whatever a leaked copy reads. It can't make
+  a key look old to have it replaced over and over: the age is signed by the
+  key's maker (see [Keys have a maximum age](#keys-have-a-maximum-age)).
 - **Old places linger.** A place under a key its owner no longer has stays
   with that key until its owner registers new keys again (which moves it) or
   a moderator removes it. Its owner can remove it from their own list
@@ -1895,6 +2118,7 @@ messages need no server change at all.
 | Server capability | Message history, channel bans, file attachments, local chat | Yes | A new capability string and message types; old clients never see them |
 | Encrypted content kind | Emotes, replies, reactions, polls, typing state | No | A new content kind inside the ciphertext; older clients show "unsupported message" |
 | Encrypted field of a kind | Links in text messages | No | A new field of an existing kind, with a fallback in the old fields; older clients skip it and show the fallback (the text) |
+| Encrypted field of every message | The sender's log head | No | A new field of `Content` beside the kind; older clients skip it, and a message without it is taken as before |
 | Client-only feature | Chat filters, notifications, colours, sounds | No | A plugin update only |
 
 Within a major version, changes are additive only. Removing a field, or
@@ -1986,7 +2210,7 @@ These are plugin settings, kept per character, and never sent to the server.
   | Tone | Colour | What |
   |------|--------|------|
   | Information | LookingGlass blue (UIColor 37, 0x0099FF, the default `[LGC]` tag's) | Status and replies: "Now talking in", "Stopped talking in", every "Not sent", "A link in it couldn't be read", "Not connected", refusals to start, `/lgc` usage, "No channel has the nickname", the ChatTwo note, a right-click invite's "Invited" and "Couldn't invite", server announcements, "Joined", other notices at Info level |
-  | Warning | light red (UIColor 508, 0xFF8080) | Every notice at Warning or Error level that isn't critical: a key changed, a name now another account, ExtraChat is on, the server not showing a membership (`MembershipHidden`), a stale key offered, a bad channel key, dropped messages, couldn't load keys, "something went wrong" (a line kept) |
+  | Warning | light red (UIColor 508, 0xFF8080) | Every notice at Warning or Error level that isn't critical: a key changed, a name now another account, ExtraChat is on, the server not showing a membership (`MembershipHidden`), a stale key offered, a bad channel key, a member who seems to see a different member list (`MemberSeesOtherMembership`: their word only, so not critical), dropped messages, couldn't load keys, "something went wrong" (a line kept) |
   | Critical | dark red (UIColor 534, 0xAE0000) | By kind, whatever the level: a forked membership (`MembershipForked`), members shown different memberships (`MembersShownDifferently`), a removal not in effect, so a removed member may still read (`RemovalNotInEffect`), the server refusing a key and hiding a change (`ServerRefusesKey`), a relayed registration code (`RelayedRegistrationCode`) |
 
   A line about a channel ("Now talking in [sky].") shows the tag in the
@@ -2412,9 +2636,9 @@ arrow brings back a message that wasn't sent: the game's own chat box adds the
 line to its history before running it, and ChatTwo keeps its own. (The first
 version added kept lines itself, which would now add the game's twice.)
 
-**Leaving.** It ends when any of these happens. With verbose channel messages
-on, one line says so every time. Off, the line is said only for a stop the
-player didn't choose (`StickyMessages.ChosenByThePlayer`, a unit test lists
+**Leaving.** It ends when any of these happens. With **Say when I start or stop
+talking in a channel** on, one line says so every time. Off, the line is said
+only for a stop the player didn't choose (`StickyMessages.ChosenByThePlayer`, a unit test lists
 every `StickyEnd`, so a new one has to be put on one side on purpose, and one
 it doesn't know is said). The player's own, marked *(own)* below
 (`ChannelSwitched`, `ChatBoxSwitched`, `Stopped`), are quiet; the rest
@@ -2482,11 +2706,11 @@ at every tab switch, and when its input loses focus or Escape is pressed after
 a one-off channel. The cost: picking the current channel again in a picker
 doesn't end it either.
 
-With verbose channel messages on, the line is printed for a channel switch
-too, though the player usually made it. Before the setting it always was, as
-the line told them their typing goes to game chat again; the owner's testing
+With **Say when I start or stop talking in a channel** on, the line is printed
+for a channel switch too, though the player usually made it. Before the
+setting it always was, as the line told them their typing goes to game chat again; the owner's testing
 showed the labels already tell them that, so it is off by default. Moving to
-another LookingGlass channel says "Now talking in" instead (verbose on), or
+another LookingGlass channel says "Now talking in" instead (setting on), or
 nothing (off): the labels change to the new tag in the same frame.
 
 **The indicator.** While sticky, the channel's tag (`[sky]` or `[LGC3]`)
@@ -2639,7 +2863,8 @@ about it:
   `/ecl1` to `/ecl8` are registered Dalamud commands. LookingGlass doesn't
   register ExtraChat's commands, so ChatTwo shows "LookingGlass [sky] (Warning:
   Party)". The ChatTwo sentence said once at a start (after "Now talking in"
-  with verbose channel messages on, on its own with them off) says what
+  with **Say when I start or stop talking in a channel** on, on its own with
+  it off) says what
   it means: ChatTwo's own channel underneath; what is typed still goes to the
   LookingGlass channel (from any ChatTwo input not set to a tell), and a
   short command typed in the main input talks in that game channel once.
@@ -3432,9 +3657,9 @@ built around channels; it is now built into sticky mode rather than beside it:
   that holds channels (windows, unread counts, the chat log, slots, nicknames,
   colours, snapshots) is ever given it. Checking membership skips it, so it is
   never ended for not being in a channel.
-- **What it shows.** "Now talking in [Local]." (with **Verbose channel
-  messages** on, as for a channel), "LG [Local]" in the server info bar (its
-  tooltip names the friends near rather than a channel) and "LookingGlass
+- **What it shows.** "Now talking in [Local]." (with **Say when I start or
+  stop talking in a channel** on, as for a channel), "LG [Local]" in the
+  server info bar (its tooltip names the friends near rather than a channel) and "LookingGlass
   [Local]" in ChatTwo's input, both in local chat's colour, and `[Local]`
   where the game's chat input names its channel, uncoloured, as a channel's
   tag is there (`ChatInterop.SetChannelLabel` writes plain text). The ChatTwo
@@ -3504,9 +3729,9 @@ The checks to make in game are in
 **What it doesn't do (choices made when building it):**
 
 - **Not in channel windows, and always in game chat.** It isn't a channel, so
-  no channel window shows it, and **Show LookingGlass messages only in
+  no channel window shows it, and **Show LookingGlass only in
   windows** doesn't move it: like the other lines no window could show, it
-  stays in game chat (the setting's tooltip says so). There is no "Show in
+  stays in game chat. There is no "Show in
   game chat" for it. A tab for local chat could come later.
 - **Not kept.** Not in the chat log on this computer, not caught up (the
   server stores nothing), not counted as unread.
@@ -3944,7 +4169,8 @@ How to build, configure, deploy, back up and restore a server is in
   and a server that repeats, reorders or forges what it sends back), flags and
   bans (the thresholds, the commands, and what a ban refuses),
   end-to-end flows, local chat (who gets it, what the server checks and what
-  a receiver shows), and malicious-server and malicious-member suites that
+  a receiver shows), keys' maximum age (with a moved clock: a week is too long
+  to wait in game), and malicious-server and malicious-member suites that
   inject forged and replayed events.
 
 Acceptance tests for the membership log:
@@ -3953,7 +4179,12 @@ Acceptance tests for the membership log:
 2. A former member's invite is rejected.
 3. A non-moderator's invite is rejected.
 4. A hidden removal is detected by the remover.
-5. A forked log is reported.
+5. A forked log is reported. Also through a message's log head, when the
+   server's own log contradicts what one member verified (of a signed entry,
+   or of a key recovered entry). A server that shows each member only their
+   own version has both told, naming the other, with check codes to compare;
+   its empty, junk or failed answers don't stop that. A member's false log
+   head is put down to them, never to the server.
 6. All earlier malicious-server tests still pass.
 7. A key recovered entry that doesn't check out is refused (someone not in the
    channel, keys their place isn't under, keys they or someone else already
@@ -4130,9 +4361,10 @@ read a week of stored messages, and it would cost a native Rust library in
 the game process and in the server. Instead, smaller hardening comes first: a
 notice when the identity signs in from another device, with a list of devices
 and **Sign out everywhere else** (H1), members' log heads gossiped inside
-messages (H2), and a maximum epoch age of about 7 days (H3), all in progress
-for the public release; then the two features above after it. 1.0 promises
-no post-compromise security.
+messages (H2), and a maximum epoch age of about 7 days (H3), for the public
+release (H2 and H3 are built: see [Log heads in messages](#log-heads-in-messages)
+and [Keys have a maximum age](#keys-have-a-maximum-age); H1 is still in progress); then the two features above after it. 1.0
+promises no post-compromise security.
 
 Look at MLS again if:
 
@@ -4302,6 +4534,9 @@ The owner's decisions, and why.
   key) shuts the others out, key login included, until the character is
   registered again, and replaces this computer's login too. See
   [Other computers signing in](#other-computers-signing-in).
+- **Keys have a maximum age (2026-10-09).** A channel's key is replaced once it
+  is 7 days old, by a member online, silently; a client constant, not a server
+  setting (see [Keys have a maximum age](#keys-have-a-maximum-age)).
 - **Local chat looks up the friends near, and asks first (2026-10-08).** The
   server learning friends near the sender, those who don't use LookingGlass
   too, is accepted; the player is told what the server learns and accepts it

@@ -991,20 +991,26 @@ public sealed partial class ClientSession : IAsyncDisposable {
     /// epoch, and only for the log's head.
     /// </summary>
     /// <param name="force">Rekey even if no membership change is pending (debug tool).</param>
-    public async Task RekeyAsync(string channelId, CancellationToken ct = default, bool force = false) {
+    public Task RekeyAsync(string channelId, CancellationToken ct = default, bool force = false) =>
+        this.RekeyAsync(channelId, force ? RekeyReason.Forced : RekeyReason.Pending, ct);
+
+    /// <inheritdoc cref="RekeyAsync(string, CancellationToken, bool)"/>
+    /// <param name="reason">Why: decides whether it is still needed once this call's turn comes.</param>
+    private async Task RekeyAsync(string channelId, RekeyReason reason, CancellationToken ct) {
         var gate = this._channelLocks.GetOrAdd(channelId, _ => new SemaphoreSlim(1, 1));
         await gate.WaitAsync(ct);
         try {
             for (var attempt = 0; attempt < 3; attempt++) {
                 var (identity, me) = this.RequireIdentityAndUser();
                 var membership = await this.SyncLogAsync(channelId, ct, fetch: attempt == 0 ? LogFetch.IfBehind : LogFetch.Always);
-                var (serverEpoch, name, nameVersion, pending) = this.Read(() => {
+                var (serverEpoch, name, nameVersion, pending, tooOld) = this.Read(() => {
                     var channel = this._channels.GetValueOrDefault(channelId) ?? throw new InvalidOperationException("Unknown channel.");
-                    return (channel.ServerEpoch, channel.Name, channel.NameVersion, this.NeedsRekey(channel));
+                    return (channel.ServerEpoch, channel.Name, channel.NameVersion, this.NeedsRekey(channel),
+                        reason == RekeyReason.KeyTooOld && this.MayReplaceOldKey(channel, this._options.TimeProvider.GetUtcNow()));
                 });
 
                 // Someone else (or an earlier call) may have rekeyed while we waited for the gate.
-                if (!pending && !force) {
+                if (!pending && reason != RekeyReason.Forced && !tooOld) {
                     return;
                 }
 
@@ -1054,9 +1060,9 @@ public sealed partial class ClientSession : IAsyncDisposable {
                 try {
                     await this.RequestAsync(new ClientFrame { SubmitRekey = request }, ct);
                 } catch (ServerErrorException ex) when (ex.Code is ErrorCode.Conflict or ErrorCode.EpochStale) {
-                    // Someone else rekeyed first, or membership changed meanwhile.
+                    // Someone else rekeyed first, or membership changed meanwhile. Then only a change still waiting needs one.
                     await this.RefreshAsync(this.RequireConnection(), ct);
-                    force = false;
+                    reason = RekeyReason.Pending;
                     continue;
                 }
 
@@ -1078,7 +1084,8 @@ public sealed partial class ClientSession : IAsyncDisposable {
 
                 this.SaveSecrets();
                 this.Publish();
-                this.Log(NoticeLevel.Debug, $"Rekeyed {channelId} to epoch {newEpoch} for {sealedKeys.Keys.Count} members at log entry {position.Seq}");
+                this.Log(NoticeLevel.Debug, $"Rekeyed {channelId} to epoch {newEpoch} for {sealedKeys.Keys.Count} members at log entry {position.Seq}"
+                                            + (tooOld && !pending ? " (its key was too old)" : ""));
                 return;
             }
 
@@ -1202,12 +1209,14 @@ public sealed partial class ClientSession : IAsyncDisposable {
                 }
             }
 
-            // Always the newest key accepted, never an epoch the server merely claims.
-            var (epoch, key) = this.Read(() => {
+            // Always the newest key accepted, never an epoch the server merely claims. With the newest log position verified,
+            // inside the encrypted, signed content, for the other members to compare with theirs (see ClientSession.LogHeads).
+            var (epoch, key, head) = this.Read(() => {
                 var held = this.KeyEpochOf(channelId) ?? throw PlainMessages.Failure(PlainMessages.NoKeyToSend with { Technical = "You don't have this channel's key yet." });
-                return (held, this.GetEpochKey(channelId, held)!);
+                return (held, this.GetEpochKey(channelId, held)!, this.MembershipOf(channelId).Head?.Clone());
             });
 
+            content.LogHead = head;
             var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             var message = this._groupKeys.EncryptMessage(content, key, channelId, epoch, identity, me.UserId, timestamp);
             var maxBytes = this.Read(() => this._limits?.MaxMessageBytes ?? 4096);
@@ -1668,6 +1677,7 @@ public sealed partial class ClientSession : IAsyncDisposable {
 
         // In the background: a long absence can take a while, and nothing else needs to wait for it.
         this.StartCatchUp(connection, catchUp);
+        this.RunBackground(PlainMessages.Rekeying, keyAgeCt => this.ReplaceOldKeysAsync(connection, catchUp?.Done.Task, keyAgeCt));
         // Whether another computer signed in meanwhile (see ClientSession.Devices).
         this.RefreshDevicesSoon();
     }
@@ -2824,6 +2834,9 @@ public sealed partial class ClientSession : IAsyncDisposable {
         this.RaiseMessage(MessageContent.Decode(content) is { } text
             ? new IncomingMessage(message.ChannelId, channelName, senderUser, isOwn, text.Text, false, timestamp) { Links = text.Links }
             : new IncomingMessage(message.ChannelId, channelName, senderUser, isOwn, null, true, timestamp));
+
+        // Shown first: anything the sender's log head needs asked of the server is done in the background.
+        this.CompareSenderHead(message.ChannelId, message.SenderId, content.LogHead);
     }
 
     /// <summary>
@@ -3252,6 +3265,7 @@ public sealed partial class ClientSession : IAsyncDisposable {
         var before = this.MembershipOf(channelId);
         var followsOn = before.Head != null;
         this._memberships[channelId] = membership;
+        this.OnMembershipSet(channelId, before, membership, applied);
         var me = this._me?.UserId;
         if (this._secrets.Memberships.ContainsKey(channelId)
             || (me != null && (membership.FindMember(me.Value) != null || membership.FindInvitee(me.Value) != null))) {
@@ -3534,7 +3548,11 @@ public sealed partial class ClientSession : IAsyncDisposable {
 
         keys[epoch] = key;
         if (position != null) {
-            positions[epoch] = new KeyPosition { Seq = position.Seq, Hash = position.Hash.ToByteArray(), CreatedMs = createdMs, CreatedBy = createdBy };
+            // Held since it first came, if it comes again: its age (see KeyMadeAt) never starts over.
+            var heldSince = positions.GetValueOrDefault(epoch)?.HeldSinceMs is > 0 and var since ? since : this.NowMs();
+            positions[epoch] = new KeyPosition {
+                Seq = position.Seq, Hash = position.Hash.ToByteArray(), CreatedMs = createdMs, CreatedBy = createdBy, HeldSinceMs = heldSince,
+            };
         }
 
         if (this._channels.TryGetValue(channelId, out var channel)) {
@@ -3733,7 +3751,8 @@ public sealed partial class ClientSession : IAsyncDisposable {
                     ? this._state == ConnectionState.Ready
                     : this._presence.GetValueOrDefault(member.UserId));
                 return new MemberView(Shown(user), member.Rank, member.Keys.Fingerprint, pinned is { KeyChangeUnacknowledged: true }, compared, replaced,
-                    replaced ? current!.Fingerprint : null, online, recovered);
+                    replaced ? current!.Fingerprint : null, online, recovered,
+                    member.Rank >= Rank.Member && channel.SeeOtherMembership.ContainsKey(member.UserId));
             })
             .OrderByDescending(member => member.Rank)
             .ThenBy(member => member.User.Name, StringComparer.OrdinalIgnoreCase)
@@ -3980,6 +3999,13 @@ public sealed partial class ClientSession : IAsyncDisposable {
 
         /// <summary>A removal (or leave) whose rekey the server didn't take: shown until a key made after it is held.</summary>
         public Wording? RemovalWarning { get; set; }
+
+        /// <summary>
+        /// Members whose messages say they verified a different membership than the server shows this client (see
+        /// ClientSession.LogHeads), with the newest entry at which they disagree: marked on them until a message of theirs agrees
+        /// at that entry or a later one, or they leave.
+        /// </summary>
+        public Dictionary<long, ulong> SeeOtherMembership { get; } = new();
 
         /// <summary>The newest name the server offered. Only shown once <see cref="TryDecryptName"/> accepts it.</summary>
         public EncryptedName? EncryptedName { get; set; }

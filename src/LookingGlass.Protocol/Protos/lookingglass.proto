@@ -1,15 +1,15 @@
-// LookingGlass wire protocol, version 1.
+// LookingGlass wire protocol.
 //
-// (Spoken as protocol version 3 now: version 2 brought the signed membership log, and version 3
-// key recovered entries, which a version 2 client would refuse as an unknown kind of entry. See
-// ProtocolInfo.CurrentVersion.)
+// Spoken as protocol version 3 (see ProtocolInfo.CurrentVersion): version 2 brought the signed
+// membership log, and version 3 key recovered entries, which a version 2 client would refuse as
+// an unknown kind of entry. What each version added, and how changes are made without a new
+// version, is described in docs/design.md, under "Protocol and extensibility" ("Versions" and
+// "Adding features").
 //
-// Rules for changing this file (see the design doc, "Versioning policy"):
-//   * Within protocol version 1, changes are additive only: new fields, new
-//     oneof cases, new enum values. Never renumber or reuse a field number.
-//   * Removing a field or changing its meaning requires protocol version 2.
-//   * Until version 1 is released it may still change in place (v0.2 replaced
-//     server-trusted membership with the signed membership log).
+// Rules for changing this file:
+//   * Within a protocol version, changes are additive only: new fields, new oneof cases, new enum
+//     values. Never renumber or reuse a field number.
+//   * Removing a field or changing its meaning requires a new protocol version.
 //
 // Transport: one binary WebSocket message per frame. The client sends
 // ClientFrame, the server sends ServerFrame.
@@ -796,6 +796,14 @@ message Content {
   oneof kind {
     TextContent text = 1;
   }
+  // Channel messages only: the newest entry of the channel's membership log the
+  // sender's client had verified when it sent this (its sequence number, and its
+  // hash as MembershipEntries.Hash makes it: the hash the next entry chains to).
+  // Receivers compare it with the log they verified, so a server showing members
+  // different logs is found through their messages (see "Log heads in messages"
+  // in the design doc). Added October 2026; older clients skip the field, and a
+  // message without it is taken as before. Absent in local chat.
+  LogPosition log_head = 15;
 }
 
 message TextContent {

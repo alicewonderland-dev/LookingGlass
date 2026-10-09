@@ -694,6 +694,13 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
             this.DrawInvitePopup(channel, session, snapshot);
         }
 
+        // The check code, for comparing over /tell with someone who seems to see a different member list (see MembershipCheckCode).
+        if (channel.CheckCode is { } code) {
+            var advanced = sessions.AdvancedMode;
+            ImGui.TextColored(Widgets.Muted, $"{PlainMessages.CheckCodeLabel.For(advanced)}: {code}");
+            Widgets.Tooltip(PlainMessages.CheckCodeExplanation.For(advanced));
+        }
+
         ImGuiHelpers.ScaledDummy(2);
         if (ImGui.BeginChild("##members", Vector2.Zero, false)) {
             foreach (var member in channel.Members.OrderByDescending(m => m.Rank).ThenBy(m => m.User.Name, StringComparer.OrdinalIgnoreCase)) {
@@ -862,6 +869,11 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
                 Modals.ChangedText(member.User.Name) + " If you didn't expect that, check with them over /tell.");
         }
 
+        if (member.SeesOtherMembership) {
+            return (FontAwesomeIcon.ExclamationTriangle, Widgets.Warning, PlainMessages.SeesOtherMembersTitle.Plain,
+                PlainMessages.SeesOtherMembersExplanation(member.User.Name).Plain);
+        }
+
         if (member.KeyRecovered) {
             // Expected, so no warning sign; but that it's them is the server's word, so it is said.
             return (FontAwesomeIcon.Redo, null, "Set up LookingGlass again", Modals.RecoveredText(member.User.Name));
@@ -884,6 +896,11 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
         if (member.KeyChanged) {
             return (FontAwesomeIcon.ExclamationTriangle, Widgets.Warning, "Key changed",
                 "Their identity key changed, or this name now belongs to a different account. Compare fingerprints with them over /tell, then mark it verified.");
+        }
+
+        if (member.SeesOtherMembership) {
+            return (FontAwesomeIcon.ExclamationTriangle, Widgets.Warning, PlainMessages.SeesOtherMembersTitle.Technical,
+                PlainMessages.SeesOtherMembersExplanation(member.User.Name).Technical);
         }
 
         // Expected (the channel's membership says why), so no warning colour; but the server vouches for it, so it shows.
