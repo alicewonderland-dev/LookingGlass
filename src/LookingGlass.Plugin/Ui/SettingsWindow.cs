@@ -65,6 +65,8 @@ public sealed class SettingsWindow : Window {
         // Look again: files may have changed since.
         this._backupCheck = null;
         this._logSize = null;
+        // And the computers signed in, with when each was last used.
+        this._sessions.Session?.RefreshDevicesSoon();
     }
 
     public override void OnClose() {
@@ -615,6 +617,7 @@ public sealed class SettingsWindow : Window {
         }
 
         var player = this._sessions.Player;
+        this.DrawDevices(player, advanced);
         ImGui.BeginDisabled(this._actions.Busy || player == null);
         if (ImGui.Button("Reset my identity...") && player != null) {
             var serverUrl = this._config.ServerUrl;
@@ -636,6 +639,37 @@ public sealed class SettingsWindow : Window {
             : "Set up LookingGlass afresh for this character on this server, if its files were lost or someone may have copied them. " +
               "Your channels come along when you register again.");
         this.DrawBackup(player, advanced);
+    }
+
+    /// <summary>
+    /// The computers signed in to this character on this server, one short line each, and "Sign out everywhere else" (see
+    /// DeviceWords and "Other computers signing in" in docs/design.md). What the list is, is in the label's tooltip
+    /// (<see cref="DeviceWords.Explanation"/>, for a "?" beside it once Settings has those).
+    /// </summary>
+    private void DrawDevices(PlayerInfo? player, bool advanced) {
+        ImGui.TextUnformatted(DeviceWords.Label);
+        Widgets.Tooltip(DeviceWords.Explanation.For(advanced));
+        var session = this._sessions.Session;
+        var snapshot = this._sessions.Snapshot;
+        if (session == null || !snapshot.DevicesAvailable) {
+            ImGui.TextColored(Widgets.Muted, DeviceWords.NotAvailable.For(advanced));
+            ImGui.Spacing();
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        foreach (var device in snapshot.Devices) {
+            Widgets.IconText(FontAwesomeIcon.Desktop, DeviceWords.Line(device, now));
+        }
+
+        ImGui.BeginDisabled(this._actions.Busy || player == null);
+        if (ImGui.Button(DeviceWords.SignOutButton + "...") && player != null) {
+            this._modals.Confirm(DeviceWords.SignOutTitle, DeviceWords.ConfirmText(player.Name, this._config.ServerUrl).For(advanced), DeviceWords.SignOutButton,
+                () => this._actions.Run("Signing out everywhere else", () => session.SignOutOtherDevicesAsync()));
+        }
+
+        ImGui.EndDisabled();
+        ImGui.Spacing();
     }
 
     /// <summary>

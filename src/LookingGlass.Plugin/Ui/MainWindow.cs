@@ -154,6 +154,7 @@ public sealed class MainWindow : Window {
             ConnectionState.Ready => ("Connected", ImGuiColors.HealerGreen, status ?? "Connected to the server."),
             ConnectionState.Connecting => ("Connecting...", ImGuiColors.DalamudOrange, status ?? "Waiting for the server."),
             ConnectionState.Reconnecting => ("Reconnecting...", ImGuiColors.DalamudOrange, status ?? "The connection to the server dropped. Trying again."),
+            ConnectionState.LoginNotRecognized when snapshot.SignedOutElsewhere => ("Signed out", Widgets.Warning, status ?? DeviceWords.SignedOutElsewhere.For(advanced)),
             ConnectionState.LoginNotRecognized => ("Login not recognised", Widgets.Warning, status ?? PlainMessages.LoginNotRecognized.For(advanced)),
             ConnectionState.Blocked => ("Blocked by the server", Widgets.Warning, status ?? "This server's operator has blocked you from it."),
             ConnectionState.Registering when snapshot.LoginRejected => ("Registering again", Widgets.Warning,
@@ -378,12 +379,16 @@ public sealed class MainWindow : Window {
         // Once a code is out, registering is what the player chose: the notice would only push the code and Verify out of
         // sight (below the window's bottom at its usual size, which testers took for no Verify button at all).
         if (rejected && challenge == null) {
-            this.DrawLoginNotRecognised(session, advanced);
+            if (snapshot.SignedOutElsewhere) {
+                this.DrawSignedOut(advanced);
+            } else {
+                this.DrawLoginNotRecognised(session, advanced);
+            }
         }
 
         const string howItChecks = "LookingGlass checks that the character is yours with a short code you put in your Lodestone profile for a few minutes.";
         ImGui.TextUnformatted(rejected ? "Register again" : "Register this character");
-        ImGui.TextColored(Widgets.Muted, !rejected ? howItChecks
+        ImGui.TextColored(Widgets.Muted, !rejected || snapshot.SignedOutElsewhere ? howItChecks
             : advanced ? "Only needed if your identity key was lost or replaced, or this server has never known your account; it replaces your login but keeps the identity key the plugin has, so your channels keep working. " + howItChecks
             : "Only needed if your LookingGlass was reset or its files were lost, or this server has never known you; it replaces your login, and your channels keep working. " + howItChecks);
         if (!rejected && snapshot.NewIdentity) {
@@ -517,6 +522,25 @@ public sealed class MainWindow : Window {
         Widgets.Tooltip(advanced ? "Try your saved login on this server again now, then your identity key." : "Try signing in to this server again now.");
         ImGui.SameLine();
         if (Widgets.GhostButton("Open settings", "Check the server address. Also behind the gear in the title bar.")) {
+            this._openSettings();
+        }
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+        ImGui.Spacing();
+    }
+
+    /// <summary>
+    /// Another computer used "Sign out everywhere else": this one's login and identity key are refused until the character is
+    /// registered again (below). Trying again can't help, so there's no Retry, only what to do.
+    /// </summary>
+    private void DrawSignedOut(bool advanced) {
+        Widgets.IconText(FontAwesomeIcon.ExclamationTriangle, DeviceWords.SignedOutTitle, Widgets.Warning);
+        ImGui.TextUnformatted(DeviceWords.SignedOutElsewhere.For(advanced));
+        ImGui.TextColored(Widgets.Muted, $"Server: {this._config.ServerUrl}");
+        ImGui.Spacing();
+        if (Widgets.GhostButton("Open settings", "Reset my identity is under Your identity. Also behind the gear in the title bar.")) {
             this._openSettings();
         }
 

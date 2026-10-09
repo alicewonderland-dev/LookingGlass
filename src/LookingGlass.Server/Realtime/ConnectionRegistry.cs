@@ -123,6 +123,19 @@ public sealed class ConnectionRegistry(Database db, ILogger<ConnectionRegistry> 
     public bool SendLocal(long userId, Event ev) =>
         this._online.TryGetValue(userId, out var connection) && connection.LocalChatAgreed && connection.TrySendDroppable(ev);
 
+    /// <summary>
+    /// Tells the user's connection that is logged in that their account just got a new device, unless it logged in with that
+    /// device (a computer isn't told about itself) or didn't agree to "devices.v1" (an older plugin never sees the event).
+    /// Only one connection per user is logged in, so that is everyone there is to tell now; the rest find it in their device
+    /// list at their next login.
+    /// </summary>
+    public void SendDeviceAdded(long userId, byte[] newTokenHash, Event ev) {
+        if (this._online.TryGetValue(userId, out var connection) && connection.DevicesAgreed
+            && connection.DeviceTokenHash is { } hash && !hash.AsSpan().SequenceEqual(newTokenHash)) {
+            connection.SendEvent(ev);
+        }
+    }
+
     public void SendToAll(IEnumerable<long> userIds, Event ev, long? except = null) {
         foreach (var userId in userIds) {
             if (userId != except) {

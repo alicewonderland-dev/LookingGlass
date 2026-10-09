@@ -95,6 +95,12 @@ public sealed class ClientConnection {
     /// </summary>
     public bool LocalChatAgreed { get; set; }
 
+    /// <summary>
+    /// The client offered "devices.v1" in Hello and the server agreed: only such a connection is told when its account gets a
+    /// new device (DeviceAdded), so an older plugin never sees the event.
+    /// </summary>
+    public bool DevicesAgreed { get; set; }
+
     public UserRow? User { get; set; }
 
     /// <summary>The hash of the device token <see cref="User"/> logged in with (what RetireIdentity's signature covers).</summary>

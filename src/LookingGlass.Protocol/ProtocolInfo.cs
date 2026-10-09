@@ -49,6 +49,13 @@ public static class ProtocolInfo {
         /// server's operator didn't turn it off.
         /// </summary>
         public const string Local = "local.v1";
+
+        /// <summary>
+        /// The account's devices (logins): the server tells a logged-in connection when the account gets a new one
+        /// (DeviceAdded), lists them (ListDevices), and signs out all but the asker's (SignOutOtherDevices). Agreed only if both
+        /// sides offer it, so an older plugin never sees DeviceAdded and an older server is never asked.
+        /// </summary>
+        public const string Devices = "devices.v1";
     }
 
     public static Limits DefaultLimits() => new() {

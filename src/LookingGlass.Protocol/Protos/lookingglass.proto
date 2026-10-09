@@ -53,6 +53,8 @@ message ClientFrame {
     ForgetChannel forget_channel = 33;
     FetchMessages fetch_messages = 34;
     SendLocalMessage send_local_message = 35;
+    ListDevices list_devices = 36;
+    SignOutOtherDevices sign_out_other_devices = 37;
   }
 }
 
@@ -82,6 +84,7 @@ message Response {
     KeyLoginChallenge key_login_challenge = 21;
     KeyLoginComplete key_login_complete = 22;
     StoredMessages stored_messages = 23;
+    Devices devices = 24;
   }
 }
 
@@ -104,6 +107,7 @@ message Event {
     LogEntryAdded log_entry_added = 19;
     PresenceChanged presence_changed = 20;
     LocalMessage local_message = 21;
+    DeviceAdded device_added = 22;
   }
 }
 
@@ -137,6 +141,11 @@ message Error {
   string message = 2;
   // With ERROR_CODE_BLOCKED: the block. Added without a version change.
   Block block = 3;
+  // With ERROR_CODE_NOT_AUTHENTICATED, in answer to a CompleteKeyLogin signed correctly by the account's current key: the
+  // account used "Sign out everywhere else" (SignOutOtherDevices) since, so its key can't sign in until the character is
+  // registered again through the Lodestone. Only the key's holder is told. Added without a version change: an older plugin
+  // reads it as any refused key login.
+  bool signed_out = 4;
 }
 
 // A block (ban) made by the server's operator.
@@ -356,6 +365,50 @@ message RetireIdentity {
   // The server's address exactly as the client connected to it, as in CompleteKeyLogin,
   // and checked the same way.
   string server_url = 2;
+}
+
+// ---------------------------------------------------------------- devices
+//
+// Capability "devices.v1" (ProtocolInfo.Capabilities.Devices): the logins (devices) an account has, so a player is told when
+// their character signs in somewhere new, and can sign every other computer out (see the design doc, "Other computers
+// signing in"). A client only sends these to a server that agreed to the capability, and the server only sends DeviceAdded
+// to connections that did. Nothing about a device is kept or shown beyond when it was added and last used.
+
+// The account's devices. Needs a login; answered with Devices.
+message ListDevices {}
+
+// "Sign out everywhere else": the server deletes every device of the account but the one this connection logged in with, and
+// from then on refuses key login for the account (Error.signed_out) until the character is registered again through the
+// Lodestone, so a copy of the identity key can't simply sign back in. This connection stays logged in. Answered with Devices
+// (just this one, then).
+message SignOutOtherDevices {}
+
+message Device {
+  // When the server added it (a registration or a key login gave out its login), in Unix seconds.
+  int64 added_unix = 1;
+  // When it last logged in, in Unix seconds.
+  int64 last_used_unix = 2;
+  // The device this connection logged in with.
+  bool this_device = 3;
+  // 8 bytes that tell the account's devices apart (a hash of its login's hash: no use for anything else), so a client
+  // remembers which it has seen.
+  bytes id = 4;
+}
+
+message Devices {
+  // Oldest first.
+  repeated Device list = 1;
+  // In answer to SignOutOtherDevices: how many devices it signed out.
+  uint32 signed_out = 2;
+}
+
+// The account just got a new device (a key login, or a registration), not this connection's: sent to the account's
+// connection that is logged in, if it agreed to "devices.v1". A client that wasn't online finds it in ListDevices at its
+// next login instead, as a device it hasn't seen.
+message DeviceAdded {
+  // As Device.added_unix and Device.id.
+  int64 added_unix = 1;
+  bytes id = 2;
 }
 
 message GetIdentities {

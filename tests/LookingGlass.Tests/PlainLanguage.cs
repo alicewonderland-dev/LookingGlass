@@ -6,10 +6,10 @@ namespace LookingGlass.Tests;
 /// <summary>
 /// What simple mode, the default, must never say: the technical words advanced mode uses. "Key" is banned outright, as a
 /// noun in every form ("new key", "identity key", "keys"): simple mode says "LookingGlass", "setup" or "update" instead.
-/// "Log" is banned as a word, not inside "login" or "logged".
+/// "Log" is banned as a word, not inside "login" or "logged"; "signed" too, but not in "signed in" or "signed out".
 /// </summary>
 public static partial class PlainLanguage {
-    [GeneratedRegex(@"\b(fingerprints?|keys?|epochs?|re-?key\w*|forks?|forked|logs?|pinned|pinning|signatures?|signed|cipher\w*|encrypt\w*|decrypt\w*|sealed|sealing)\b",
+    [GeneratedRegex(@"\b(fingerprints?|keys?|epochs?|re-?key\w*|forks?|forked|logs?|pinned|pinning|signatures?|signed(?!\s+(?:in|out)\b)|cipher\w*|encrypt\w*|decrypt\w*|sealed|sealing)\b",
         RegexOptions.IgnoreCase)]
     private static partial Regex Banned();
 
