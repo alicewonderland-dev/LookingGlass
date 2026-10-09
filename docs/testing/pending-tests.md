@@ -171,11 +171,12 @@ with it on.
 
 ### Log heads in messages, needs the build after 0.2.12 on A and B
 
-Nothing new to see: messages now carry a check that only a malicious server
-would set off, and the automated tests cover that. These tasks only make sure
-normal chat is unchanged.
+Little new to see: messages now carry a check that only a malicious server
+would set off, and the automated tests cover that. These tasks make sure
+normal chat is unchanged, and that the new check code is the same for both.
 
 - [ ] **Normal chat is unchanged** ([chat-links](chat-links-checklist.md): steps 16–17). A and B chat in `sky` both ways, with and without an item link → everything arrives as before, with no LookingGlass warning on either side (none saying someone "seems to see a different member list"). Then A invites a third character (or B leaves and A invites B back) while both go on chatting → still no warning. Needs: a third character for the invite, or B willing to leave and rejoin.
+- [ ] **Check codes match** ([chat-links](chat-links-checklist.md): step 19). Above `sky`'s member list, A and B each see "Check code: #… …" (five numbers), the same on both. Advanced mode labels it "Log head", same code; hovering explains it. After the change in the task above, both move on to the same new code. Nobody in the member list has a warning sign for "Sees a different member list". Needs: do alongside the task above.
 - [ ] **An older plugin still talks** ([chat-links](chat-links-checklist.md): step 18). Optional. A on this build, B on an older one (0.2.12 or before): both directions arrive as before, no error or warning on either side. Needs: B on an older build.
 
 ### Windows only, needs 0.2.9 on A

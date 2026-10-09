@@ -77,15 +77,15 @@ it shows as odd characters. Nothing appears in Say, Party or any linkshell.
 - [ ] 15. (Optional, if a second character has an older LookingGlass build.)
       It sees each message as plain text, `look [Potion]`, with no error.
 
-## Log heads in messages (nothing to see)
+## Log heads in messages (little to see)
 
 Messages now also carry, inside the encryption, the newest membership change
 the sender's plugin has checked, and the receiver compares it with its own
 (see [Log heads in messages](../design.md#log-heads-in-messages)). What it
 catches, a server showing members different member lists, can't be made to
 happen in game without a malicious server, so the automated tests cover it.
-In game, only check that nothing changes for normal chat. Both A and B on
-this build unless a step says otherwise.
+In game, check that nothing changes for normal chat, and that both see the
+same check code. Both A and B on this build unless a step says otherwise.
 
 - [ ] 16. A and B chat in `[sky]` for a few lines each way, with and without
       links. Everything arrives as before, and no LookingGlass warning shows
@@ -98,3 +98,10 @@ this build unless a step says otherwise.
 - [ ] 18. (Optional, if a second character has an older LookingGlass build.)
       A on this build and B on the older one chat both ways: every message
       arrives as before, with no error or warning on either side.
+- [ ] 19. Check codes. In the channel window, above the member list, A and B
+      each see a line "Check code: #12 48213 90412 33187 00921" (the numbers
+      will differ from these). Both see the same code. In advanced mode it is
+      labelled "Log head", with the same code. Hovering it explains what it is
+      for, in plain words in simple mode. After step 17's change, both codes
+      move on to the same new one (the number at the start goes up). No member
+      shows a warning sign for "Sees a different member list".
