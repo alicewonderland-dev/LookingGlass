@@ -21,7 +21,8 @@ mode. Do it once at Dalamud's usual font size and once with a bigger one
       setting is off); **Colour** and **Privacy notice accepted** (or **not
       accepted yet**) with **Read it** and **Withdraw**; **Keep chat history
       on this computer** and, while it's on, **Size limit**; **Advanced
-      mode**, **Reset my identity...**.
+      mode**, **Computers signed in** (with one line per computer, and **Sign
+      out everywhere else...**), **Reset my identity...**.
 - [ ] 3. Each setting does what it did before the redesign: tick and untick
       each box, pick another chat channel, pick a local chat colour, and check
       that it takes effect as before and is kept after reloading the plugin.
@@ -31,7 +32,8 @@ mode. Do it once at Dalamud's usual font size and once with a bigger one
 - [ ] 4. A small round **?** follows exactly these: **Server address**,
       **Show messages in**, **Show LookingGlass only in windows**, local
       chat's **Colour**, **Privacy notice accepted**, **Keep chat history on
-      this computer**, **Advanced mode** and **Reset my identity...**. No
+      this computer**, **Advanced mode**, **Computers signed in** and **Reset
+      my identity...**. No
       other setting has one. Click each: a small bubble opens right beside
       it (to its left if the window is near the right edge of the screen),
       with a few sentences in everyday words, a few lines long and about as

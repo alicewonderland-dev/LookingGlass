@@ -327,8 +327,10 @@ IPv6 clients are counted per /64.
   in, and can **Sign out everywhere else**, which also stops their key signing
   in until they register again through the Lodestone (see
   [design.md](design.md#other-computers-signing-in)). Listing them is limited
-  to 20 at once, then 1 every 6 seconds per user, and signing out to 3 at
-  once, then 1 a minute; not settings.
+  to 20 at once, then 1 every 6 seconds per user, and signing out to 5 at
+  once, then 1 a minute; not settings. A player who can't reach the Lodestone
+  can be let back in with `--allow-key-login` (see
+  [Letting a key sign in again](#letting-a-key-sign-in-again)).
 - **Connections.** Per IP address (an IPv6 client per /56, the least most
   ISPs give a customer): 20 open at once, 60 new ones a minute, and 4 at once
   that haven't logged in (`ConnectionsPerIp`, `ConnectionsPerMinutePerIp`,
@@ -767,6 +769,27 @@ of range):
 Raise `FlagAfterMinutesRefused` or `FlagAfterLimits` if innocent players get
 flagged (behind a large shared NAT, say); lower them to hear sooner.
 
+#### Letting a key sign in again
+
+A player's **Sign out everywhere else** stops their identity key signing in
+(key login) until they register again through the Lodestone, so a copy of the
+key can't sign straight back in (see
+[design.md](design.md#other-computers-signing-in)). A player who can't
+register again (the Lodestone is down, their profile can't be edited) can ask
+you to undo that, with the same `LG` function:
+
+```sh
+LG --allow-key-login "Bob Hatter@Lich"                      # or the character's user ID
+```
+
+Their computers that were signed out then sign in with the key by themselves
+at their next connection; so would anyone holding a copy of the key, so only
+do it when the player is sure it was them who signed out (otherwise they
+should reset their identity). It works on a running server at once (it reads
+this at each key login), and revokes no login. Exit codes: 0 done, 1 not done
+(no such character, or key login wasn't turned off), 2 the command line was
+wrong.
+
 ### Stopping and restarting
 
 `systemctl stop` (or `restart`, or the installer) sends SIGTERM. The server
@@ -950,9 +973,11 @@ from before bans keep working; a banned one shows the server's message as a
 failed connection.
 
 **From a server without device notices (schema 10).** The `users` table gains
-one column, `key_login_off` (0 for everyone); nothing else changes, and there
-is no new setting. It is set by a player's **Sign out everywhere else**, and
-cleared when they register again. Plugins from before keep working: they
+two columns, `key_login_off` (0 for everyone) and `signed_out_by` (empty), and
+`devices` one, `device_id` (8 random bytes for each device, filled in by the
+upgrade); nothing else changes, and there is no new setting. A player's
+**Sign out everywhere else** sets the first two, and registering again (or
+`--allow-key-login`) clears them. Plugins from before keep working: they
 aren't told of new devices, and one that was signed out shows "Login not
 recognised".
 
@@ -960,7 +985,8 @@ recognised".
 server opens it, and ignores what it doesn't know), but an older server
 doesn't read bans (everyone banned gets back in until the new version runs
 again), nor `key_login_off` (the key of a player who signed out everywhere
-else can sign in with a key login again).
+else can sign in with a key login again). Devices it adds have no ID; the new
+version gives them one when it next lists them.
 
 ## Loading a development build of the plugin
 
