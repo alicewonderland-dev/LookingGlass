@@ -9,8 +9,8 @@ here only say roughly what to do.
 The owner hands out the tasks and ticks them off as results come in, so ask
 which ones are yours before you start, and send your results to the owner.
 
-**Plugin version:** 0.2.11 is current. Each feature below says the oldest
-version it needs. Use 0.2.11 when you can.
+**Plugin version:** 0.2.12 is current. Each feature below says the oldest
+version it needs. Use 0.2.12 when you can.
 
 **Settings names:** the tasks use the Settings window's names from its
 redesign (the first build after 0.2.12). On an older build, these settings

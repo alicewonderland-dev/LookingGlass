@@ -45,8 +45,8 @@ channel window open.
       shows in game chat (with **Say when I start or stop talking in a
       channel** on). Type `test`:
       it doesn't show in game chat; a `raid` tab is added to the window used
-      last. Switch to `/s`: "Stopped talking in" shows in game chat (verbose
-      on).
+      last. Switch to `/s`: "Stopped talking in" shows in game chat (**Say when I
+      start or stop talking in a channel** on).
 - [ ] 9. Disconnect (Settings, or stop the server) and send `/lgc1 hi`: "Not
       connected" shows in game chat. Connect again: the connection lines
       show in game chat as before.

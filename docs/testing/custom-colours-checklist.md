@@ -65,8 +65,8 @@ With `sky` on `#FF66CC`:
     link still pink, not the closest game colour or the channel's colour?
   - a caught-up message (log out, have B send, log in): the tag pink, the
     time uncoloured, the rest as above.
-  - `/lgc1` with no message (talking in the channel): with verbose channel
-    messages on, "Now talking in [sky]." has `[sky]` in pink within the blue;
+  - `/lgc1` with no message (talking in the channel): with **Say when I
+    start or stop talking in a channel** on, "Now talking in [sky]." has `[sky]` in pink within the blue;
     the server info bar shows "LG [sky]" in pink.
   - right-click B's name > **Invite to LookingGlass**: `[sky]` in pink in
     the submenu.

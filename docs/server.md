@@ -304,7 +304,12 @@ takes single addresses (`"10.0.0.5"`) and networks in CIDR form
 (`"172.17.0.0/16"`). Without a trusted proxy, every client appears to be the
 proxy, and the limits apply to everyone together.
 
-IPv6 clients are counted per /64.
+IPv6 clients are counted by prefix, not by single address. Connections, and
+registrations and their Lodestone lookups, are counted per /56 (the least most
+ISPs give a customer, so one customer's many /64s count once). Key logins and
+registrations refused for their address are counted per /64. The abuse flags
+count both a /64 and its /56 (see [Flags and bans](#flags-and-bans)),
+and an IPv6 address alone in a ban stands for its /64.
 
 ### Limits worth knowing
 
@@ -410,8 +415,10 @@ offline, so it needs no disk and no database change. It does see who sent to
 whom and when, as it sees who is in which channel. And it learns who was
 near whom: before sending, the plugin looks up each friend near the sender by
 name (each at most once in 10 minutes), so the server sees which friends were
-near the sender, and when, even friends who don't use LookingGlass (an open
-decision of the owner's: see [design.md](design.md#local-chat-friends-only)).
+near the sender, and when, even friends who don't use LookingGlass. The owner
+decided to keep these lookups, and to have the first `/lgl` ask the player to
+accept a privacy notice saying so before anything is looked up: see
+[design.md](design.md#local-chat-friends-only).
 What one user may be sent by everyone together is limited too, and a
 recipient whose connection is slow loses local messages, not the connection.
 
