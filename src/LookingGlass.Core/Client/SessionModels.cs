@@ -364,7 +364,10 @@ public sealed class ClientSessionOptions {
     /// <summary>The protocol version offered in Hello. Only tests change it, to play an older plugin.</summary>
     internal uint ProtocolVersion { get; init; } = ProtocolInfo.CurrentVersion;
 
-    /// <summary>How often a channel's whole log may be fetched again to look into a possible fork. Only tests change it.</summary>
+    /// <summary>
+    /// How often a channel's whole log may be fetched again to look into a possible fork, and how often the server may be asked
+    /// about the log heads in one sender's messages in a channel (see ClientSession.LogHeads). Only tests change it.
+    /// </summary>
     internal TimeSpan ForkCheckInterval { get; init; } = TimeSpan.FromMinutes(1);
 
     /// <summary>

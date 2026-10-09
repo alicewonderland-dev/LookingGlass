@@ -239,6 +239,29 @@ public static class PlainMessages {
         $"{author} sent you an update for {channel} that doesn't work for you. They may be trying to cut you off or split the channel" +
         (rekey ? "; LookingGlass is putting it right now." : ". If it keeps happening, check with the other members over /tell."));
 
+    /// <summary>
+    /// A member's message carried a membership log head that the server's log, as it shows it to this user, doesn't bear
+    /// out (see "Log heads in messages" in docs/design.md). Only the member's word says so: the server may be showing them
+    /// another version, or their client may be wrong or lying. So it names them, and blames neither.
+    /// </summary>
+    /// <param name="who">The member, as "Name@World".</param>
+    /// <param name="channel">The channel's name.</param>
+    /// <param name="seq">The entry their message names.</param>
+    /// <param name="ahead">They say they verified that entry, and the server's log for this user ends before it.</param>
+    public static Wording MemberSeesOtherMembership(string who, string channel, ulong seq, bool ahead) => new(NoticeKind.MemberSeesOtherMembership,
+        ahead
+            ? $"{who}'s message in {channel} says they have verified membership log entry #{seq}, but the server's log for you ends before " +
+              "it. Either the server is hiding a change from you, or their client is wrong or misbehaving. Compare the member list with " +
+              "them over /tell."
+            : $"{who}'s message in {channel} says they verified a different membership log entry #{seq} from yours, and the server shows " +
+              "you yours. Either the server is showing them a different version of the membership, or their client is wrong or " +
+              "misbehaving. Compare the member list with them over /tell.",
+        ahead
+            ? $"{who} seems to see newer changes to the members of {channel} than the server shows you. Either the server is hiding " +
+              "a change from you, or something is wrong with their LookingGlass. Check with them over /tell before trusting who's in it."
+            : $"{who} seems to see a different member list for {channel} from yours. Either the server is showing them different " +
+              "members, or something is wrong with their LookingGlass. Check with them over /tell before trusting who's in it.");
+
     /// <summary>A channel key was refused.</summary>
     /// <param name="reason">Why, in technical words.</param>
     /// <param name="channel">The channel's name.</param>
@@ -624,6 +647,8 @@ public static class PlainMessages {
         yield return BadChannelKey(who, "Tea party", 7, "isn't the key they committed to giving everyone else", false);
         yield return ChannelKeyRejected("it failed signature or decryption checks", "Tea party");
         yield return CantSealTo(who, "invalid point");
+        yield return MemberSeesOtherMembership(who, "Tea party", 9, false);
+        yield return MemberSeesOtherMembership(who, "Tea party", 9, true);
         yield return VerifiedKeyChanged;
         yield return MessageFromNonMember("Tea party", who);
         yield return MessageWithoutKey("Bob Hatter");

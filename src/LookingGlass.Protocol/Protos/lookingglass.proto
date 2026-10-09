@@ -704,6 +704,14 @@ message Content {
   oneof kind {
     TextContent text = 1;
   }
+  // Channel messages only: the newest entry of the channel's membership log the
+  // sender's client had verified when it sent this (its sequence number, and its
+  // hash as MembershipEntries.Hash makes it: the hash the next entry chains to).
+  // Receivers compare it with the log they verified, so a server showing members
+  // different logs is found through their messages (see "Log heads in messages"
+  // in the design doc). Added October 2026; older clients skip the field, and a
+  // message without it is taken as before. Absent in local chat.
+  LogPosition log_head = 15;
 }
 
 message TextContent {

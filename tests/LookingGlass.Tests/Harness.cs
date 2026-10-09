@@ -169,10 +169,11 @@ public sealed class Harness : IAsyncDisposable {
     /// <param name="replaySaveDelay">How soon changed message times and positions are saved.</param>
     /// <param name="offerLocalChat">Offer local chat in Hello; off plays a plugin from before it.</param>
     /// <param name="remoteAddress">The address the client's connections come from (by default none, which per-IP limits count as one address).</param>
+    /// <param name="traceCapacity">How many requests, answers and events the client keeps in its trace (for tests that count them over many).</param>
     public ClientSessionOptions Options(bool autoRekey = true, Action<NoticeLevel, string>? log = null, TimeProvider? time = null, Func<CancellationToken, Task>? beforeConnect = null,
         uint protocolVersion = ProtocolInfo.CurrentVersion, Func<WebSocket, WebSocket>? wrap = null, TimeSpan? forkCheckInterval = null, TimeSpan? loginRetryDelay = null,
         Uri? serverUri = null, bool offerCatchUp = true, TimeSpan? catchUpWithoutPosition = null, int maxHeldLive = 2000, TimeSpan? replaySaveDelay = null,
-        bool offerLocalChat = true, string? remoteAddress = null) => new() {
+        bool offerLocalChat = true, string? remoteAddress = null, int traceCapacity = 200) => new() {
         ServerUri = serverUri ?? new Uri(this.Factory.Server.BaseAddress, ProtocolInfo.WebSocketPath),
         Connect = async (uri, ct) => {
             if (beforeConnect != null) {
@@ -197,6 +198,7 @@ public sealed class Harness : IAsyncDisposable {
         CatchUpRetryDelay = TimeSpan.FromMilliseconds(100),
         ReplayStateSaveDelay = replaySaveDelay ?? TimeSpan.FromSeconds(30),
         OfferLocalChat = offerLocalChat,
+        TraceCapacity = traceCapacity,
     };
 
     /// <summary>Opens a WebSocket to this server, whatever address <paramref name="uri"/> names (as a client's Connect).</summary>
@@ -726,13 +728,40 @@ public sealed class TestClient {
     }
 
     /// <summary>A message signed and encrypted with this client's keys, as the server would deliver it.</summary>
-    public ChatMessage ForgeMessage(string channelId, ulong epoch, string text, DateTimeOffset when) {
-        using var keys = this.LoadIdentity();
-        var sent = ChannelCrypto.EncryptMessage(new Content { Text = new TextContent { Text = text } }, this.LoadEpochKey(channelId, epoch), channelId, epoch, keys, this.UserId, when.ToUnixTimeMilliseconds());
+    /// <param name="head">The membership log head it says its sender verified; none, as a plugin from before log heads sends.</param>
+    public ChatMessage ForgeMessage(string channelId, ulong epoch, string text, DateTimeOffset when, LogPosition? head = null) {
+        var sent = this.ForgeSend(channelId, epoch, text, when, head);
         return new ChatMessage {
             ChannelId = channelId, Epoch = epoch, SenderId = this.UserId, MessageId = sent.MessageId,
             TimestampUnixMs = sent.TimestampUnixMs, Ciphertext = sent.Ciphertext, Signature = sent.Signature,
         };
+    }
+
+    /// <summary>
+    /// A message as this client's keys make it, to send through the server as its member (with <see cref="ClientSession.SendRawAsync"/>)
+    /// whatever its plugin would put in it.
+    /// </summary>
+    /// <param name="head">The membership log head it says its sender verified; none, as a plugin from before log heads sends.</param>
+    public SendMessage ForgeSend(string channelId, ulong epoch, string text, DateTimeOffset when, LogPosition? head = null) {
+        using var keys = this.LoadIdentity();
+        var content = new Content { Text = new TextContent { Text = text }, LogHead = head };
+        return ChannelCrypto.EncryptMessage(content, this.LoadEpochKey(channelId, epoch), channelId, epoch, keys, this.UserId, when.ToUnixTimeMilliseconds());
+    }
+
+    /// <summary>
+    /// What a channel message this client sent says inside, as the server stores it (decrypted with the channel's key):
+    /// for checking what a plugin puts in its messages.
+    /// </summary>
+    public Content ReadSent(Harness server, string channelId, string text, TestClient reader) {
+        var stored = server.Database.ReadStoredMessages(channelId, reader.UserId, reader.Keys(), 0, null, 1000, 1 << 20)!.Messages;
+        foreach (var message in stored.Where(message => message.SenderId == this.UserId)) {
+            var content = ChannelCrypto.DecryptMessage(message, reader.LoadEpochKey(channelId, message.Epoch), this.Keys().SigningPublicKey);
+            if (content?.Text?.Text == text) {
+                return content;
+            }
+        }
+
+        throw new InvalidOperationException($"No stored message \"{text}\" from {this.Name}.");
     }
 }
 

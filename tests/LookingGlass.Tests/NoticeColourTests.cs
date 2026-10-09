@@ -26,6 +26,8 @@ public sealed class NoticeColourTests {
         Assert.Equal(NoticeTone.Warning, NoticeColours.ToneOf(NoticeLevel.Warning, NoticeKind.KeyChanged));
         Assert.Equal(NoticeTone.Warning, NoticeColours.ToneOf(NoticeLevel.Warning, NoticeKind.MembershipHidden));
         Assert.Equal(NoticeTone.Warning, NoticeColours.ToneOf(NoticeLevel.Warning, NoticeKind.StaleKeyOffered));
+        // A member's word that they see another membership: it may be theirs that's wrong, so not critical.
+        Assert.Equal(NoticeTone.Warning, NoticeColours.ToneOf(NoticeLevel.Warning, NoticeKind.MemberSeesOtherMembership));
     }
 
     [Theory]
