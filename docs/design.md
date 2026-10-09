@@ -4172,8 +4172,8 @@ the game process and in the server. Instead, smaller hardening comes first: a
 notice when the identity signs in from another device, with a list of devices
 and **Sign out everywhere else** (H1), members' log heads gossiped inside
 messages (H2), and a maximum epoch age of about 7 days (H3), for the public
-release (H3 is built: see [Keys have a maximum age](#keys-have-a-maximum-age);
-H1 and H2 are still in progress); then the two features above after it. 1.0
+release (H2 and H3 are built: see [Log heads in messages](#log-heads-in-messages)
+and [Keys have a maximum age](#keys-have-a-maximum-age); H1 is still in progress); then the two features above after it. 1.0
 promises no post-compromise security.
 
 Look at MLS again if:
