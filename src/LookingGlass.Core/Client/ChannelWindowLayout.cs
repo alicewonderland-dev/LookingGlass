@@ -140,7 +140,9 @@ public static class ChannelWindowLayouts {
 
 /// <summary>
 /// Which channels also show in the game's chat log ("Show in game chat", on for every channel unless turned off).
-/// Kept per character like colours and nicknames, as the set of channels turned off, and dropped by the same rule.
+/// Kept per character like colours and nicknames, as the set of channels turned off, and dropped by the same rule. A
+/// channel turned off stays off whatever its windows do: one that no window shows opens in one at its next line, as with
+/// windows only (see <see cref="WindowsOnly.MessageWantsWindow"/>).
 /// </summary>
 public static class GameChatChannels {
     /// <summary>Whether a channel's messages also go to the game's chat log.</summary>
@@ -156,23 +158,6 @@ public static class GameChatChannels {
     /// </summary>
     public static bool NoticeToGameChat(IReadOnlySet<string> off, SessionNotice notice) =>
         notice.ChannelId is not { } channelId || notice.Level >= NoticeLevel.Warning || Shows(off, channelId);
-
-    /// <summary>
-    /// The channels turned off game chat that no window has (its last tab or window was closed, or none was opened again at
-    /// login): only the complete channel list's, as they show nowhere now. They go back to game chat, with
-    /// <see cref="BackInGameChat"/> said, so a channel never ends up shown nowhere but in the unread counts.
-    /// </summary>
-    public static IReadOnlyList<string> ShownNowhere(IReadOnlySet<string> off, IEnumerable<ChannelWindowLayout?> windows, SessionSnapshot snapshot) {
-        if (off.Count == 0 || snapshot.State != ConnectionState.Ready || !snapshot.ChannelsLoaded) {
-            return [];
-        }
-
-        var shown = windows.SelectMany(window => window?.Tabs ?? []).ToHashSet();
-        return snapshot.Channels.Select(channel => channel.Id).Where(id => off.Contains(id) && !shown.Contains(id)).ToList();
-    }
-
-    /// <summary>Said (in game chat) when a channel goes back to game chat because no window shows it; the same in both modes.</summary>
-    public static string BackInGameChat(string tag) => $"{tag} shows in game chat again, since no window shows it.";
 
     /// <summary>Forgets channels you're no longer in, only against the complete channel list.</summary>
     /// <returns>True if anything changed.</returns>

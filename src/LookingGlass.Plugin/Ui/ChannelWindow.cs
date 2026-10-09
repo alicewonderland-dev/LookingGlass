@@ -44,6 +44,12 @@ public sealed class ChannelWindow : Window {
     private int _tabsSteadyFrames;
     // A message that wasn't sent, to put into the input box's own text this frame (see OnInput).
     private string? _reload;
+    // Its flash (see Flash): in which channel's colour; this frame's strength and colour; how many colours PreDraw pushed.
+    private readonly WindowFlash _flash = new();
+    private string? _flashChannel;
+    private float _flashStrength;
+    private Vector4 _flashColour;
+    private int _flashPushed;
 
     /// <param name="opened">Opened by the player just now (else reopened at login): it appears by the mouse, and may take the focus.</param>
     public ChannelWindow(ChannelWindows windows, ChannelWindowLayout layout, bool opened) : base("LookingGlass" + IdPrefix + layout.Id) {
@@ -108,6 +114,17 @@ public sealed class ChannelWindow : Window {
         this.BringToFront();
     }
 
+    /// <summary>
+    /// Flashes the window briefly, <paramref name="pulses"/> times, in a channel's colour (LookingGlass blue for one with
+    /// none): its title bar and border, without bringing it to the front or taking the keyboard. For a window that opened, or
+    /// got a tab, by itself (see <see cref="WindowFlash"/>).
+    /// </summary>
+    public void Flash(int pulses, string channelId) {
+        if (this._flash.Start(DateTimeOffset.UtcNow, pulses)) {
+            this._flashChannel = channelId;
+        }
+    }
+
     public override void Update() {
         // The selected channel's name: the window says which channel its input box sends to. "##" can't end the title early.
         var title = this.Layout.Selected is { } selected ? this.LongName(selected) : "LookingGlass";
@@ -123,6 +140,52 @@ public sealed class ChannelWindow : Window {
             ImGui.SetNextWindowPos(ImGui.GetMousePos() + new Vector2(12, 12) * Widgets.Scale, ImGuiCond.Always);
             this._placeAtMouse = false;
         }
+
+        // Flashing: the title bar (open, focused or not, or collapsed) tinted toward the channel's colour; the border is drawn
+        // in Draw. ImGui draws the title bar in Begin, so they are popped first thing in Draw (before anything there could
+        // throw), or in PostDraw when Begin drew no body (collapsed).
+        this._flashPushed = 0;
+        this._flashStrength = this._flashChannel == null ? 0
+            : this._flash.StrengthAt(DateTimeOffset.UtcNow, Services.PluginInterface.UiBuilder.ShouldUseReducedMotion);
+        if (this._flashStrength <= 0) {
+            this._flashChannel = this._flash.IsRunning(DateTimeOffset.UtcNow) ? this._flashChannel : null;
+            return;
+        }
+
+        this._flashColour = (ChannelPalette.ChatColourOf(this.Sessions.ColourOf(this._flashChannel!)) ?? ChannelPalette.OfRgb(0x0099FF)) with { W = 1 };
+        var colours = ImGui.GetStyle().Colors;
+        foreach (var part in new[] { ImGuiCol.TitleBg, ImGuiCol.TitleBgActive, ImGuiCol.TitleBgCollapsed }) {
+            var usual = colours[(int) part];
+            ImGui.PushStyleColor(part, Vector4.Lerp(usual, this._flashColour with { W = usual.W }, this._flashStrength * WindowFlash.TitleBarTint));
+            this._flashPushed++;
+        }
+    }
+
+    public override void PostDraw() => this.PopFlashColours();
+
+    /// <summary>The title bar colours PreDraw pushed, if they are still pushed.</summary>
+    private void PopFlashColours() {
+        if (this._flashPushed > 0) {
+            ImGui.PopStyleColor(this._flashPushed);
+            this._flashPushed = 0;
+        }
+    }
+
+    /// <summary>While flashing, a border around the window in the channel's colour, as strong as the flash is now.</summary>
+    private void DrawFlashBorder() {
+        if (this._flashStrength <= 0) {
+            return;
+        }
+
+        var min = ImGui.GetWindowPos();
+        var max = min + ImGui.GetWindowSize();
+        var thickness = 2 * Widgets.Scale;
+        var drawList = ImGui.GetWindowDrawList();
+        // The whole window, not only its inside, so the border sits on its edge.
+        drawList.PushClipRect(min, max, false);
+        drawList.AddRect(min + new Vector2(thickness / 2), max - new Vector2(thickness / 2), ImGui.GetColorU32(this._flashColour with { W = this._flashStrength }),
+            ImGui.GetStyle().WindowRounding, ImDrawFlags.None, thickness);
+        drawList.PopClipRect();
     }
 
     public override void OnClose() {
@@ -134,12 +197,14 @@ public sealed class ChannelWindow : Window {
     }
 
     public override void Draw() {
+        // The title bar is drawn by now: its flash colours go before anything else, so nothing that throws below leaves them pushed.
+        this.PopFlashColours();
         var snapshot = this.Sessions.Snapshot;
         var advanced = this.Sessions.AdvancedMode;
         var history = this.Sessions.History;
         var focused = ImGui.IsWindowFocused(ImGuiFocusedFlags.RootAndChildWindows);
         if (focused) {
-            // The window a channel is added to while only windows show messages.
+            // The window a channel is added to when it opens by itself.
             this._windows.Used(this);
         }
 
@@ -154,8 +219,9 @@ public sealed class ChannelWindow : Window {
                 var channel = snapshot.FindChannel(channelId);
                 ImGui.PushID(channelId);
 
-                // Name in the channel's colour; on a tab not shown, how many messages came since it last was.
-                var unread = this.Layout.Selected == channelId ? 0 : history.FromOthersAfter(channelId, state.SeenSeq);
+                // Name in the channel's colour; on a tab not selected, how many messages from others came since a window last
+                // showed the channel, or the player talked in it (see TabUnread).
+                var unread = this.Layout.Selected == channelId ? 0 : this._windows.TabCounts.CountOf(history, channelId);
                 var label = Visible(this.ShortName(channelId)) + (unread > 0 ? $"  ({UnreadCounter.Format(unread)})" : "");
                 var colour = this.ColourOf(channelId);
                 if (colour is { } c) {
@@ -182,7 +248,7 @@ public sealed class ChannelWindow : Window {
 
                     Widgets.Tooltip(windowsOnly ? WindowsOnly.GameChatItemTooltip : inGameChat
                         ? "This channel's messages show in game chat and in its windows. Click to see them only in its windows."
-                        : "This channel's messages show only in its windows (warnings still show in game chat). Click to see them in game chat too.");
+                        : "This channel's messages show only in its windows, and open one if none is open (warnings still show in game chat). Click to see them in game chat too.");
                     if (Widgets.MenuItem(FontAwesomeIcon.WindowClose, "Close tab")) {
                         closing.Add(channelId);
                     }
@@ -217,19 +283,17 @@ public sealed class ChannelWindow : Window {
 
         this.DrawAddPopup(snapshot, advanced);
 
-        if (shown != null) {
-            // The tab shown is read here; in the channel list too while this window has the focus.
-            this.Tab(shown).SeenSeq = history.LastSeq(shown);
-            if (this._selectRequest == shown) {
-                this._selectRequest = null;
-            }
+        if (shown != null && this._selectRequest == shown) {
+            this._selectRequest = null;
         }
 
         if (this._selectRequest != null && !this.Layout.Tabs.Contains(this._selectRequest)) {
             this._selectRequest = null;
         }
 
-        this.Sessions.Unread.Viewing(this.Viewer, focused ? shown : null);
+        // The tab shown is read, for the tabs' counts (in every window) and the channel list alike, focused or not: it is on screen.
+        TabUnread.WindowShows(this.Sessions.Unread, this._windows.TabCounts, history, this.Viewer, shown);
+        this.DrawFlashBorder();
         this.Remember(shown, order, closing);
     }
 
@@ -828,8 +892,6 @@ public sealed class ChannelWindow : Window {
 
     private TabState Tab(string channelId) {
         if (!this._tabs.TryGetValue(channelId, out var state)) {
-            // Nothing in it has been seen in this window yet: a tab not selected (one reopened at login behind another) counts
-            // what is already there from others; a tab selected reads it at once.
             state = new TabState();
             this._tabs[channelId] = state;
         }
@@ -873,9 +935,6 @@ public sealed class ChannelWindow : Window {
     /// <summary>What a tab remembers while the window is open.</summary>
     private sealed class TabState {
         public string Draft = "";
-
-        /// <summary>The newest line in the history when the tab was last shown: the newer ones from others are its unread count.</summary>
-        public long SeenSeq;
 
         /// <summary>The newest line when the messages were last scrolled to the bottom.</summary>
         public long BottomSeq;

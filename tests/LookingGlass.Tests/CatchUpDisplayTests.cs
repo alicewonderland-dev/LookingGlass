@@ -72,7 +72,7 @@ public sealed class CatchUpDisplayTests {
         Assert.Equal(missed.Select(m => m.Timestamp), lines.Skip(2).Select(line => line.SentAt));
         Assert.False(lines[0].CaughtUp);
         // The window's tab counts them as new for others.
-        Assert.Equal(3, history.FromOthersAfter("aaa", lines[0].Seq));
+        Assert.Equal(3, history.UnreadAfter("aaa", lines[0].Seq));
     }
 
     [Fact]

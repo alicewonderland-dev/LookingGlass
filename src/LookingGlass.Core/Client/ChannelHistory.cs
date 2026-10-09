@@ -137,11 +137,18 @@ public sealed class ChannelHistory {
         return lines.IsEmpty ? 0 : lines[^1].Seq;
     }
 
-    /// <summary>How many messages from others a channel holds after <paramref name="seq"/>: a window's unread count for a tab not shown.</summary>
-    public int FromOthersAfter(string channelId, long seq) {
+    /// <summary>
+    /// How many messages from others a channel holds after <paramref name="seq"/> and after the player's own newest message
+    /// in it (talking in a channel reads what came before, as in the channel list): a window's count on a tab not selected.
+    /// </summary>
+    public int UnreadAfter(string channelId, long seq) {
         var lines = this.LinesOf(channelId);
         var count = 0;
         for (var i = lines.Length - 1; i >= 0 && lines[i].Seq > seq; i--) {
+            if (lines[i] is { Kind: HistoryLineKind.Message, IsOwn: true }) {
+                break;
+            }
+
             if (lines[i].FromOthers) {
                 count++;
             }

@@ -3,8 +3,10 @@ namespace LookingGlass.Core.Client;
 /// <summary>
 /// Counts the messages from others in each channel since it was last read, for the main
 /// window's unread markers. A channel is read when a window shows it (<see cref="Viewing(string?)"/>:
-/// the main window, every frame it's drawn; or a channel window, every frame it has the focus with
-/// that channel's tab selected) or when you send to it (<see cref="MarkRead"/>). Counts live only in
+/// the main window, every frame it's drawn, if its messages go to game chat (<see cref="MainWindowReads"/>); or a
+/// channel window, every frame it's drawn with that channel's tab selected, focused or not, the same rule as the tabs'
+/// own counts (<see cref="TabUnread.WindowShows"/>)) or when you send to it
+/// (<see cref="MarkRead"/>). Counts live only in
 /// memory. Safe from any thread: messages arrive on the session's threads, the window reads on
 /// the draw thread.
 /// </summary>
@@ -73,6 +75,14 @@ public sealed class UnreadCounter {
 
     /// <summary>The main window, as a viewer (see <see cref="Viewing(string, string?)"/>).</summary>
     public const string MainWindow = "main";
+
+    /// <summary>
+    /// Whether the main window reads a channel it shows: only one whose messages go to game chat (seen there, as before
+    /// windows). Its channel pane shows no messages, so a channel seen only in windows (windows only, or turned off game
+    /// chat) stays counted until a channel window's tab shows it, or the player talks in it.
+    /// </summary>
+    public static bool MainWindowReads(bool windowsOnly, IReadOnlySet<string> off, string channelId) =>
+        WindowsOnly.MessageToGameChat(windowsOnly, off, channelId);
 
     /// <summary>
     /// A window is showing this channel (call every frame it shows it), or none: one of several, each with a name of its

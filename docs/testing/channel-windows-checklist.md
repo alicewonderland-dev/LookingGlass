@@ -59,6 +59,21 @@ any linkshell, for A or B.
       At the bottom, new messages scroll into view by themselves.
 - [ ] 17. With `raid` selected in a window that also has `sky`, B sends two
       lines in `sky`: the `sky` tab shows `(2)`. Select it: the count goes.
+- [ ] 17b. **(new, after 0.2.13)** Tab counts on every tab not selected. With
+      three tabs `sky`, `fc`, `raid` in one window and `raid` selected, B sends
+      one line in `sky` and two in `fc`: `sky (1)` and `fc (2)`; hover `fc`:
+      "2 new messages". Someone joining `fc` adds nothing (only messages
+      count). A sends `/lgc2 hi` from the game's chat box: the `fc` count goes
+      (talking in a channel reads it).
+- [ ] 17c. **(new, after 0.2.13)** Open a second window with `sky` selected
+      (**Open in new window**). B sends in `sky`: the first window's `sky` tab
+      (not selected) gets no count, since the other window shows `sky`.
+      Select `fc` in the second window and have B send in `sky` again: both
+      windows' `sky` tabs count it until one of them shows `sky`, then both
+      lose the count.
+- [ ] 17d. **(new, after 0.2.13)** Relog with the window open: B sends in a
+      tab behind the selected one while A logs in; once the window is back,
+      that tab counts the messages since login, and selecting it clears it.
 - [ ] 18. B links an item: A sees `[Name]` in colour; hovering shows its name
       (and "High quality" for an HQ one). B links a map flag: clicking it opens
       A's map at the flag. B links a status: hovering shows its name.
@@ -108,14 +123,36 @@ any linkshell, for A or B.
 - [ ] 32. Close every window with `sky`, then turn **Show in game chat**
       off for `fc` from its ⋮ menu while no window has `fc`: a window with `fc`
       opens.
-- [ ] 33. With `sky` still off game chat, close every window (or tab) that has
-      it. Game chat says, once, in blue with `[sky]` in its colour, "[sky] shows
-      in game chat again, since no window shows it.", and the ⋮ menu has **Show in
-      game chat** with a green check again. B sends in `sky`: it shows in game
-      chat, and the channel list counts it as unread.
-- [ ] 33b. Turn `sky` off game chat again (a window opens) and relog: the
-      window comes back and `sky` stays off, with no "shows in game chat again"
-      line.
+- [ ] 33. **(changed, after 0.2.13)** With `sky` still off game chat, close
+      every window (or tab) that has it. Nothing is said in game chat, and the
+      ⋮ menu's **Show in game chat** stays a red cross. Keep walking with the
+      keys: B sends in `sky`. It doesn't show in game chat; a `sky` window opens
+      by itself (or, with **New channels open** at **As a tab** and another
+      window open, a `sky` tab is added to the window used last, not
+      selected), flashes briefly in `sky`'s colour, and doesn't take the
+      keyboard. Counts: a new window shows `sky` selected, so neither the
+      window nor the channel list counts the message (it is on screen, focused
+      or not); a tab added behind another shows `(1)` and the channel list
+      counts it, both until you select that tab.
+- [ ] 33b. Relog: the window comes back and `sky` stays off, with no "shows in
+      game chat again" line.
+- [ ] 33c. **(new, after 0.2.13)** Close every window with `sky` and relog: no
+      `sky` window comes back, and `sky` stays off. B sends in `sky`: a window
+      opens by itself, as in step 33. Close it again, log out, have B send in
+      `sky` while A is away, and log back in: the caught-up messages open a
+      window too, not game chat.
+- [ ] 33d. **(new, after 0.2.13)** Close every window with `sky`, start a fight
+      (a striking dummy), and have B send in `sky`: nothing opens while in
+      combat; it opens once combat ends, with the message.
+- [ ] 33e. **(new, after 0.2.13)** As in 33d, but turn `sky`'s **Show in game
+      chat** back on (⋮ menu) while still in combat, after B's message: once
+      combat ends the window still opens, with that message (it was never in
+      game chat). B's next message shows in game chat.
+- [ ] 33f. **(new, after 0.2.13)** `sky` off game chat, no window with `sky`:
+      A sends `/lgc1 hi` from the game's chat box: not in game chat; a `sky`
+      window opens by itself, flashing, with A's line. Close it; B leaves
+      `sky` (or A invites someone): the information line alone opens a window
+      too.
 - [ ] 34. Turn it back on (⋮ menu, or a tab's right-click menu): `sky`'s
       messages are in game chat again.
 - [ ] 35. A warning about `sky` (if you can make one, for example a message
@@ -124,12 +161,38 @@ any linkshell, for A or B.
 
 ## Unread
 
-- [ ] 36. Click into the `sky` window (it has the focus) with `sky` selected,
-      and have B send in `sky`: the main window's channel list doesn't count
-      it. Click into the game instead (the window loses the focus), and have B
-      send again: the channel list counts it.
-- [ ] 37. With a count on `sky` in the channel list, click into the window
-      with `sky` selected: the count goes.
+- [ ] 36. **(changed, after 0.2.13)** With `sky` selected in an open window,
+      have B send in `sky`, once with the window focused (clicked into) and
+      once with the game focused: the main window's channel list counts
+      neither (the tab is on screen). Select another tab in that window and
+      have B send again: the channel list counts it, and so does the `sky` tab.
+      Collapse the window (double-click its title bar): what arrives in its
+      selected channel counts again.
+- [ ] 37. With a count on `sky` in the channel list, select the `sky` tab in a
+      window (no need to click into it otherwise): the count goes, in the
+      channel list and on that tab.
+- [ ] 37b. **(new, after 0.2.13)** With `sky` off game chat and a count on it in
+      the channel list, select `sky` in the main window's channel list: the
+      count stays (the main window shows no messages). Select a channel that
+      shows in game chat with a count: its count goes, as before. Send in
+      `sky` (`/lgc1 hi`): its count goes.
+
+## Flash
+
+- [ ] 37c. **(new, after 0.2.13)** A window that opens by itself (step 33)
+      flashes: its title bar and border pulse three times in the channel's
+      colour (LookingGlass blue for a channel with none) over about a second and
+      a half, then look as usual. It doesn't come to the front over a window
+      you're using, and the game keeps the keyboard.
+- [ ] 37d. **(new, after 0.2.13)** With **As a tab**, a tab added by itself to
+      an open window: that window flashes once, in the new channel's colour.
+- [ ] 37e. **(new, after 0.2.13)** Windows you open yourself (**Open in new
+      window**, **Add to window**, the **+**), and windows reopened at login,
+      don't flash.
+- [ ] 37f. **(new, after 0.2.13)** Dalamud Settings, turn on reduced motion
+      (**Reduce motions**, under Look & Feel or Experimental, depending on the
+      Dalamud version) and repeat step 37c: no pulsing, a steady softer tint
+      and border for about a second and a half instead.
 
 ## Remembering
 

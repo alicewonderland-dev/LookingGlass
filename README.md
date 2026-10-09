@@ -29,7 +29,10 @@ early testing (version 0.2).
 - **Channel windows.** Right-click a channel in the list to chat in a window
   of its own, with tabs for more channels (the **+**). What you type there only
   ever goes to that channel, never to game chat, and you can choose which
-  channels also show in game chat (the channel's ⋮ menu).
+  channels also show in game chat (the channel's ⋮ menu). A channel kept out
+  of game chat opens in a window by itself when a message arrives and no
+  window shows it. Tabs you aren't looking at count their new messages, and a
+  window that opens by itself flashes briefly so you notice it.
 - **Windows only.** Settings, **Show LookingGlass only in windows**,
   keeps channel messages out of game chat altogether: a channel that no window
   shows opens in one (as a tab, or a new window), but not mid-fight or during

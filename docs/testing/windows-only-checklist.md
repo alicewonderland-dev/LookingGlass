@@ -27,7 +27,9 @@ channel window open.
 - [ ] 3. **(A and B)** B sends `hello` in `sky`. Nothing shows in game chat
       (or ChatTwo). A window opens with `sky` as its only tab, showing
       `hello`. It doesn't take the keyboard: keep walking with the keys while
-      it opens, and nothing you type goes into it.
+      it opens, and nothing you type goes into it. **(new, after 0.2.13)** It
+      flashes as it opens: its title bar and border pulse three times in
+      `sky`'s colour, over about a second and a half.
 - [ ] 4. **(A and B)** B sends again in `sky`: it shows in the window only,
       and no second window or tab opens.
 - [ ] 5. A sends `hi` with `/lgc1 hi` from the game's chat box: it doesn't
@@ -39,6 +41,14 @@ channel window open.
       selected. The `fc` tab shows no count for those lines (only messages
       are counted), or a count of the messages from others in `fc` since
       login if there were any. B sends in `fc`: the count goes up by one.
+      **(new, after 0.2.13)** When the `fc` tab is added, the `sky` window
+      flashes once, in `fc`'s colour, and stays where it was.
+- [ ] 6b. **(new, after 0.2.13)** Channel list counts. Open `/lg`: with the
+      setting on, every channel with messages from others you haven't seen in
+      a window tab shows a count (here `fc`). Select `fc` in the channel list:
+      the count stays. Select the `fc` tab in the window (no need to click
+      into it): the count goes. With a count on `sky`, send `/lgc1 hi`: it
+      goes too.
 - [ ] 7. `/lgc4 hi` (no channel on 4) and `/lgc` alone: the answers show in
       game chat, in blue, as before.
 - [ ] 8. Talk in `raid` with `/lgc3` (no message): "Now talking in [raid]"
@@ -115,18 +125,30 @@ channel window open.
 - [ ] 22. Untick the setting. **(A and B)** B sends in `sky`: it shows in game
       chat again at once (and in its window). Each channel's **Show in game
       chat** is as it was before: a channel you had turned off is still off.
-- [ ] 23. A channel turned off game chat on its own that no window showed
-      (step 21) gets a window when the setting is turned off, rather than going
-      back to game chat.
-- [ ] 23b. Turn the setting on, close the window of a channel turned off game
-      chat on its own, start a fight, and turn the setting off while still in
-      combat: no window opens, and no "shows in game chat again" line. Leave
-      combat: its window opens then. A channel waiting for a window whose own
-      setting shows it in game chat gets none, and its next message shows in
-      game chat.
-- [ ] 24. Turn the setting on, log out, turn it off in Settings on the title
-      screen (or another character), and log back in: the same as step 23
-      happens once the channel list is in.
+- [ ] 23. **(changed, after 0.2.13)** A channel turned off game chat on its
+      own that no window showed (step 21) stays off and gets no window yet when
+      the setting is turned off. Have a message arrive in it: it doesn't show
+      in game chat; a window (or a tab) opens by itself, flashing, without
+      taking the keyboard, as while the setting was on.
+- [ ] 23b. **(changed, after 0.2.13)** Turn the setting on, close every window,
+      have a message arrive in `raid` (whose own setting shows it in game chat)
+      while in combat, and turn the setting off while still in combat. Leave
+      combat: a `raid` window still opens, with that message (it was never in
+      game chat, so it isn't left shown nowhere). `raid`'s next message shows
+      in game chat. The same with a channel turned off game chat on its own:
+      its window opens once combat ends.
+- [ ] 23c. **(new, after 0.2.13)** Known gap, accepted: with the setting on,
+      close every window, start a fight, have a message arrive in `raid`, then
+      press **Disconnect** (Settings) and **Connect** again while still in
+      combat. Leave combat: no window opens for that message, and it was never
+      in game chat (the session it waited in has ended). With **Keep chat
+      history on this computer** on, open `raid`'s window: the message is among
+      the older lines. Report it only if it behaves otherwise.
+- [ ] 24. **(changed, after 0.2.13)** Turn the setting on, close the window of
+      the channel turned off game chat on its own, log out, turn the setting
+      off in Settings on the title screen (or another character), and log back
+      in: nothing opens at login (unless that channel had messages while you
+      were away), and its next message opens a window, as in step 23.
 
 ## Remembering
 
@@ -134,4 +156,4 @@ channel window open.
       it come back where they were. Messages sent while you were away (catch-up)
       don't show in game chat; a channel with some and no window gets one.
 - [ ] 26. With the setting on, `/xllog`: no errors from LookingGlass while
-      windows opened.
+      windows opened (or flashed).

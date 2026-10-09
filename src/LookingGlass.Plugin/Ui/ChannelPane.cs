@@ -299,7 +299,7 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
 
             Widgets.Tooltip(windowsOnly ? WindowsOnly.GameChatItemTooltip : inGameChat
                 ? "This channel's messages show in game chat and in its windows. Turn it off to see them only in its windows."
-                : "This channel's messages show only in its windows (warnings still show in game chat). Turn it on to see them in game chat too.");
+                : "This channel's messages show only in its windows, and open one if none is open (warnings still show in game chat). Turn it on to see them in game chat too.");
         }
 
         ImGui.Separator();
