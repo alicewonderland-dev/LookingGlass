@@ -3238,7 +3238,7 @@ public sealed partial class ClientSession : IAsyncDisposable {
         var before = this.MembershipOf(channelId);
         var followsOn = before.Head != null;
         this._memberships[channelId] = membership;
-        this.RememberHeadHashes(channelId, before, applied);
+        this.OnMembershipSet(channelId, before, membership, applied);
         var me = this._me?.UserId;
         if (this._secrets.Memberships.ContainsKey(channelId)
             || (me != null && (membership.FindMember(me.Value) != null || membership.FindInvitee(me.Value) != null))) {
@@ -3716,7 +3716,8 @@ public sealed partial class ClientSession : IAsyncDisposable {
                     ? this._state == ConnectionState.Ready
                     : this._presence.GetValueOrDefault(member.UserId));
                 return new MemberView(Shown(user), member.Rank, member.Keys.Fingerprint, pinned is { KeyChangeUnacknowledged: true }, compared, replaced,
-                    replaced ? current!.Fingerprint : null, online, recovered);
+                    replaced ? current!.Fingerprint : null, online, recovered,
+                    member.Rank >= Rank.Member && channel.SeeOtherMembership.Contains(member.UserId));
             })
             .OrderByDescending(member => member.Rank)
             .ThenBy(member => member.User.Name, StringComparer.OrdinalIgnoreCase)
@@ -3956,6 +3957,12 @@ public sealed partial class ClientSession : IAsyncDisposable {
 
         /// <summary>A removal (or leave) whose rekey the server didn't take: shown until a key made after it is held.</summary>
         public Wording? RemovalWarning { get; set; }
+
+        /// <summary>
+        /// Members whose messages say they verified a different membership than the server shows this client (see
+        /// ClientSession.LogHeads): marked on them until their messages agree again, or they leave.
+        /// </summary>
+        public HashSet<long> SeeOtherMembership { get; } = new();
 
         /// <summary>The newest name the server offered. Only shown once <see cref="TryDecryptName"/> accepts it.</summary>
         public EncryptedName? EncryptedName { get; set; }

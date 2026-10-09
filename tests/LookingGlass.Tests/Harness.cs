@@ -327,6 +327,51 @@ public sealed class Harness : IAsyncDisposable {
         return entry;
     }
 
+    /// <summary>
+    /// <paramref name="frame"/> with <paramref name="shown"/> (and its log position) replaced by <paramref name="instead"/>
+    /// everywhere in it, as a careful server forking the log would answer one client: always with that client's own version.
+    /// For a <see cref="RewritingWebSocket"/>.
+    /// </summary>
+    public static ServerFrame SwapEntry(ServerFrame frame, MembershipEntry? shown, MembershipEntry? instead) {
+        if (shown != null && instead != null) {
+            Swap(frame, shown, instead, MembershipEntries.PositionOf(shown), MembershipEntries.PositionOf(instead));
+        }
+
+        return frame;
+    }
+
+    private static void Swap(Google.Protobuf.IMessage message, MembershipEntry shown, MembershipEntry instead, LogPosition shownAt, LogPosition insteadAt) {
+        object? Replacement(object? value) => value switch {
+            MembershipEntry entry when entry.Equals(shown) => instead.Clone(),
+            LogPosition position when position.Equals(shownAt) => insteadAt.Clone(),
+            _ => null,
+        };
+
+        foreach (var field in message.Descriptor.Fields.InFieldNumberOrder()) {
+            if (field.FieldType != Google.Protobuf.Reflection.FieldType.Message || field.IsMap) {
+                continue;
+            }
+
+            var value = field.Accessor.GetValue(message);
+            if (field.IsRepeated) {
+                var list = (System.Collections.IList) value;
+                for (var i = 0; i < list.Count; i++) {
+                    if (Replacement(list[i]) is { } replaced) {
+                        list[i] = replaced;
+                    } else {
+                        Swap((Google.Protobuf.IMessage) list[i]!, shown, instead, shownAt, insteadAt);
+                    }
+                }
+            } else if (value is Google.Protobuf.IMessage child) {
+                if (Replacement(child) is { } replaced) {
+                    field.Accessor.SetValue(message, replaced);
+                } else {
+                    Swap(child, shown, instead, shownAt, insteadAt);
+                }
+            }
+        }
+    }
+
     /// <summary>The newest membership log position <paramref name="client"/> has verified for a channel.</summary>
     public static LogPosition PositionOf(TestClient client, string channelId) => client.Session.Snapshot.FindChannel(channelId)!.LogHead!;
 

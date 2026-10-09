@@ -37,6 +37,45 @@ public sealed class LogHeadTests : IAsyncLifetime {
         Assert.Equal(PositionOf(alice, channelId), content.LogHead);
         // The hash the next entry chains to: the entry's own, as the log has it.
         Assert.Equal(this._server.Database.GetChannel(channelId)!.LogHead, content.LogHead);
+
+        // Both see the same check code, made from it, to compare over /tell.
+        var code = alice.Session.Snapshot.FindChannel(channelId)!.CheckCode;
+        Assert.Matches(@"^#\d+ \d{5} \d{5} \d{5} \d{5}$", code);
+        Assert.StartsWith($"#{content.LogHead.Seq} ", code);
+        Assert.Equal(code, bob.Session.Snapshot.FindChannel(channelId)!.CheckCode);
+        Assert.Equal(code, MembershipCheckCode.Of(content.LogHead));
+        var other = content.LogHead.Clone();
+        other.Hash = ByteString.CopyFrom(new byte[MembershipEntries.HashSize]);
+        Assert.NotEqual(code, MembershipCheckCode.Of(other));
+    }
+
+    /// <summary>
+    /// After a restart, the hashes the saved membership kept are carried on from: a join afterwards (from which the membership
+    /// itself keeps only newer hashes) doesn't stop a head from before it being compared.
+    /// </summary>
+    [Fact]
+    public async Task AfterARestartAnOlderHeadIsStillComparedPastAJoin() {
+        var alice = await this._server.RegisterAsync("Alice Before Restart");
+        var carol = await this._server.RegisterAsync("Carol Restarts");
+        var dave = await this._server.RegisterAsync("Dave After Restart");
+        var channelId = await alice.Session.CreateChannelAsync("Restarted", Ct);
+        await AddMemberAsync(alice, channelId, carol);
+        var older = PositionOf(carol, channelId);
+        await carol.Session.DisposeAsync();
+        carol = await this._server.RestartAsync(carol);
+
+        await AddMemberAsync(alice, channelId, dave);
+        var epoch = dave.Session.Snapshot.FindChannel(channelId)!.Epoch;
+        await WaitFor(() => carol.Store.Load().EpochKeys.GetValueOrDefault(channelId)?.ContainsKey(epoch) == true ? new object() : null);
+        await WaitFor(() => PositionOf(carol, channelId).Seq == older.Seq + 2 ? new object() : null);
+        var fetches = LogFetches(carol);
+
+        await this._server.SendAndSettleAsync(carol, new Event { ChatMessage = alice.ForgeMessage(channelId, epoch, "right older head", DateTimeOffset.UtcNow, older) });
+        Assert.Equal(fetches, LogFetches(carol));
+        var wrong = new LogPosition { Seq = older.Seq, Hash = ByteString.CopyFrom(new byte[MembershipEntries.HashSize]) };
+        await this._server.SendAndSettleAsync(carol, new Event { ChatMessage = alice.ForgeMessage(channelId, epoch, "wrong older head", DateTimeOffset.UtcNow, wrong) });
+        var notice = await WaitFor(() => carol.Notices.FirstOrDefault(n => n.Kind == NoticeKind.MemberSeesOtherMembership));
+        Assert.StartsWith("Alice Before Restart@", notice.Text);
     }
 
     /// <summary>A plugin from before log heads sends none: its messages are shown as before, and nothing is fetched or said.</summary>

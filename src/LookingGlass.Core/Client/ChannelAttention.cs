@@ -36,6 +36,12 @@ public sealed record ChannelAttention(AttentionLevel Level, ImmutableArray<strin
             warnings.Add(PlainMessages.RegisteredAgainIn(string.Join(", ", replaced)).For(advanced));
         }
 
+        // Their word that they see another membership (see ClientSession.LogHeads): a warning on them, below one on the server.
+        var otherMembership = channel.Members.Where(member => member.SeesOtherMembership).Select(NameOf).ToList();
+        if (otherMembership.Count > 0) {
+            warnings.Add(PlainMessages.SeesOtherMembersIn(string.Join(", ", otherMembership)).For(advanced));
+        }
+
         // No key is coming for a place that belongs to an old key: its warning says what to do instead.
         var pending = channel.OldKeyMembership ? null
             : channel.RekeyPending ? PlainMessages.NewKeyPending

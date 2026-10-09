@@ -247,20 +247,64 @@ public static class PlainMessages {
     /// <param name="who">The member, as "Name@World".</param>
     /// <param name="channel">The channel's name.</param>
     /// <param name="seq">The entry their message names.</param>
-    /// <param name="ahead">They say they verified that entry, and the server's log for this user ends before it.</param>
-    public static Wording MemberSeesOtherMembership(string who, string channel, ulong seq, bool ahead) => new(NoticeKind.MemberSeesOtherMembership,
-        ahead
-            ? $"{who}'s message in {channel} says they have verified membership log entry #{seq}, but the server's log for you ends before " +
-              "it. Either the server is hiding a change from you, or their client is wrong or misbehaving. Compare the member list with " +
-              "them over /tell."
-            : $"{who}'s message in {channel} says they verified a different membership log entry #{seq} from yours, and the server shows " +
-              "you yours. Either the server is showing them a different version of the membership, or their client is wrong or " +
-              "misbehaving. Compare the member list with them over /tell.",
-        ahead
-            ? $"{who} seems to see newer changes to the members of {channel} than the server shows you. Either the server is hiding " +
-              "a change from you, or something is wrong with their LookingGlass. Check with them over /tell before trusting who's in it."
-            : $"{who} seems to see a different member list for {channel} from yours. Either the server is showing them different " +
-              "members, or something is wrong with their LookingGlass. Check with them over /tell before trusting who's in it.");
+    /// <param name="how">How it disagrees, as far as can be told.</param>
+    /// <param name="checkCode">This user's check code for the channel (<see cref="MembershipCheckCode"/>), to compare.</param>
+    public static Wording MemberSeesOtherMembership(string who, string channel, ulong seq, HeadDisagreement how, string? checkCode) =>
+        new(NoticeKind.MemberSeesOtherMembership,
+            how switch {
+                HeadDisagreement.Ahead => $"{who}'s message in {channel} says they have verified membership log entry #{seq}, but the server " +
+                                          "doesn't show you the log that far. Either the server is hiding a change from you, or their client " +
+                                          "is wrong or misbehaving.",
+                HeadDisagreement.NotShown => $"{who}'s message in {channel} says they verified a different membership log entry #{seq} from " +
+                                             "yours, and the server won't show you its entry there. Either the server is showing them a " +
+                                             "different version of the membership, or their client is wrong or misbehaving.",
+                _ => $"{who}'s message in {channel} says they verified a different membership log entry #{seq} from yours, and the server " +
+                     "doesn't show you theirs. Either the server is showing them a different version of the membership, or their client is " +
+                     "wrong or misbehaving.",
+            } + (checkCode == null
+                ? " Compare the member list with them over /tell."
+                : $" Compare check codes with them over /tell: yours is {checkCode} (log head, above the channel's member list), and at the " +
+                  "same entry number theirs should be the same."),
+            how switch {
+                HeadDisagreement.Ahead => $"{who} seems to see newer changes to the members of {channel} than the server shows you. Either " +
+                                          "the server is hiding a change from you, or something is wrong with their LookingGlass.",
+                HeadDisagreement.NotShown => $"{who} seems to see a different member list for {channel} from yours, and the server won't show " +
+                                             "you what it has. Either the server is showing them different members, or something is wrong " +
+                                             "with their LookingGlass.",
+                _ => $"{who} seems to see a different member list for {channel} from yours. Either the server is showing them different " +
+                     "members, or something is wrong with their LookingGlass.",
+            } + (checkCode == null
+                ? " Check with them over /tell before trusting who's in it."
+                : $" Check with them over /tell: your check code is {checkCode} (above the channel's member list), and theirs should be " +
+                  "the same once the number at the start is."));
+
+    /// <summary>A short warning about members who seem to see a different member list, for a channel at a glance.</summary>
+    /// <param name="names">Their names, joined.</param>
+    public static Wording SeesOtherMembersIn(string names) => new(NoticeKind.MemberSeesOtherMembership,
+        $"Sees a different membership: {names}. Their messages name another log head than yours; compare check codes over /tell.",
+        $"Seems to see a different member list: {names}. Compare check codes with them over /tell.");
+
+    /// <summary>A member who seems to see a different member list, on their row in the member list (title, then what to do).</summary>
+    public static Wording SeesOtherMembersTitle => new(NoticeKind.MemberSeesOtherMembership,
+        "Sees a different membership",
+        "Sees a different member list");
+
+    /// <inheritdoc cref="SeesOtherMembersTitle"/>
+    public static Wording SeesOtherMembersExplanation(string name) => new(NoticeKind.MemberSeesOtherMembership,
+        $"{name}'s messages name another membership log head than the one you verified, and the server doesn't show you theirs: it " +
+        "may be showing them a different log, or their client may be wrong. Compare check codes (above the member list) with them over /tell.",
+        $"{name} seems to see a different member list from yours: the server may be showing them different members, or something may " +
+        "be wrong with their LookingGlass. Compare check codes (above the member list) with them over /tell.");
+
+    /// <summary>The check code's label and what it is for, above a channel's member list (see <see cref="MembershipCheckCode"/>).</summary>
+    public static readonly Wording CheckCodeLabel = new(NoticeKind.General, "Log head", "Check code");
+
+    /// <inheritdoc cref="CheckCodeLabel"/>
+    public static readonly Wording CheckCodeExplanation = new(NoticeKind.General,
+        "The newest membership log entry you verified (its number) and a code from its hash. Members whose clients verified the same " +
+        "log have the same code at the same number. If someone's messages show a different one, compare codes over /tell.",
+        "Everyone who sees the same member list as you has the same code, once the number at the start is the same. If LookingGlass " +
+        "says someone seems to see a different member list, compare codes with them over /tell.");
 
     /// <summary>A channel key was refused.</summary>
     /// <param name="reason">Why, in technical words.</param>
@@ -647,8 +691,16 @@ public static class PlainMessages {
         yield return BadChannelKey(who, "Tea party", 7, "isn't the key they committed to giving everyone else", false);
         yield return ChannelKeyRejected("it failed signature or decryption checks", "Tea party");
         yield return CantSealTo(who, "invalid point");
-        yield return MemberSeesOtherMembership(who, "Tea party", 9, false);
-        yield return MemberSeesOtherMembership(who, "Tea party", 9, true);
+        foreach (var how in Enum.GetValues<HeadDisagreement>()) {
+            yield return MemberSeesOtherMembership(who, "Tea party", 9, how, "#9 48213 90412 33187 00921");
+            yield return MemberSeesOtherMembership(who, "Tea party", 9, how, null);
+        }
+
+        yield return SeesOtherMembersIn(who);
+        yield return SeesOtherMembersTitle;
+        yield return SeesOtherMembersExplanation("Bob Hatter");
+        yield return CheckCodeLabel;
+        yield return CheckCodeExplanation;
         yield return VerifiedKeyChanged;
         yield return MessageFromNonMember("Tea party", who);
         yield return MessageWithoutKey("Bob Hatter");
