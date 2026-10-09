@@ -941,6 +941,9 @@ public sealed class DeviceNoticeTests : IAsyncLifetime {
             var again = new Database(path);
             Assert.Equal(1L, Query(path, "SELECT COUNT(*) FROM schema_version WHERE version = 11;"));
             Assert.True(again.IsKeyLoginOff(77));
+            // A device an older server added meanwhile (going back to it for a while) gets an ID when listed.
+            Execute(path, "UPDATE devices SET device_id = x'';");
+            Assert.Equal(8, Assert.Single(again.GetDevices(77)).DeviceId.Length);
             Database.ReleasePooledConnections(path);
         } finally {
             DeleteDirectory(directory);

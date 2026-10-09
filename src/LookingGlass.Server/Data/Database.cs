@@ -939,6 +939,8 @@ public sealed class Database {
     /// <summary>A user's devices, oldest first (as added).</summary>
     public List<DeviceRow> GetDevices(long userId) {
         using var connection = this.Open();
+        // An older server (one went back to for a while) adds devices without an ID: they get one now.
+        Execute(connection, null, "UPDATE devices SET device_id = randomblob(8) WHERE user_id = $id AND length(device_id) = 0;", ("$id", userId));
         return Query(connection, null,
             "SELECT token_hash, device_id, created_at, last_used_at FROM devices WHERE user_id = $id ORDER BY created_at, rowid;",
             reader => new DeviceRow((byte[]) reader.GetValue(0), (byte[]) reader.GetValue(1), reader.GetInt64(2), reader.GetInt64(3)), ("$id", userId));
