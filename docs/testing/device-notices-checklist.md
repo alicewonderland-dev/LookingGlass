@@ -114,9 +114,12 @@ in on the other. The automated tests cover it.
       2, log in and use **Sign out everywhere else** (confirm). Log out.
 - [ ] 18. On install 1, log in. The main window says **Signed out by a
       computer this one doesn't know**: someone else may have a copy of your
-      LookingGlass files, and **Reset my identity...** is the main button
-      (not the registration steps). Its own login was used to do it, but not
-      by this computer, so it doesn't take it for its own.
+      LookingGlass files, and "The computer that did it was added on <date
+      and time>" (install 1's own device's: install 2 used its login).
+      **Reset my identity...** is the main button; below it, **Or register
+      again, only if that computer was yours** with the registration steps.
+      Its own login was used to do it, but not by this computer, so it
+      doesn't take it for its own.
 
 ## Older plugins
 

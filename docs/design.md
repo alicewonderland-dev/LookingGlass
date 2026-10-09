@@ -451,10 +451,22 @@ recorded for this one (`used_unix`). The plugin keeps the latter
 another time since, it says, gently: "This computer's saved LookingGlass login
 may have been used somewhere else on <time>, since you last played here. If
 that wasn't you, use "Sign out everywhere else" in Settings; if it happens
-again, use "Reset my identity"." No new state on the server, and no
-addresses. A login of its own that is new (a registration, a key login)
-starts afresh. It can be a false alarm: a server restored from a backup, or
-an answer to a login lost on the way, look the same; hence the gentle words.
+again, use "Reset my identity"." No addresses are kept. A login of its own
+that is new (a registration, a key login) starts afresh.
+
+Two things would otherwise look like a copy:
+
+- *A refused login.* The server records a use only once every check has
+  passed (a banned character, or a debug account on a server that turned them
+  off, isn't using its login).
+- *A login whose answer was lost.* Each try sends 16 random bytes
+  (`Authenticate.login_nonce`); the server keeps the last use's with its time
+  (`devices.last_login_nonce`) and says it next time
+  (`AuthenticateOk.previous_login_nonce`). The plugin remembers the nonces of
+  its tries not answered yet (`UnansweredLoginNonces`, at most 8, saved before
+  each try): a previous use made with one of them was its own.
+
+A server restored from a backup still looks the same; hence the gentle words.
 
 **The list.** Settings, under "Your identity", shows **Computers signed in**
 with a "?" (`DeviceWords.Explanation`): one short line each, "This computer:
@@ -485,7 +497,9 @@ carries a fresh nonce for its connection; the last four stay good for five
 minutes, and each is used once.
 
 *The new login, crash-safely.* The plugin saves the new login
-(`PendingDeviceToken`) before it sends it. If the answer is lost, it drops
+(`PendingDeviceToken`) before it sends it, and sends nothing if it can't be
+saved (it says so: "Nothing was signed out: LookingGlass couldn't save this
+computer's new login to its files first…"). If the answer is lost, it drops
 the connection; the next login tries the new login first, keeps it if it
 works, and drops it if the old one works instead (the server never took it).
 So this computer is never left without a login the server knows.
@@ -498,16 +512,25 @@ correctly is told why (`Error.signed_out`, with the ID of the device that did
 it in `signed_out_by`; only the key's holder learns it). An older plugin shows
 "Login not recognised". The signed-out computer tells three cases apart:
 
-- *its own ID, and it signed out everywhere else itself:* it has lost its own
-  login since. "This computer used "Sign out everywhere else", and the server
-  has lost its login since…": register again;
+- *its own ID, at the time it signed out everywhere else itself:* it has lost
+  its own login since. "This computer used "Sign out everywhere else", and
+  the server has lost its login since…": register again. The server dates
+  each sign-out (`users.signed_out_at`), tells the computer that did it
+  (`Devices.signed_out_at_unix`) and a refused key login
+  (`Error.signed_out_at_unix`); the plugin keeps the time of its own
+  (`SignedOutOthersAt`), so a later sign-out by a copy of its login isn't
+  taken for its own;
 - *a device it has seen:* one of the player's own, most likely. "You were
   signed out from another of your computers…": register again, or, if it
   wasn't them, reset;
-- *a device it never saw, or its own ID when it never did it* (a copy of its
-  own login did): someone else may have its files. "You were signed out by a
+- *a device it never saw, or its own ID at another time* (a copy of its own
+  login did): someone else may have its files. "You were signed out by a
   computer this one has never seen…", and **Reset my identity** is the main
-  action there, not registering again, which keeps the key a thief may hold.
+  action there. It may still be the player's own new computer, which this one
+  never listed: registering again is offered second ("only if that computer
+  was yours"), and the screen says when the computer that did it was added
+  (`Error.signed_out_by_added_unix`, kept with the sign-out as
+  `users.signed_out_by_added`), for the player to recognise.
 
 Registering through the Lodestone (with any keys) turns key login back on.
 Registering again with the same key would let a copy of it back in, so if a

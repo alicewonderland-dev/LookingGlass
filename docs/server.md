@@ -973,11 +973,13 @@ from before bans keep working; a banned one shows the server's message as a
 failed connection.
 
 **From a server without device notices (schema 10).** The `users` table gains
-two columns, `key_login_off` (0 for everyone) and `signed_out_by` (empty), and
-`devices` one, `device_id` (8 random bytes for each device, filled in by the
-upgrade); nothing else changes, and there is no new setting. A player's
-**Sign out everywhere else** sets the first two, and registering again (or
-`--allow-key-login`) clears them. Plugins from before keep working: they
+`key_login_off` (0 for everyone), `signed_out_by`, `signed_out_by_added` and
+`signed_out_at` (which device signed out everywhere else, when it was added,
+and when); `devices` gains `device_id` (8 random bytes for each device,
+filled in by the upgrade) and `last_login_nonce` (what the plugin sent with
+the login's last use). Nothing else changes, and there is no new setting. A
+player's **Sign out everywhere else** sets the `users` ones, and registering
+again (or `--allow-key-login`) clears them. Plugins from before keep working: they
 aren't told of new devices, and one that was signed out shows "Login not
 recognised".
 
