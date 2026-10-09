@@ -400,4 +400,20 @@ public sealed class ClientSessionOptions {
     /// the server never sends local messages to.
     /// </summary>
     internal bool OfferLocalChat { get; init; } = true;
+
+    /// <summary>
+    /// Make a channel's next key once its newest is older than <see cref="ClientSession.EpochMaxAge"/> (see "Keys have a
+    /// maximum age" in docs/design.md), with <see cref="AutoRekeyWhenDesignated"/>. Only tests turn it off, to play a plugin
+    /// from before it, which never does (and takes the new key as any other).
+    /// </summary>
+    internal bool ReplaceOldKeys { get; init; } = true;
+
+    /// <summary>How often, while connected, channels' keys are looked at to see whether one is too old. Only tests change it.</summary>
+    internal TimeSpan KeyAgeCheckInterval { get; init; } = TimeSpan.FromMinutes(10);
+
+    /// <summary>
+    /// The most this client waits, picked at random each time, before replacing a key that is too old: members online
+    /// together then rarely try at once, and the first to try makes it for everyone. Only tests change it.
+    /// </summary>
+    internal TimeSpan KeyAgeJitter { get; init; } = TimeSpan.FromMinutes(10);
 }

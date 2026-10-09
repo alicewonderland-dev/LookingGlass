@@ -244,6 +244,13 @@ public sealed class KeyPosition {
 
     /// <summary>Who made the key (its author), with <see cref="CreatedMs"/>.</summary>
     public long CreatedBy { get; set; }
+
+    /// <summary>
+    /// When this client got the key (Unix ms, by its own clock), or 0 if it was kept by a version from before this was saved.
+    /// Judges the key's age when it doesn't say when it was made (an older plugin made it), and caps a stated time: the key
+    /// was made before this client had it.
+    /// </summary>
+    public long HeldSinceMs { get; set; }
 }
 
 /// <summary>Orders channel names: a later epoch wins, then a higher revision within the epoch.</summary>
