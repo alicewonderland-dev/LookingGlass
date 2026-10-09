@@ -989,20 +989,26 @@ public sealed partial class ClientSession : IAsyncDisposable {
     /// epoch, and only for the log's head.
     /// </summary>
     /// <param name="force">Rekey even if no membership change is pending (debug tool).</param>
-    public async Task RekeyAsync(string channelId, CancellationToken ct = default, bool force = false) {
+    public Task RekeyAsync(string channelId, CancellationToken ct = default, bool force = false) =>
+        this.RekeyAsync(channelId, force ? RekeyReason.Forced : RekeyReason.Pending, ct);
+
+    /// <inheritdoc cref="RekeyAsync(string, CancellationToken, bool)"/>
+    /// <param name="reason">Why: decides whether it is still needed once this call's turn comes.</param>
+    private async Task RekeyAsync(string channelId, RekeyReason reason, CancellationToken ct) {
         var gate = this._channelLocks.GetOrAdd(channelId, _ => new SemaphoreSlim(1, 1));
         await gate.WaitAsync(ct);
         try {
             for (var attempt = 0; attempt < 3; attempt++) {
                 var (identity, me) = this.RequireIdentityAndUser();
                 var membership = await this.SyncLogAsync(channelId, ct, fetch: attempt == 0 ? LogFetch.IfBehind : LogFetch.Always);
-                var (serverEpoch, name, nameVersion, pending) = this.Read(() => {
+                var (serverEpoch, name, nameVersion, pending, tooOld) = this.Read(() => {
                     var channel = this._channels.GetValueOrDefault(channelId) ?? throw new InvalidOperationException("Unknown channel.");
-                    return (channel.ServerEpoch, channel.Name, channel.NameVersion, this.NeedsRekey(channel));
+                    return (channel.ServerEpoch, channel.Name, channel.NameVersion, this.NeedsRekey(channel),
+                        reason == RekeyReason.KeyTooOld && this.MayReplaceOldKey(channel, this._options.TimeProvider.GetUtcNow()));
                 });
 
                 // Someone else (or an earlier call) may have rekeyed while we waited for the gate.
-                if (!pending && !force) {
+                if (!pending && reason != RekeyReason.Forced && !tooOld) {
                     return;
                 }
 
@@ -1052,9 +1058,9 @@ public sealed partial class ClientSession : IAsyncDisposable {
                 try {
                     await this.RequestAsync(new ClientFrame { SubmitRekey = request }, ct);
                 } catch (ServerErrorException ex) when (ex.Code is ErrorCode.Conflict or ErrorCode.EpochStale) {
-                    // Someone else rekeyed first, or membership changed meanwhile.
+                    // Someone else rekeyed first, or membership changed meanwhile. Then only a change still waiting needs one.
                     await this.RefreshAsync(this.RequireConnection(), ct);
-                    force = false;
+                    reason = RekeyReason.Pending;
                     continue;
                 }
 
@@ -1076,7 +1082,8 @@ public sealed partial class ClientSession : IAsyncDisposable {
 
                 this.SaveSecrets();
                 this.Publish();
-                this.Log(NoticeLevel.Debug, $"Rekeyed {channelId} to epoch {newEpoch} for {sealedKeys.Keys.Count} members at log entry {position.Seq}");
+                this.Log(NoticeLevel.Debug, $"Rekeyed {channelId} to epoch {newEpoch} for {sealedKeys.Keys.Count} members at log entry {position.Seq}"
+                                            + (tooOld && !pending ? " (its key was too old)" : ""));
                 return;
             }
 
@@ -1655,6 +1662,7 @@ public sealed partial class ClientSession : IAsyncDisposable {
 
         // In the background: a long absence can take a while, and nothing else needs to wait for it.
         this.StartCatchUp(connection, catchUp);
+        this.RunBackground(PlainMessages.Rekeying, keyAgeCt => this.ReplaceOldKeysAsync(connection, catchUp?.Done.Task, keyAgeCt));
     }
 
     /// <param name="refreshIdentities">Fetch every identity again, not only those not cached yet.</param>
@@ -3515,7 +3523,11 @@ public sealed partial class ClientSession : IAsyncDisposable {
 
         keys[epoch] = key;
         if (position != null) {
-            positions[epoch] = new KeyPosition { Seq = position.Seq, Hash = position.Hash.ToByteArray(), CreatedMs = createdMs, CreatedBy = createdBy };
+            // Held since it first came, if it comes again: its age (see KeyMadeAt) never starts over.
+            var heldSince = positions.GetValueOrDefault(epoch)?.HeldSinceMs is > 0 and var since ? since : this.NowMs();
+            positions[epoch] = new KeyPosition {
+                Seq = position.Seq, Hash = position.Hash.ToByteArray(), CreatedMs = createdMs, CreatedBy = createdBy, HeldSinceMs = heldSince,
+            };
         }
 
         if (this._channels.TryGetValue(channelId, out var channel)) {

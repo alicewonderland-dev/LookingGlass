@@ -90,6 +90,9 @@ public sealed partial class ClientSession {
 
         /// <summary>The catch-up is over: nothing is held back any more.</summary>
         public bool Over { get; set; }
+
+        /// <summary>Completes once the catch-up is over, whatever came of it (and its held live messages were taken).</summary>
+        public TaskCompletionSource Done { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 
     /// <summary>One channel's catch-up: what was accepted, how many were dropped, and the epochs whose keys were looked for.</summary>
@@ -178,6 +181,7 @@ public sealed partial class ClientSession {
             }
 
             Interlocked.Increment(ref this._catchUpsDone);
+            state.Done.TrySetResult();
         }
     }
 

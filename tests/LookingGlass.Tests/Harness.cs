@@ -169,10 +169,13 @@ public sealed class Harness : IAsyncDisposable {
     /// <param name="replaySaveDelay">How soon changed message times and positions are saved.</param>
     /// <param name="offerLocalChat">Offer local chat in Hello; off plays a plugin from before it.</param>
     /// <param name="remoteAddress">The address the client's connections come from (by default none, which per-IP limits count as one address).</param>
+    /// <param name="replaceOldKeys">Replace a channel's key once it is too old; off plays a plugin from before it.</param>
+    /// <param name="keyAgeCheckInterval">How often keys' ages are looked at (by default as in the plugin: every 10 minutes).</param>
+    /// <param name="keyAgeJitter">The most a client waits at random before replacing an old key (by default as in the plugin).</param>
     public ClientSessionOptions Options(bool autoRekey = true, Action<NoticeLevel, string>? log = null, TimeProvider? time = null, Func<CancellationToken, Task>? beforeConnect = null,
         uint protocolVersion = ProtocolInfo.CurrentVersion, Func<WebSocket, WebSocket>? wrap = null, TimeSpan? forkCheckInterval = null, TimeSpan? loginRetryDelay = null,
         Uri? serverUri = null, bool offerCatchUp = true, TimeSpan? catchUpWithoutPosition = null, int maxHeldLive = 2000, TimeSpan? replaySaveDelay = null,
-        bool offerLocalChat = true, string? remoteAddress = null) => new() {
+        bool offerLocalChat = true, string? remoteAddress = null, bool replaceOldKeys = true, TimeSpan? keyAgeCheckInterval = null, TimeSpan? keyAgeJitter = null) => new() {
         ServerUri = serverUri ?? new Uri(this.Factory.Server.BaseAddress, ProtocolInfo.WebSocketPath),
         Connect = async (uri, ct) => {
             if (beforeConnect != null) {
@@ -197,6 +200,9 @@ public sealed class Harness : IAsyncDisposable {
         CatchUpRetryDelay = TimeSpan.FromMilliseconds(100),
         ReplayStateSaveDelay = replaySaveDelay ?? TimeSpan.FromSeconds(30),
         OfferLocalChat = offerLocalChat,
+        ReplaceOldKeys = replaceOldKeys,
+        KeyAgeCheckInterval = keyAgeCheckInterval ?? TimeSpan.FromMinutes(10),
+        KeyAgeJitter = keyAgeJitter ?? TimeSpan.FromMinutes(10),
     };
 
     /// <summary>Opens a WebSocket to this server, whatever address <paramref name="uri"/> names (as a client's Connect).</summary>
