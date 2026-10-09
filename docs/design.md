@@ -50,8 +50,7 @@ membership log, online indicators, blocking, channel windows (pop-out chat),
 message catch-up (what was sent while you were away), an opt-in chat log on the
 player's computer, local chat with friends near you (`/lgl`), flags for abuse
 and the operator's bans, and debug tooling. ChatTwo integration and the import
-wizard come next. A move to MLS is planned (see
-[Planned features](#planned-features)).
+wizard come next. LookingGlass isn't moving to MLS (see [MLS](#mls)).
 
 ## Glossary
 
@@ -534,7 +533,9 @@ and login to another.
 **Encryption.** The file is encrypted with Windows DPAPI, which doesn't move
 between machines. Where DPAPI is unavailable (Wine, Proton) it uses a random
 local key file instead, which guards against accidental sharing rather than a
-local attacker. Settings shows which is in use.
+local attacker. Settings shows which is in use. An optional passphrase for
+the key file is planned (see
+[A passphrase for the key file on Wine and Proton](#a-passphrase-for-the-key-file-on-wine-and-proton)).
 
 **Backups.** Every save keeps the previous version next to it as
 `secrets-….bin.bak`. If the file is missing or damaged, the plugin loads the
@@ -1602,7 +1603,9 @@ again.
   invite someone by name, the server supplies their key and could substitute
   its own. Each member shows "not compared" until you compare fingerprints
   over /tell and mark them verified. There is no strict mode yet that refuses
-  to invite, or seal keys to, anyone not compared.
+  to invite, or seal keys to, anyone not compared (planned after the public
+  release; see
+  [Strict mode for keys not compared](#strict-mode-for-keys-not-compared)).
 - **The server vouches for re-verified keys.** See
   [The trust this needs](#the-trust-this-needs).
 - **A removal takes effect when the remover's client publishes it.** The
@@ -1632,6 +1635,13 @@ again.
   on. Before, nothing was kept to fetch. The server still can't read them, and a
   member who leaves or is removed fetches nothing more. "Reset my identity"
   stops the stolen keys signing in, and their place moves to the new keys.
+- **No forward secrecy or post-compromise security.** Epoch keys are sealed
+  to each member's long-term X25519 key, and the server keeps them, sealed,
+  while it keeps messages under them. Someone who copies a member's identity
+  keys can open every epoch key sealed to that member, old ones the server
+  still holds and new ones as they are made, until the member resets their
+  identity; nothing locks them out on its own. 1.0 promises neither property
+  (owner, 2026-10-09; see [MLS](#mls)).
 - **Metadata is kept, not only seen.** With each stored message the server
   keeps what it saw when relaying it: who sent it, when, in which channel, under
   which epoch, and its size, for as long as it keeps the message (7 days by
@@ -1818,6 +1828,16 @@ These are plugin settings, kept per character, and never sent to the server.
   they are removed). The freed number then goes to the next channel without
   one. Choosing a number another channel has swaps the two. Typing a number
   with no channel on it says so.
+- **Connecting by itself.** With "Connect automatically" on (the default), a
+  session starts when a character logs in, and also whenever a logged-in
+  player has none for any other reason: the owner found a plugin update left
+  them on "Not connected" (2026-10-09). Each frame the plugin checks
+  (`AutoConnect`): logged in, setting on, no session and none on its way, the
+  player didn't press Disconnect (until they connect, log in again or change
+  the server address), and the last start it made by itself was at least 30
+  seconds ago. A start that fails at once (the keys can't be read) is said
+  once and not retried until the player acts. The log records each start and
+  stop and why, never a name.
 - **Commands.** Of the channel commands only `/lgc` is listed in Dalamud's
   command help (`/lgl` is too); the fifty numbered commands are hidden to keep
   the list short. `/lgc` on its own explains how to use it.
@@ -1828,16 +1848,16 @@ These are plugin settings, kept per character, and never sent to the server.
   tagged by its number instead. A channel's nickname goes away when the user
   leaves it.
 - **Chat tags.** A channel with a nickname is tagged with it, as in `[sky]`,
-  unless **Show nicknames in chat tags** is off; otherwise with its number, as
+  unless **Use nicknames in tags** is off; otherwise with its number, as
   in `[LGC3]`. A channel with neither (more than fifty channels, or a message
   that arrives before the channel list is in) is tagged `[LGC]`.
 - **Colours.** One of 40 of the game's own chat colours, or a custom colour,
   any RGB value (see [Custom colours](#custom-colours)). The channel's lines
-  take the colour, or only the tag if **Colour the whole line in a channel's
-  colour** is off. The bar beside the channel in the list takes it too.
-  **Default** colours only the tag.
+  take the colour, or only the tag if **Colour the whole line** is off. The
+  bar beside the channel in the list takes it too. **Default** colours only
+  the tag.
 - **Chat channel.** Messages appear in one of the game's chat channels, chosen
-  in Settings, so chat tabs can show or hide them.
+  in Settings (**Show messages in**), so chat tabs can show or hide them.
 - **LookingGlass's own lines.** Everything LookingGlass itself says in the
   chat log starts with "[LookingGlass]" in LookingGlass blue, and is in one of
   three colours (rows of the game's UIColor sheet, chosen in one place,
@@ -2032,7 +2052,8 @@ chosen in Settings (the same one for every line, so a ChatTwo tab that shows
 talking in [sky]." with a few words of reason where they help (": you logged
 out.", ": disconnected.", ": you're no longer in it.", ": LookingGlass was
 turned off.", ": the connection started over."). Most of these only with
-**Verbose channel messages** on (Settings, under Chat; `VerboseChannelMessages`,
+**Say when I start or stop talking in a channel** on (Settings, under Chat;
+called "Verbose channel messages" before 2026-10-09; `VerboseChannelMessages`,
 off by default, also for settings saved before it existed): off, "Now talking
 in" isn't said, nor "Stopped talking in" when the player chose the stop (see
 Leaving). A player who switches between LookingGlass and game channels often
@@ -2773,9 +2794,11 @@ library (`WindowsOnly`, `PendingWindows`) and unit tested; the plugin's
 to make in game are in
 [docs/testing/windows-only-checklist.md](testing/windows-only-checklist.md).
 
-- **One setting, "Show LookingGlass messages only in windows"**, in Settings
-  under Chat (`Configuration.MessagesOnlyInWindows`), with a dimmed line under
-  it saying what it does; off by default, also for settings saved before it.
+- **One setting, "Show LookingGlass only in windows"** ("Show LookingGlass
+  messages only in windows" before 2026-10-09), in Settings under Chat
+  (`Configuration.MessagesOnlyInWindows`), with a "?" saying what it does (see
+  [The Settings window](#the-settings-window)); off by default, also for
+  settings saved before it.
   While on, no channel's messages, and none of its information lines (someone
   was invited, joined, left or was removed; a catch-up's "N messages while you
   were away"), go to game chat, whatever each
@@ -2802,8 +2825,10 @@ to make in game are in
   - When in doubt about a line about a channel, it goes to windows only.
 - **A channel no window shows opens in one.** A line kept out of game chat
   asks for a window (`PendingWindows`); if no channel window has the channel,
-  a second setting (`Configuration.WindowOpening`) chooses where it goes:
-  - **Add it as a tab to the window used last** (the default): the channel
+  a second setting (`Configuration.WindowOpening`, **New channels open** in
+  Settings) chooses where it goes:
+  - **As a tab** (the default; "Add it as a tab to the window used last"
+    before 2026-10-09), in the window used last: the channel
     window that last had the focus, or, if it has been closed or none has had
     the focus this session, the one opened last. "Used last" is kept for the
     session only; nothing new is saved. The tab is added at the end, not
@@ -2811,12 +2836,12 @@ to make in game are in
     one shows its count of new messages (from others since login), as a tab
     reopened at login behind another does. A tab opened by an information line
     alone (someone joined) shows no count: only messages are counted.
-  - **Open a new window each time**: a new window with the channel as its only
-    tab. Except for channels with messages from while the player was away
-    (message catch-up, mostly at login): those share one new window, the first
-    opening it and the others added as tabs behind it, for the rest of the
-    session while it is open, so a login never opens a window for every
-    channel. The setting's tooltip says so.
+  - **In a new window** ("Open a new window each time" before 2026-10-09): a
+    new window with the channel as its only tab. Except for channels with
+    messages from while the player was away (message catch-up, mostly at
+    login): those share one new window, the first opening it and the others
+    added as tabs behind it, for the rest of the session while it is open, so
+    a login never opens a window for every channel.
   - With no window open, a new one either way; several channels at once share
     the window opened for the first (or get one each, with a new window each
     time). Each new window opens a step (30 pixels, scaled) below and right of
@@ -2882,10 +2907,11 @@ are in [docs/testing/chat-log-checklist.md](testing/chat-log-checklist.md).
 **The owner's decisions.**
 
 - **Opt-in**, off by default: one setting, **Keep a chat log on this
-  computer** (simple mode: "chat history"), logs **every channel**, with no
-  per-channel choice.
-- **A size limit, not an age**: 50 MB by default, from 5 MB to 1 GB (a slider
-  in Settings while it's on). When the log would pass it, the oldest messages
+  computer** (simple mode: **Keep chat history on this computer**, in a
+  section of its own; its "?" says what it does), logs **every channel**, with
+  no per-channel choice.
+- **A size limit, not an age**: 50 MB by default, from 5 MB to 1 GB (the
+  **Size limit** slider in Settings while it's on). When the log would pass it, the oldest messages
   go first. The limit applies to each character's log on each server.
 - **Shown in channel windows**, above the lines since login. **No export.**
 - **Nothing readable leaves the player's computer**: the log is never sent,
@@ -3262,11 +3288,11 @@ friends.
 **Shown in game chat** as a channel's message is (`ChatOutput.LocalMessage`):
 the tag `[Local]`, then `<Name@World>` and the message, sanitised, with links
 rebuilt from the player's own game data; the sender's name colour if they have
-one. Its colour is a setting of its own (Settings, under Chat, **Local chat
-colour**: the channel colour menu's swatches, **Default** and **Custom...**;
+one. Its colour is a setting of its own (Settings, under Local chat,
+**Colour**: the channel colour menu's swatches, **Default** and **Custom...**;
 `LocalChatColourRow` and `LocalChatCustomColour`, none by default, also for
 settings saved before; one for every character), used for the tag, or the
-whole line as **Colour the whole line in a channel's colour** says. It goes to
+whole line as **Colour the whole line** says. It goes to
 the chat channel chosen in Settings, like every LookingGlass line.
 
 **Talking in local chat** (the owner's decisions, built 2026-10-08). `/lgl`
@@ -3345,11 +3371,12 @@ built around channels; it is now built into sticky mode rather than beside it:
   kept from game chat, ends talking in local chat at once and opens the notice:
   once, as nothing is talked in after it. Nothing is looked up meanwhile.
 - **How to use it stays findable.** `/lgl` alone no longer prints the usage,
-  so the usage (`LocalChatWords.Usage`: Dalamud's command help and Settings,
-  under Chat) says both forms and how to stop, and the first time ever that
-  talking in local chat starts, one more line says where typing goes and to
-  type `/s` (or another channel) on its own to stop (a saved setting,
-  `LocalChatTalkNoteShown`), whatever **Verbose channel messages** says.
+  so the usage (`LocalChatWords.Usage`: Dalamud's command help; Settings,
+  under Local chat, says it more briefly in the "?" of **Colour**) says both
+  forms and how to stop, and the first time ever that talking in local chat
+  starts, one more line says where typing goes and to type `/s` (or another
+  channel) on its own to stop (a saved setting, `LocalChatTalkNoteShown`),
+  whatever **Say when I start or stop talking in a channel** says.
 - **The diagnostic log** is the channels' (`[sticky]` lines), tagged
   `[Local]`; `/lgl` is a known command in it. Never what was typed, nor who is
   near.
@@ -3449,9 +3476,10 @@ lookups (another operator could change that), and that receiving needs none
 of it, with **Accept and use local chat** and **Not now**. The message typed
 isn't kept: once accepted, game chat says to send it again. The choice is one
 setting for every character (`LocalChatPrivacyAccepted`, off by default, also
-for settings saved before it), shown in Settings under Chat with **What it
-tells the server** and **Withdraw** under it (then `/lgl` asks again, and
-talking in local chat ends; the window has a **Withdraw** too, once accepted).
+for settings saved before it), shown in Settings under Local chat as
+**Privacy notice accepted** (or **not accepted yet**), with a "?", **Read it**
+(the window) and **Withdraw** (then `/lgl` asks again, and talking in local
+chat ends; the window has a **Withdraw** too, once accepted).
 
 **What is checked in game** (the checklist has it): that `/lgl` is free (no
 game command and no common plugin uses it); that 20 yalms is about `/say`'s
@@ -3495,6 +3523,53 @@ How it works:
   encrypted, and the like), and that every notice raised anywhere in the test
   suite is shown in both modes.
 - The debug window (`/lgdebug`) always shows the technical details.
+
+### The Settings window
+
+Opened from the main window's gear, or Dalamud's plugin settings button
+(`SettingsWindow`). Redesigned at the owner's request (approved 2026-10-09):
+testers skimmed past the long tooltips and dimmed paragraphs under each
+setting. Now every setting has a **short label**, and only a setting its label
+doesn't explain has a small round **"?"** right after the label (or after the
+checkbox or button). Clicking the "?" opens a small bubble beside it, a few
+sentences about 24 em wide, to its right or, with no room on the screen
+there, to its left. It isn't a hover tooltip and doesn't push the settings
+below it down. A click anywhere else (the "?" too) or Escape closes it.
+
+The sections, in order, with the settings that have a "?" marked (?):
+
+- **Server**: **Server address** (?) with **Apply**, the "Not saved yet"
+  warning and the line while the address change is checked (they are state,
+  not explanations); **Connect automatically**, with **Connect now** or
+  **Disconnect** at the right of the same line if it fits.
+- **Chat**: **Show messages in** (?) the game's chat channel; **Colour the
+  whole line**; **Use nicknames in tags**; **Say when I start or stop talking
+  in a channel** (`VerboseChannelMessages`); **Show LookingGlass only in
+  windows** (?), and under it **New channels open** **As a tab** / **In a new
+  window**, greyed out while it is off.
+- **Local chat**: **Colour** (?, about `/lgl`), the swatch opening the colour
+  menu; **Privacy notice accepted** (or **not accepted yet**) (?), with **Read
+  it** (the privacy window) and, once accepted, **Withdraw**, each beside what
+  is before it if it fits, else under it.
+- **Chat history** ("Chat log" in advanced mode): **Keep chat history on this
+  computer** (?, naming the protection in advanced mode), **Size limit**, how
+  much room it takes, and **Delete my chat history**.
+- **Your identity**: **Advanced mode** (?), the fingerprint (advanced mode
+  only), **Reset my identity...** (?), and the backup offer if there is one.
+- **Blocked users**: the list, or "Nobody blocked. Block someone from a
+  member's menu in a channel."
+
+The words are in the core library, so they are tested like every other: the
+labels and each "?"'s words in `SettingsWords` (by `SettingHelp`, in both
+modes' words), windows only's in `WindowsOnly`, the chat history's in
+`ChatLogWords`. Tests (`SettingsWordsTests`) check that every "?" has words in
+both modes, at most 180 characters and three sentences, plain in simple mode
+(Advanced mode's own "?" is the one exception: it names what advanced mode
+shows), and that labels are short and plain. The plugin draws a label and its
+"?" with `Widgets.Label` and `Widgets.Help`, for every "?". Tooltips stay only
+where they say a state (the local chat colour swatch: default or not). The
+checks to make in game are in
+[docs/testing/settings-checklist.md](testing/settings-checklist.md).
 
 ## Server design
 
@@ -3897,26 +3972,69 @@ out.
   keep the old part as it was), and how the size cap and deletion work across
   both.
 
+### Strict mode for keys not compared
+
+Status: planned, after the public release (owner, 2026-10-09; H4 in
+[the MLS evaluation](mls-evaluation.md)). An optional setting, for a player or
+a channel, that refuses to invite, or seal keys to, anyone whose fingerprint
+hasn't been compared (see [Known limitations](#known-limitations)). Warn and
+continue stays the default: most key changes in a game community are new
+computers, and blocking by default would teach players to click through.
+
+### A passphrase for the key file on Wine and Proton
+
+Status: planned, after the public release (owner, 2026-10-09; H5 in
+[the MLS evaluation](mls-evaluation.md)). Where DPAPI is unavailable, the
+secrets file and the chat log are protected by a local key file in the same
+folder, so a copied plugin folder gives away everything. An optional
+passphrase would protect that key file. Off by default, since a forgotten
+passphrase means re-verifying through the Lodestone with new keys and losing
+the chat log. The details are to decide when it's built.
+
 ### MLS
 
-MLS (RFC 9420) solves the same problems as the membership log and epoch keys,
-with an audited standard, and scales better. There is no mature C#
-implementation, so adopting it means shipping a Rust library (OpenMLS)
-through native interop in both the plugin and the server.
+Status: not moving to MLS (owner, 2026-10-09). The full evaluation, with its
+sources, is in [mls-evaluation.md](mls-evaluation.md).
 
-The group-key and membership layers sit behind interfaces
-(`IGroupKeyProvider`, `IMembershipProvider`), so the switch replaces them
-without touching chat, UI or server routing.
+MLS (RFC 9420) would replace only the epoch-key layer, the smallest and
+simplest part of LookingGlass's cryptography. The membership log (ranks,
+invites, removals), recovery through the Lodestone, message catch-up and local
+chat would all stay custom, with a new layer binding them to MLS, and two
+sources of truth (the log and MLS's tree) to keep in lockstep. Contrary to
+what this section used to say, the switch wouldn't stay behind
+`IGroupKeyProvider` and `IMembershipProvider`: those are shaped around sealed
+keys, the log stays, and the server's routing would change (it would have to
+order and keep commits, store each channel's GroupInfo, and accept frames over
+today's limit). What MLS adds, forward secrecy and post-compromise security,
+is worth little while a stolen secrets file also lets the thief sign in and
+read a week of stored messages, and it would cost a native Rust library in
+the game process and in the server. Instead, smaller hardening comes first: a
+notice when the identity signs in from another device, with a list of devices
+and **Sign out everywhere else** (H1), members' log heads gossiped inside
+messages (H2), and a maximum epoch age of about 7 days (H3), all in progress
+for the public release; then the two features above after it. 1.0 promises
+no post-compromise security.
+
+Look at MLS again if:
+
+- clients outside the game, or several devices per character, become goals;
+- channels need to grow well beyond 500 members;
+- forward secrecy and post-compromise security are to become promised
+  properties;
+- the adversarial reviews find structural problems in the epoch-key layer
+  that are better fixed by replacing it than by patching it;
+- a mature, maintained, audited MLS library with a stable C interface or a
+  managed .NET binding appears.
 
 ## Milestones
 
 | Milestone | Contents | Gate after it |
 | --- | --- | --- |
-| M0 Foundations | Repository, schema, CI, core library | The cryptography spec is reviewed |
+| M0 Foundations | Repository, schema, CI, core library | |
 | M1 Identity | Registration, identity keys, tokens | |
 | M2 Channels and chat | Invites, rekeying, signed messages | Two clients chat while a hostile test server tries to read, forge and replay |
 | M3 Integrations and UI | ChatTwo, import wizard, key-verification UI | |
-| M4 Hardening and beta | Hardening, beta testing | No open high-severity findings, then the 1.0 release |
+| M4 Hardening and beta | Hardening (H1 to H3 in [MLS](#mls)), beta testing | Adversarial reviews by several models of the finalized design and its implementation, with no open high-severity findings, then the 1.0 release |
 
 Version 0.2 covers M1 and M2 and the key-verification UI of M3. Of M3's
 ChatTwo integration, sticky mode's (sending through ChatTwo's input, and
@@ -3924,11 +4042,20 @@ naming the channel in it) and the invite item in its right-click menu are
 built, as is M0's CI. The rest of the ChatTwo integration (channel names and
 colours for ChatTwo's own use) and the import wizard aren't built yet.
 
+M0's gate used to be "the cryptography spec is reviewed". The review now comes
+once the design is finalized, as M4's gate (decided 2026-10-09): a compact
+protocol specification is written for the reviewers, and the design and code
+are run past adversarial reviews by several different AI models, rather than
+a commissioned review (see
+[How the review is done](mls-evaluation.md#how-the-review-is-done)). MLS is no
+longer a milestone.
+
 ## Decisions
 
 The owner's decisions, and why.
 
-- **Sealed epoch keys now, MLS later (2026-10-03).** Build the signed
+- **Sealed epoch keys now, MLS later (2026-10-03; the MLS part superseded on
+  2026-10-09, see the decision not to move to MLS below).** Build the signed
   membership log for v0.2 as an interim step, then move to MLS once core
   functionality is confirmed in real use. The second code review had shown the
   first design unsound: trust only ever grew, and ranks and removals weren't
@@ -4003,7 +4130,8 @@ The owner's decisions, and why.
   [Chat log on this computer](#chat-log-on-this-computer).
 - **Quiet start and stop lines (2026-10-07).** "Now talking in" and the
   "Stopped talking in" lines for stops the player chose are off by default
-  (Settings, **Verbose channel messages**): someone who moves between
+  (Settings, **Say when I start or stop talking in a channel**, once called
+  "Verbose channel messages"): someone who moves between
   LookingGlass and game channels often found them a bother, and the server
   info bar and chat box labels have proven reliable. Stops the player didn't
   choose are always said. See
@@ -4018,8 +4146,8 @@ The owner's decisions, and why.
   the two options. Through Dalamud's `IContextMenu` and ChatTwo's context menu
   IPC, with no game hooks, no protocol change and no server change. See
   [Context menu invites](#context-menu-invites).
-- **Windows only (2026-10-07).** One setting, "Show LookingGlass messages
-  only in windows", keeps every channel's messages and information lines out
+- **Windows only (2026-10-07).** One setting, "Show LookingGlass only in
+  windows", keeps every channel's messages and information lines out
   of game chat; warnings and critical lines still go there, as do answers to
   what the player typed in the chat box. A channel no window shows gets a tab
   in the window used last, or a new window, as a second setting says, without
@@ -4052,14 +4180,33 @@ The owner's decisions, and why.
   too, is accepted; the player is told what the server learns and accepts it
   before the first `/lgl` (see
   [Local chat (friends only)](#local-chat-friends-only)).
+- **Not moving to MLS; reviewed by models, not a paid firm (2026-10-09).**
+  After an evaluation ([mls-evaluation.md](mls-evaluation.md)), the owner
+  decided: no move to MLS and no MLS milestone or spike, with the conditions
+  for looking again recorded under [MLS](#mls); no commissioned, paid review
+  ("we're making an FFXIV plugin, not Signal"), but adversarial reviews by
+  several AI models of the finalized design and its implementation; the
+  hardening H1 to H3 (sign-in notices and a device list, log heads in
+  messages, a maximum epoch age) before the public release, and H4 (strict
+  mode) and H5 (a passphrase on Wine and Proton) after it; and no promise of
+  post-compromise security in 1.0.
+- **Settings: short labels, and a "?" only where needed (2026-10-09).** Long
+  tooltips and dimmed paragraphs gave way to short labels; a setting its label
+  doesn't explain gets a "?" that opens a small bubble on click, not on hover.
+  Local chat and the chat history have sections of their own. See
+  [The Settings window](#the-settings-window).
 
 ## Open questions
 
 - **Secret storage on Wine and Proton:** is the local key-file fallback
-  enough?
+  enough? Answered (2026-10-09): not on its own; an optional passphrase comes
+  after the public release (see
+  [A passphrase for the key file on Wine and Proton](#a-passphrase-for-the-key-file-on-wine-and-proton)).
 - **Key-change policy:** warn and continue (current), or block until
   re-verified? (Decided for keys re-verified through the Lodestone; see
-  Decisions.)
+  Decisions.) Answered (2026-10-09): warn and continue stays the default, and
+  an optional strict mode comes after the public release (see
+  [Strict mode for keys not compared](#strict-mode-for-keys-not-compared)).
 - **ChatTwo IPC names:** reuse `ExtraChat.*`, or use `LookingGlass.*` and ask
   ChatTwo to support them? Sticky mode already sends on
   `ExtraChat.OverrideChannelColour`, the only one ChatTwo listens to for its
@@ -4069,5 +4216,5 @@ The owner's decisions, and why.
 - **Limits:** confirm after beta load testing.
 - **Public hosting:** who runs it, the cost, a privacy note, and an acceptable
   Lodestone volume.
-- **Moving to MLS:** plan the switch as its own milestone, including how
-  existing channels migrate.
+- **Moving to MLS:** decided (2026-10-09): not moving, and no longer a
+  milestone (see [MLS](#mls)).

@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using LookingGlass.Core.Client;
+using Dalamud.Plugin.Services;
 
 namespace LookingGlass.Plugin;
 
@@ -34,6 +35,12 @@ public sealed class SessionManager : IDisposable {
     // Framework thread only. Bumped by every start and stop, so a start that was
     // waiting for the previous session to close is dropped if anything changed meanwhile.
     private int _generation;
+    // Connecting by itself (AutoConnect), framework thread only: the player pressed Disconnect; a start is waiting for the
+    // last session's final save; a start by itself failed and was said; and when it last started one by itself.
+    private bool _stoppedByPlayer;
+    private bool _starting;
+    private bool _autoGaveUp;
+    private DateTimeOffset? _lastAutoStart;
 
     public SessionManager(Configuration config, PlayerTracker player, ChatOutput chat) {
         this._config = config;
@@ -43,7 +50,29 @@ public sealed class SessionManager : IDisposable {
         this._chatLogs = new ChatLogKeeper(Services.PluginInterface.ConfigDirectory.FullName, ProtectedSecretStore.ChatLogProtection(),
             message => Services.Log.Warning(message));
         player.Changed += this.OnPlayerChanged;
+        Services.Framework.Update += this.OnFrameworkUpdate;
         this._nameColours = config.NameColours.ToImmutableDictionary();
+    }
+
+    /// <summary>
+    /// Every frame: a logged-in player with "Connect automatically" on and no session gets one (see <see cref="AutoConnect"/>),
+    /// whatever left them without: a plugin update or reload, or a start that was lost. The character logging in starts one
+    /// at once anyway (<see cref="OnPlayerChanged"/>); this is the net under it.
+    /// </summary>
+    private void OnFrameworkUpdate(IFramework framework) {
+        var now = DateTimeOffset.UtcNow;
+        var state = new AutoConnectState(this._config.AutoConnect, this._player.Current != null, this.Session != null, this._starting,
+            this._stoppedByPlayer, this._autoGaveUp, this._lastAutoStart);
+        if (!AutoConnect.ShouldStart(state, now) || this._player.Current is not { } player) {
+            return;
+        }
+
+        // Never a name: only that it happened.
+        Services.Log.Information("Connecting automatically: logged in with no session");
+        this._lastAutoStart = now;
+        if (!this.StartFor(player)) {
+            this._autoGaveUp = true;
+        }
     }
 
     /// <summary>The current session, or null when logged out or not connected.</summary>
@@ -70,7 +99,7 @@ public sealed class SessionManager : IDisposable {
     public UnreadCounter Unread { get; } = new();
 
     /// <summary>
-    /// "Show LookingGlass messages only in windows" (see <see cref="Configuration.MessagesOnlyInWindows"/>). Read whenever a
+    /// "Show LookingGlass only in windows" (see <see cref="Configuration.MessagesOnlyInWindows"/>). Read whenever a
     /// line arrives, so turning it on or off takes effect at once. Safe from any thread.
     /// </summary>
     public bool MessagesOnlyInWindows => this._config.MessagesOnlyInWindows;
@@ -149,6 +178,10 @@ public sealed class SessionManager : IDisposable {
         this._closing = copying.ContinueWith(_ => { }, TaskScheduler.Default);
         this._config.ServerUrl = newUrl;
         this._config.Save();
+        // A new address: a Disconnect pressed, or a start that failed, was about the old one.
+        this._stoppedByPlayer = false;
+        this._autoGaveUp = false;
+        this._lastAutoStart = null;
         if (this._player.Current is { } player && this._config.AutoConnect) {
             this.StartFor(player);
         }
@@ -157,12 +190,20 @@ public sealed class SessionManager : IDisposable {
     }
 
     public void Connect() {
+        // The player asked: connecting by itself may try again too, if this fails.
+        this._stoppedByPlayer = false;
+        this._autoGaveUp = false;
         if (this.Session == null && this._player.Current is { } player) {
             this.StartFor(player);
         }
     }
 
-    public void Disconnect() => this.Stop();
+    /// <summary>The player's Disconnect: nothing connects by itself again until they connect, or log in again.</summary>
+    public void Disconnect() {
+        this._stoppedByPlayer = true;
+        Services.Log.Information("Disconnected by the player");
+        this.Stop();
+    }
 
     /// <summary>
     /// "Reset my identity" for the logged-in character on the configured server, for a key that was lost or may have been
@@ -512,7 +553,7 @@ public sealed class SessionManager : IDisposable {
     /// A local chat message (see <see cref="LocalChat"/>): the player's own is printed as it is; anyone else's only if, as the
     /// game shows it now, the sender is near and on the friends list (<see cref="LocalChat.Judge"/>), and isn't blocked; only
     /// then is a sender seen for the first time held (<see cref="ClientSession.ConfirmLocalSender"/>). Otherwise it is dropped, only counted in the diagnostic log, but for once a session, when the friends list isn't
-    /// loaded, a line saying to open it. Always in game chat, whatever "Show LookingGlass messages only in windows" says:
+    /// loaded, a line saying to open it. Always in game chat, whatever "Show LookingGlass only in windows" says:
     /// no window shows local chat (see "Local chat (friends only)" in docs/design.md). From any thread.
     /// </summary>
     /// <param name="generation">The history's generation the session was started with: a message caught in a logout is dropped.</param>
@@ -599,35 +640,49 @@ public sealed class SessionManager : IDisposable {
         }
 
         this.Stop();
+        // Another character, or logged out: a Disconnect pressed, or a start that failed, was about the last one.
+        this._stoppedByPlayer = false;
+        this._autoGaveUp = false;
+        this._lastAutoStart = null;
+        // Never a name: only what happened.
+        Services.Log.Information(player == null ? "Logged out: no session"
+            : this._config.AutoConnect ? "Logged in: connecting automatically" : "Logged in: not connecting (Connect automatically is off)");
         if (player != null && this._config.AutoConnect) {
             this.StartFor(player);
         }
     }
 
     /// <summary>Call on the framework thread.</summary>
-    private void StartFor(PlayerInfo player) {
+    /// <returns>False if starting failed at once (and was said); true if it started, or will once the last session has closed.</returns>
+    private bool StartFor(PlayerInfo player) {
         var generation = ++this._generation;
         if (this._closing is { IsCompleted: false } closing) {
             // A quick relog: the old session is still making its final save to the secrets file.
             // Start once it's done, back on the framework thread, without blocking the game meanwhile.
+            this._starting = true;
             _ = closing.ContinueWith(_ => Services.Framework.RunOnFrameworkThread(() => {
                 if (this._generation == generation) {
-                    this.StartNow(player);
+                    this._starting = false;
+                    if (!this.StartNow(player)) {
+                        this._autoGaveUp = true;
+                    }
                 }
             }), TaskScheduler.Default);
-            return;
+            return true;
         }
 
-        this.StartNow(player);
+        this._starting = false;
+        return this.StartNow(player);
     }
 
-    private void StartNow(PlayerInfo player) {
+    /// <returns>False if it couldn't start (and said so).</returns>
+    private bool StartNow(PlayerInfo player) {
         Uri uri;
         try {
             uri = new Uri(this._config.ServerUrl);
         } catch (UriFormatException) {
             this._chat.Notice(NoticeLevel.Error, $"Invalid server URL: {this._config.ServerUrl}");
-            return;
+            return false;
         }
 
         ClientSession session;
@@ -647,7 +702,7 @@ public sealed class SessionManager : IDisposable {
         } catch (Exception ex) {
             Services.Log.Error(ex, "Couldn't start a LookingGlass session");
             this.Tell(NoticeLevel.Error, PlainMessages.CouldntLoadKeys(ex.Message));
-            return;
+            return false;
         }
 
         // A new session's history starts empty, and what an older one still delivers is dropped. Its lines go to its chat
@@ -697,6 +752,7 @@ public sealed class SessionManager : IDisposable {
         this.Unread.Reset();
         Volatile.Write(ref this._session, session);
         session.Start();
+        return true;
     }
 
     private void OnNotice(SessionNotice notice, int history) {
@@ -765,6 +821,8 @@ public sealed class SessionManager : IDisposable {
     /// </summary>
     private void Stop() {
         this._generation++;
+        // A start that was waiting is dropped with the generation, so it isn't on its way any more.
+        this._starting = false;
         var session = Interlocked.Exchange(ref this._session, null);
         // The history's next generation first, then the channel settings: see Deliver. Its chat log closes in the
         // background, once it has written what it was given.
@@ -792,6 +850,7 @@ public sealed class SessionManager : IDisposable {
 
     public void Dispose() {
         this._player.Changed -= this.OnPlayerChanged;
+        Services.Framework.Update -= this.OnFrameworkUpdate;
         this.Stop();
 
         // Unloading: the final save must finish before the plugin goes away, so this one may wait. So does the chat log's

@@ -1,6 +1,6 @@
 # Windows only: in-game checklist
 
-"Show LookingGlass messages only in windows" (see
+"Show LookingGlass only in windows" (see
 [Windows only, never game chat](../design.md#windows-only-never-game-chat)).
 You need character **A** (yours, on this build) in at least three channels,
 here `sky` (`/lgc1`), `fc` (`/lgc2`) and `raid` (`/lgc3`). Give `sky` a
@@ -13,14 +13,13 @@ channel window open.
 
 ## The setting
 
-- [ ] 1. `/lg`, the gear, Settings. Under **Chat**, after **Verbose channel
-      messages**: **Show LookingGlass messages only in windows**, unticked.
-      Under it, a dimmed line says what it does (messages only in windows,
-      warnings and answers to the chat box still in game chat). Below that,
-      greyed out, "For a channel no window shows:" with **Add it as a tab to
-      the window used last** (chosen) and **Open a new window each time**.
-      Hover each: a tooltip says what it does; the second says channels with
-      messages from while you were away share one new window.
+- [ ] 1. **(changed)** `/lg`, the gear, Settings. Under **Chat**, after **Say
+      when I start or stop talking in a channel**: **Show LookingGlass only in
+      windows**, unticked, with a **?**. The **?** opens a small bubble:
+      channel messages appear only in channel windows, not game chat, and
+      warnings and replies to your commands still show in game chat. Under
+      it, indented and greyed out, **New channels open** with **As a tab**
+      (chosen) and **In a new window**.
 - [ ] 2. Tick the setting. The two choices are no longer greyed out.
 
 ## Nothing in game chat
@@ -43,7 +42,8 @@ channel window open.
 - [ ] 7. `/lgc4 hi` (no channel on 4) and `/lgc` alone: the answers show in
       game chat, in blue, as before.
 - [ ] 8. Talk in `raid` with `/lgc3` (no message): "Now talking in [raid]"
-      shows in game chat (with **Verbose channel messages** on). Type `test`:
+      shows in game chat (with **Say when I start or stop talking in a
+      channel** on). Type `test`:
       it doesn't show in game chat; a `raid` tab is added to the window used
       last. Switch to `/s`: "Stopped talking in" shows in game chat (verbose
       on).
@@ -71,7 +71,7 @@ channel window open.
       to the `sky` window, not the `fc` one, and not selected.
 - [ ] 14. Close the `sky` window. A message arrives in `sky`: it is added as a
       tab to the `fc` window (the one opened last).
-- [ ] 15. In Settings choose **Open a new window each time**. Close the `sky`
+- [ ] 15. In Settings choose **In a new window**. Close the `sky`
       tab, and have a message arrive in `sky`: a new window opens with `sky`
       only, a little below and right of the window used last, without taking
       the keyboard. Have messages arrive in two channels no window shows (at
@@ -79,12 +79,12 @@ channel window open.
       step below and right of the one before, none exactly on top of another.
       Move the window used last near the bottom right of the screen and repeat:
       the new windows stay on the screen.
-- [ ] 15b. **(A and B)** Still with **Open a new window each time**, close
+- [ ] 15b. **(A and B)** Still with **In a new window**, close
       every window and log out. B sends in `sky` and `fc`. Log back in: one
       new window opens with both as tabs (messages from while you were away),
       not a window each.
 - [ ] 16. Close every window. Have messages arrive in two channels: with
-      **Add it as a tab to the window used last**, one window opens, with the
+      **As a tab**, one window opens, with the
       first channel selected and the second as a tab behind it.
 
 ## In combat, cutscenes and loading screens
@@ -103,7 +103,7 @@ channel window open.
 - [ ] 20. In `sky`'s ⋮ menu (main window) and its tab's right-click menu,
       **Show in game chat** shows a red cross, greyed out, for every channel
       (even one whose own setting is on), and can't be clicked. Hover it: one
-      tooltip, saying "Show LookingGlass messages only in windows" is on and
+      tooltip, saying "Show LookingGlass only in windows" is on and
       to change it in Settings, under Chat. Hover a tab: "Not shown in game
       chat: only windows show messages (change it in Settings)."
 - [ ] 21. Close every window that has a channel turned off game chat on its
