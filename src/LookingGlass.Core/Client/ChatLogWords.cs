@@ -7,23 +7,17 @@ namespace LookingGlass.Core.Client;
 public static class ChatLogWords {
     public static readonly Wording KeepIt = new(NoticeKind.General,
         "Keep a chat log on this computer",
-        "Keep a chat history on this computer");
+        "Keep chat history on this computer");
 
+    /// <summary>What <see cref="KeepIt"/> does, in the bubble of its "?" in Settings (see <see cref="SettingsWords"/>).</summary>
     /// <param name="protection">How the secrets file is protected ("Windows DPAPI", "local key file"), for advanced mode.</param>
     public static Wording Explanation(string protection) => new(NoticeKind.General,
-        "Saves every channel's messages (yours too, and LookingGlass's lines about who joined or left) so channel windows can " +
-        "show them after you log out: scroll up in a window, or click \"Show older messages\". Encrypted at rest with its own " +
-        $"key, kept as your identity keys are ({protection}). It stays on this computer, and is never uploaded or shared. " +
-        "When it reaches its size limit, the oldest messages are deleted first.",
-        "Saves every channel's messages (yours too, and who joined or left) so channel windows can show them again the next " +
-        "time you play: scroll up in a window, or click \"Show older messages\". It's kept scrambled, like your LookingGlass setup, " +
-        "stays on this computer, and is never uploaded or shared. When it's full, the oldest messages are deleted first.");
+        $"Lets channel windows show older messages next time you play. Stored encrypted ({protection}), never uploaded. The " +
+        "oldest messages go first when it's full.",
+        "Lets channel windows show older messages next time you play. Stored scrambled, never uploaded. The oldest messages " +
+        "go first when it's full.");
 
-    public static readonly Wording SizeLimit = Wording.Same("Largest size (MB)");
-
-    public static readonly Wording SizeLimitTooltip = Wording.Same(
-        $"From {ChatLogLimits.MinMegabytes} MB to {ChatLogLimits.MaxMegabytes} MB (1 GB), for each character on each server. " +
-        "Lowering it deletes the oldest messages straight away.");
+    public static readonly Wording SizeLimit = Wording.Same("Size limit");
 
     /// <summary>"Your chat log uses 12.3 MB on this computer."</summary>
     public static Wording Uses(long bytes) => new(NoticeKind.General,
@@ -76,7 +70,7 @@ public static class ChatLogWords {
 
     /// <summary>Every wording above, with examples for those that take something: for the plain-language tests.</summary>
     public static IEnumerable<Wording> Examples() => [
-        KeepIt, Explanation("Windows DPAPI"), SizeLimit, SizeLimitTooltip, Uses(12_900_000), Delete, DeleteConfirm(52_428_800),
+        KeepIt, Explanation("Windows DPAPI"), SizeLimit, Uses(12_900_000), Delete, DeleteConfirm(52_428_800),
         TurnedOff(800_000), Unreadable("the file that unlocks it is missing"), Unreadable(null), ShowOlder, Loading, NothingOlder,
         Earlier(new DateTimeOffset(2026, 10, 6, 12, 0, 0, TimeSpan.Zero)), SinceLogin,
     ];

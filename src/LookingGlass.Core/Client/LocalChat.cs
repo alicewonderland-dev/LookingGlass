@@ -210,7 +210,7 @@ public enum LocalChatStep {
 
 /// <summary>What opened local chat's privacy notice: what to say once it is accepted (see <see cref="LocalChatWords.PrivacyAcceptedFor"/>).</summary>
 public enum LocalPrivacyAsked {
-    /// <summary>Settings (What it tells the server): nothing was typed.</summary>
+    /// <summary>Settings (Read it, under Local chat): nothing was typed.</summary>
     FromSettings,
 
     /// <summary>/lgl &lt;message&gt;: the message wasn't sent.</summary>

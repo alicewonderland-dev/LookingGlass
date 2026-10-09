@@ -99,7 +99,7 @@ public sealed class SessionManager : IDisposable {
     public UnreadCounter Unread { get; } = new();
 
     /// <summary>
-    /// "Show LookingGlass messages only in windows" (see <see cref="Configuration.MessagesOnlyInWindows"/>). Read whenever a
+    /// "Show LookingGlass only in windows" (see <see cref="Configuration.MessagesOnlyInWindows"/>). Read whenever a
     /// line arrives, so turning it on or off takes effect at once. Safe from any thread.
     /// </summary>
     public bool MessagesOnlyInWindows => this._config.MessagesOnlyInWindows;
@@ -553,7 +553,7 @@ public sealed class SessionManager : IDisposable {
     /// A local chat message (see <see cref="LocalChat"/>): the player's own is printed as it is; anyone else's only if, as the
     /// game shows it now, the sender is near and on the friends list (<see cref="LocalChat.Judge"/>), and isn't blocked; only
     /// then is a sender seen for the first time held (<see cref="ClientSession.ConfirmLocalSender"/>). Otherwise it is dropped, only counted in the diagnostic log, but for once a session, when the friends list isn't
-    /// loaded, a line saying to open it. Always in game chat, whatever "Show LookingGlass messages only in windows" says:
+    /// loaded, a line saying to open it. Always in game chat, whatever "Show LookingGlass only in windows" says:
     /// no window shows local chat (see "Local chat (friends only)" in docs/design.md). From any thread.
     /// </summary>
     /// <param name="generation">The history's generation the session was started with: a message caught in a logout is dropped.</param>

@@ -10,7 +10,7 @@ You need character **A** (yours, on this build, registered) in a channel
 `sky` (`/lgc1`, nickname `sky`) with at least one other member **B** who can
 send messages (or use the echo bot on a test server: `/lgdebug` > Channel
 tools > Simulate incoming works without anyone). Check with **Colour the whole
-line in a channel's colour** on, then the chat steps again with it off. Do
+line** on, then the chat steps again with it off. Do
 steps 1 to 9 without ChatTwo, then 10 to 14 with ChatTwo on.
 
 ## The colour test (no channel changes)

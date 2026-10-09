@@ -11,7 +11,7 @@ clients (or PCs) in the same zone and instance:
 Optionally a fourth character **D** who is A's friend but doesn't use
 LookingGlass (or has it turned off). Start with every character's Friends
 window not yet opened this session (log in afresh), simple mode (Settings,
-**Advanced mode** off), and A's **Local chat colour** at **Default**. Watch
+**Advanced mode** off), and A's local chat **Colour** at **Default**. Watch
 `/xllog` with debug output on, for the "Local chat" and "Local message"
 lines. Do it once with ChatTwo off and once with ChatTwo on, on A.
 
@@ -27,8 +27,10 @@ lines. Do it once with ChatTwo off and once with ChatTwo on, on A.
       type there until you type `/s` (or another channel) on its own. (`/lgl`
       alone no longer explains itself: it talks in local chat, see *Talking in
       local chat* below.)
-- [ ] 3. Settings, under **Chat**: **Local chat colour ([Local])** with a
-      swatch, and under it the same words as 2.
+- [ ] 3. **(changed)** Settings, under **Local chat** (a section of its
+      own): **Colour** with a **?** and a swatch. The **?** opens a small
+      bubble: "/lgl message talks to friends near you who use LookingGlass.
+      /lgl on its own keeps talking there until you type /s."
 
 ## Asking first (each of A, B and C, once)
 
@@ -42,12 +44,15 @@ lines. Do it once with ChatTwo off and once with ChatTwo on, on A.
 - [ ] 3b. **Not now**: the window closes; `/lgl hello` again asks again.
 - [ ] 3c. **(changed)** **Accept and use local chat**: the window closes, and game chat says
       "Local chat is on. Send your message again with /lgl <message>."
-      `/lgl hello` now sends. Settings, under Chat, says you've accepted (on a line of its
-      own), with **What it tells the server** and **Withdraw** under it, both
-      visible at the window's usual width (beside each other, or one under the
-      other if the window is narrow). **What it tells the server** opens the
-      window with **Withdraw** and **Close**. Either **Withdraw** makes `/lgl`
-      ask again. Accept again before going on.
+      `/lgl hello` now sends. Settings, under **Local chat**, says **Privacy
+      notice accepted** (before: **Privacy notice not accepted yet**, with
+      only **Read it**), with a **?** and the buttons **Read it** and
+      **Withdraw**, all visible at the window's usual width (on one line, or
+      the buttons under it if the window is narrow). The **?** says the
+      server learns the names of friends near you when you use /lgl, and
+      never sees what you say. **Read it** opens the window with **Withdraw**
+      and **Close**. Either **Withdraw** makes `/lgl` ask again. Accept again
+      before going on.
 - [ ] 3d. Before accepting, local messages from a friend who has accepted are
       still shown (receiving doesn't need it).
 
@@ -124,16 +129,16 @@ Before anyone opens their Friends window this session.
 
 ## Colours and where it shows
 
-- [ ] 19. Settings, **Local chat colour**: pick a swatch. The next local line
-      on A is in that colour (the whole line, or only `[Local]` with **Colour
-      the whole line in a channel's colour** off). **Custom...**: a custom
+- [ ] 19. Settings, under **Local chat**, **Colour**: pick a swatch. The next
+      local line on A is in that colour (the whole line, or only `[Local]`
+      with **Colour the whole line** off). **Custom...**: a custom
       colour shows exactly (in ChatTwo too). **Default**: only the tag, blue.
 - [ ] 20. Give B a name colour (right-click B in a channel member list, Name
       colour...): B's name in local lines takes it.
-- [ ] 21. Turn on **Show LookingGlass messages only in windows**: local lines
-      still show in game chat (no window opens for them). Its tooltip says so.
+- [ ] 21. Turn on **Show LookingGlass only in windows**: local lines still
+      show in game chat (no window opens for them).
 - [ ] 22. Local lines go to the chat channel chosen in Settings (**Show
-      messages in the chat channel**), so a chat tab filtering it hides them.
+      messages in**), so a chat tab filtering it hides them.
 - [ ] 23. While talking in a channel (`/lgc1` with no message), `/lgl hi`
       still goes to local chat, and talking in the channel goes on.
 
@@ -170,9 +175,9 @@ Before anyone opens their Friends window this session.
 in a channel (see *Talking in local chat* in
 [Local chat (friends only)](../design.md#local-chat-friends-only)). Needs
 0.2.12. Setup: A has accepted local chat (3c), is a member
-of a channel `sky` on `/lgc1`, has a swatch picked as **Local chat colour**
-(so the colour can be told from the default), and has **Verbose channel
-messages** on (Settings, under Chat) unless a step says off. ChatTwo off until
+of a channel `sky` on `/lgc1`, has a swatch picked as local chat's **Colour**
+(so the colour can be told from the default), and has **Say when I start or
+stop talking in a channel** on (Settings, under Chat) unless a step says off. ChatTwo off until
 the ChatTwo steps. Watch `/xllog` for the `[sticky]` lines. Steps 29 to 41
 need only A, standing away from everyone unless a step says otherwise; 42 to
 46 need ChatTwo; 47 needs B, A's friend.
@@ -218,19 +223,19 @@ need only A, standing away from everyone unless a step says otherwise; 42 to
       right-click a player's name > **Send Tell** (ends).
 - [ ] 35. **Ending it without choosing to.** Start with `/lgl`, then press
       **Disconnect** (Settings): "Stopped talking in [Local]: disconnected.",
-      even with verbose channel messages off. Connect, start again, and turn
+      even with **Say when I start or stop talking in a channel** off. Connect, start again, and turn
       LookingGlass off in `/xlplugins`: "Stopped talking in [Local]:
       LookingGlass was turned off.", and the chat input names Say again. Turn
       it back on, start again and log out to the title screen: on logging in,
       nothing is still talking in local chat (no label, no info bar entry).
-- [ ] 36. **Verbose channel messages off.** `/lgl` alone: no "Now talking"
+- [ ] 36. **Say when I start or stop talking in a channel off.** `/lgl` alone: no "Now talking"
       line, but the labels and the info bar show `[Local]`. `/s` alone: no
       line, and the labels go away. Turn it back on.
 - [ ] 37. **Not connected.** Press **Disconnect**, then `/lgl` alone: "Can't
       switch to [Local]: not connected to LookingGlass." Nothing starts (no
       label, no info bar entry), and `hello` goes to Say as usual. Connect
       again.
-- [ ] 38. **Asked first.** Settings, under Chat, **Withdraw**. `/lgl` alone:
+- [ ] 38. **Asked first.** Settings, under Local chat, **Withdraw**. `/lgl` alone:
       "Local chat first asks you to accept what it tells the LookingGlass
       server. See the window that opened, then type /lgl again." and the
       privacy window opens. Nothing starts. **Accept and use local chat**:
@@ -238,10 +243,11 @@ need only A, standing away from everyone unless a step says otherwise; 42 to
       now starts.
 - [ ] 39. **Withdrawn while talking in local chat.** While talking in local
       chat, **Withdraw** in Settings: at once, "Stopped talking in [Local]: you
-      withdrew the privacy notice." (even with verbose channel messages off),
-      the labels and the info bar entry go away, and `hello` now goes to Say.
-      Start again (accept first), then **Withdraw** in the privacy window
-      (Settings, **What it tells the server**): the same. Accept again.
+      withdrew the privacy notice." (even with **Say when I start or stop
+      talking in a channel** off), the labels and the info bar entry go away,
+      and `hello` now goes to Say. Start again (accept first), then
+      **Withdraw** in the privacy window (Settings, **Read it**): the same.
+      Accept again.
 - [ ] 40. **The diagnostic log.** In `/xllog`, the `[sticky]` lines from the
       steps above say "talking in [Local]" with sizes and fixed words (and
       `/lgl` as a command's name), never what you typed or anyone's name.
