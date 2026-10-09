@@ -106,6 +106,9 @@ public sealed partial class ClientSession {
         public Dictionary<long, MembershipEntryKind> Unconfirmed { get; } = new();
         public int UnconfirmedCount { get; set; }
         public HashSet<ulong> KeysLookedFor { get; } = new();
+
+        /// <summary>The membership log heads the accepted messages carry, with their senders, oldest first.</summary>
+        public List<(long SenderId, LogPosition Head)> Heads { get; } = new();
     }
 
     /// <summary>
@@ -365,6 +368,11 @@ public sealed partial class ClientSession {
         batch.Accepted.Add(MessageContent.Decode(content) is { } text
             ? new IncomingMessage(channelId, channelName, sender, isOwn, text.Text, false, timestamp) { Links = text.Links, CaughtUp = true }
             : new IncomingMessage(channelId, channelName, sender, isOwn, null, true, timestamp) { CaughtUp = true });
+
+        // Compared as a live message's, once the batch is shown (see FinishChannelAsync).
+        if (content.LogHead != null) {
+            batch.Heads.Add((message.SenderId, content.LogHead));
+        }
     }
 
     /// <summary>A caught-up message was had, whatever came of it: the next catch-up carries on after it.</summary>
@@ -384,6 +392,11 @@ public sealed partial class ClientSession {
         if (batch.Accepted.Count > 0) {
             this.InvokeSafely(this.MessagesCaughtUp,
                 new CaughtUpMessages(channelId, name, batch.Accepted.Select(message => message with { Sender = Shown(message.Sender) }).ToList()));
+        }
+
+        // Their log heads, as live messages' are, against what this client verified at each (older, but it still has to match).
+        foreach (var (senderId, head) in batch.Heads) {
+            this.CompareSenderHead(channelId, senderId, head);
         }
 
         if (batch.Dropped > 0) {

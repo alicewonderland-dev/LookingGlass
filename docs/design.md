@@ -854,8 +854,15 @@ word. A malicious or compromised server can therefore:
 - after the next rekey, read that channel's messages and act as that member,
   with their rank (as admin, say);
 - show different members different recoveries, since these entries carry no
-  member's signature. A client only notices by comparing the whole log, not
-  from a single entry.
+  member's signature. A client doesn't notice from a single entry, only by
+  comparing logs: the server's whole log with its own, or another member's log
+  head, which each of their messages carries (see
+  [Log heads in messages](#log-heads-in-messages)). A server careful to show
+  each member only their own version is then seen to split them, but not
+  proven to: each is told the other sees a different member list, with check
+  codes to compare over /tell. Codes settle it only between two honest members
+  at the same entry number (see
+  [Log heads in messages](#log-heads-in-messages)).
 
 The new keys' signature stops it binding someone else's keys, not its own.
 
@@ -1024,6 +1031,120 @@ user re-verified their character (see
 - **Rollbacks.** If the server shows a client an older log than it has already
   verified (it may be hiding a change, such as a removal), the client does the
   same.
+- **Through messages.** A server that shows each member only their own version
+  never shows anyone two. Each message carries its sender's log head, so the
+  others see that they disagree, though not always who lied (next section).
+
+### Log heads in messages
+
+Added before the public release, with the owner's agreement (October 2026).
+Without it, a server that keeps showing each member one version of the log,
+their own, is only found out when it slips and shows someone the other. Key
+recovered entries make that easy: they are the server's word, so it can show
+different ones to different members with nobody signing anything twice. The
+code is `ClientSession.LogHeads`; the tests are in `LogHeadTests`,
+`MaliciousServerTests` and `MaliciousMemberTests`.
+
+What it does and doesn't do, in short: a split between two members shows as
+soon as a message crosses it, on both sides, but a server careful enough to
+show each of them only their own version can't be proven to have lied. The
+warning then names the other member, not the server, and gives the user a
+check code to compare over /tell, which is where the truth comes out.
+
+- **What is sent.** Every channel message carries, inside its encrypted,
+  signed content, the sender's verified log head for that channel: the
+  sequence number and hash of the newest entry their client verified
+  (`Content.log_head`, a `LogPosition`). The hash is the entry's hash as the log
+  chains it (`MembershipEntries.Hash`, over the signed fields and the
+  signature: what the next entry's previous hash is). The server can't read or
+  change it. It is a field added as links were: older clients skip it, and a
+  message without one is taken as before, with nothing compared. About 40
+  bytes, under the same 4 KiB limit. Local chat has no channel, and no head.
+- **Compared on receipt**, after the message is shown, never holding it up:
+  - **Same hash** at that position: nothing to do. This is the usual case,
+    and is one lookup: a client remembers the hashes of the last 1,024 entries
+    it verified per channel (in memory; after a restart it carries on from the
+    hashes the saved membership kept, those since its last join or leave). A
+    position older than that is let go: if the logs differ there, they differ
+    at every later position too, and the sender's later messages carry later
+    heads.
+  - **Another hash at a position the client verified.** That the two logs
+    disagree is certain: the sender signed their head. Who is to blame isn't.
+    The client asks the server for its entry there, which can only make it
+    the server's fault, never clear anyone. If the server shows another entry
+    than the one the client verified, the fork check every log sync uses looks
+    into it; if it shows none, the same check fetches its whole log. When that
+    check blames the server (the critical "two different versions" warning, or
+    "won't show the membership as you have verified it"), with the channel
+    marked "check members", that warning stands. Otherwise (the server shows
+    the entry the client verified, or shows junk, or fails, or the fork check
+    must wait for its once-a-minute turn) the sender is named: an ordinary
+    warning (light red, not critical), "Bob seems to see a different member
+    list for Tea party from yours. Either the server is showing them different
+    members, or something is wrong with their LookingGlass", with both check
+    codes at that number: the one the sender's head names, and the user's own
+    there. When the server showed no entry there, it says so too.
+  - **A position the client hasn't reached.** It fetches the log and verifies
+    it as always (any problem found is reported as such), then compares as
+    above. If the server's own log ends before that position, or three tries
+    in a row (a minute apart at least) don't reach it, the sender is named the
+    same way, with the code their head names, and a note that the user doesn't
+    have that entry yet.
+- **The mark on the member.** Whoever's head disagrees is also marked in the
+  member list (a warning sign: "Sees a different member list"), and the
+  channel list flags the channel for it, below a warning about the server.
+  They are marked even when a warning about the server is already on the
+  channel; only the second warning is left out then. The mark remembers the
+  entry where they disagreed, and stays until a message of theirs agrees at
+  that entry or a later one, or they leave. An older head that agrees takes
+  nothing off: a message sent before the split and delivered late (or held
+  back by the server to be delivered just then) says nothing about where the
+  two part. When the mark goes, what was looked into about their heads is
+  forgotten, so a new disagreement is looked into and told again.
+- **Check codes.** Above every channel's member list is its check code: the
+  number of the newest entry this client verified and 25 digits from its hash
+  ("#12 48213 90412 33187 00921 55102"; "Check code" in simple mode, "Log
+  head" in advanced). Members who verified the same log have the same code at
+  the same number. Comparing member lists isn't enough: when the server shows
+  two members different key recovered entries for Dave, both lists say "Dave".
+  The warning naming a member gives the code at the number their message names
+  (theirs, and the user's own there), so the two compare over /tell, which the
+  server can't touch. That settles it only between two honest members at the
+  same number: if one is further on, the codes differ anyway, and if the
+  member is the one lying, their word over /tell is worth no more than their
+  head.
+- **Why a member can't do more harm with it.** A false head is signed by its
+  sender, so it is evidence against them: it never brings the warning that
+  blames the server, only the one naming them, and the mark on them. It can
+  make a client ask the server one question (one page of the log, or a log
+  sync when it claims to be ahead), at most once a minute per sender and
+  channel, and once per head claimed. A member could already say anything in a
+  message.
+- **Both sides.** When the server shows Alice and Carol different versions,
+  whichever of them the server's own log disagrees with gets the fork warning;
+  the other is told the first sees a different member list. A careful server
+  answers each of them with their own version, so neither can blame it: both
+  are told, naming the other, with codes that differ. That is the cue to compare
+  over /tell.
+- **What it can't find.** A server that never delivers a member's messages to
+  someone gives them no head to compare: that is undetectable this way. The
+  people involved would notice the missing chat.
+- **Caught-up messages** are compared too, once their batch is shown: their
+  heads are older, and are compared with what the client verified at their
+  position (or let go if too far back). The chat log on this computer keeps no
+  heads: messages read back from it aren't compared again.
+- **Not compared: your own messages**, including those sent from your other
+  computers (the same account is skipped). A split between your own computers
+  isn't found this way; comparing their check codes is.
+- **A possible follow-up (not built): settling a disagreement between members.**
+  A reviewer suggested that two members who disagree could send each other the
+  entries their logs hold from the point they part, so each could verify the
+  other's version. Caveats, recorded for if it is built: a key recovered entry
+  can never be proof of anything (it is the server's word, signed over no
+  position), so a dispute that comes down to two of them blames nobody; only
+  an entry signed by a third party (a member other than the two, signing two
+  entries at one position) would let a client escalate to the critical fork
+  warning. Until then, the check code over /tell is the way to settle it.
 
 ### Stale places and "Remove from my list"
 
@@ -1093,7 +1214,7 @@ knows it by, and a disband would end the channel for everyone.
 | A former member signs invites for ghosts | Invalid: the inviter isn't a member at that point in the log |
 | An ordinary member invites ghosts | Invalid: rank is part of the signed log |
 | The server hides a removal | The remover's client, and everyone who saw the removal, reject keys made for the older position, and warn that the server may be hiding a change |
-| The server shows different member lists to different clients | Needs a member to sign two different entries at the same position; a client that sees both reports a fork. Key recovered entries are the exception: the server can show different ones to different clients, which only comparing whole logs reveals |
+| The server shows different member lists to different clients | Needs a member to sign two different entries at the same position; a client that sees both reports a fork. Key recovered entries are the exception: the server can show different ones to different clients, which only comparing logs reveals. Members' messages carry their log heads, so the first message across the split shows that the two disagree, on both sides; unless the server's own answers give it away, each is told the other sees a different member list, with check codes to compare over /tell, which settles it between two honest members at the same entry number. A server that never delivers someone's messages leaves nothing to compare, though the missing chat shows (see [Log heads in messages](#log-heads-in-messages)) |
 | An old key is reused after registering again | The old key stopped being a member when it was removed, or when a key recovered entry moved the place to the new key |
 | An old channel name is replayed | Names are bound to the log position and a revision counter |
 
@@ -1246,7 +1367,9 @@ moved clock.
   the key the log has for them. A message under an older epoch is accepted
   only within 2 minutes of the client getting the newer key.
 - Inside the ciphertext, each message has a content kind (text today). A
-  client shows a kind it doesn't know as an unsupported message.
+  client shows a kind it doesn't know as an unsupported message. Beside the
+  kind, a message carries its sender's membership log head (see
+  [Log heads in messages](#log-heads-in-messages)).
 - The plugin sanitises all remote text before it reaches the chat log.
 
 #### Links in messages
@@ -1801,6 +1924,7 @@ messages need no server change at all.
 | Server capability | Message history, channel bans, file attachments, local chat | Yes | A new capability string and message types; old clients never see them |
 | Encrypted content kind | Emotes, replies, reactions, polls, typing state | No | A new content kind inside the ciphertext; older clients show "unsupported message" |
 | Encrypted field of a kind | Links in text messages | No | A new field of an existing kind, with a fallback in the old fields; older clients skip it and show the fallback (the text) |
+| Encrypted field of every message | The sender's log head | No | A new field of `Content` beside the kind; older clients skip it, and a message without it is taken as before |
 | Client-only feature | Chat filters, notifications, colours, sounds | No | A plugin update only |
 
 Within a major version, changes are additive only. Removing a field, or
@@ -1892,7 +2016,7 @@ These are plugin settings, kept per character, and never sent to the server.
   | Tone | Colour | What |
   |------|--------|------|
   | Information | LookingGlass blue (UIColor 37, 0x0099FF, the default `[LGC]` tag's) | Status and replies: "Now talking in", "Stopped talking in", every "Not sent", "A link in it couldn't be read", "Not connected", refusals to start, `/lgc` usage, "No channel has the nickname", the ChatTwo note, a right-click invite's "Invited" and "Couldn't invite", server announcements, "Joined", other notices at Info level |
-  | Warning | light red (UIColor 508, 0xFF8080) | Every notice at Warning or Error level that isn't critical: a key changed, a name now another account, ExtraChat is on, the server not showing a membership (`MembershipHidden`), a stale key offered, a bad channel key, dropped messages, couldn't load keys, "something went wrong" (a line kept) |
+  | Warning | light red (UIColor 508, 0xFF8080) | Every notice at Warning or Error level that isn't critical: a key changed, a name now another account, ExtraChat is on, the server not showing a membership (`MembershipHidden`), a stale key offered, a bad channel key, a member who seems to see a different member list (`MemberSeesOtherMembership`: their word only, so not critical), dropped messages, couldn't load keys, "something went wrong" (a line kept) |
   | Critical | dark red (UIColor 534, 0xAE0000) | By kind, whatever the level: a forked membership (`MembershipForked`), members shown different memberships (`MembersShownDifferently`), a removal not in effect, so a removed member may still read (`RemovalNotInEffect`), the server refusing a key and hiding a change (`ServerRefusesKey`), a relayed registration code (`RelayedRegistrationCode`) |
 
   A line about a channel ("Now talking in [sky].") shows the tag in the
@@ -3854,7 +3978,12 @@ Acceptance tests for the membership log:
 2. A former member's invite is rejected.
 3. A non-moderator's invite is rejected.
 4. A hidden removal is detected by the remover.
-5. A forked log is reported.
+5. A forked log is reported. Also through a message's log head, when the
+   server's own log contradicts what one member verified (of a signed entry,
+   or of a key recovered entry). A server that shows each member only their
+   own version has both told, naming the other, with check codes to compare;
+   its empty, junk or failed answers don't stop that. A member's false log
+   head is put down to them, never to the server.
 6. All earlier malicious-server tests still pass.
 7. A key recovered entry that doesn't check out is refused (someone not in the
    channel, keys their place isn't under, keys they or someone else already

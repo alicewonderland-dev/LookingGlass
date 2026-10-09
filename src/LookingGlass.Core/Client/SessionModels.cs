@@ -131,6 +131,12 @@ public sealed record ChannelView(
     public string DisplayName => this.Name ?? PlaceholderName(this.Id);
 
     /// <summary>
+    /// The check code of <see cref="LogHead"/> (see <see cref="MembershipCheckCode"/>), for members to compare over /tell; null
+    /// before the log is verified.
+    /// </summary>
+    public string? CheckCode => MembershipCheckCode.Of(this.LogHead);
+
+    /// <summary>
     /// <see cref="MembershipWarning"/> in a mode's words (see <see cref="Wording"/>). Never null where it isn't: a missing
     /// plain text falls back to the technical one, so simple mode never loses a warning.
     /// </summary>
@@ -176,8 +182,13 @@ public sealed record ChannelView(
 /// the user hasn't compared the new one yet. Expected, so not <see cref="KeyChanged"/>'s warning, but worth showing: that it
 /// is really them is the server's word.
 /// </param>
+/// <param name="SeesOtherMembership">
+/// Their messages say they verified a different membership than the server shows this user, and nothing blamed the server
+/// for it (see "Log heads in messages" in docs/design.md). Their word only, so a warning on them, not on the server; it goes
+/// once their messages agree again, or they leave.
+/// </param>
 public sealed record MemberView(User User, Rank Rank, string? Fingerprint, bool KeyChanged, bool FingerprintCompared = false, bool KeyReplaced = false,
-    string? NewFingerprint = null, bool Online = false, bool KeyRecovered = false);
+    string? NewFingerprint = null, bool Online = false, bool KeyRecovered = false, bool SeesOtherMembership = false);
 
 /// <param name="Verified">
 /// The invite is open in the channel's verified log, for this user's current keys, made by the inviter it names, and its
@@ -364,7 +375,10 @@ public sealed class ClientSessionOptions {
     /// <summary>The protocol version offered in Hello. Only tests change it, to play an older plugin.</summary>
     internal uint ProtocolVersion { get; init; } = ProtocolInfo.CurrentVersion;
 
-    /// <summary>How often a channel's whole log may be fetched again to look into a possible fork. Only tests change it.</summary>
+    /// <summary>
+    /// How often a channel's whole log may be fetched again to look into a possible fork, and how often the server may be asked
+    /// about the log heads in one sender's messages in a channel (see ClientSession.LogHeads). Only tests change it.
+    /// </summary>
     internal TimeSpan ForkCheckInterval { get; init; } = TimeSpan.FromMinutes(1);
 
     /// <summary>

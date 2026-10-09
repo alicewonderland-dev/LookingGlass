@@ -243,6 +243,228 @@ public sealed class MaliciousMemberTests : IAsyncLifetime {
         Assert.Equal(1UL, this._server.Database.GetChannel(channelId)!.Name!.Revision);
     }
 
+    // ---------------------------------------------------------------- false log heads
+
+    /// <summary>
+    /// Bob's messages say he verified another entry at a position where the server shows Carol the entry she verified. Only
+    /// Bob's word says otherwise, so nothing blames the server or marks the channel as forked: Carol is told once, naming Bob,
+    /// that either the server shows him other members or his plugin is wrong, and Bob is marked in the member list. His
+    /// further false heads (one at a position nobody has reached) are shown as messages, and cost nothing more: no warning,
+    /// no fetch. Once his messages agree with her log again, the mark goes.
+    /// </summary>
+    [Fact]
+    public async Task AFalseLogHeadFromAMemberIsPutDownToThemNotTheServer() {
+        var (alice, bob, carol, channelId, epoch) = await this.ThreeMembersAsync("False Head");
+        var head = PositionOf(carol, channelId);
+        var fetches = LogFetches(carol);
+
+        await bob.Session.SendRawAsync(new ClientFrame { SendMessage = bob.ForgeSend(channelId, epoch, "trust me", DateTimeOffset.UtcNow, Junk(head.Seq, 0x42)) }, Ct);
+        await WaitFor(() => carol.Messages.FirstOrDefault(m => m.Text == "trust me"));
+        var notice = await WaitFor(() => carol.Notices.FirstOrDefault(n => n.Kind == NoticeKind.MemberSeesOtherMembership));
+        Assert.StartsWith("Bob False Head@", notice.Text);
+        Assert.StartsWith("Bob False Head@", notice.Plain);
+        Assert.Equal(NoticeTone.Warning, NoticeColours.ToneOf(notice.Level, notice.Kind));
+        Assert.Equal(fetches + 1, LogFetches(carol));
+
+        // (Relayed as the server would: the server limits how fast one member sends.)
+        var more = Enumerable.Range(0, 5)
+            .Select(i => bob.ForgeMessage(channelId, epoch, $"trust me {i}", DateTimeOffset.UtcNow, Junk(head.Seq, (byte) i)))
+            .Append(bob.ForgeMessage(channelId, epoch, "trust me later", DateTimeOffset.UtcNow, Junk(head.Seq + 1000, 7)))
+            .Select(message => new Event { ChatMessage = message })
+            .ToArray();
+        await this._server.SendAndSettleAsync(carol, more);
+        await alice.Session.SendTextAsync(channelId, "honest", Ct);
+        await WaitFor(() => carol.Messages.FirstOrDefault(m => m.Text == "honest"));
+        Assert.Equal(7, carol.Messages.Count(m => m.Text?.StartsWith("trust me") == true));
+        Assert.Single(carol.Notices, n => n.Kind == NoticeKind.MemberSeesOtherMembership);
+        Assert.Equal(fetches + 1, LogFetches(carol));
+        AssertNothingBlamesTheServer(carol, channelId);
+        Assert.Equal(head, PositionOf(carol, channelId));
+        var view = carol.Session.Snapshot.FindChannel(channelId)!;
+        Assert.True(view.Members.Single(m => m.User.UserId == bob.UserId).SeesOtherMembership);
+        Assert.False(view.Members.Single(m => m.User.UserId == alice.UserId).SeesOtherMembership);
+        var attention = ChannelAttention.Of(view, advanced: false);
+        Assert.Equal(AttentionLevel.Warning, attention.Level);
+        Assert.Contains(attention.Reasons, reason => reason.Contains("Bob False Head@"));
+
+        // His client behaves again: the mark goes.
+        await bob.Session.SendTextAsync(channelId, "sorry", Ct);
+        await WaitFor(() => carol.Session.Snapshot.FindChannel(channelId)!.Members.Single(m => m.User.UserId == bob.UserId).SeesOtherMembership ? null : new object());
+        Assert.Equal(AttentionLevel.None, ChannelAttention.Of(carol.Session.Snapshot.FindChannel(channelId)!).Level);
+    }
+
+    /// <summary>
+    /// Bob says he verified an entry far beyond the log. Carol asks the server for anything newer (once), it has nothing, and
+    /// she is told it is Bob's word against the server's, naming him; nothing blames the server.
+    /// </summary>
+    [Fact]
+    public async Task AMemberClaimingALogHeadFarAheadCostsOneLookAndNoServerWarning() {
+        var (_, bob, carol, channelId, epoch) = await this.ThreeMembersAsync("Far Ahead");
+        var head = PositionOf(carol, channelId);
+        var fetches = LogFetches(carol);
+
+        await bob.Session.SendRawAsync(new ClientFrame { SendMessage = bob.ForgeSend(channelId, epoch, "I'm from the future", DateTimeOffset.UtcNow, Junk(head.Seq + 1_000_000, 1)) }, Ct);
+        await WaitFor(() => carol.Messages.FirstOrDefault(m => m.Text == "I'm from the future"));
+        var notice = await WaitFor(() => carol.Notices.FirstOrDefault(n => n.Kind == NoticeKind.MemberSeesOtherMembership));
+        Assert.StartsWith("Bob Far Ahead@", notice.Text);
+        Assert.Contains($"#{head.Seq + 1_000_000}", notice.Text);
+        // The code his message names, to compare with his, and that Carol has no entry with that number yet.
+        Assert.Contains(MembershipCheckCode.Of(Junk(head.Seq + 1_000_000, 1))!, notice.Text);
+        Assert.Contains(MembershipCheckCode.Of(Junk(head.Seq + 1_000_000, 1))!, notice.Plain);
+        Assert.Contains(MembershipCheckCode.Of(head)!, notice.Plain);
+        Assert.Equal(fetches + 1, LogFetches(carol));
+        AssertNothingBlamesTheServer(carol, channelId);
+        Assert.Equal(head, PositionOf(carol, channelId));
+    }
+
+    /// <summary>A stored message is checked as a live one: Bob's false head, caught up after Carol was away, is put down to him.</summary>
+    [Fact]
+    public async Task AFalseLogHeadInACaughtUpMessageIsPutDownToItsSender() {
+        var (_, bob, carol, channelId, epoch) = await this.ThreeMembersAsync("Stored Head");
+        var head = PositionOf(carol, channelId);
+        await carol.Session.DisposeAsync();
+        this._server.Database.StoreMessage(bob.ForgeMessage(channelId, epoch, "while you were out", DateTimeOffset.UtcNow.AddMinutes(-1), Junk(head.Seq, 9)),
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), 5000);
+
+        var back = this._server.StartClient(carol.Name, carol.Store);
+        await WaitFor(() => back.Messages.FirstOrDefault(m => m.Text == "while you were out" && m.CaughtUp));
+        var notice = await WaitFor(() => back.Notices.FirstOrDefault(n => n.Kind == NoticeKind.MemberSeesOtherMembership));
+        Assert.StartsWith("Bob Stored Head@", notice.Text);
+        AssertNothingBlamesTheServer(back, channelId);
+    }
+
+    /// <summary>
+    /// Bob is marked for a head that disagrees with Carol's log at her newest entry. A message of his whose head is an older
+    /// entry, which agrees (one sent before, delivered late, or held back by the server), proves nothing about where they
+    /// part: the mark stays, and his next disagreeing head (the same as before) finds it still there. Only a head that agrees
+    /// at that entry or later takes it off; a disagreement after that is looked into and told again.
+    /// </summary>
+    [Fact]
+    public async Task AnOlderAgreeingHeadDoesntTakeTheMarkOff() {
+        var alice = await this._server.RegisterAsync("Alice Mark Stays");
+        var bob = await this._server.RegisterAsync("Bob Mark Stays");
+        // Asking the server again is allowed at once here: what is tested is when the mark goes.
+        var carol = await this._server.RegisterAsync("Carol Mark Stays", options: this._server.Options(forkCheckInterval: TimeSpan.FromMilliseconds(1)));
+        var channelId = await alice.Session.CreateChannelAsync("Mark Stays", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        var older = PositionOf(alice, channelId);
+        await AddMemberAsync(alice, channelId, carol);
+        var epoch = carol.Session.Snapshot.FindChannel(channelId)!.Epoch;
+        await WaitFor(() => bob.Store.Load().EpochKeys.GetValueOrDefault(channelId)?.ContainsKey(epoch) == true ? new object() : null);
+        var head = PositionOf(carol, channelId);
+        Assert.True(older.Seq < head.Seq);
+        bool Marked() => carol.Session.Snapshot.FindChannel(channelId)!.Members.Single(m => m.User.UserId == bob.UserId).SeesOtherMembership;
+        Task SendAsync(string text, LogPosition claimed, int secondsAgo = 0) =>
+            this._server.SendAndSettleAsync(carol, new Event { ChatMessage = bob.ForgeMessage(channelId, epoch, text, DateTimeOffset.UtcNow.AddSeconds(-secondsAgo), claimed) });
+
+        await SendAsync("wrong", Junk(head.Seq, 0x31));
+        await WaitFor(() => Marked() ? new object() : null);
+
+        await SendAsync("from before", older, secondsAgo: 30);
+        Assert.Contains(carol.Messages, m => m.Text == "from before");
+        Assert.True(Marked());
+        await SendAsync("wrong again", Junk(head.Seq, 0x31));
+        Assert.True(Marked());
+        Assert.Single(carol.Notices, n => n.Kind == NoticeKind.MemberSeesOtherMembership);
+
+        // Agreeing at that entry: the mark goes. The same wrong head after that is a new disagreement, looked into and told.
+        await SendAsync("right", head);
+        Assert.False(Marked());
+        await SendAsync("wrong once more", Junk(head.Seq, 0x31));
+        await WaitFor(() => Marked() ? new object() : null);
+        await WaitFor(() => carol.Notices.Count(n => n.Kind == NoticeKind.MemberSeesOtherMembership) == 2 ? new object() : null);
+    }
+
+    /// <summary>
+    /// Whatever Bob puts in his messages, Carol asks the server about his heads at most once a minute, and about each head once:
+    /// a different false head within the minute costs nothing; after it, one more question; the same head again, none.
+    /// </summary>
+    [Fact]
+    public async Task QuestionsAboutAMembersHeadsAreLimitedPerMinuteAndPerHead() {
+        var clock = new ManualClock();
+        var (_, bob, carol, channelId, epoch) = await this.ThreeMembersAsync("Limited", this._server.Options(time: clock));
+        var head = PositionOf(carol, channelId);
+        int Targeted() => carol.Session.GetTrace().Count(entry => entry.Outgoing && entry.Summary.EndsWith(" FetchMembershipLog"));
+
+        async Task SendAsync(string text, byte fill) {
+            // Once settled, a look is under way if there is to be one (it starts in the inbox, in the background).
+            await this._server.SendAndSettleAsync(carol, new Event { ChatMessage = bob.ForgeMessage(channelId, epoch, text, clock.GetUtcNow(), Junk(head.Seq, fill)) });
+        }
+
+        var before = Targeted();
+        await SendAsync("first", 1);
+        await WaitFor(() => carol.Notices.FirstOrDefault(n => n.Kind == NoticeKind.MemberSeesOtherMembership));
+        Assert.Equal(before + 1, Targeted());
+
+        await SendAsync("another within the minute", 2);
+        Assert.Equal(before + 1, Targeted());
+
+        clock.Offset = TimeSpan.FromMinutes(2);
+        await SendAsync("another after it", 3);
+        await WaitFor(() => Targeted() == before + 2 ? new object() : null);
+
+        clock.Offset = TimeSpan.FromMinutes(4);
+        await SendAsync("the first again", 1);
+        Assert.Equal(before + 2, Targeted());
+        Assert.Single(carol.Notices, n => n.Kind == NoticeKind.MemberSeesOtherMembership);
+        Assert.Equal(4, carol.Messages.Count(m => m.Sender.UserId == bob.UserId));
+    }
+
+    /// <summary>
+    /// A catch-up with several of Bob's messages, each with another false head: they are compared once the batch is shown, and
+    /// cost one question to the server and one warning, naming him.
+    /// </summary>
+    [Fact]
+    public async Task SeveralFalseHeadsInOneCatchUpCostOneLookAndOneWarning() {
+        var (_, bob, carol, channelId, epoch) = await this.ThreeMembersAsync("Batch Heads");
+        var head = PositionOf(carol, channelId);
+        await carol.Session.DisposeAsync();
+        for (var i = 0; i < 4; i++) {
+            this._server.Database.StoreMessage(bob.ForgeMessage(channelId, epoch, $"stored {i}", DateTimeOffset.UtcNow.AddMinutes(-5 + i), Junk(head.Seq, (byte) (0x10 + i))),
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), 5000);
+        }
+
+        var targeted = 0;
+        var back = this._server.StartClient(carol.Name, carol.Store, this._server.Options(wrap: socket => new RewritingWebSocket(socket, frame => frame, sent => {
+            if (sent.FetchMembershipLog is { } fetch && fetch.FromSeq == head.Seq) {
+                Interlocked.Increment(ref targeted);
+            }
+        })));
+        await WaitFor(() => back.Session.CatchUpsDone > 0 ? new object() : null);
+        Assert.Equal(4, back.Messages.Count(m => m.CaughtUp && m.Text?.StartsWith("stored") == true));
+        await WaitFor(() => back.Notices.FirstOrDefault(n => n.Kind == NoticeKind.MemberSeesOtherMembership));
+        await this._server.SendAndSettleAsync(back);
+        Assert.Equal(1, Volatile.Read(ref targeted));
+        Assert.Single(back.Notices, n => n.Kind == NoticeKind.MemberSeesOtherMembership);
+        AssertNothingBlamesTheServer(back, channelId);
+    }
+
+    /// <summary>Alice's channel with Bob and Carol, each holding the newest key (its epoch is given).</summary>
+    private async Task<(TestClient Alice, TestClient Bob, TestClient Carol, string ChannelId, ulong Epoch)> ThreeMembersAsync(string suffix,
+        ClientSessionOptions? carolOptions = null) {
+        var alice = await this._server.RegisterAsync("Alice " + suffix);
+        var bob = await this._server.RegisterAsync("Bob " + suffix);
+        var carol = await this._server.RegisterAsync("Carol " + suffix, options: carolOptions);
+        var channelId = await alice.Session.CreateChannelAsync(suffix, Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        await AddMemberAsync(alice, channelId, carol);
+        var epoch = carol.Session.Snapshot.FindChannel(channelId)!.Epoch;
+        await WaitFor(() => bob.Store.Load().EpochKeys.GetValueOrDefault(channelId)?.ContainsKey(epoch) == true ? new object() : null);
+        await WaitFor(() => PositionOf(bob, channelId).Equals(PositionOf(carol, channelId)) ? new object() : null);
+        return (alice, bob, carol, channelId, epoch);
+    }
+
+    /// <summary>A log position with a hash that belongs to no entry.</summary>
+    private static LogPosition Junk(ulong seq, byte fill) => new() { Seq = seq, Hash = ByteString.CopyFrom(Enumerable.Repeat(fill, MembershipEntries.HashSize).ToArray()) };
+
+    private static int LogFetches(TestClient client) => client.Session.GetTrace().Count(entry => entry.Outgoing && entry.Summary.EndsWith(" FetchMembershipLog"));
+
+    /// <summary>No warning says the server shows a different membership, and the channel isn't marked for it.</summary>
+    private static void AssertNothingBlamesTheServer(TestClient client, string channelId) {
+        Assert.DoesNotContain(client.Notices, n => n.Kind is NoticeKind.MembershipForked or NoticeKind.MembersShownDifferently or NoticeKind.MembershipHidden);
+        Assert.Null(client.Session.Snapshot.FindChannel(channelId)!.MembershipWarning);
+    }
+
     /// <summary>A correctly sealed and signed rekey by <paramref name="author"/> for the two members, with any name, revision and source.</summary>
     private SubmitRekey Rekey(string channelId, ulong epoch, TestClient author, IdentityKeys authorKeys, TestClient other, string name, ulong revision, NameSource? source = null) {
         var key = ChannelCrypto.NewEpochKey();

@@ -1207,12 +1207,14 @@ public sealed partial class ClientSession : IAsyncDisposable {
                 }
             }
 
-            // Always the newest key accepted, never an epoch the server merely claims.
-            var (epoch, key) = this.Read(() => {
+            // Always the newest key accepted, never an epoch the server merely claims. With the newest log position verified,
+            // inside the encrypted, signed content, for the other members to compare with theirs (see ClientSession.LogHeads).
+            var (epoch, key, head) = this.Read(() => {
                 var held = this.KeyEpochOf(channelId) ?? throw PlainMessages.Failure(PlainMessages.NoKeyToSend with { Technical = "You don't have this channel's key yet." });
-                return (held, this.GetEpochKey(channelId, held)!);
+                return (held, this.GetEpochKey(channelId, held)!, this.MembershipOf(channelId).Head?.Clone());
             });
 
+            content.LogHead = head;
             var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             var message = this._groupKeys.EncryptMessage(content, key, channelId, epoch, identity, me.UserId, timestamp);
             var maxBytes = this.Read(() => this._limits?.MaxMessageBytes ?? 4096);
@@ -2813,6 +2815,9 @@ public sealed partial class ClientSession : IAsyncDisposable {
         this.RaiseMessage(MessageContent.Decode(content) is { } text
             ? new IncomingMessage(message.ChannelId, channelName, senderUser, isOwn, text.Text, false, timestamp) { Links = text.Links }
             : new IncomingMessage(message.ChannelId, channelName, senderUser, isOwn, null, true, timestamp));
+
+        // Shown first: anything the sender's log head needs asked of the server is done in the background.
+        this.CompareSenderHead(message.ChannelId, message.SenderId, content.LogHead);
     }
 
     /// <summary>
@@ -3241,6 +3246,7 @@ public sealed partial class ClientSession : IAsyncDisposable {
         var before = this.MembershipOf(channelId);
         var followsOn = before.Head != null;
         this._memberships[channelId] = membership;
+        this.OnMembershipSet(channelId, before, membership, applied);
         var me = this._me?.UserId;
         if (this._secrets.Memberships.ContainsKey(channelId)
             || (me != null && (membership.FindMember(me.Value) != null || membership.FindInvitee(me.Value) != null))) {
@@ -3722,7 +3728,8 @@ public sealed partial class ClientSession : IAsyncDisposable {
                     ? this._state == ConnectionState.Ready
                     : this._presence.GetValueOrDefault(member.UserId));
                 return new MemberView(Shown(user), member.Rank, member.Keys.Fingerprint, pinned is { KeyChangeUnacknowledged: true }, compared, replaced,
-                    replaced ? current!.Fingerprint : null, online, recovered);
+                    replaced ? current!.Fingerprint : null, online, recovered,
+                    member.Rank >= Rank.Member && channel.SeeOtherMembership.ContainsKey(member.UserId));
             })
             .OrderByDescending(member => member.Rank)
             .ThenBy(member => member.User.Name, StringComparer.OrdinalIgnoreCase)
@@ -3962,6 +3969,13 @@ public sealed partial class ClientSession : IAsyncDisposable {
 
         /// <summary>A removal (or leave) whose rekey the server didn't take: shown until a key made after it is held.</summary>
         public Wording? RemovalWarning { get; set; }
+
+        /// <summary>
+        /// Members whose messages say they verified a different membership than the server shows this client (see
+        /// ClientSession.LogHeads), with the newest entry at which they disagree: marked on them until a message of theirs agrees
+        /// at that entry or a later one, or they leave.
+        /// </summary>
+        public Dictionary<long, ulong> SeeOtherMembership { get; } = new();
 
         /// <summary>The newest name the server offered. Only shown once <see cref="TryDecryptName"/> accepts it.</summary>
         public EncryptedName? EncryptedName { get; set; }
