@@ -20,12 +20,13 @@ public sealed partial class ClientSession {
     internal static readonly TimeSpan OldKeyRetryInterval = TimeSpan.FromHours(1);
 
     // ---- state guarded by _lock
-    // When this client last tried to replace each channel's old key (by the session's clock).
+    // When this client last tried to replace each channel's old key (by the session's clock). Not saved: a restart may try at once.
     private readonly Dictionary<string, DateTimeOffset> _oldKeyTriedAt = new();
     // ----
 
     private int _keyAgeChecks;
     private int _oldKeyTries;
+    private int _oldKeyTriesDone;
 
     /// <summary>How many times keys' ages have been looked at, this session.</summary>
     internal int KeyAgeChecksForTests => Volatile.Read(ref this._keyAgeChecks);
@@ -33,15 +34,27 @@ public sealed partial class ClientSession {
     /// <summary>How many tries at replacing an old key were started, this session.</summary>
     internal int OldKeyTriesForTests => Volatile.Read(ref this._oldKeyTries);
 
+    /// <summary>How many tries at replacing an old key are over (whatever came of them), this session.</summary>
+    internal int OldKeyTriesDoneForTests => Volatile.Read(ref this._oldKeyTriesDone);
+
+    /// <summary>Awaited (with the channel) when a try's random wait is over, before it rekeys: tests hold it there.</summary>
+    internal Func<string, Task>? BeforeOldKeyRekeyForTests { get; set; }
+
     /// <summary>
-    /// While <paramref name="connection"/> lasts, now and every <see cref="ClientSessionOptions.KeyAgeCheckInterval"/>: starts
-    /// replacing the key of every channel whose newest key is too old and which this client may rekey (see
-    /// <see cref="TakeChannelsWithOldKeys"/>), each after a random wait of up to <see cref="ClientSessionOptions.KeyAgeJitter"/>.
-    /// Members online together each pick their own wait, so one usually goes first and the others then hold a new key and
-    /// stop; two that try at once are settled as any rekeys at once (the server takes the first for the next epoch, and the
-    /// other is refused and gives up).
+    /// While <paramref name="connection"/> lasts, from when its login's catch-up is over (<paramref name="catchUpDone"/>, if
+    /// any) and then every <see cref="ClientSessionOptions.KeyAgeCheckInterval"/>: starts replacing the key of every channel
+    /// whose newest key is too old and which this client may rekey (see <see cref="TakeChannelsWithOldKeys"/>), each after a
+    /// random wait of up to <see cref="ClientSessionOptions.KeyAgeJitter"/>. Not before the catch-up is over: live messages
+    /// held back meanwhile are taken under an older key only within 2 minutes of a newer one arriving (see
+    /// <see cref="IsPastOldEpochGrace"/>), so a new key made at login could cut them off. Members online together each pick
+    /// their own wait, so one usually goes first and the others then hold a new key and stop; two that try at once are
+    /// settled as any rekeys at once (the server takes the first for the next epoch, and the other is refused and gives up).
     /// </summary>
-    private async Task ReplaceOldKeysAsync(Connection connection, CancellationToken ct) {
+    private async Task ReplaceOldKeysAsync(Connection connection, Task? catchUpDone, CancellationToken ct) {
+        if (catchUpDone != null) {
+            await Task.WhenAny(catchUpDone, connection.Closed).WaitAsync(ct);
+        }
+
         while (!ct.IsCancellationRequested && !connection.Closed.IsCompleted) {
             foreach (var channelId in this.TakeChannelsWithOldKeys()) {
                 var wait = this._options.KeyAgeJitter > TimeSpan.Zero
@@ -60,7 +73,8 @@ public sealed partial class ClientSession {
     /// <summary>
     /// Waits <paramref name="wait"/>, then makes the channel's next key if its newest is still too old (nobody else made one
     /// meanwhile). Silent, like every automatic rekey: a try that fails (refused, a newer key arrived first, the connection
-    /// went) is only noted in the diagnostic log, at Debug, without names; the next is an hour on.
+    /// went) is only noted in the diagnostic log, at Debug, without names; the next is an hour on. But if a membership change
+    /// came meanwhile (a removal, say), the try made the rekey it needs, and its failure is told as that rekey's would be.
     /// </summary>
     private async Task ReplaceOldKeyAsync(string channelId, TimeSpan wait, CancellationToken ct) {
         try {
@@ -68,11 +82,21 @@ public sealed partial class ClientSession {
                 await Task.Delay(wait, ct);
             }
 
+            if (this.BeforeOldKeyRekeyForTests is { } hook) {
+                await hook(channelId);
+            }
+
             await this.RekeyAsync(channelId, RekeyReason.KeyTooOld, ct);
         } catch (Exception ex) when (!ct.IsCancellationRequested) {
             // Not the exception's words: they can name a member.
             var why = ex is ServerErrorException refused ? $"the server answered {refused.Code}" : ex.GetType().Name;
             this.Log(NoticeLevel.Debug, $"Couldn't replace the too old key of {channelId}: {why}");
+            if (this.Read(() => this._channels.GetValueOrDefault(channelId) is { } channel && this.NeedsRekey(channel))) {
+                // Told by RunBackground, as a failed rekey for a membership change is.
+                throw;
+            }
+        } finally {
+            Interlocked.Increment(ref this._oldKeyTriesDone);
         }
     }
 

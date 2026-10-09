@@ -130,32 +130,216 @@ public sealed class EpochMaxAgeTests {
         }
     }
 
+    /// <summary>Holds a client's tries at replacing an old key once their random wait is over, until <see cref="Release"/>.</summary>
+    private sealed class HeldTries {
+        private readonly TaskCompletionSource _reached = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public HeldTries(TestClient client) {
+            client.Session.BeforeOldKeyRekeyForTests = _ => {
+                this._reached.TrySetResult();
+                return this._release.Task;
+            };
+        }
+
+        /// <summary>Waits until a try is being held.</summary>
+        public Task ReachedAsync() => WaitFor(() => this._reached.Task.IsCompleted ? new object() : null);
+
+        public void Release() => this._release.TrySetResult();
+    }
+
     /// <summary>
-    /// A member waiting at random to replace the old key, while another member makes the new one, makes none when its wait
-    /// is over: it holds a new key by then.
+    /// A member whose wait to replace the old key is over only after another member made the new one makes none: it checks
+    /// again, and holds a new key by then. The one key is the other member's.
     /// </summary>
     [Fact]
     public async Task AMemberStillWaitingWhenTheNewKeyArrivesMakesNone() {
         var clock = new ManualClock();
         await using var server = new Harness(serverTime: clock);
         var alice = await server.RegisterAsync("Alice First Key", options: Often(server, clock));
-        var bob = await server.RegisterAsync("Bob Waits Key", options: Often(server, clock, jitter: TimeSpan.FromSeconds(3)));
+        var bob = await server.RegisterAsync("Bob Waits Key", options: Often(server, clock));
         var channelId = await alice.Session.CreateChannelAsync("Waits Key Channel", Ct);
         await AddMemberAsync(alice, channelId, bob);
         var epoch = ServerEpoch(server, channelId);
         await alice.Session.DisposeAsync();
 
-        // Bob starts his wait; then Alice comes online and replaces the key at once.
+        // Bob's wait is over, and his try held; then Alice comes online and replaces the key at once.
+        var held = new HeldTries(bob);
         clock.Offset = AWeek + TimeSpan.FromMinutes(1);
-        await WaitFor(() => bob.Session.OldKeyTriesForTests > 0 ? new object() : null);
+        await held.ReachedAsync();
         var first = server.StartClient(alice.Name, alice.Store, Often(server, clock));
         await HoldsAsync(bob, channelId, epoch + 1);
         await HoldsAsync(first, channelId, epoch + 1);
 
-        // Bob's wait is over by now.
-        await Task.Delay(TimeSpan.FromSeconds(3.5), Ct);
+        held.Release();
+        await WaitFor(() => bob.Session.OldKeyTriesDoneForTests > 0 ? new object() : null);
         await ChecksAsync(2, bob, first);
         Assert.Equal(epoch + 1, ServerEpoch(server, channelId));
+        await bob.Session.DisposeAsync();
+        Assert.Equal(first.UserId, bob.Store.Load().EpochKeyPositions[channelId][epoch + 1].CreatedBy);
+    }
+
+    /// <summary>
+    /// A removal arriving while a member waits to replace the old key: when its turn comes, the rekey the removal needs is
+    /// made (by it, here, the remover being held up), once, and not for the removed member.
+    /// </summary>
+    [Fact]
+    public async Task ARemovalDuringTheWaitGetsItsRekeyOnce() {
+        var clock = new ManualClock();
+        await using var server = new Harness(serverTime: clock);
+        var (alice, bob, carol, channelId, epoch) = await ThreeMembersAsync(server, clock, "Removal Wait");
+        var held = new HeldTries(bob);
+        clock.Offset = AWeek + TimeSpan.FromMinutes(1);
+        await held.ReachedAsync();
+
+        // Alice removes Carol, and is held up before making the new key; the server asks her (she makes none by herself here).
+        var kickHeld = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        alice.Session.AfterKickRequestForTests = () => kickHeld.Task;
+        var kick = alice.Session.KickAsync(channelId, carol.UserId, Ct);
+        await WaitFor(() => bob.Session.Snapshot.FindChannel(channelId) is { RekeyPending: true } c ? c : null);
+
+        held.Release();
+        await HoldsAsync(bob, channelId, epoch + 1);
+        kickHeld.SetResult();
+        await kick;
+        await HoldsAsync(alice, channelId, epoch + 1);
+        await ChecksAsync(2, bob);
+        Assert.Equal(epoch + 1, ServerEpoch(server, channelId));
+        Assert.True(bob.Session.Snapshot.FindChannel(channelId) is { RekeyPending: false });
+        Assert.DoesNotContain(bob.Notices, n => n.Level >= NoticeLevel.Warning);
+        await bob.Session.DisposeAsync();
+        Assert.Equal(bob.UserId, bob.Store.Load().EpochKeyPositions[channelId][epoch + 1].CreatedBy);
+        Assert.False(carol.Store.Load().EpochKeys.GetValueOrDefault(channelId)?.ContainsKey(epoch + 1) == true);
+    }
+
+    /// <summary>
+    /// When the try for an old key made the rekey a removal needs, and that fails, the member is told, as for any failed
+    /// rekey for a membership change (not only the diagnostic log, as for a routine one).
+    /// </summary>
+    [Fact]
+    public async Task AFailedRekeyForARemovalIsToldEvenWhenTheOldKeyStartedIt() {
+        var clock = new ManualClock();
+        await using var server = new Harness(serverTime: clock);
+        var (alice, bob, carol, channelId, epoch) = await ThreeMembersAsync(server, clock, "Removal Refused");
+        await bob.Session.DisposeAsync();
+        var refused = server.StartClient(bob.Name, bob.Store, Often(server, clock, wrap: inner => new RefusedRekeysWebSocket(inner)));
+        await WaitFor(() => refused.Session.Snapshot is { State: ConnectionState.Ready, ChannelsLoaded: true } ? new object() : null);
+        var held = new HeldTries(refused);
+        clock.Offset = AWeek + TimeSpan.FromMinutes(1);
+        await held.ReachedAsync();
+
+        var kickHeld = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        alice.Session.AfterKickRequestForTests = () => kickHeld.Task;
+        var kick = alice.Session.KickAsync(channelId, carol.UserId, Ct);
+        await WaitFor(() => refused.Session.Snapshot.FindChannel(channelId) is { RekeyPending: true } c ? c : null);
+
+        held.Release();
+        await WaitFor(() => refused.Notices.FirstOrDefault(n => n.Level == NoticeLevel.Warning && n.Text.StartsWith("Rekeying a channel failed")));
+        kickHeld.SetResult();
+        await kick;
+        await HoldsAsync(refused, channelId, epoch + 1);
+    }
+
+    /// <summary>
+    /// Alice (the admin, making no key by herself: the server's asking her to after a removal doesn't start one), Bob (who
+    /// replaces old keys) and Carol (who doesn't), in a channel; all on the test's clock.
+    /// </summary>
+    private static async Task<(TestClient Alice, TestClient Bob, TestClient Carol, string ChannelId, ulong Epoch)> ThreeMembersAsync(Harness server, ManualClock clock, string name) {
+        var alice = await server.RegisterAsync($"Alice {name}", options: Often(server, clock, replaceOldKeys: false));
+        var bob = await server.RegisterAsync($"Bob {name}", options: Often(server, clock));
+        var carol = await server.RegisterAsync($"Carol {name}", options: Often(server, clock, replaceOldKeys: false));
+        var channelId = await alice.Session.CreateChannelAsync($"{name} Channel", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        await AddMemberAsync(alice, channelId, carol);
+        var epoch = ServerEpoch(server, channelId);
+        await alice.Session.DisposeAsync();
+        var admin = server.StartClient(alice.Name, alice.Store, server.Options(autoRekey: false, time: clock));
+        await WaitFor(() => admin.Session.Snapshot is { State: ConnectionState.Ready, ChannelsLoaded: true } ? new object() : null);
+        return (admin, bob, carol, channelId, epoch);
+    }
+
+    /// <summary>
+    /// Keys aren't looked at until the login's catch-up is over: live messages held back meanwhile are taken under an older
+    /// key only within 2 minutes of a newer one, so a key made at login mustn't cut them off.
+    /// </summary>
+    [Fact]
+    public async Task KeysAreLookedAtOnlyOnceTheLoginsCatchUpIsOver() {
+        var clock = new ManualClock();
+        await using var server = new Harness(serverTime: clock);
+        var alice = await server.RegisterAsync("Alice Catch Up First", options: Often(server, clock));
+        var bob = await server.RegisterAsync("Bob Catch Up First", options: Often(server, clock));
+        var channelId = await alice.Session.CreateChannelAsync("Catch Up First Channel", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        var epoch = ServerEpoch(server, channelId);
+        await alice.Session.DisposeAsync();
+        await bob.Session.DisposeAsync();
+
+        clock.Offset = AWeek + TimeSpan.FromMinutes(1);
+        HoldingWebSocket? holding = null;
+        var back = server.StartClient(bob.Name, bob.Store, Often(server, clock, wrap: socket => {
+            holding = new HoldingWebSocket(socket);
+            holding.HoldNext(ClientFrame.BodyOneofCase.FetchMessages);
+            return holding;
+        }));
+        await WaitFor(() => holding?.Held.IsCompleted == true ? new object() : null);
+        await Task.Delay(TimeSpan.FromMilliseconds(300), Ct);
+        Assert.Equal(0, back.Session.KeyAgeChecksForTests);
+        Assert.Equal(epoch, ServerEpoch(server, channelId));
+
+        holding!.Release();
+        await HoldsAsync(back, channelId, epoch + 1);
+    }
+
+    /// <summary>
+    /// A key whose maker's signed time is ahead of when this client got it (its maker's clock, and the server's, days ahead)
+    /// counts from when this client got it: a time ahead can't keep a key in use longer.
+    /// </summary>
+    [Fact]
+    public async Task AKeyDatedAheadCountsFromWhenItArrived() {
+        var clock = new ManualClock();
+        var bobClock = new ManualClock();
+        await using var server = new Harness(serverTime: clock);
+        var alice = await server.RegisterAsync("Alice Dates Ahead", options: Often(server, clock, replaceOldKeys: false));
+        var bob = await server.RegisterAsync("Bob Gets Ahead", options: Often(server, bobClock));
+        var channelId = await alice.Session.CreateChannelAsync("Ahead Channel", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        var epoch = ServerEpoch(server, channelId);
+
+        clock.Offset = TimeSpan.FromDays(3);
+        await alice.Session.RekeyAsync(channelId, Ct, force: true);
+        await HoldsAsync(bob, channelId, epoch + 1);
+
+        // A week after Bob got it (four days after it says it was made), Bob replaces it.
+        clock.Offset = bobClock.Offset = AWeek + TimeSpan.FromMinutes(1);
+        await HoldsAsync(bob, channelId, epoch + 2);
+        await bob.Session.DisposeAsync();
+        Assert.Equal(bob.UserId, bob.Store.Load().EpochKeyPositions[channelId][epoch + 2].CreatedBy);
+    }
+
+    /// <summary>
+    /// A key kept by a version that saved when it was made but not when it arrived counts from when it was made: replaced
+    /// once that is a week ago, not a week after the update.
+    /// </summary>
+    [Fact]
+    public async Task AKeyWithOnlyItsMakersTimeCountsFromThat() {
+        var clock = new ManualClock();
+        await using var server = new Harness(serverTime: clock);
+        var alice = await server.RegisterAsync("Alice Made Time", options: Often(server, clock, replaceOldKeys: false));
+        var bob = await server.RegisterAsync("Bob Made Time", options: Often(server, clock));
+        var channelId = await alice.Session.CreateChannelAsync("Made Time Channel", Ct);
+        await AddMemberAsync(alice, channelId, bob);
+        var epoch = ServerEpoch(server, channelId);
+        await bob.Session.DisposeAsync();
+
+        var secrets = bob.Store.Load();
+        var held = secrets.EpochKeyPositions[channelId][epoch];
+        Assert.True(held.CreatedMs > 0);
+        held.HeldSinceMs = 0;
+        bob.Store.Save(secrets);
+
+        clock.Offset = AWeek + TimeSpan.FromMinutes(1);
+        var updated = server.StartClient(bob.Name, bob.Store, Often(server, clock));
+        await HoldsAsync(updated, channelId, epoch + 1);
     }
 
     /// <summary>A member alone in a channel makes no new key for it: nobody else could read what a stolen one opens.</summary>

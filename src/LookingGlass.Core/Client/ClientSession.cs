@@ -1662,7 +1662,7 @@ public sealed partial class ClientSession : IAsyncDisposable {
 
         // In the background: a long absence can take a while, and nothing else needs to wait for it.
         this.StartCatchUp(connection, catchUp);
-        this.RunBackground(PlainMessages.Rekeying, keyAgeCt => this.ReplaceOldKeysAsync(connection, keyAgeCt));
+        this.RunBackground(PlainMessages.Rekeying, keyAgeCt => this.ReplaceOldKeysAsync(connection, catchUp?.Done.Task, keyAgeCt));
     }
 
     /// <param name="refreshIdentities">Fetch every identity again, not only those not cached yet.</param>
