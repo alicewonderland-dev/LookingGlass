@@ -46,9 +46,9 @@ channel window open.
 - [ ] 6b. **(new, after 0.2.13)** Channel list counts. Open `/lg`: with the
       setting on, every channel with messages from others you haven't seen in
       a window tab shows a count (here `fc`). Select `fc` in the channel list:
-      the count stays. Select the `fc` tab in the window (click into the
-      window): the count goes. With a count on `sky`, send `/lgc1 hi`: it goes
-      too.
+      the count stays. Select the `fc` tab in the window (no need to click
+      into it): the count goes. With a count on `sky`, send `/lgc1 hi`: it
+      goes too.
 - [ ] 7. `/lgc4 hi` (no channel on 4) and `/lgc` alone: the answers show in
       game chat, in blue, as before.
 - [ ] 8. Talk in `raid` with `/lgc3` (no message): "Now talking in [raid]"
@@ -133,9 +133,17 @@ channel window open.
 - [ ] 23b. **(changed, after 0.2.13)** Turn the setting on, close every window,
       have a message arrive in `raid` (whose own setting shows it in game chat)
       while in combat, and turn the setting off while still in combat. Leave
-      combat: no window opens for `raid` (it shows in game chat now), and its
-      next message shows in game chat. The same with a channel turned off game
-      chat on its own: its window opens once combat ends.
+      combat: a `raid` window still opens, with that message (it was never in
+      game chat, so it isn't left shown nowhere). `raid`'s next message shows
+      in game chat. The same with a channel turned off game chat on its own:
+      its window opens once combat ends.
+- [ ] 23c. **(new, after 0.2.13)** Known gap, accepted: with the setting on,
+      close every window, start a fight, have a message arrive in `raid`, then
+      press **Disconnect** (Settings) and **Connect** again while still in
+      combat. Leave combat: no window opens for that message, and it was never
+      in game chat (the session it waited in has ended). With **Keep chat
+      history on this computer** on, open `raid`'s window: the message is among
+      the older lines. Report it only if it behaves otherwise.
 - [ ] 24. **(changed, after 0.2.13)** Turn the setting on, close the window of
       the channel turned off game chat on its own, log out, turn the setting
       off in Settings on the title screen (or another character), and log back

@@ -130,8 +130,10 @@ any linkshell, for A or B.
       by itself (or, with **New channels open** at **As a tab** and another
       window open, a `sky` tab is added to the window used last, not
       selected), flashes briefly in `sky`'s colour, and doesn't take the
-      keyboard. The channel list counts the message until you look at the `sky`
-      tab.
+      keyboard. Counts: a new window shows `sky` selected, so neither the
+      window nor the channel list counts the message (it is on screen, focused
+      or not); a tab added behind another shows `(1)` and the channel list
+      counts it, both until you select that tab.
 - [ ] 33b. Relog: the window comes back and `sky` stays off, with no "shows in
       game chat again" line.
 - [ ] 33c. **(new, after 0.2.13)** Close every window with `sky` and relog: no
@@ -142,6 +144,15 @@ any linkshell, for A or B.
 - [ ] 33d. **(new, after 0.2.13)** Close every window with `sky`, start a fight
       (a striking dummy), and have B send in `sky`: nothing opens while in
       combat; it opens once combat ends, with the message.
+- [ ] 33e. **(new, after 0.2.13)** As in 33d, but turn `sky`'s **Show in game
+      chat** back on (⋮ menu) while still in combat, after B's message: once
+      combat ends the window still opens, with that message (it was never in
+      game chat). B's next message shows in game chat.
+- [ ] 33f. **(new, after 0.2.13)** `sky` off game chat, no window with `sky`:
+      A sends `/lgc1 hi` from the game's chat box: not in game chat; a `sky`
+      window opens by itself, flashing, with A's line. Close it; B leaves
+      `sky` (or A invites someone): the information line alone opens a window
+      too.
 - [ ] 34. Turn it back on (⋮ menu, or a tab's right-click menu): `sky`'s
       messages are in game chat again.
 - [ ] 35. A warning about `sky` (if you can make one, for example a message
@@ -150,12 +161,16 @@ any linkshell, for A or B.
 
 ## Unread
 
-- [ ] 36. Click into the `sky` window (it has the focus) with `sky` selected,
-      and have B send in `sky`: the main window's channel list doesn't count
-      it. Click into the game instead (the window loses the focus), and have B
-      send again: the channel list counts it.
-- [ ] 37. With a count on `sky` in the channel list, click into the window
-      with `sky` selected: the count goes.
+- [ ] 36. **(changed, after 0.2.13)** With `sky` selected in an open window,
+      have B send in `sky`, once with the window focused (clicked into) and
+      once with the game focused: the main window's channel list counts
+      neither (the tab is on screen). Select another tab in that window and
+      have B send again: the channel list counts it, and so does the `sky` tab.
+      Collapse the window (double-click its title bar): what arrives in its
+      selected channel counts again.
+- [ ] 37. With a count on `sky` in the channel list, select the `sky` tab in a
+      window (no need to click into it otherwise): the count goes, in the
+      channel list and on that tab.
 - [ ] 37b. **(new, after 0.2.13)** With `sky` off game chat and a count on it in
       the channel list, select `sky` in the main window's channel list: the
       count stays (the main window shows no messages). Select a channel that

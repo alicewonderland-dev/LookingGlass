@@ -2216,8 +2216,8 @@ These are plugin settings, kept per character, and never sent to the server.
   A line about a channel ("Now talking in [sky].") shows the tag in the
   channel's own colour within the blue.
 - **Unread counts.** The channel list counts messages from others since the
-  user last looked at a channel in the main window (or in a channel window
-  that has the focus) or talked in it. A channel whose messages don't go to
+  user last looked at a channel in the main window (or as the selected tab of
+  an open channel window, focused or not) or talked in it. A channel whose messages don't go to
   game chat (turned off there, or every channel in windows only) is read only
   in a channel window, as the main window shows no messages (see
   [Channel windows](#channel-windows)). The window's title shows the total. The
@@ -3103,7 +3103,14 @@ the plugin's `ChannelWindows` opens and remembers the windows and
   line opens a window by itself, by the rules of
   [Windows only](#windows-only-never-game-chat): not in combat, a cutscene or
   a loading screen; as a tab in the window used last or in a new window, as
-  **New channels open** says; without taking the keyboard; with a flash.
+  **New channels open** says; without taking the keyboard; with a flash. That
+  includes the player's own message (sent with `/lgc1` from the chat box, or
+  in sticky mode: it comes back from the server like anyone's, so it opens,
+  and flashes, a window), and an information line alone (someone joined,
+  left or was invited), as in windows only. Information lines about a channel
+  that can't have a window (one not in the channel list yet at login, or a
+  place from the player's old keys) go to game chat instead, so none is
+  shown nowhere.
   Before 2026-10-09 such a channel went back to game chat, with a blue line
   "[sky] shows in game chat again, since no window shows it."; that is gone.
   Where a message goes is read before the session
@@ -3117,8 +3124,8 @@ the plugin's `ChannelWindows` opens and remembers the windows and
   clears its count in the others), or since the player last talked in it
   (`ChannelHistory.UnreadAfter`), as the channel list counts. A tab never
   shown counts what came since login: one reopened at login behind another,
-  or added by itself. Selecting it clears it. A tab shown in a window without
-  the focus counts as read here, as it is on screen. For the session only.
+  or added by itself. Selecting it clears it. For the session only. Read by
+  the same rule as the channel list (`TabUnread.WindowShows`, below).
 - **Flash** (`WindowFlash`, owner request 2026-10-09). A window that opens by
   itself because a line arrived (windows only, or a channel off game chat
   that no window showed) flashes briefly: its title bar is tinted toward the
@@ -3132,11 +3139,14 @@ the plugin's `ChannelWindows` opens and remembers the windows and
   border for as long. The numbers are constants in one place, for the owner
   to tune from what players say. A window the player opens or adds to never
   flashes.
-- **Unread.** A tab selected in the window that has the focus reads its
-  channel for the channel list too: `UnreadCounter` takes a viewer per window
-  (the main window, and each channel window while it has the focus), and a
-  channel any of them shows is read. A window without the focus doesn't read
-  its tab, so what arrives meanwhile counts in the channel list. The main
+- **Unread.** One rule for the tabs' counts and the channel list's (review
+  fix, 2026-10-09): a channel is read while it is the selected tab of an open
+  channel window that is drawn, whether that window has the focus or not, as
+  it is on screen (`TabUnread.WindowShows` marks both). `UnreadCounter` takes
+  a viewer per window (the main window, and each channel window), and a
+  channel any of them shows is read; what arrives meanwhile doesn't count. A
+  collapsed or closed window shows nothing, so what arrives then counts. (Before
+  2026-10-09 only a window with the focus read its tab for the channel list.) The main
   window reads only a channel whose messages go to game chat
   (`UnreadCounter.MainWindowReads`): its channel pane shows no messages, so a
   channel seen only in windows (turned off game chat, or every channel in
@@ -3265,26 +3275,42 @@ to make in game are in
   (or a tab), as **New channels open** says, waiting for combat, cutscenes and
   loading screens, without taking the keyboard, with a flash
   (`WindowsOnly.MessageWantsWindow`, `NoticeWantsWindow`). It never goes back
-  to game chat by itself.
+  to game chat by itself. Its own message (from the chat box or sticky mode)
+  and an information line alone (someone joined) open a window too, as here.
+  A line about it that no window could show (before the channel list is in at
+  login, or for a place from the player's old keys) goes to game chat, in
+  either mode (`WindowsOnly.NoticeToGameChat`).
 - **Flash.** A window opened this way flashes three times, and a window that
   got a tab this way once, without coming to the front (see **Flash** in
   [Channel windows](#channel-windows)).
 - **Counts.** In the channel list, every channel shows its count while the
-  setting is on, read only in a channel window's tab (or by talking in it):
+  setting is on, read only as the selected tab of an open channel window,
+  focused or not (or by talking in it):
   the main window's channel pane shows no messages, so selecting a channel
   there doesn't read it (`UnreadCounter.MainWindowReads`).
 - **Turning it off** restores the usual behaviour at once (the next line goes
   where its channel's own setting says), and nothing about each channel's
-  choice is lost. A channel still waiting for a window whose lines go to game
-  chat now needs none and is dropped when the windows are found; one kept out
-  of game chat on its own still gets its window. Nothing else opens then: a
+  choice is lost. A channel already waiting for a window (in combat, say)
+  still gets it, even if its lines go to game chat from now on: the line it
+  waited with was never printed there, so dropping it would leave that line
+  shown nowhere (review fix, 2026-10-09; the same when a channel's own "Show
+  in game chat" is turned back on while it waits). Nothing else opens then: a
   channel off game chat on its own that no window shows opens one at its next
   line, as above. (Before 2026-10-09 such channels were given a window at once
   when the setting was turned off, so the old "shows in game chat again" rule
   couldn't undo their choice; with that rule gone, they simply wait for their
-  next line.) Lines that arrive while a channel waits for combat, a cutscene
-  or a loading screen to end are kept in the history, to show when the window
-  opens: no line ends up shown nowhere.
+  next line.)
+- **Lines waiting for a window.** Lines that arrive while a channel waits for
+  combat, a cutscene or a loading screen to end are kept in the history, and
+  show when the window opens. One gap, accepted: if the session stops while
+  they wait (logging out, **Disconnect**, another character or server, the
+  plugin unloading), the windows close, the history is emptied with the
+  session, and what waited
+  is forgotten, so those lines show in no window and were never in game chat.
+  They are only in the chat log on this computer, if the player keeps one
+  (they show among its older lines in the channel's window after the next
+  login). Keeping them would mean holding the old session's lines past its
+  end, which the history deliberately doesn't do.
 
 ### Chat log on this computer
 
@@ -4624,7 +4650,13 @@ The owner's decisions, and why.
   window shows no longer goes back to game chat ("[sky] shows in game chat
   again" is gone): its next line opens a window by itself, by the same rules
   as windows only. Channels whose messages go to game chat keep today's
-  behaviour (see the open question on their counts). See
+  behaviour (see the open question on their counts). After review: one
+  "read" rule for the tabs' and the channel list's counts (the selected tab of
+  an open window, focused or not); a line waiting for a window always gets it,
+  even if the settings change meanwhile; a line about a channel that can't
+  have a window goes to game chat in either mode; and lines still waiting
+  when the session stops are lost from windows (accepted; they are in the
+  chat log, if kept). See
   [Channel windows](#channel-windows) and
   [Windows only, never game chat](#windows-only-never-game-chat).
 
