@@ -1750,6 +1750,16 @@ These are plugin settings, kept per character, and never sent to the server.
   they are removed). The freed number then goes to the next channel without
   one. Choosing a number another channel has swaps the two. Typing a number
   with no channel on it says so.
+- **Connecting by itself.** With "Connect automatically" on (the default), a
+  session starts when a character logs in, and also whenever a logged-in
+  player has none for any other reason: the owner found a plugin update left
+  them on "Not connected" (2026-10-09). Each frame the plugin checks
+  (`AutoConnect`): logged in, setting on, no session and none on its way, the
+  player didn't press Disconnect (until they connect, log in again or change
+  the server address), and the last start it made by itself was at least 30
+  seconds ago. A start that fails at once (the keys can't be read) is said
+  once and not retried until the player acts. The log records each start and
+  stop and why, never a name.
 - **Commands.** Of the channel commands only `/lgc` is listed in Dalamud's
   command help (`/lgl` is too); the fifty numbered commands are hidden to keep
   the list short. `/lgc` on its own explains how to use it.
