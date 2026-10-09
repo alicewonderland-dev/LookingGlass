@@ -152,6 +152,15 @@ with it on.
 
 - [ ] **Talking to a friend near you** ([local-chat](local-chat-checklist.md): step 47). Setup as for the local chat tasks above (both accepted, both opened the Friends window). A types `/lgl` alone, then `hello there` → B sees `[Local] <A@World> hello there`, nobody sees it in Say. A line with only an item link, and one with `<t>`, arrive as a link and the target's name. B walks beyond 20 yalms → A's next line says nobody is near enough, and nothing goes to Say. A types `/s` alone, then `bye` → B sees it in Say. Needs: B, A's friend, with LookingGlass.
 
+### Log heads in messages, needs the build after 0.2.12 on A and B
+
+Nothing new to see: messages now carry a check that only a malicious server
+would set off, and the automated tests cover that. These tasks only make sure
+normal chat is unchanged.
+
+- [ ] **Normal chat is unchanged** ([chat-links](chat-links-checklist.md): steps 16–17). A and B chat in `sky` both ways, with and without an item link → everything arrives as before, with no LookingGlass warning on either side (none saying someone "seems to see a different member list"). Then A invites a third character (or B leaves and A invites B back) while both go on chatting → still no warning. Needs: a third character for the invite, or B willing to leave and rejoin.
+- [ ] **An older plugin still talks** ([chat-links](chat-links-checklist.md): step 18). Optional. A on this build, B on an older one (0.2.12 or before): both directions arrive as before, no error or warning on either side. Needs: B on an older build.
+
 ### Windows only, needs 0.2.9 on A
 
 Setup: as in group 1 (`sky`, `fc`, `raid`), with B in `sky` and `fc`, and A

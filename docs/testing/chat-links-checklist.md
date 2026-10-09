@@ -76,3 +76,25 @@ it shows as odd characters. Nothing appears in Say, Party or any linkshell.
       item, place or status names, and no ids.
 - [ ] 15. (Optional, if a second character has an older LookingGlass build.)
       It sees each message as plain text, `look [Potion]`, with no error.
+
+## Log heads in messages (nothing to see)
+
+Messages now also carry, inside the encryption, the newest membership change
+the sender's plugin has checked, and the receiver compares it with its own
+(see [Log heads in messages](../design.md#log-heads-in-messages)). What it
+catches, a server showing members different member lists, can't be made to
+happen in game without a malicious server, so the automated tests cover it.
+In game, only check that nothing changes for normal chat. Both A and B on
+this build unless a step says otherwise.
+
+- [ ] 16. A and B chat in `[sky]` for a few lines each way, with and without
+      links. Everything arrives as before, and no LookingGlass warning shows
+      on either side (in particular none saying someone "seems to see a
+      different member list", or that the server showed two different member
+      lists).
+- [ ] 17. The members change while you chat: A invites a third character
+      (or B leaves and A invites B back), and A and B go on chatting at once,
+      while it happens. Still no warning on either side.
+- [ ] 18. (Optional, if a second character has an older LookingGlass build.)
+      A on this build and B on the older one chat both ways: every message
+      arrives as before, with no error or warning on either side.
