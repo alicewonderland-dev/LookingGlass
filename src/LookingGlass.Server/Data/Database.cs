@@ -260,6 +260,10 @@ public sealed class Database {
 
         var current = Convert.ToInt32(Scalar(connection, null, "SELECT COALESCE(MAX(version), 0) FROM schema_version;"));
         if (current >= SchemaVersion) {
+            // An earlier build of schema 11 (a development or test server's) lacked some of its columns: added now.
+            using var heal = connection.BeginTransaction();
+            AddSchema11Columns(connection, heal);
+            heal.Commit();
             return;
         }
 
@@ -482,36 +486,7 @@ public sealed class Database {
         }
 
         if (current < 11) {
-            // "Sign out everywhere else": the account's identity key may not sign in (key login) until the character is
-            // registered again through the Lodestone, so a copy of the key can't simply sign back in, and which device did it
-            // (its ID). Off for everyone to begin with. And each device gets a random ID, kept when its login is replaced, so
-            // clients can tell which devices they have seen. Devices keep nothing else but when they were added and last used.
-            // (Checked, as tests of older schemas only remove the version rows.)
-            if (!HasColumn(connection, tx, "users", "key_login_off")) {
-                Execute(connection, tx, "ALTER TABLE users ADD COLUMN key_login_off INTEGER NOT NULL DEFAULT 0;");
-            }
-
-            if (!HasColumn(connection, tx, "users", "signed_out_by")) {
-                Execute(connection, tx, """
-                    ALTER TABLE users ADD COLUMN signed_out_by BLOB;
-                    ALTER TABLE users ADD COLUMN signed_out_by_added INTEGER NOT NULL DEFAULT 0;
-                    ALTER TABLE users ADD COLUMN signed_out_at INTEGER NOT NULL DEFAULT 0;
-                    """);
-            }
-
-            // The nonce a login's last use was made with (Authenticate.login_nonce), so its client can tell its own logins
-            // whose answers were lost from a copy of it used elsewhere.
-            if (!HasColumn(connection, tx, "devices", "last_login_nonce")) {
-                Execute(connection, tx, "ALTER TABLE devices ADD COLUMN last_login_nonce BLOB NOT NULL DEFAULT x'';");
-            }
-
-            if (!HasColumn(connection, tx, "devices", "device_id")) {
-                Execute(connection, tx, """
-                    ALTER TABLE devices ADD COLUMN device_id BLOB NOT NULL DEFAULT x'';
-                    UPDATE devices SET device_id = randomblob(8);
-                    """);
-            }
-
+            AddSchema11Columns(connection, tx);
             Execute(connection, tx, "INSERT INTO schema_version (version) VALUES (11);");
         }
 
@@ -569,6 +544,39 @@ public sealed class Database {
                     "registered the other's public key before registrations were signed. The retirement now counts only for the account it was recorded for.",
                     ShortKeyId(key), retiredFor, accounts);
             }
+        }
+    }
+
+    /// <summary>
+    /// Schema 11's columns, each added if it isn't there: on upgrading to 11, and on every start at 11 or later, so a database
+    /// made by an earlier build of 11 (on a development or test server) that lacks some gains them. Nothing else changes.
+    /// </summary>
+    private static void AddSchema11Columns(SqliteConnection connection, SqliteTransaction tx) {
+        // "Sign out everywhere else": the account's identity key may not sign in (key login) until the character is registered
+        // again through the Lodestone, so a copy of the key can't simply sign back in; which device did it (its ID), when that
+        // device was added, and when it did it. Off for everyone to begin with.
+        (string Table, string Column, string Definition)[] columns = [
+            ("users", "key_login_off", "INTEGER NOT NULL DEFAULT 0"),
+            ("users", "signed_out_by", "BLOB"),
+            ("users", "signed_out_by_added", "INTEGER NOT NULL DEFAULT 0"),
+            ("users", "signed_out_at", "INTEGER NOT NULL DEFAULT 0"),
+            // The nonce a login's last use was made with (Authenticate.login_nonce), so its client can tell its own logins
+            // whose answers were lost from a copy of it used elsewhere.
+            ("devices", "last_login_nonce", "BLOB NOT NULL DEFAULT x''"),
+        ];
+        foreach (var (table, column, definition) in columns) {
+            if (!HasColumn(connection, tx, table, column)) {
+                Execute(connection, tx, $"ALTER TABLE {table} ADD COLUMN {column} {definition};");
+            }
+        }
+
+        // Each device's random ID, kept when its login is replaced, so clients can tell which devices they have seen. Devices
+        // keep nothing else but when they were added and last used.
+        if (!HasColumn(connection, tx, "devices", "device_id")) {
+            Execute(connection, tx, """
+                ALTER TABLE devices ADD COLUMN device_id BLOB NOT NULL DEFAULT x'';
+                UPDATE devices SET device_id = randomblob(8);
+                """);
         }
     }
 

@@ -979,7 +979,8 @@ and when); `devices` gains `device_id` (8 random bytes for each device,
 filled in by the upgrade) and `last_login_nonce` (what the plugin sent with
 the login's last use). Nothing else changes, and there is no new setting. A
 player's **Sign out everywhere else** sets the `users` ones, and registering
-again (or `--allow-key-login`) clears them. Plugins from before keep working: they
+again (or `--allow-key-login`) clears them. A database at schema 11 that lacks
+any of these (made by an earlier development build) gains them at start. Plugins from before keep working: they
 aren't told of new devices, and one that was signed out shows "Login not
 recognised".
 

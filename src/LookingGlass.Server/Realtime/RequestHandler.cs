@@ -850,7 +850,7 @@ public sealed class RequestHandler(
         return new Response {
             AuthenticateOk = new AuthenticateOk {
                 User = user.ToProto(), KeyVersion = user.KeyVersion, PreviousUsedUnix = previousUse, UsedUnix = thisUse,
-                PreviousLoginNonce = ByteString.CopyFrom(previousNonce),
+                PreviousLoginNonceHash = previousNonce.Length == 0 ? ByteString.Empty : ByteString.CopyFrom(SHA256.HashData(previousNonce)),
             },
         };
     }

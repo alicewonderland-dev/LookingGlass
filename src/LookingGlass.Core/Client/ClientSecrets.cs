@@ -56,6 +56,12 @@ public sealed class ClientSecrets {
     /// </summary>
     public List<string>? UnansweredLoginNonces { get; set; }
 
+    /// <summary>
+    /// This computer's "Sign out everywhere else" was done (its new login was taken at a login after the answer was lost), and
+    /// when is still to be learnt from the next list of devices (see <see cref="SignedOutOthersAt"/>).
+    /// </summary>
+    public bool LearnSignOutTime { get; set; }
+
     public long? UserId { get; set; }
 
     /// <summary>Identity keys seen for other users (trust on first use).</summary>
@@ -178,6 +184,7 @@ public sealed class ClientSecrets {
         this.LastLoginUnix = null;
         this.SignedOutOthersAt = null;
         this.UnansweredLoginNonces = null;
+        this.LearnSignOutTime = false;
         this.EpochKeys.Clear();
         this.EpochKeyPositions.Clear();
     }

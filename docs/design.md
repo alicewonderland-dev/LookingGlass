@@ -461,10 +461,13 @@ Two things would otherwise look like a copy:
   off, isn't using its login).
 - *A login whose answer was lost.* Each try sends 16 random bytes
   (`Authenticate.login_nonce`); the server keeps the last use's with its time
-  (`devices.last_login_nonce`) and says it next time
-  (`AuthenticateOk.previous_login_nonce`). The plugin remembers the nonces of
-  its tries not answered yet (`UnansweredLoginNonces`, at most 8, saved before
-  each try): a previous use made with one of them was its own.
+  (`devices.last_login_nonce`) and says its SHA-256 next time
+  (`AuthenticateOk.previous_login_nonce_hash`: only the hash, so whoever holds
+  a copy of the login can't learn the plugin's nonces and send one back). The
+  plugin remembers the nonces of its tries not answered yet
+  (`UnansweredLoginNonces`, at most 8, saved before each try, and forgotten
+  again for a try that is refused): a previous use made with one of them, but
+  for the try being answered, was its own.
 
 A server restored from a backup still looks the same; hence the gentle words.
 

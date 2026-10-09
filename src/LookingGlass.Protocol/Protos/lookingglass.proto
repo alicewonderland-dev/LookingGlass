@@ -313,9 +313,9 @@ message RegistrationComplete {
 
 message Authenticate {
   string device_token = 1;
-  // 16 random bytes, fresh for each try: the server keeps the one of the login's last use, and says it the next time
-  // (AuthenticateOk.previous_login_nonce), so a client can tell its own login whose answer it never got from a copy of its
-  // login used elsewhere. Empty from an older plugin. Added without a version change.
+  // 16 random bytes, fresh for each try: the server keeps the one of the login's last use, and says its hash the next time
+  // (AuthenticateOk.previous_login_nonce_hash), so a client can tell its own login whose answer it never got from a copy of
+  // its login used elsewhere. Empty from an older plugin. Added without a version change.
   bytes login_nonce = 2;
 }
 
@@ -327,8 +327,9 @@ message AuthenticateOk {
   // login was used elsewhere meanwhile (a copy of it). 0 from an older server. Added without a version change.
   int64 previous_used_unix = 3;
   int64 used_unix = 4;
-  // The login_nonce that last use was made with (empty if none, or from an older plugin).
-  bytes previous_login_nonce = 5;
+  // The SHA-256 of the login_nonce that last use was made with (empty if it had none): only the hash, so whoever holds a
+  // copy of the login can't learn the client's nonces from it and send one back.
+  bytes previous_login_nonce_hash = 5;
 }
 
 // Key login: a user the server knows gets a new device token by signing a challenge with

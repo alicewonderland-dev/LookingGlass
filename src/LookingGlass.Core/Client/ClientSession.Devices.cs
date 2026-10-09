@@ -43,9 +43,8 @@ public sealed partial class ClientSession {
     private SignedOutBy _signedOutBy;
     // With it: when the device that did it was added, as the server said.
     private DateTimeOffset? _signedOutByAdded;
-    // The login a "Sign out everywhere else" whose answer was lost gave this computer was taken at login: this computer did
-    // it, at a time the next list of devices says (Devices.signed_out_at_unix).
-    private bool _learnSignOutTime;
+    // The nonce (hex) of the login answered last, which isn't one of this computer's earlier logins whose answers were lost.
+    private string? _answeredLoginNonce;
 
     // New computers not told yet (held back after a notice), the newest one's time, when the last notice was, and whether
     // telling the held ones is due.
@@ -243,7 +242,7 @@ public sealed partial class ClientSession {
                     this._secrets.PendingDeviceToken = null;
                     // It took it: the sign-out was done, by this computer, at the time the next list says.
                     this._secrets.SignedOutOthersAt = null;
-                    this._learnSignOutTime = true;
+                    this._secrets.LearnSignOutTime = true;
                     this._secretsVersion++;
                 }
 
@@ -273,17 +272,37 @@ public sealed partial class ClientSession {
 
     /// <summary>
     /// Asks to log in with <paramref name="token"/>, with a fresh nonce for this try, remembered (and saved) first as one not
-    /// answered yet: if the answer is lost, the next login's previous use names it, and it is known for this computer's own.
+    /// answered yet: if the answer is lost, the next login's previous use names it (by its hash), and it is known for this
+    /// computer's own. A refused try is no use of the login, so its nonce is forgotten again.
     /// </summary>
-    private Task<Response> AuthenticateRequestAsync(Connection connection, string token, CancellationToken ct) {
+    private async Task<Response> AuthenticateRequestAsync(Connection connection, string token, CancellationToken ct) {
         var nonce = System.Security.Cryptography.RandomNumberGenerator.GetBytes(16);
+        var hex = Convert.ToHexStringLower(nonce);
         lock (this._lock) {
-            this._secrets.UnansweredLoginNonces = [Convert.ToHexStringLower(nonce), .. (this._secrets.UnansweredLoginNonces ?? []).Take(MaxUnansweredLoginNonces - 1)];
+            this._secrets.UnansweredLoginNonces = [hex, .. (this._secrets.UnansweredLoginNonces ?? []).Take(MaxUnansweredLoginNonces - 1)];
             this._secretsVersion++;
         }
 
         this.SaveSecrets();
-        return this.RequestAsync(connection, new ClientFrame { Authenticate = new Authenticate { DeviceToken = token, LoginNonce = ByteString.CopyFrom(nonce) } }, ct);
+        try {
+            var response = await this.RequestAsync(connection,
+                new ClientFrame { Authenticate = new Authenticate { DeviceToken = token, LoginNonce = ByteString.CopyFrom(nonce) } }, ct);
+            lock (this._lock) {
+                this._answeredLoginNonce = hex;
+            }
+
+            return response;
+        } catch (ServerErrorException) {
+            // Answered, with a refusal: the server recorded no use with it.
+            lock (this._lock) {
+                if (this._secrets.UnansweredLoginNonces?.Remove(hex) == true) {
+                    this._secretsVersion++;
+                }
+            }
+
+            this.SaveSecrets();
+            throw;
+        }
     }
 
     /// <summary>
@@ -294,8 +313,10 @@ public sealed partial class ClientSession {
     /// </summary>
     private void NoteLogin(AuthenticateOk ok) {
         lock (this._lock) {
-            var previousNonce = ok.PreviousLoginNonce.Length > 0 ? Convert.ToHexStringLower(ok.PreviousLoginNonce.Span) : null;
-            var ours = previousNonce != null && this._secrets.UnansweredLoginNonces?.Contains(previousNonce) == true;
+            // One of this computer's earlier logins whose answers were lost; never this one's own (nothing can have used it before).
+            var ours = ok.PreviousLoginNonceHash.Length > 0 && (this._secrets.UnansweredLoginNonces ?? [])
+                .Where(nonce => nonce != this._answeredLoginNonce)
+                .Any(nonce => System.Security.Cryptography.SHA256.HashData(Convert.FromHexString(nonce)).AsSpan().SequenceEqual(ok.PreviousLoginNonceHash.Span));
             if (this._secrets.LastLoginUnix is { } last && ok.PreviousUsedUnix > 0 && ok.PreviousUsedUnix != last && !ours) {
                 this._pendingNotices.Add(SessionNotice.Of(NoticeLevel.Warning, DeviceWords.LoginUsedElsewhere(TimeOf(ok.PreviousUsedUnix))));
             }
@@ -320,7 +341,7 @@ public sealed partial class ClientSession {
         this._secrets.LastLoginUnix = null;
         this._secrets.SignedOutOthersAt = null;
         this._secrets.UnansweredLoginNonces = null;
-        this._learnSignOutTime = false;
+        this._secrets.LearnSignOutTime = false;
     }
 
     /// <summary>Takes a list of the account's devices: shown in Settings, and other computers' not seen before told about.</summary>
@@ -332,9 +353,9 @@ public sealed partial class ClientSession {
             }
 
 
-            if (this._learnSignOutTime && devices.SignedOutAtUnix > 0) {
+            if (this._secrets.LearnSignOutTime && devices.SignedOutAtUnix > 0) {
                 this._secrets.SignedOutOthersAt = devices.SignedOutAtUnix;
-                this._learnSignOutTime = false;
+                this._secrets.LearnSignOutTime = false;
             }
 
             var known = this._secrets.KnownDevices;

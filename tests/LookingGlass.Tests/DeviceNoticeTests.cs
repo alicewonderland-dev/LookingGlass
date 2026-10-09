@@ -738,6 +738,129 @@ public sealed class DeviceNoticeTests : IAsyncLifetime {
         store.Save(secrets);
     }
 
+    /// <summary>
+    /// The server says the previous use's nonce only as its SHA-256, so whoever holds a copy of the login can't learn this
+    /// computer's nonces from it and send one back.
+    /// </summary>
+    [Fact]
+    public async Task TheServerSaysOnlyAHashOfThePreviousLoginsNonce() {
+        var alice = await this._server.RegisterAsync("Alice Hashed Nonce");
+        var token = alice.Store.Load().DeviceToken!;
+        await alice.Session.DisposeAsync();
+        byte[] nonce = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+
+        await using (var first = await this._server.ConnectRawAsync()) {
+            Assert.NotNull((await first.SendAsync(new ClientFrame {
+                Authenticate = new Authenticate { DeviceToken = token, LoginNonce = ByteString.CopyFrom(nonce) },
+            })).AuthenticateOk);
+        }
+
+        await using var second = await this._server.ConnectRawAsync();
+        var ok = (await second.SendAsync(new ClientFrame { Authenticate = new Authenticate { DeviceToken = token } })).AuthenticateOk;
+        Assert.Equal(System.Security.Cryptography.SHA256.HashData(nonce), ok.PreviousLoginNonceHash.ToByteArray());
+    }
+
+    /// <summary>A refused login leaves nothing to remember: its nonce isn't kept as one of this computer's unanswered ones.</summary>
+    [Fact]
+    public async Task ARefusedLoginsNonceIsntKept() {
+        var store = new InMemorySecretStore();
+        var alice = await this._server.RegisterAsync("Alice Refused Nonces", store);
+        await alice.Session.DisposeAsync();
+        // The server knows neither the login nor the key (as a wrong database would): every try is refused.
+        this._server.ExecuteSql("DELETE FROM devices WHERE user_id = $id;", ("$id", alice.UserId));
+        this._server.ExecuteSql("UPDATE users SET signing_key = $key WHERE user_id = $id;", ("$key", RandomHash()), ("$id", alice.UserId));
+
+        var back = this._server.StartClient(alice.Name, store, this._server.Options(loginRetryDelay: TimeSpan.FromHours(1)));
+        await WaitFor(() => back.Session.Snapshot.State == ConnectionState.LoginNotRecognized ? new object() : null);
+        Assert.Contains(back.Session.GetTrace(), entry => entry.Outgoing && entry.Summary.EndsWith(" Authenticate"));
+        Assert.Empty(store.Load().UnansweredLoginNonces ?? []);
+    }
+
+    /// <summary>
+    /// The nonce of the login being answered isn't one of "this computer's own earlier logins": a server (or a copy) naming it
+    /// as the previous use's doesn't hide that the login was used at another time.
+    /// </summary>
+    [Fact]
+    public async Task ThisLoginsOwnNonceDoesntExplainAnEarlierUse() {
+        var store = new InMemorySecretStore();
+        var alice = await this._server.RegisterAsync("Alice Own Nonce", store);
+        await DevicesShown(alice);
+        await alice.Session.DisposeAsync();
+
+        byte[]? sent = null;
+        var options = this._server.Options(wrap: socket => new RewritingWebSocket(socket, frame => {
+            if (frame.Response?.AuthenticateOk is { } ok && sent != null) {
+                ok.PreviousUsedUnix = 1_000_000_000;
+                ok.PreviousLoginNonceHash = ByteString.CopyFrom(System.Security.Cryptography.SHA256.HashData(sent));
+            }
+
+            return frame;
+        }, sent: frame => {
+            if (frame.Authenticate != null) {
+                sent = frame.Authenticate.LoginNonce.ToByteArray();
+            }
+        }));
+        var back = await this._server.RestartAsync(alice, options);
+        await WaitFor(() => back.Notices.FirstOrDefault(notice => notice.Kind == NoticeKind.LoginUsedElsewhere));
+    }
+
+    /// <summary>
+    /// That this computer signed out everywhere else (its new login taken at a login after the answer was lost) is saved until
+    /// the next list says when: closing the plugin in between doesn't lose it.
+    /// </summary>
+    [Fact]
+    public async Task WhenThisComputerSignedOutIsLearntEvenAfterARestart() {
+        var store = new InMemorySecretStore();
+        var alice = await this._server.RegisterAsync("Alice Learns Later", store);
+        Assert.Equal(0, await alice.Session.SignOutOtherDevicesAsync(Ct));
+        await alice.Session.DisposeAsync();
+        var at = this._server.Database.SignedOut(alice.UserId)!.At;
+        // As if the answer had been lost, and the plugin closed after taking the new login at the next login, before any list.
+        var secrets = store.Load();
+        secrets.SignedOutOthersAt = null;
+        secrets.LearnSignOutTime = true;
+        store.Save(secrets);
+
+        var back = await this._server.RestartAsync(alice);
+        await DevicesShown(back);
+        var learnt = await WaitFor(() => store.Load() is { LearnSignOutTime: false } saved ? saved : null);
+        Assert.Equal(at, learnt.SignedOutOthersAt);
+    }
+
+    /// <summary>
+    /// A database already at schema 11 from an earlier build of it, without some of its columns, gains them when the server
+    /// starts; and logins and signing out work on it.
+    /// </summary>
+    [Fact]
+    public void ASchema11DatabaseMissingColumnsGainsThem() {
+        var directory = Path.Combine(Path.GetTempPath(), "lgt-devices-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try {
+            var path = Path.Combine(directory, "test.db");
+            var db = new Database(path);
+            using var keys = IdentityKeys.Generate();
+            var user = db.RegisterUser(77, "Kept User", 0, ProtocolInfo.DebugWorldName, keys.ToBundle(), true).User;
+            var token = RandomHash();
+            Assert.True(db.AddDeviceForKey(77, user.SigningKey, user.KeyVersion, token));
+            // An earlier build of schema 11: these weren't there yet, and the version row is.
+            Execute(path, "ALTER TABLE users DROP COLUMN signed_out_by_added; ALTER TABLE users DROP COLUMN signed_out_at; " +
+                          "ALTER TABLE devices DROP COLUMN last_login_nonce;");
+            Database.ReleasePooledConnections(path);
+
+            var healed = new Database(path);
+            Assert.Equal(1L, Query(path, "SELECT COUNT(*) FROM schema_version WHERE version = 11;"));
+            Assert.Equal(77, healed.FindDevice(token, [9, 9], out _, out _, out _));
+            var newToken = RandomHash();
+            Assert.Equal(0, healed.SignOutOtherDevices(77, token, newToken));
+            Assert.True(healed.SignedOut(77)!.At > 0);
+            Assert.Equal(77, healed.FindDevice(newToken, [8, 8], out _, out var previous, out _));
+            Assert.Equal(new byte[] { 9, 9 }, previous);
+            Database.ReleasePooledConnections(path);
+        } finally {
+            DeleteDirectory(directory);
+        }
+    }
+
     /// <summary>A store whose saves fail while <see cref="Fail"/> is set, as a full disk or a file held open would.</summary>
     private sealed class FailingSecretStore : ISecretStore {
         private readonly InMemorySecretStore _inner = new();
