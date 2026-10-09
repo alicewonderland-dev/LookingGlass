@@ -50,14 +50,14 @@ public sealed class Configuration : IPluginConfiguration {
     public bool LocalChatTalkNoteShown { get; set; }
 
     /// <summary>
-    /// Verbose channel messages: say "Now talking in" and every "Stopped talking in". Off (the default, also for settings
+    /// "Say when I start or stop talking in a channel" (verbose channel messages): say "Now talking in" and every "Stopped talking in". Off (the default, also for settings
     /// saved before it existed), only stops the player didn't choose are said (see <see cref="StickyMessages.SayEnded"/>):
     /// the server info bar and the chat box labels always show where typing goes.
     /// </summary>
     public bool VerboseChannelMessages { get; set; }
 
     /// <summary>
-    /// "Show LookingGlass messages only in windows" (off by default, also for settings saved before it existed): no channel's
+    /// "Show LookingGlass only in windows" (off by default, also for settings saved before it existed): no channel's
     /// messages or information lines go to game chat, whatever each channel's own setting says, and a channel no window
     /// shows opens in one. Warnings, and answers to what is typed in the chat box, still go there. See <see cref="WindowsOnly"/>.
     /// Each channel's own choice is kept as it was, for when it is turned off.

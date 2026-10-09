@@ -16,7 +16,7 @@ read back.
 ## Off by default
 
 - [ ] 1. On a fresh install (or with the setting never touched), open Settings
-      (the gear in `/lg`). Under **Chat history**, **Keep a chat history on
+      (the gear in `/lg`). Under **Chat history**, **Keep chat history on
       this computer** is unticked, with no size slider. No `chatlog-…` folder
       exists in the config folder.
 - [ ] 2. Open a `sky` window and chat with B for a bit. Still no `chatlog-…`
@@ -24,11 +24,13 @@ read back.
 
 ## Turning it on
 
-- [ ] 3. Tick **Keep a chat history on this computer**. The text under it says
-      what it keeps, that it stays on this computer scrambled, never uploaded
-      or shared, and that the oldest go first when it's full; no "log",
-      "encrypted" or "key" in simple mode. A **Largest size (MB)** slider shows
-      50 MB; its tooltip says 5 MB to 1024 MB, per character and server.
+- [ ] 3. **(changed)** Tick **Keep chat history on this computer**. No text
+      under it: click the **?** after it. A small bubble says channel windows
+      show older messages next time you play, that it's stored scrambled and
+      never uploaded, and that the oldest go first when it's full; no "log",
+      "encrypted" or "key" in simple mode (in advanced mode it says encrypted,
+      and names the protection, such as Windows DPAPI). A **Size limit**
+      slider shows 50 MB, from 5 MB to 1024 MB.
 - [ ] 4. Send a few lines in `sky` (one with `<item>` after linking an item,
       one with `<flag>`), have B send a few and leave and rejoin `fc` (or
       invite someone), and rename `fc` if you can. A `chatlog-<id>-<hash>`
@@ -86,7 +88,7 @@ read back.
       lines.
 - [ ] 15. **Reset my identity** (on a test character): the log is still there
       afterwards, and its older lines still show.
-- [ ] 16. Untick **Keep a chat history on this computer**: a dialog asks
+- [ ] 16. Untick **Keep chat history on this computer**: a dialog asks
       whether to delete what was kept (with its size); **Cancel** keeps the
       files, and **Delete my chat history...** stays in Settings while any
       exist. Send more lines: the files don't change. Windows no longer show
@@ -105,7 +107,7 @@ read back.
 
 - [ ] 19. With B's older lines showing in `sky`, block B (a member's menu):
       B's older messages disappear from the window. Unblock B: they show again.
-- [ ] 20. Untick and tick **Keep a chat history on this computer** in one
+- [ ] 20. Untick and tick **Keep chat history on this computer** in one
       session, then **Show older messages**: nothing from this session shows
       twice (not above and below "Since you logged in").
 - [ ] 21. Change the server address to another address of the same server and

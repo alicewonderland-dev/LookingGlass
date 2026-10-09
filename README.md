@@ -30,14 +30,14 @@ early testing (version 0.2).
   of its own, with tabs for more channels (the **+**). What you type there only
   ever goes to that channel, never to game chat, and you can choose which
   channels also show in game chat (the channel's ⋮ menu).
-- **Windows only.** Settings, **Show LookingGlass messages only in windows**,
+- **Windows only.** Settings, **Show LookingGlass only in windows**,
   keeps channel messages out of game chat altogether: a channel that no window
   shows opens in one (as a tab, or a new window), but not mid-fight or during
   a cutscene. Warnings still show in game chat.
 - **Nothing missed.** Messages sent while you were logged out or disconnected
   (for up to a week) show up when you're back, marked with the time they were
   sent.
-- **Chat history (optional).** Turn on **Keep a chat history on this
+- **Chat history (optional).** Turn on **Keep chat history on this
   computer** in Settings (in advanced mode, **Keep a chat log on this
   computer**), and channel windows show older messages when you scroll up,
   even after you log out. It stays on your computer, scrambled so only you
@@ -80,8 +80,9 @@ is listed in Dalamud's command help (`/xlhelp`), not `/lgc1` to `/lgc50`, to
 keep the list short; `/lgl` is listed too, and says how to use it. While you
 talk in a channel, its tag (like `[sky]`, or `[Local]` for local chat) shows
 where the chat box names its channel and in the server info bar; click that to
-stop. Starting and stopping aren't also said in chat unless you turn on **Verbose channel messages** in Settings (off by
-default), but a stop you didn't choose, such as a disconnect, always is. If a
+stop. Starting and stopping aren't also said in chat unless you turn on **Say
+when I start or stop talking in a channel** in Settings (off by default), but
+a stop you didn't choose, such as a disconnect, always is. If a
 message can't be sent, you're told, and it doesn't go to game chat either.
 Item, map flag and status links work as in normal chat, and so do text
 commands such as `<t>` and `<me>`, which are sent as the names they stand for.
@@ -112,7 +113,7 @@ yet. While it's in testing, it is loaded as a dev plugin:
 1. **The server.** LookingGlass connects to its own server whenever you log
    in; there's nothing to set. To use another server, type `/lg`, click the
    gear in the window's title bar to open Settings, enter its address under
-   **Server URL** (it looks like `wss://chat.example.com/ws`) and press
+   **Server address** (it looks like `wss://chat.example.com/ws`) and press
    **Apply**. If you used the test server at `alicedev`, switch to the new
    address the same way: the plugin offers to keep your identity, and your
    channels come with you.
@@ -160,7 +161,8 @@ Select a channel in the main window to see its members and settings.
   really them**.
 - **Advanced mode.** Turn it on in Settings, under "Your identity", to see the
   encryption details: fingerprints you can compare over /tell to be sure your
-  chats are private. Warnings show either way.
+  chats are private. Warnings show either way. In Settings, the small **?**
+  after a setting says what it does.
 
 ## Playing on a new computer, or lost your settings
 
@@ -187,7 +189,7 @@ other servers.
 ## Troubleshooting
 
 - **No messages in chat.** Messages go to the game chat channel chosen under
-  "Show messages in the chat channel" in Settings. Make sure your chat tab shows
+  **Show messages in** in Settings. Make sure your chat tab shows
   that channel, or choose another.
 - **"This server doesn't recognise your login".** Check the server address in
   Settings first. The plugin tries again every minute or so, and **Retry now**

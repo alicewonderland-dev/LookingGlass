@@ -126,7 +126,7 @@ public sealed class ChannelWindows(WindowSystem system, Configuration config, Se
     }
 
     /// <summary>
-    /// "Show LookingGlass messages only in windows" (see <see cref="WindowsOnly"/>), once the windows are back. While it is
+    /// "Show LookingGlass only in windows" (see <see cref="WindowsOnly"/>), once the windows are back. While it is
     /// on, each channel a line arrived for that game chat didn't show gets a window, or a tab in one, if none shows it: once
     /// the game isn't busy (<see cref="GameBusy"/>), and without taking the keyboard from the game. Just turned off, a
     /// channel waiting whose own setting shows it in game chat goes there from now on, and needs no window; one kept out
