@@ -145,8 +145,6 @@ public sealed class ChannelWindowLayoutTests {
         var window = Assert.Single(windows);
         Assert.Equal("two", window.Id);
         Assert.Equal("aaa", window.Selected);
-        Assert.Empty(GameChatChannels.ShownNowhere(new HashSet<string> { "aaa" }, [null, new ChannelWindowLayout { Tabs = null! }, window],
-            Snapshot(ConnectionState.Ready, true, "aaa")));
     }
 
     [Fact]
@@ -208,36 +206,6 @@ public sealed class ChannelWindowLayoutTests {
     }
 
     [Fact]
-    public void AChannelOffGameChatThatNoWindowShowsGoesBack() {
-        var off = new HashSet<string> { "aaa", "bbb", "gone" };
-        var windows = new List<ChannelWindowLayout>();
-        var window = ChannelWindowLayouts.Open(windows, "aaa");
-        ChannelWindowLayouts.AddTab(window, "bbb");
-        var complete = Snapshot(ConnectionState.Ready, true, "aaa", "bbb", "ccc");
-
-        // Both are in a window: nothing to do. Nor before the list is in (nothing is known to be shown nowhere yet).
-        Assert.Empty(GameChatChannels.ShownNowhere(off, windows, complete));
-        windows.Clear();
-        Assert.Empty(GameChatChannels.ShownNowhere(off, windows, Snapshot(ConnectionState.Ready, false, "aaa", "bbb")));
-        Assert.Empty(GameChatChannels.ShownNowhere(off, windows, Snapshot(ConnectionState.Reconnecting, true, "aaa", "bbb")));
-
-        // The last tab of "bbb" closed (or no window came back at login): it, and only channels you're in, go back.
-        window = ChannelWindowLayouts.Open(windows, "aaa");
-        Assert.Equal(["bbb"], GameChatChannels.ShownNowhere(off, windows, complete));
-        ChannelWindowLayouts.CloseTab(window, "aaa");
-        windows.Clear();
-        Assert.Equal(["aaa", "bbb"], GameChatChannels.ShownNowhere(off, windows, complete));
-        Assert.Empty(GameChatChannels.ShownNowhere(new HashSet<string>(), windows, complete));
-    }
-
-    [Fact]
-    public void TheLineSaidThenIsPlain() {
-        var line = GameChatChannels.BackInGameChat("[sky]");
-        Assert.Equal("[sky] shows in game chat again, since no window shows it.", line);
-        PlainLanguage.AssertPlain(line);
-    }
-
-    [Fact]
     public void TheSettingGoesWithItsChannelOnlyAgainstTheCompleteList() {
         var off = new HashSet<string> { "aaa", "bbb" };
         Assert.False(GameChatChannels.Sync(off, Snapshot(ConnectionState.Ready, false, "aaa")));
@@ -287,6 +255,23 @@ public sealed class ChannelWindowLayoutTests {
         Assert.False(GameChatChannels.Shows(off, "aaa"));
         Assert.True(unread.Add(From("aaa")));
         Assert.Equal(1, unread.CountOf("aaa"));
+    }
+
+    [Fact]
+    public void TheMainWindowReadsOnlyAChannelWhoseMessagesGoToGameChat() {
+        var off = new HashSet<string> { "aaa" };
+        Assert.True(UnreadCounter.MainWindowReads(false, off, "bbb"));
+        Assert.False(UnreadCounter.MainWindowReads(false, off, "aaa"));
+        Assert.False(UnreadCounter.MainWindowReads(true, new HashSet<string>(), "bbb"));
+
+        // Its channel pane shows no messages: one seen only in windows stays counted there until a window tab shows it.
+        var unread = new UnreadCounter(new ManualClock());
+        unread.Add(From("aaa"));
+        unread.Viewing(UnreadCounter.MainWindowReads(false, off, "aaa") ? "aaa" : null);
+        Assert.Equal(1, unread.CountOf("aaa"));
+        Assert.True(unread.Add(From("aaa")));
+        unread.Viewing("window:one", "aaa");
+        Assert.Equal(0, unread.CountOf("aaa"));
     }
 
     [Fact]

@@ -150,6 +150,26 @@ public sealed class ChannelHistory {
         return count;
     }
 
+    /// <summary>
+    /// How many messages from others a channel holds after <paramref name="seq"/> and after the player's own newest message
+    /// in it (talking in a channel reads what came before, as in the channel list): a window's count on a tab not selected.
+    /// </summary>
+    public int UnreadAfter(string channelId, long seq) {
+        var lines = this.LinesOf(channelId);
+        var count = 0;
+        for (var i = lines.Length - 1; i >= 0 && lines[i].Seq > seq; i--) {
+            if (lines[i] is { Kind: HistoryLineKind.Message, IsOwn: true }) {
+                break;
+            }
+
+            if (lines[i].FromOthers) {
+                count++;
+            }
+        }
+
+        return count;
+    }
+
     /// <summary>A message was delivered (from someone else, or your own once the server accepted it).</summary>
     /// <param name="generation">The <see cref="Generation"/> it is for; null for the current one.</param>
     /// <returns>False if it was dropped: already held, or for an older session.</returns>

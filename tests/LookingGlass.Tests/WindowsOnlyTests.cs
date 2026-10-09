@@ -52,13 +52,14 @@ public sealed class WindowsOnlyTests {
         // "Bob invited you to sky": about a channel the player isn't in (yet), so no window can show it.
         var invited = new SessionNotice(NoticeLevel.Info, "Bob invited you to \"sky\".", "invite");
         Assert.True(WindowsOnly.NoticeToGameChat(true, NoneOff, invited, Joined));
-        Assert.False(WindowsOnly.NoticeWantsWindow(true, invited, Joined));
+        Assert.False(WindowsOnly.NoticeWantsWindow(true, NoneOff, invited, Joined));
 
         // A place from the user's old keys has no window either.
         var withOld = Joined with { Channels = [Joined.Channels[0], Joined.Channels[1] with { OldKeyMembership = true }] };
         var old = new SessionNotice(NoticeLevel.Info, "Bob joined.", "bbb");
         Assert.True(WindowsOnly.NoticeToGameChat(true, NoneOff, old, withOld));
-        Assert.False(WindowsOnly.NoticeWantsWindow(true, old, withOld));
+        Assert.False(WindowsOnly.NoticeWantsWindow(true, NoneOff, old, withOld));
+        Assert.False(WindowsOnly.NoticeWantsWindow(false, new HashSet<string> { "bbb" }, old, withOld));
         Assert.False(WindowsOnly.CanHaveWindow(withOld, "bbb"));
         Assert.True(WindowsOnly.CanHaveWindow(withOld, "aaa"));
     }
@@ -74,16 +75,56 @@ public sealed class WindowsOnlyTests {
     }
 
     [Fact]
-    public void OnlyALineKeptFromGameChatByWindowsOnlyAsksForAWindow() {
+    public void OnlyALineKeptFromGameChatAsksForAWindow() {
         var joined = new SessionNotice(NoticeLevel.Info, "Bob joined.", "aaa");
         var warning = new SessionNotice(NoticeLevel.Warning, "Careful.", "aaa");
 
-        Assert.True(WindowsOnly.NoticeWantsWindow(true, joined, Joined));
-        Assert.False(WindowsOnly.NoticeWantsWindow(false, joined, Joined));
+        Assert.True(WindowsOnly.NoticeWantsWindow(true, NoneOff, joined, Joined));
+        Assert.False(WindowsOnly.NoticeWantsWindow(false, NoneOff, joined, Joined));
         // In game chat anyway, or about no channel, or never shown (debug): nothing to open.
-        Assert.False(WindowsOnly.NoticeWantsWindow(true, warning, Joined));
-        Assert.False(WindowsOnly.NoticeWantsWindow(true, joined with { ChannelId = null }, Joined));
-        Assert.False(WindowsOnly.NoticeWantsWindow(true, joined with { Level = NoticeLevel.Debug }, Joined));
+        Assert.False(WindowsOnly.NoticeWantsWindow(true, NoneOff, warning, Joined));
+        Assert.False(WindowsOnly.NoticeWantsWindow(true, NoneOff, joined with { ChannelId = null }, Joined));
+        Assert.False(WindowsOnly.NoticeWantsWindow(true, NoneOff, joined with { Level = NoticeLevel.Debug }, Joined));
+    }
+
+    [Fact]
+    public void AChannelOffGameChatOnItsOwnAsksForAWindowAsWindowsOnlyWould() {
+        var off = new HashSet<string> { "aaa" };
+        var joined = new SessionNotice(NoticeLevel.Info, "Bob joined.", "aaa");
+        var warning = new SessionNotice(NoticeLevel.Warning, "Careful.", "aaa");
+
+        // Its messages and information lines: kept out of game chat, so they ask for a window, as windows only's do.
+        Assert.True(WindowsOnly.MessageWantsWindow(false, off, "aaa"));
+        Assert.True(WindowsOnly.NoticeWantsWindow(false, off, joined, Joined));
+        // Its warnings go to game chat as well, and ask for nothing; nor does a debug line, shown nowhere.
+        Assert.False(WindowsOnly.NoticeWantsWindow(false, off, warning, Joined));
+        Assert.False(WindowsOnly.NoticeWantsWindow(false, off, joined with { Level = NoticeLevel.Debug }, Joined));
+        // A channel that shows in game chat asks for nothing.
+        Assert.False(WindowsOnly.MessageWantsWindow(false, off, "bbb"));
+        Assert.False(WindowsOnly.NoticeWantsWindow(false, off, joined with { ChannelId = "bbb" }, Joined));
+        // While windows only is on, every channel asks, whatever its own setting.
+        Assert.True(WindowsOnly.MessageWantsWindow(true, NoneOff, "bbb"));
+        Assert.True(WindowsOnly.MessageWantsWindow(true, off, "aaa"));
+        // Asked again when the window is found (the setting may have changed meanwhile): turned back on in game chat, and
+        // windows only off, it needs none.
+        Assert.False(WindowsOnly.MessageWantsWindow(false, NoneOff, "aaa"));
+    }
+
+    [Fact]
+    public void AnInformationLineAtLoginForAChannelOffGameChatWaitsForTheListRatherThanBeingShownNowhere() {
+        // Before the channel list is in, a line about a channel turned off game chat stays out of game chat (its own
+        // setting), and asks for a window; the window waits for the complete list.
+        var off = new HashSet<string> { "aaa" };
+        var joined = new SessionNotice(NoticeLevel.Info, "Bob joined.", "aaa");
+        var loading = Snapshot(ConnectionState.Ready, false);
+
+        Assert.False(WindowsOnly.NoticeToGameChat(false, off, joined, loading));
+        Assert.True(WindowsOnly.NoticeWantsWindow(false, off, joined, loading));
+
+        var pending = new PendingWindows();
+        pending.Want("aaa");
+        Assert.Empty(pending.Take(loading, busy: false));
+        Assert.Equal(["aaa"], Ids(pending.Take(Joined, busy: false)));
     }
 
     // ================================================================ where a window is found
@@ -337,22 +378,6 @@ public sealed class WindowsOnlyTests {
         pending.Want("ccc");
 
         Assert.Equal([new WantedWindow("aaa", true), new WantedWindow("bbb", true), new WantedWindow("ccc", true)], pending.Take(ready, busy: false));
-    }
-
-    [Fact]
-    public void WhatWaitsCanBeLookedAtAndThinnedOut() {
-        var pending = new PendingWindows();
-        pending.Want("aaa");
-        pending.Want("bbb");
-        pending.Want("ccc");
-
-        Assert.True(pending.Contains("bbb"));
-        Assert.False(pending.Contains("ddd"));
-
-        // Windows only turned off: only the channels kept out of game chat on their own still wait.
-        pending.Retain(id => id != "bbb");
-        Assert.False(pending.Contains("bbb"));
-        Assert.Equal(["aaa", "ccc"], Ids(pending.Take(Snapshot(ConnectionState.Ready, true, "aaa", "bbb", "ccc"), busy: false)));
     }
 
     [Fact]

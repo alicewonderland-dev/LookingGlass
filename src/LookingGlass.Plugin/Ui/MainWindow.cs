@@ -667,8 +667,10 @@ public sealed class MainWindow : Window {
         var visible = ImGui.BeginChild("##channel", Vector2.Zero, false, ImGuiWindowFlags.AlwaysUseWindowPadding);
         ImGui.PopStyleVar();
         if (visible) {
-            // Shown in an open (drawn) window: read, and what arrives meanwhile doesn't count.
-            this._sessions.Unread.Viewing(selected.Id);
+            // Shown in an open (drawn) window: read, and what arrives meanwhile doesn't count. Only a channel whose messages go
+            // to game chat, though: the pane shows none, so one seen only in windows stays counted until a window shows it.
+            var reads = UnreadCounter.MainWindowReads(this._sessions.MessagesOnlyInWindows, this._sessions.GameChatOff, selected.Id);
+            this._sessions.Unread.Viewing(reads ? selected.Id : null);
             this._pane.Draw(selected, session, snapshot);
         }
 

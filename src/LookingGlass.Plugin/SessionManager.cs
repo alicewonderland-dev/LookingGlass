@@ -105,8 +105,9 @@ public sealed class SessionManager : IDisposable {
     public bool MessagesOnlyInWindows => this._config.MessagesOnlyInWindows;
 
     /// <summary>
-    /// The channels a line arrived for while <see cref="MessagesOnlyInWindows"/> kept it out of game chat: the channel
-    /// windows open one for each that no window shows (see <see cref="Ui.ChannelWindows"/>). Safe from any thread.
+    /// The channels a line arrived for that was kept out of game chat, by <see cref="MessagesOnlyInWindows"/> or the channel's
+    /// own "Show in game chat": the channel windows open one for each that no window shows (see <see cref="Ui.ChannelWindows"/>).
+    /// Safe from any thread.
     /// </summary>
     public PendingWindows WantWindows { get; } = new();
 
@@ -489,8 +490,8 @@ public sealed class SessionManager : IDisposable {
 
     /// <summary>
     /// Keeps a message in its channel's history (for its windows), counts it as unread, and prints it in game chat unless
-    /// the channel is turned off there, or only windows show messages (then it asks for a window). The player's own
-    /// messages come back this way too, so they follow the same rule. From any thread.
+    /// the channel is turned off there, or only windows show messages; then it asks for a window instead (one opens if none
+    /// shows the channel). The player's own messages come back this way too, so they follow the same rule. From any thread.
     /// </summary>
     /// <param name="generation">The history's generation the session was started with (see <see cref="ChannelHistory.Generation"/>).</param>
     private void Deliver(IncomingMessage message, int? generation = null) {
@@ -507,7 +508,7 @@ public sealed class SessionManager : IDisposable {
         if (WindowsOnly.MessageToGameChat(windowsOnly, off, message.ChannelId)) {
             this._chat.Message(message, this.SlotOf(message.ChannelId), this.NicknameOf(message.ChannelId), this.ColourOf(message.ChannelId),
                 nameColour: this.NameColourOf(message.Sender));
-        } else if (windowsOnly) {
+        } else {
             this.WantWindows.Want(message.ChannelId);
         }
     }
@@ -515,8 +516,9 @@ public sealed class SessionManager : IDisposable {
     /// <summary>
     /// A channel's messages sent while the player was away (message catch-up): all of them in its history (for its windows),
     /// after a line saying how many, and counted as unread; in game chat, unless the channel is turned off there, a line
-    /// saying how many and the last <see cref="CatchUpChat.GameChatCap"/> of them, each with the time it was sent. While only
-    /// windows show messages, none of it goes to game chat, and the channel asks for a window. From any thread.
+    /// saying how many and the last <see cref="CatchUpChat.GameChatCap"/> of them, each with the time it was sent. Otherwise
+    /// (only windows show messages, or the channel is turned off game chat) none of it goes to game chat, and the channel asks
+    /// for a window. From any thread.
     /// </summary>
     private void DeliverCaughtUp(CaughtUpMessages caughtUp, int generation) {
         // As in Deliver: where it goes is read before checking it is still this session's.
@@ -532,7 +534,7 @@ public sealed class SessionManager : IDisposable {
         }
 
         if (!WindowsOnly.MessageToGameChat(windowsOnly, off, caughtUp.ChannelId)) {
-            if (windowsOnly && caughtUp.Messages.Count > 0) {
+            if (caughtUp.Messages.Count > 0) {
                 this.WantWindows.Want(caughtUp.ChannelId, caughtUp: true);
             }
 
@@ -764,8 +766,8 @@ public sealed class SessionManager : IDisposable {
         }
 
         // One about a channel shows in its windows too; in game chat unless the channel is turned off there, or only windows
-        // show messages (then it asks for a window), but a warning always. The list is read before the session is checked,
-        // as in Deliver.
+        // show messages (then it asks for a window, as a message would), but a warning always. The list is read before the
+        // session is checked, as in Deliver.
         var off = this._gameChatOff;
         var windowsOnly = this.MessagesOnlyInWindows;
         if (history != this.History.Generation) {
@@ -775,7 +777,7 @@ public sealed class SessionManager : IDisposable {
         this.History.AddNotice(notice, history);
         var snapshot = this.Snapshot;
         if (!WindowsOnly.NoticeToGameChat(windowsOnly, off, notice, snapshot)) {
-            if (WindowsOnly.NoticeWantsWindow(windowsOnly, notice, snapshot)) {
+            if (WindowsOnly.NoticeWantsWindow(windowsOnly, off, notice, snapshot)) {
                 this.WantWindows.Want(notice.ChannelId!);
             }
 

@@ -39,7 +39,7 @@ public sealed class Plugin : IDalamudPlugin {
         // One action runner for both windows, so the main window's status line shows what Settings started too.
         var actions = new UiActions(() => this._sessions.Snapshot.PendingChallenge?.Code, () => this._config.AdvancedMode);
         this._fonts = new UiFonts(pluginInterface.UiBuilder);
-        this._channelWindows = new ChannelWindows(this._windows, this._config, this._sessions, sender, chat);
+        this._channelWindows = new ChannelWindows(this._windows, this._config, this._sessions, sender);
         this._settingsWindow = new SettingsWindow(this._config, this._sessions, actions, () => localPrivacy.Ask(LocalPrivacyAsked.FromSettings));
         this._mainWindow = new MainWindow(this._config, this._sessions, actions, this._fonts, this._channelWindows, this._settingsWindow.Toggle, () => {
             this._settingsWindow.IsOpen = true;

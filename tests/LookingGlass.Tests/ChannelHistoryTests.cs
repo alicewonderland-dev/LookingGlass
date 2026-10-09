@@ -250,6 +250,27 @@ public sealed class ChannelHistoryTests {
     }
 
     [Fact]
+    public void TalkingInAChannelReadsWhatCameBefore() {
+        var history = new ChannelHistory();
+        history.Add(From(Bob, "aaa"));
+        history.Add(From(Bob, "aaa"));
+        Assert.Equal(2, history.UnreadAfter("aaa", 0));
+
+        // Your own message (from any window, or the chat box): what came before it is read, as in the channel list.
+        history.Add(From(Alice, "aaa", own: true));
+        Assert.Equal(0, history.UnreadAfter("aaa", 0));
+
+        history.AddNotice(new SessionNotice(NoticeLevel.Info, "Bob left.", "aaa"));
+        history.Add(From(Bob, "aaa"));
+        history.Add(From(Bob, "bbb"));
+        Assert.Equal(1, history.UnreadAfter("aaa", 0));
+        // Seen later than your own message: from there.
+        Assert.Equal(0, history.UnreadAfter("aaa", history.LastSeq("aaa")));
+        Assert.Equal(1, history.UnreadAfter("bbb", 0));
+        Assert.Equal(0, history.UnreadAfter("ccc", 0));
+    }
+
+    [Fact]
     public void ChannelsYouLeftAreForgottenOnlyAgainstTheCompleteList() {
         var history = new ChannelHistory();
         history.Add(From(Bob, "aaa"));
