@@ -322,7 +322,13 @@ IPv6 clients are counted per /64.
   its per-address limits. Behind a large shared NAT, raise
   `KeyLoginsPerHourPerIp` and `KeyLoginFailuresPerHourPerIp` together.
 - **Devices.** Each user keeps their 20 most recently used devices; older ones
-  are dropped as new ones sign in.
+  are dropped as new ones sign in. Players see their devices in Settings (when
+  each was added and last used, nothing else), are told when a new one signs
+  in, and can **Sign out everywhere else**, which also stops their key signing
+  in until they register again through the Lodestone (see
+  [design.md](design.md#other-computers-signing-in)). Listing them is limited
+  to 20 at once, then 1 every 6 seconds per user, and signing out to 3 at
+  once, then 1 a minute; not settings.
 - **Connections.** Per IP address (an IPv6 client per /56, the least most
   ISPs give a customer): 20 open at once, 60 new ones a minute, and 4 at once
   that haven't logged in (`ConnectionsPerIp`, `ConnectionsPerMinutePerIp`,
@@ -589,7 +595,8 @@ Before giving the address to people you don't know:
 The server logs to the journal (`journalctl -u lookingglass`). It never logs
 messages or channel names (it can't read them), device tokens, keys,
 registration codes or key login signatures. User IDs (Lodestone character
-IDs) appear in lines about registrations, key logins and channel changes,
+IDs) appear in lines about registrations, key logins, players signing out
+their other devices (with how many) and channel changes,
 and in the Information line for an invite refused by one of the invite
 limits ("Invite from user 1 to user 2 refused by InviteBurstPerPair", named
 as its setting, or `MaxPendingInvitesPerChannel`), which is logged at most
@@ -942,9 +949,18 @@ using `--ban`: the server running the old version doesn't read bans. Plugins
 from before bans keep working; a banned one shows the server's message as a
 failed connection.
 
-**Going back to an older version** works with a schema 10 database (an older
-server opens it, and ignores the two tables), but an older server doesn't
-read bans: everyone banned gets back in until the new version runs again.
+**From a server without device notices (schema 10).** The `users` table gains
+one column, `key_login_off` (0 for everyone); nothing else changes, and there
+is no new setting. It is set by a player's **Sign out everywhere else**, and
+cleared when they register again. Plugins from before keep working: they
+aren't told of new devices, and one that was signed out shows "Login not
+recognised".
+
+**Going back to an older version** works with a schema 11 database (an older
+server opens it, and ignores what it doesn't know), but an older server
+doesn't read bans (everyone banned gets back in until the new version runs
+again), nor `key_login_off` (the key of a player who signed out everywhere
+else can sign in with a key login again).
 
 ## Loading a development build of the plugin
 

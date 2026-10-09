@@ -119,6 +119,19 @@ shouldn't stutter, and `/xllog` shouldn't name anyone.
 
 - [ ] **The ChatTwo note when you start talking in a channel** ([sticky-channel](sticky-channel-checklist.md): step 28). Needs 0.2.10. Turn on **Verbose channel messages**. Switch ChatTwo's input to Party, type `/lgc1` → "Now talking in [sky]." in blue, followed once by a line explaining ChatTwo's "(Warning: …)", that typing still goes to [sky], and that a short command like `/p hi` goes to that game channel once. Typing `/lgc1` again shows only "Now talking in [sky].". ChatTwo's channel name reads "LookingGlass [sky] (Warning: Party)", and the info bar shows "LG [sky]". Needs: ChatTwo installed and on. You may need to be in a party for ChatTwo to switch to Party. This is also the setup for the group 2 sticky task.
 
+### Other computers signing in, needs the first release after 0.2.12
+
+Setup for all of these: one character A on a **test server**, and two installs
+of the plugin under the same Windows user (your usual one, and a second Dalamud
+profile with its own config folder), as the checklist explains. Log out on one
+install before logging in on the other.
+
+- [ ] **The list in Settings** ([device-notices](device-notices-checklist.md): step 1). Settings > Your identity shows **Signed-in computers** with one line, "This computer: added …, in use now", and **Sign out everywhere else...**. Hovering the label explains it in a sentence or two. Needs: nothing extra.
+- [ ] **A copy of the login isn't told** ([device-notices](device-notices-checklist.md): steps 2–3). Copy A's secrets file to install 2 and log in there → it connects with the copied login, no warning, one computer listed. Needs: install 2.
+- [ ] **Told at the next login** ([device-notices](device-notices-checklist.md): steps 4–8). On install 2, Forget account (`/lgdebug`) and register again → on install 1, at login, a light red line "Your LookingGlass character signed in from another computer on <time>. If that wasn't you, …", and two computers listed; not told again at the next login. Install 2, at its next login, is told about install 1 the same way. Needs: install 2, the Lodestone.
+- [ ] **Sign out everywhere else** ([device-notices](device-notices-checklist.md): steps 9–13). On install 2, the button asks first (plain words, mentions Reset my identity); confirming says "Signed out everywhere else (1 other computer)" and lists only this computer. Install 1 then shows **You were signed out from another computer** (label **Signed out**, no Retry now), even after a restart; advanced mode words it technically. Needs: install 2.
+- [ ] **Registering again lifts it, and clean up** ([device-notices](device-notices-checklist.md): steps 14–17). Install 1 registers again → works, channels as before; install 2 is then told of it. Optional: with 0.2.12, being signed out shows "Login not recognised". Finish with Reset my identity on install 1, and delete install 2's copy. Needs: install 2, the Lodestone.
+
 ---
 
 # Group 2: two players (or more)
@@ -243,6 +256,11 @@ internet connection**.
 ### Name colours: echo bot, needs 0.2.9
 
 - [ ] **Echo bot colour key** ([name-colours](name-colours-checklist.md): step 23, echo bot part). On a test server with the echo bot, give it a name colour → its key in `LookingGlass.json` ends in `@` and the server's address. Change only the case of the server address's host in Settings (or add a trailing `/`) → the echo bot keeps its colour. Needs: a test server running the echo bot.
+
+### Other computers signing in: server side, needs the first release after 0.2.12
+
+- [ ] **Upgrading the server** (see [server.md](../server.md#upgrading), "From a server without device notices"). Update the test server and restart → it starts on schema 11 with no warning, and players already registered connect as before. Needs: SSH.
+- [ ] **What the journal says** ([device-notices](device-notices-checklist.md): steps 10–11, server part). After the group 1 task "Sign out everywhere else", the journal has "User … signed out their other devices (1)" and, when install 1 connects, "Key login for … refused: the account signed out its other devices": user IDs and the address only, never a name. Needs: journal access, the times the tester reports.
 
 ### Custom colours: the decision
 

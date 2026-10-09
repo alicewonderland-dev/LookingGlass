@@ -349,7 +349,8 @@ the plugin signs in with its identity key:
 3. The plugin signs the challenge, its user ID and the server URL it connected
    to, with the account's current key.
 4. The server checks the signature and issues a new device token, which
-   replaces the refused one. Other devices keep theirs.
+   replaces the refused one. Other devices keep theirs, and are told (see
+   [Other computers signing in](#other-computers-signing-in)).
 
 A retired key can't key-login. Every answer that reaches the account check
 verifies one signature (unknown accounts against a key nobody holds), so the
@@ -394,6 +395,88 @@ itself once the right server is back. **Retry now** tries the token and the
 key at once. The message also says that if the character was re-verified on
 another computer and it wasn't the user, **Reset my identity** takes the
 channels back.
+
+### Other computers signing in
+
+Anyone with a copy of a player's secrets file holds their identity key, and
+key login gives them a login of their own, which reads every channel until
+the player resets their identity. Before this, nobody was told. Now (an MLS
+evaluation's finding, which the owner approved for before public release,
+2026-10-09) the player is, and can shut such a copy out. Capability
+`devices.v1`, so older plugins and servers are unaffected.
+
+**Being told.** Whenever the account gets a new device (a key login, or a
+registration through the Lodestone, recovery included), every other
+computer of the account is told, as a warning: "Your LookingGlass character
+signed in from another computer on <date and time>. If that wasn't you, use
+"Sign out everywhere else" in Settings and reset your identity." Advanced
+mode says it was a new login, made with the identity key or by registering
+again.
+
+- *Online:* the server sends `DeviceAdded` (when it was added, and its ID) to
+  the account's logged-in connection, if that agreed to the capability and
+  isn't the new device's own. Only one connection per character is logged in
+  at a time, so that is everyone there is to tell at that moment. (When the
+  other computer then logs in, it replaces this connection, as before.)
+- *Away:* at every login the plugin lists the account's devices
+  (`ListDevices`), and tells about each one it hasn't seen that isn't its own.
+  The IDs it has seen are kept in the secrets file (`KnownDevices`, at most
+  64). A registration deletes every device, so a computer that signs back in
+  with its key afterwards finds the registering one new.
+- *Never told:* about itself (its own key login after the server lost its
+  login, say), or about a new account's first device. A computer's first list
+  (a new computer, or the first login with this version) is taken as it is,
+  since it can't tell what is new in it: devices added before that show in
+  the list, but aren't announced.
+
+Why the device list rather than a flag the server keeps for each device: it
+needs no new state on the server, works the same for every way a device is
+added, and the list is wanted for Settings anyway. A device's ID is 8 bytes of
+a hash of its login's hash: it tells the account's devices apart and is no use
+for anything else. Comparing IDs, not times, means two logins in the same
+second are still told apart (the server keeps times in seconds).
+
+**The list.** Settings, under "Your identity", shows **Signed-in computers**:
+one short line each, "This computer: added 3 h ago, in use now" or "Another
+computer: added 9/10/2026 14:02, used 5 min ago" (local time, relative within
+a day). The server shows nothing it didn't already keep: when each device was
+added and last logged in. Nothing was added to the devices table (no
+addresses). The label's explanation (`DeviceWords.Explanation`) is a sentence
+or two kept for a "?" beside it; until Settings has those, it is the label's
+tooltip.
+
+**Sign out everywhere else.** A button under the list, after a confirmation
+(`SignOutOtherDevices`). In one transaction the server deletes every device of
+the account but the asker's, and turns key login off for the account
+(`users.key_login_off`, schema 11). This computer stays signed in. Turning key
+login off is what makes the button worth having: without it, a copy of the key
+would sign straight back in with a key login. So from then on:
+
+- any other computer's login is refused, and so is every key login (this
+  computer's too, should the server lose its login). One signed correctly is
+  told why (`Error.signed_out`;
+  only the key's holder learns it), and that computer says "You were signed
+  out from another computer (with "Sign out everywhere else"). To use
+  LookingGlass here again, register again through the Lodestone. If that
+  wasn't you, someone else has a copy of your LookingGlass files: use "Reset
+  my identity" in Settings instead, which takes your channels back."
+  An older plugin shows "Login not recognised";
+- registering through the Lodestone (with any keys) turns key login back on.
+  Registering again with the same key would let a copy of it back in, so if a
+  computer wasn't recognised, the player also resets their identity, which
+  retires the key. The confirmation says so;
+- there is no other connection to close: the only one logged in is the
+  asker's. Other computers find their login refused when they next connect.
+
+A refused key login of this kind doesn't count as a failure (it was signed
+correctly), as for a banned account. `ListDevices` and `SignOutOtherDevices`
+need a login, and have limits of their own (see [Abuse limits](#abuse-limits)).
+
+**What this doesn't cover.** A copy of the secrets file holds the login too.
+Someone using that login, not the key, isn't a new device, so nobody is told;
+and signing out everywhere else keeps it, since it is this computer's own.
+Reset my identity revokes it. A malicious server can hide devices and events,
+as it can hide anything (see [Known limitations](#known-limitations)).
 
 ## Server addresses and relay protection
 
@@ -523,7 +606,9 @@ Each character's secrets for one server address live in one file,
 - what the plugin knows about others and the channels: pinned keys, blocked
   users, the log positions it has verified, the newest channel names it has
   accepted, and the newest message times per sender (see
-  [Replay protection](#replay-protection)).
+  [Replay protection](#replay-protection));
+- the IDs of the account's devices it has seen (see
+  [Other computers signing in](#other-computers-signing-in)).
 
 **Bound to its address.** The file records the address it belongs to, and
 its name holds a 128-bit hash of it. The plugin refuses to use a file for any
@@ -1606,6 +1691,12 @@ again.
   after updating to this version, messages under a key from before the
   channel's last membership change before the update can't be dated, so they
   aren't caught up.
+- **A copy of a login isn't another computer.** A player is told when their
+  account gets a new login, but someone with a copy of their secrets file can
+  use the saved login in it instead of the key. That isn't a new device, so
+  nobody is told, and "Sign out everywhere else" keeps it (it is the asker's
+  own). Only "Reset my identity" revokes it. See
+  [Other computers signing in](#other-computers-signing-in).
 - **Shared addresses share limits.** Per-address limits (registrations, key
   login, connections) can't tell apart the people behind one address (a
   shared NAT, a mobile carrier's CGNAT, one IPv6 /64). Someone there can use
@@ -1686,6 +1777,12 @@ Some additions needed no new version:
   [Local chat (friends only)](#local-chat-friends-only)). A server agrees to it
   only with a client that offers it, and sends `LocalMessage` only to such a
   connection, so an older plugin never sees one; an older server never agrees.
+- Devices: the capability `devices.v1`, `ListDevices`, `SignOutOtherDevices`,
+  `Devices` and the `DeviceAdded` event, and `Error.signed_out` (see
+  [Other computers signing in](#other-computers-signing-in)). The server sends
+  `DeviceAdded` only to a connection that agreed, and a client only asks a
+  server that agreed. An older plugin reads `Error.signed_out` as any refused
+  key login.
 - Blocks: `ERROR_CODE_BLOCKED`, and `Error.block` (the operator's reason, when
   it ends, and whether it is on the address). An older plugin shows the
   server's message, which says it all, as a failed connection.
@@ -3442,8 +3539,8 @@ one transaction for every multi-step change.
   gives it the channel's key, unless nobody else holds it.
 - **Storage.** SQLite in WAL mode. Conditional updates (on epoch and rank)
   guard against races. The schema is upgraded in place at startup; the
-  current schema version is 10 (bans and flags; 9 brought stored messages for
-  catch-up).
+  current schema version is 11 (key login turned off by "Sign out everywhere
+  else"; 10 brought bans and flags, 9 stored messages for catch-up).
 - **Stored messages.** Kept as relayed, numbered per channel, swept at startup
   and every ten minutes (see [Message catch-up](#message-catch-up)).
 - **Memory.** Nothing kept per address, user or name grows without bound.
@@ -3486,6 +3583,8 @@ one transaction for every multi-step change.
 | Pages of stored messages | 200 messages or 96 KiB each; 100 pages per user at once, then 4 a second | A returning client asks once per channel; within the frame limit |
 | Local messages | 50 recipients each (0 to 200, 0 turns local chat off); 5 per user at once, then 1 a second; 120 to one user at once, by everyone together, then 1 a second, and 30 from one sender to one user, then 1 every 2 seconds (past either, and to a connection whose queue is half full, dropped); the message as large as a channel message | Crowds of friends stay cheap and within the frame limit; floods are stopped as in channels; operator settings |
 | Devices per user | 20 most recently used | Bounds stored logins |
+| Device lists per user | 20 at once, then 1 every 6 seconds | A plugin asks at each login, when told of a new device, and when Settings opens |
+| "Sign out everywhere else" per user | 3 at once, then 1 a minute | A button behind a confirmation |
 
 Channel creation, renames, disbands, identity lookups and heavy reads have
 their own per-user rate limits. The server doesn't know whom a user blocked
@@ -3976,6 +4075,13 @@ The owner's decisions, and why.
   can't be found in time (see [The code is bound too](#the-code-is-bound-too)).
 - **First deployment.** The first tester server runs as a systemd service on
   a Linux machine behind Tailscale Funnel; a cloud host comes later.
+- **Other computers signing in are told (2026-10-09).** An MLS evaluation
+  found that a copy of a player's secrets file signs in with the key, and
+  reads every channel, without the player being told. The owner approved
+  fixing that before public release: every other computer is told of a new
+  login, Settings lists them, and "Sign out everywhere else" shuts the others
+  out, key login included, until the character is registered again. See
+  [Other computers signing in](#other-computers-signing-in).
 - **Local chat looks up the friends near, and asks first (2026-10-08).** The
   server learning friends near the sender, those who don't use LookingGlass
   too, is accepted; the player is told what the server learns and accepts it
