@@ -76,6 +76,25 @@ public sealed record SessionSnapshot(
         ImmutableArray<ChannelView>.Empty, ImmutableArray<InviteView>.Empty,
         null, false, null, ImmutableArray<User>.Empty, false);
 
+    /// <summary>
+    /// The account's devices (logins) as last listed, oldest first, one of them this computer's (see "Other computers signing in"
+    /// in docs/design.md). Kept while disconnected; empty until first listed, and with a server that doesn't keep the list.
+    /// </summary>
+    public ImmutableArray<DeviceView> Devices { get; init; } = ImmutableArray<DeviceView>.Empty;
+
+    /// <summary>Logged in, on a server that lists the account's devices and signs them out (capability "devices.v1").</summary>
+    public bool DevicesAvailable { get; init; }
+
+    /// <summary>
+    /// With <see cref="LoginRejected"/>: the server refused the identity key because the account used "Sign out everywhere
+    /// else" (see <see cref="DeviceWords.SignedOutStatus"/>), and which computer did, as this one can tell; not because it
+    /// doesn't know the login or the key. <see cref="Client.SignedOutBy.None"/> otherwise.
+    /// </summary>
+    public SignedOutBy SignedOutBy { get; init; }
+
+    /// <summary>Whether <see cref="SignedOutBy"/> says the account signed out everywhere else.</summary>
+    public bool SignedOutElsewhere => this.SignedOutBy != SignedOutBy.None;
+
     /// <summary>The status in a mode's words. Never null where <see cref="StatusText"/> isn't: a missing plain text falls back to it.</summary>
     public string? StatusFor(bool advanced) => advanced ? this.StatusText : this.PlainStatusText ?? this.StatusText;
 
@@ -212,6 +231,12 @@ public sealed record InviteView(
     bool InviterKeyChanged,
     string? InviterFingerprint);
 
+/// <summary>One of the account's devices (each computer signed in has a login of its own), as the server lists them.</summary>
+/// <param name="Added">When the server gave it its login (a registration, or a key login).</param>
+/// <param name="LastUsed">When it last logged in.</param>
+/// <param name="ThisDevice">It is this computer's login.</param>
+public sealed record DeviceView(DateTimeOffset Added, DateTimeOffset LastUsed, bool ThisDevice);
+
 /// <param name="Text">The message as plain text, each link as its "[name]".</param>
 public sealed record IncomingMessage(
     string ChannelId,
@@ -308,6 +333,18 @@ public sealed class ServerErrorException(ErrorCode code, string message, string?
 
     /// <summary>With <see cref="ErrorCode.Blocked"/>: the operator's block, as the server describes it.</summary>
     public Block? Block { get; init; }
+
+    /// <summary>A refused key login: another computer used "Sign out everywhere else" (see <see cref="Protocol.Error.SignedOut"/>).</summary>
+    public bool SignedOut { get; init; }
+
+    /// <summary>With <see cref="SignedOut"/>: the ID of the device that did, as the server says (empty if it doesn't).</summary>
+    public byte[] SignedOutBy { get; init; } = [];
+
+    /// <summary>With <see cref="SignedOut"/>: when that device was added, and when it did it (Unix seconds; 0 if not said).</summary>
+    public long SignedOutByAddedUnix { get; init; }
+
+    /// <inheritdoc cref="SignedOutByAddedUnix"/>
+    public long SignedOutAtUnix { get; init; }
 }
 
 /// <summary>The connection closed before the request was answered.</summary>
@@ -414,6 +451,24 @@ public sealed class ClientSessionOptions {
     /// the server never sends local messages to.
     /// </summary>
     internal bool OfferLocalChat { get; init; } = true;
+
+    /// <summary>
+    /// Offer the account's devices (the "devices.v1" capability) in Hello. Only tests turn it off, to play a plugin from before
+    /// it, which the server never tells of a new device.
+    /// </summary>
+    internal bool OfferDevices { get; init; } = true;
+
+    /// <summary>
+    /// After telling the player about new computers, how long to hold back the next such notice (those in between are told
+    /// together after it), so a stream of them is a notice now and then, not a flood. Only tests change it.
+    /// </summary>
+    internal TimeSpan DeviceNoticeInterval { get; init; } = TimeSpan.FromMinutes(1);
+
+    /// <summary>
+    /// The least time between lists of devices fetched in the background (at login, when told of a new device, when Settings
+    /// opens): within the server's limit, so the client never runs into it by itself. Only tests change it.
+    /// </summary>
+    internal TimeSpan DeviceListInterval { get; init; } = TimeSpan.FromSeconds(6);
 
     /// <summary>
     /// Make a channel's next key once its newest is older than <see cref="ClientSession.EpochMaxAge"/> (see "Keys have a

@@ -81,6 +81,12 @@ public enum NoticeKind {
     IdentityRetired,
     /// <summary>Marking someone verified didn't work: the keys held for them changed since they were shown.</summary>
     VerifiedKeyChanged,
+    /// <summary>The account got a new login on another computer (a key login, or registering again through the Lodestone).</summary>
+    SignedInElsewhere,
+    /// <summary>Another computer used "Sign out everywhere else": this one's login and key login are refused.</summary>
+    SignedOutElsewhere,
+    /// <summary>This computer's own login was used elsewhere since it last logged in (a copy of it may be in use).</summary>
+    LoginUsedElsewhere,
 
     // ---- Servers
     /// <summary>The server lists its addresses, without the one this client uses.</summary>

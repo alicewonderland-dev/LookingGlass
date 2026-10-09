@@ -65,6 +65,8 @@ public sealed class SettingsWindow : Window {
         // Look again: files may have changed since.
         this._backupCheck = null;
         this._logSize = null;
+        // And the computers signed in, with when each was last used.
+        this._sessions.Session?.RefreshDevicesSoon();
     }
 
     public override void OnClose() {
@@ -594,6 +596,7 @@ public sealed class SettingsWindow : Window {
         }
 
         var player = this._sessions.Player;
+        this.DrawDevices(player, advanced);
         ImGui.BeginDisabled(this._actions.Busy || player == null);
         if (ImGui.Button(SettingsWords.ResetIdentity + "...") && player != null) {
             var serverUrl = this._config.ServerUrl;
@@ -612,6 +615,36 @@ public sealed class SettingsWindow : Window {
         // Outside the disabled part: it explains the button even while it can't be used.
         this.Help(SettingHelp.ResetIdentity);
         this.DrawBackup(player, advanced);
+    }
+
+    /// <summary>
+    /// The computers signed in to this character on this server, one short line each, and "Sign out everywhere else" (see
+    /// DeviceWords and "Other computers signing in" in docs/design.md). What the list is, is in its "?" bubble
+    /// (<see cref="DeviceWords.Explanation"/>).
+    /// </summary>
+    private void DrawDevices(PlayerInfo? player, bool advanced) {
+        this.Label(DeviceWords.Label, SettingHelp.SignedInComputers);
+        var session = this._sessions.Session;
+        var snapshot = this._sessions.Snapshot;
+        if (session == null || !snapshot.DevicesAvailable) {
+            ImGui.TextColored(Widgets.Muted, DeviceWords.NotAvailable.For(advanced));
+            ImGui.Spacing();
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        foreach (var device in snapshot.Devices) {
+            Widgets.IconText(FontAwesomeIcon.Desktop, DeviceWords.Line(device, now));
+        }
+
+        ImGui.BeginDisabled(this._actions.Busy || player == null);
+        if (ImGui.Button(DeviceWords.SignOutButton + "...") && player != null) {
+            this._modals.Confirm(DeviceWords.SignOutButton, DeviceWords.ConfirmText(player.Name, this._config.ServerUrl).For(advanced), DeviceWords.SignOutButton,
+                () => this._actions.Run("Signing out everywhere else", () => session.SignOutOtherDevicesAsync()));
+        }
+
+        ImGui.EndDisabled();
+        ImGui.Spacing();
     }
 
     /// <summary>
@@ -671,7 +704,7 @@ public sealed class SettingsWindow : Window {
 
     /// <param name="loggedIn">Connected and logged in now, so the server can be told to retire the old key straight away.</param>
     /// <param name="advanced">In advanced mode's words; otherwise simple mode's, with nothing about keys.</param>
-    private static string ResetText(string name, string serverUrl, bool loggedIn, bool advanced) {
+    internal static string ResetText(string name, string serverUrl, bool loggedIn, bool advanced) {
         var text = new StringBuilder();
         if (!advanced) {
             text.Append($"This sets up LookingGlass afresh for {name} on {serverUrl}. Only do this if its files were lost, or someone may ")

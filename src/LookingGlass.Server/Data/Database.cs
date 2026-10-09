@@ -52,6 +52,19 @@ public sealed record MemberRow(UserRow User, Rank Rank, bool Forgotten = false, 
 public sealed record InviteRow(string ChannelId, UserRow Invitee, UserRow Inviter, SealedBox SealedName, byte[] Signature, long CreatedUnix, MembershipEntry? Entry,
     bool Forgotten = false);
 
+/// <summary>One of a user's devices (logins). Times are Unix seconds.</summary>
+/// <param name="TokenHash">The SHA-256 of its device token, as stored.</param>
+/// <param name="DeviceId">8 random bytes it was given when added, kept when its login is replaced: what clients know it by.</param>
+/// <param name="AddedAt">When a registration or a key login gave it out.</param>
+/// <param name="LastUsedAt">When it last logged in.</param>
+public sealed record DeviceRow(byte[] TokenHash, byte[] DeviceId, long AddedAt, long LastUsedAt);
+
+/// <summary>A user's "Sign out everywhere else" in force (see <see cref="Database.SignedOut"/>). Times are Unix seconds.</summary>
+/// <param name="DeviceId">The device that did it (empty if not known).</param>
+/// <param name="DeviceAddedAt">When that device was added (0 if not known).</param>
+/// <param name="At">When it did it (0 if not known).</param>
+public sealed record SignOutRow(byte[] DeviceId, long DeviceAddedAt, long At);
+
 /// <summary>A page of a channel's stored messages (see <see cref="Database.ReadStoredMessages"/>).</summary>
 /// <param name="Messages">Oldest first, each with its <see cref="ChatMessage.ServerId"/>.</param>
 /// <param name="More">More follow the last one.</param>
@@ -129,7 +142,8 @@ public sealed class UnsupportedDatabaseException(string message) : Exception(mes
 /// Methods are synchronous (SQLite is in-process) and short.
 /// </summary>
 public sealed class Database {
-    private const int SchemaVersion = 10;
+    /// <summary>The schema this version makes, and upgrades older databases to.</summary>
+    internal const int SchemaVersion = 11;
     private const int KeptEpochs = 4;
 
     /// <summary>
@@ -246,6 +260,10 @@ public sealed class Database {
 
         var current = Convert.ToInt32(Scalar(connection, null, "SELECT COALESCE(MAX(version), 0) FROM schema_version;"));
         if (current >= SchemaVersion) {
+            // An earlier build of schema 11 (a development or test server's) lacked some of its columns: added now.
+            using var heal = connection.BeginTransaction();
+            AddSchema11Columns(connection, heal);
+            heal.Commit();
             return;
         }
 
@@ -467,6 +485,11 @@ public sealed class Database {
                 """);
         }
 
+        if (current < 11) {
+            AddSchema11Columns(connection, tx);
+            Execute(connection, tx, "INSERT INTO schema_version (version) VALUES (11);");
+        }
+
         tx.Commit();
         this.ReportSharedKeys(traces);
     }
@@ -521,6 +544,39 @@ public sealed class Database {
                     "registered the other's public key before registrations were signed. The retirement now counts only for the account it was recorded for.",
                     ShortKeyId(key), retiredFor, accounts);
             }
+        }
+    }
+
+    /// <summary>
+    /// Schema 11's columns, each added if it isn't there: on upgrading to 11, and on every start at 11 or later, so a database
+    /// made by an earlier build of 11 (on a development or test server) that lacks some gains them. Nothing else changes.
+    /// </summary>
+    private static void AddSchema11Columns(SqliteConnection connection, SqliteTransaction tx) {
+        // "Sign out everywhere else": the account's identity key may not sign in (key login) until the character is registered
+        // again through the Lodestone, so a copy of the key can't simply sign back in; which device did it (its ID), when that
+        // device was added, and when it did it. Off for everyone to begin with.
+        (string Table, string Column, string Definition)[] columns = [
+            ("users", "key_login_off", "INTEGER NOT NULL DEFAULT 0"),
+            ("users", "signed_out_by", "BLOB"),
+            ("users", "signed_out_by_added", "INTEGER NOT NULL DEFAULT 0"),
+            ("users", "signed_out_at", "INTEGER NOT NULL DEFAULT 0"),
+            // The nonce a login's last use was made with (Authenticate.login_nonce), so its client can tell its own logins
+            // whose answers were lost from a copy of it used elsewhere.
+            ("devices", "last_login_nonce", "BLOB NOT NULL DEFAULT x''"),
+        ];
+        foreach (var (table, column, definition) in columns) {
+            if (!HasColumn(connection, tx, table, column)) {
+                Execute(connection, tx, $"ALTER TABLE {table} ADD COLUMN {column} {definition};");
+            }
+        }
+
+        // Each device's random ID, kept when its login is replaced, so clients can tell which devices they have seen. Devices
+        // keep nothing else but when they were added and last used.
+        if (!HasColumn(connection, tx, "devices", "device_id")) {
+            Execute(connection, tx, """
+                ALTER TABLE devices ADD COLUMN device_id BLOB NOT NULL DEFAULT x'';
+                UPDATE devices SET device_id = randomblob(8);
+                """);
         }
     }
 
@@ -700,6 +756,10 @@ public sealed class Database {
             ("$debug", isDebug ? 1 : 0), ("$now", now));
 
         Execute(connection, tx, "DELETE FROM devices WHERE user_id = $id;", ("$id", userId));
+        // The Lodestone (or, for a debug account, anyone) vouched for this registration: whatever "Sign out everywhere else"
+        // turned off, its key may sign in again.
+        Execute(connection, tx, "UPDATE users SET key_login_off = 0, signed_out_by = NULL, signed_out_by_added = 0, signed_out_at = 0 WHERE user_id = $id;",
+            ("$id", userId));
 
         if (keysChanged) {
             // The new keys can't open anything sealed to the old ones; a rekey gives them the channels' keys.
@@ -765,7 +825,7 @@ public sealed class Database {
         using var connection = this.Open();
         using var tx = connection.BeginTransaction();
         var now = Now();
-        Execute(connection, tx, "INSERT INTO devices (token_hash, user_id, created_at, last_used_at) VALUES ($hash, $id, $now, $now);",
+        Execute(connection, tx, "INSERT INTO devices (token_hash, user_id, created_at, last_used_at, device_id) VALUES ($hash, $id, $now, $now, randomblob(8));",
             ("$hash", tokenHash), ("$id", userId), ("$now", now));
         PruneDevices(connection, tx, userId);
         tx.Commit();
@@ -773,19 +833,20 @@ public sealed class Database {
 
     /// <summary>
     /// Adds a device for a key login (or a registration), but only while the user is still registered with the key that
-    /// signed it (or was registered), and that key isn't retired for them. In one statement, so a registration with new
-    /// keys or a retirement (each of which revokes every device) can't land between the check and the insert and leave
-    /// the old key with a working login.
+    /// signed it (or was registered), that key isn't retired for them, and key login isn't turned off for them ("Sign out
+    /// everywhere else"; a registration turns it on again first). In one statement, so a registration with new keys, a
+    /// retirement (each of which revokes every device) or signing out everywhere else can't land between the check and the
+    /// insert and leave the key with a working login.
     /// </summary>
-    /// <returns>False if the user's keys changed or were retired (or they're gone) since <paramref name="signingKey"/> was checked.</returns>
+    /// <returns>False if the user's keys changed or were retired (or they're gone) since <paramref name="signingKey"/> was checked, or their key login was turned off.</returns>
     public bool AddDeviceForKey(long userId, byte[] signingKey, uint keyVersion, byte[] tokenHash) {
         using var connection = this.Open();
         using var tx = connection.BeginTransaction();
         var now = Now();
         var added = Execute(connection, tx, """
-            INSERT INTO devices (token_hash, user_id, created_at, last_used_at)
-            SELECT $hash, user_id, $now, $now FROM users
-            WHERE user_id = $id AND signing_key = $key AND key_version = $version
+            INSERT INTO devices (token_hash, user_id, created_at, last_used_at, device_id)
+            SELECT $hash, user_id, $now, $now, randomblob(8) FROM users
+            WHERE user_id = $id AND signing_key = $key AND key_version = $version AND key_login_off = 0
               AND NOT EXISTS (SELECT 1 FROM retired_keys WHERE retired_keys.user_id = users.user_id AND retired_keys.signing_key = users.signing_key);
             """,
             ("$hash", tokenHash), ("$id", userId), ("$key", signingKey), ("$version", (long) keyVersion), ("$now", now)) == 1;
@@ -869,15 +930,116 @@ public sealed class Database {
             ("$when", when.ToUnixTimeSeconds()), ("$hash", tokenHash));
     }
 
-    public long? FindDevice(byte[] tokenHash) {
+    public long? FindDevice(byte[] tokenHash) => this.FindDevice(tokenHash, [], out _, out _, out _);
+
+    /// <summary>
+    /// The user a login (device) belongs to, recording that it is used now, with the nonce the client sent for this use.
+    /// Null if there is no such device. Call only once the login is accepted: a refused one isn't a use of it.
+    /// </summary>
+    /// <param name="loginNonce">What the client sent with this use (Authenticate.login_nonce); empty if nothing.</param>
+    /// <param name="previousUsedAt">When it was used before (its last use until now), in Unix seconds.</param>
+    /// <param name="previousNonce">The nonce that use was made with.</param>
+    /// <param name="usedAt">The time recorded for this use.</param>
+    public long? FindDevice(byte[] tokenHash, byte[] loginNonce, out long previousUsedAt, out byte[] previousNonce, out long usedAt) {
         using var connection = this.Open();
-        var result = Scalar(connection, null, "SELECT user_id FROM devices WHERE token_hash = $hash;", ("$hash", tokenHash));
-        if (result == null) {
+        using var tx = connection.BeginTransaction();
+        var found = Query(connection, tx, "SELECT user_id, last_used_at, last_login_nonce FROM devices WHERE token_hash = $hash;",
+                reader => ((long UserId, long LastUsed, byte[] Nonce)?) (reader.GetInt64(0), reader.GetInt64(1), (byte[]) reader.GetValue(2)), ("$hash", tokenHash))
+            .FirstOrDefault();
+        previousUsedAt = 0;
+        previousNonce = [];
+        usedAt = 0;
+        if (found is not { } device) {
             return null;
         }
 
-        Execute(connection, null, "UPDATE devices SET last_used_at = $now WHERE token_hash = $hash;", ("$now", Now()), ("$hash", tokenHash));
-        return Convert.ToInt64(result);
+        usedAt = Now();
+        previousUsedAt = device.LastUsed;
+        previousNonce = device.Nonce;
+        Execute(connection, tx, "UPDATE devices SET last_used_at = $now, last_login_nonce = $nonce WHERE token_hash = $hash;",
+            ("$now", usedAt), ("$nonce", loginNonce), ("$hash", tokenHash));
+        tx.Commit();
+        return device.UserId;
+    }
+
+    /// <summary>The user a login (device) belongs to, without recording a use. Null if there is no such device.</summary>
+    public long? DeviceOwner(byte[] tokenHash) {
+        using var connection = this.Open();
+        return Scalar(connection, null, "SELECT user_id FROM devices WHERE token_hash = $hash;", ("$hash", tokenHash)) is { } owner ? Convert.ToInt64(owner) : null;
+    }
+
+    /// <summary>A user's devices, oldest first (as added).</summary>
+    public List<DeviceRow> GetDevices(long userId) {
+        using var connection = this.Open();
+        // An older server (one went back to for a while) adds devices without an ID: they get one now.
+        Execute(connection, null, "UPDATE devices SET device_id = randomblob(8) WHERE user_id = $id AND length(device_id) = 0;", ("$id", userId));
+        return Query(connection, null,
+            "SELECT token_hash, device_id, created_at, last_used_at FROM devices WHERE user_id = $id ORDER BY created_at, rowid;",
+            reader => new DeviceRow((byte[]) reader.GetValue(0), (byte[]) reader.GetValue(1), reader.GetInt64(2), reader.GetInt64(3)), ("$id", userId));
+    }
+
+    /// <summary>
+    /// "Sign out everywhere else", in one transaction: the device <paramref name="keepTokenHash"/> gets the login
+    /// <paramref name="newTokenHash"/> (keeping its ID and when it was added and used), every other device of the user is
+    /// deleted, and key login is turned off for them (see <see cref="AddDeviceForKey"/>), noting that device as the one that
+    /// did it, until they register again (see <see cref="RegisterUser"/>) or the operator turns it on again
+    /// (<see cref="AllowKeyLogin"/>). Only while that device is still theirs: one revoked meanwhile (a registration, a
+    /// retirement, or this from another device) signs nobody out.
+    /// </summary>
+    /// <returns>How many devices it deleted; null if <paramref name="keepTokenHash"/> isn't one of the user's devices (nothing changed).</returns>
+    public int? SignOutOtherDevices(long userId, byte[] keepTokenHash, byte[] newTokenHash) {
+        using var connection = this.Open();
+        using var tx = connection.BeginTransaction();
+        var device = Query(connection, tx, "SELECT device_id, created_at FROM devices WHERE user_id = $id AND token_hash = $hash;",
+            reader => ((byte[] Id, long AddedAt)?) ((byte[]) reader.GetValue(0), reader.GetInt64(1)), ("$id", userId), ("$hash", keepTokenHash)).FirstOrDefault();
+        if (device is not { } asker) {
+            return null;
+        }
+
+        var deleted = Execute(connection, tx, "DELETE FROM devices WHERE user_id = $id AND token_hash <> $hash;", ("$id", userId), ("$hash", keepTokenHash));
+        Execute(connection, tx, "UPDATE devices SET token_hash = $new WHERE token_hash = $hash;", ("$new", newTokenHash), ("$hash", keepTokenHash));
+        Execute(connection, tx,
+            "UPDATE users SET key_login_off = 1, signed_out_by = $device, signed_out_by_added = $added, signed_out_at = $now WHERE user_id = $id;",
+            ("$id", userId), ("$device", asker.Id), ("$added", asker.AddedAt), ("$now", Now()));
+        tx.Commit();
+        return deleted;
+    }
+
+    /// <summary>
+    /// While the user's key login is off (see <see cref="SignOutOtherDevices"/>): the ID of the device that turned it off
+    /// (empty if not known), when that device was added, and when it did it (0 if not known). Null while it is on.
+    /// </summary>
+    public SignOutRow? SignedOut(long userId) {
+        using var connection = this.Open();
+        return Query(connection, null, "SELECT key_login_off, signed_out_by, signed_out_by_added, signed_out_at FROM users WHERE user_id = $id;",
+                reader => reader.GetInt64(0) == 0
+                    ? null
+                    : new SignOutRow(reader.IsDBNull(1) ? [] : (byte[]) reader.GetValue(1), reader.GetInt64(2), reader.GetInt64(3)), ("$id", userId))
+            .FirstOrDefault();
+    }
+
+    /// <summary>Whether the user signed out everywhere else since they last registered: their key can't sign in (see <see cref="SignOutOtherDevices"/>).</summary>
+    public bool IsKeyLoginOff(long userId) {
+        using var connection = this.Open();
+        return Convert.ToInt64(Scalar(connection, null, "SELECT COALESCE(MAX(key_login_off), 0) FROM users WHERE user_id = $id;", ("$id", userId))) != 0;
+    }
+
+    /// <summary>
+    /// While the user's key login is off (see <see cref="SignOutOtherDevices"/>), the ID of the device that turned it off (empty
+    /// if not known); null while it is on.
+    /// </summary>
+    public byte[]? SignedOutBy(long userId) => this.SignedOut(userId)?.DeviceId;
+
+    /// <summary>
+    /// The operator's <c>--allow-key-login</c>: turns key login on again for a user whose "Sign out everywhere else" turned it
+    /// off, as registering again would (but without revoking any login).
+    /// </summary>
+    /// <returns>Whether it was off.</returns>
+    public bool AllowKeyLogin(long userId) {
+        using var connection = this.Open();
+        return Execute(connection, null,
+            "UPDATE users SET key_login_off = 0, signed_out_by = NULL, signed_out_by_added = 0, signed_out_at = 0 WHERE user_id = $id AND key_login_off <> 0;",
+            ("$id", userId)) == 1;
     }
 
     // ================================================================ channels

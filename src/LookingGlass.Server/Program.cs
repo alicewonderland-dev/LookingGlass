@@ -25,14 +25,15 @@ string DatabasePath(ServerOptions options) =>
     Path.Combine(Path.GetFullPath(options.DataDirectory, builder.Environment.ContentRootPath), "lookingglass.db");
 
 // "--backup <file or folder> [--keep N]": an online backup of the configured database, and no server (nothing listens).
-// "--ban <whom> [--days N] [--reason "..."]", "--unban <whom>" and "--bans": the operator's bans, likewise (see BanCommand).
+// "--ban <whom> [--days N] [--reason "..."]", "--unban <whom>" and "--bans": the operator's bans, likewise (see BanCommand);
+// and "--allow-key-login <whom>", undoing a player's "Sign out everywhere else" for their key.
 BackupCommand.Request? backup;
 BanCommand.Request? banning;
 try {
     backup = BackupCommand.Parse(args);
     banning = BanCommand.Parse(args);
     if (backup != null && banning != null) {
-        throw new ArgumentException("Use --backup on its own, not with --ban, --unban or --bans.");
+        throw new ArgumentException("Use --backup on its own, not with --ban, --unban, --bans or --allow-key-login.");
     }
 } catch (ArgumentException ex) {
     Console.Error.WriteLine(ex.Message);

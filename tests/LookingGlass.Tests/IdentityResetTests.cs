@@ -408,11 +408,13 @@ public sealed class IdentityResetTests : IAsyncLifetime {
         try {
             // The first connection was replaced by the second's login meanwhile, so its answer may never come.
             await first.SendAsync(Retire(url, RetireIdentityProof.Sign(keys, userId, token, url)));
-        } catch (Exception ex) when (ex is InvalidOperationException or System.Net.WebSockets.WebSocketException or OperationCanceledException) {
+        } catch (Exception ex) when (ex is InvalidOperationException or System.Net.WebSockets.WebSocketException or OperationCanceledException or IOException) {
         }
 
         Assert.Null(this._server.Handler.BeforeIdentityRetiredForTests);
-        Assert.True(this._server.Database.IsKeyRetired(userId, keys.SigningPublicKey));
+        // The first connection is closed as soon as the second logs in (once what was queued for it is sent), which can be
+        // before the retirement it asked for is done.
+        await WaitFor(() => this._server.Database.IsKeyRetired(userId, keys.SigningPublicKey) ? new object() : null);
         Assert.Equal(0, this._server.Database.CountDevices(userId));
         await WaitFor(() => this._server.Registry.IsOnline(userId) ? null : new object());
         await Assert.ThrowsAnyAsync<Exception>(() => second.SendAsync(new ClientFrame { Ping = new Ping() }));

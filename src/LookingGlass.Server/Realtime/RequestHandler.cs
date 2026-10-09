@@ -30,6 +30,12 @@ public sealed class RequestException(ErrorCode code, string message) : Exception
 
     /// <summary>With <see cref="ErrorCode.Blocked"/>: the operator's block, for the client to say why.</summary>
     public Block? Block { get; init; }
+
+    /// <summary>A key login signed correctly, refused because the account signed out everywhere else (see <see cref="Protocol.Error.SignedOut"/>).</summary>
+    public bool SignedOut { get; init; }
+
+    /// <summary>With <see cref="SignedOut"/>: which device signed out everywhere else, and when (see <see cref="Protocol.Error.SignedOutBy"/>).</summary>
+    public SignOutRow? SignedOutBy { get; init; }
 }
 
 /// <summary>
@@ -70,6 +76,11 @@ public sealed class RequestHandler(
 
     // Said to anyone asking, before looking at the account, on a server with key login off.
     private const string KeyLoginUnavailable = "Signing in with the identity key isn't available on this server.";
+
+    // A key login signed correctly by the account's current key, after "Sign out everywhere else": only the key's holder reads it.
+    private const string KeyLoginSignedOut =
+        "This character used \"Sign out everywhere else\" on another computer, so its identity key can't sign in here until the character is " +
+        "registered again through the Lodestone.";
 
     // A plugin too old to register here: one that doesn't sign registrations, or can't check the Lodestone code it shows.
     private const string UpdateToRegister = "This server needs a newer version of LookingGlass to register: please update the plugin, then register again.";
@@ -176,6 +187,10 @@ public sealed class RequestHandler(
     // A budget of its own for pages of stored messages (message catch-up), each up to MaxStoredMessageBytesPerPage: a client
     // coming back asks once per channel (more for channels that had a lot), so the burst covers a full channel list.
     private readonly UserRateLimits _storedMessageReads = new(perSecond: 4, burst: 100, time);
+    // The account's devices: a plugin asks at each login, when told of a new one, and when Settings opens.
+    private readonly UserRateLimits _deviceLists = new(perSecond: 1.0 / 6, burst: 20, time);
+    // "Sign out everywhere else": a button behind a confirmation, so a few at once is plenty (each also needs a list's nonce).
+    private readonly UserRateLimits _signOuts = new(perSecond: 1.0 / 60, burst: 5, time);
 
     // A message's number and its relaying happen under its channel's lock (one of these, by the channel's ID), so every
     // member is sent a channel's messages in the order of their numbers: a client that saw one has seen every earlier one it
@@ -218,6 +233,12 @@ public sealed class RequestHandler(
     /// of the account log in meanwhile.
     /// </summary>
     internal Action? BeforeIdentityRetiredForTests { get; set; }
+
+    /// <summary>
+    /// Runs once, after a "Sign out everywhere else" has been checked and before it is stored, so tests can have another
+    /// device of the account log in meanwhile, its login still good.
+    /// </summary>
+    internal Action? BeforeSignOutCommittedForTests { get; set; }
 
     /// <summary>
     /// Plays a server from before key recovery: registering new keys leaves the account's places under the keys they have
@@ -268,6 +289,8 @@ public sealed class RequestHandler(
                 ClientFrame.BodyOneofCase.SendMessage => this.SendMessage(connection, frame.SendMessage),
                 ClientFrame.BodyOneofCase.FetchMessages => this.FetchMessages(connection, frame.FetchMessages),
                 ClientFrame.BodyOneofCase.SendLocalMessage => this.SendLocalMessage(connection, frame.SendLocalMessage),
+                ClientFrame.BodyOneofCase.ListDevices => this.ListDevices(connection),
+                ClientFrame.BodyOneofCase.SignOutOtherDevices => this.SignOutOtherDevices(connection, frame.SignOutOtherDevices),
                 _ => throw new RequestException(ErrorCode.InvalidRequest, "Unknown request."),
             };
         } catch (RequestException ex) {
@@ -278,6 +301,12 @@ public sealed class RequestHandler(
 
             var error = Error(ex.Code, ex.Message);
             error.Error.Block = ex.Block;
+            error.Error.SignedOut = ex.SignedOut;
+            if (ex.SignedOutBy is { } by) {
+                error.Error.SignedOutBy = ByteString.CopyFrom(by.DeviceId);
+                error.Error.SignedOutByAddedUnix = by.DeviceAddedAt;
+                error.Error.SignedOutAtUnix = by.At;
+            }
             return error;
         } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
             throw;
@@ -396,9 +425,12 @@ public sealed class RequestHandler(
         };
         welcome.Capabilities.AddRange(hello.Capabilities.Where(capability => capability == ProtocolInfo.Capabilities.Chat
                                                                              || (capability == ProtocolInfo.Capabilities.History && options.Value.Messages.Enabled)
-                                                                             || (capability == ProtocolInfo.Capabilities.Local && this.Limits.MaxLocalRecipients > 0)).Distinct());
+                                                                             || (capability == ProtocolInfo.Capabilities.Local && this.Limits.MaxLocalRecipients > 0)
+                                                                             || capability == ProtocolInfo.Capabilities.Devices).Distinct());
         // Local messages go only to connections that agreed, so an older plugin never sees one.
         connection.LocalChatAgreed = welcome.Capabilities.Contains(ProtocolInfo.Capabilities.Local);
+        // And DeviceAdded likewise.
+        connection.DevicesAgreed = welcome.Capabilities.Contains(ProtocolInfo.Capabilities.Devices);
         // The operator's own addresses, which clients moving to one of them trust because this server, at the address
         // they already use, lists it. Never the Host-header fallback: that's whatever the connecting side said.
         welcome.PublicUrls.AddRange(this._advertisedUrls);
@@ -687,6 +719,9 @@ public sealed class RequestHandler(
 
         logger.LogInformation("Registered {User} ({Kind}); {Places} places moved to the keys registered", user.UserId, pending.IsDebug ? "debug" : "verified",
             registration.Recovered.Count);
+        // Every other device was revoked, and the account's connection dropped, just before: normally nobody is left to tell
+        // now, and the others find this one in their list when they next sign in (with the key, if it is still the account's).
+        this.TellOtherDevices(user.UserId, HashToken(token));
         return new Response {
             RegistrationComplete = new RegistrationComplete { DeviceToken = token, User = user.ToProto(), PlacesRestored = (uint) registration.Recovered.Count },
         };
@@ -772,7 +807,8 @@ public sealed class RequestHandler(
         }
 
         var tokenHash = string.IsNullOrEmpty(request.DeviceToken) ? null : HashToken(request.DeviceToken);
-        var userId = tokenHash == null ? null : db.FindDevice(tokenHash);
+        // Not a use of the login yet: that is recorded once every check below has passed (a refused login isn't one).
+        var userId = tokenHash == null ? null : db.DeviceOwner(tokenHash);
         var user = userId == null ? null : db.GetUser(userId.Value);
         // A retired key has no devices (retiring deletes them, and none are added for it); checked here too, so that holds
         // whatever adds a device.
@@ -798,7 +834,12 @@ public sealed class RequestHandler(
         // A retirement or registration (each revokes every device, then disconnects the account) that landed after the
         // checks above, and disconnected the account before this connection was online, would leave it logged in with a
         // deleted login. Checked again now that it is online: anything revoking the login from here on disconnects it.
-        var current = db.FindDevice(tokenHash!) == user.UserId ? db.GetUser(user.UserId) : null;
+        // And now, with everything checked, the use is recorded, with the client's nonce for it: the client compares when the
+        // login was used before, and with which nonce, with its own last login (see AuthenticateOk.previous_used_unix).
+        var nonce = request.LoginNonce.Length is > 0 and <= MaxLoginNonceBytes ? request.LoginNonce.ToByteArray() : [];
+        var current = db.FindDevice(tokenHash!, nonce, out var previousUse, out var previousNonce, out var thisUse) == user.UserId
+            ? db.GetUser(user.UserId)
+            : null;
         if (current == null || db.IsKeyRetired(current.UserId, current.SigningKey)) {
             connection.User = null;
             connection.DeviceTokenHash = null;
@@ -806,7 +847,12 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.NotAuthenticated, "Unknown or revoked device token.");
         }
 
-        return new Response { AuthenticateOk = new AuthenticateOk { User = user.ToProto(), KeyVersion = user.KeyVersion } };
+        return new Response {
+            AuthenticateOk = new AuthenticateOk {
+                User = user.ToProto(), KeyVersion = user.KeyVersion, PreviousUsedUnix = previousUse, UsedUnix = thisUse,
+                PreviousLoginNonceHash = previousNonce.Length == 0 ? ByteString.Empty : ByteString.CopyFrom(SHA256.HashData(previousNonce)),
+            },
+        };
     }
 
     /// <summary>
@@ -914,6 +960,17 @@ public sealed class RequestHandler(
             throw this.BlockedAccount(connection, user!.UserId, ban);
         }
 
+        if (refusal == null && db.SignedOut(user!.UserId) is { } signedOut) {
+            // "Sign out everywhere else": signed by the account's key, so only its holder learns why (as for a ban), and no login
+            // is made. Answered correctly, so no failure either: a computer signed out tries again on every connection.
+            if (pending!.CountedForAddress) {
+                this._keyLoginFailuresPerIp.Refund(connection.RemoteAddress);
+            }
+
+            logger.LogInformation("Key login for {User} from {Address} refused: the account signed out its other devices", user.UserId, connection.RemoteAddress);
+            throw new RequestException(ErrorCode.NotAuthenticated, KeyLoginSignedOut) { SignedOut = true, SignedOutBy = signedOut };
+        }
+
         if (refusal == null) {
             token = NewDeviceToken();
             if (this.BeforeKeyLoginDeviceAddedForTests is { } hook) {
@@ -949,6 +1006,7 @@ public sealed class RequestHandler(
         }
 
         logger.LogInformation("Key login for {User} from {Address}: new device", user!.UserId, connection.RemoteAddress);
+        this.TellOtherDevices(user.UserId, HashToken(token!));
         return new Response { KeyLoginComplete = new KeyLoginComplete { DeviceToken = token, User = user.ToProto() } };
     }
 
@@ -1045,6 +1103,134 @@ public sealed class RequestHandler(
         registry.Disconnect(user.UserId, "This character's identity was retired");
         logger.LogInformation("Retired the identity key of {User}", user.UserId);
         return new Response { Ack = new Ack() };
+    }
+
+    // ================================================================ devices
+
+    /// <summary>How long a sign-out nonce (<see cref="Devices.SignOutNonce"/>) can be signed and sent back.</summary>
+    internal static readonly TimeSpan SignOutNonceLifetime = TimeSpan.FromMinutes(5);
+
+    /// <summary>The most sign-out nonces a connection holds at once (the newest).</summary>
+    private const int MaxSignOutNonces = 4;
+
+    /// <summary>The longest Authenticate.login_nonce kept (a client sends 16 bytes); a longer one is taken as none.</summary>
+    private const int MaxLoginNonceBytes = 32;
+
+    /// <summary>
+    /// The account's devices, oldest first: when each was added and last used, its ID, and which this connection logged in
+    /// with; and a fresh nonce for a "Sign out everywhere else" on this connection to sign.
+    /// </summary>
+    private Response ListDevices(ClientConnection connection) {
+        var me = RequireUser(connection);
+        if (!this._deviceLists.TryTake(me.UserId)) {
+            throw new RequestException(ErrorCode.RateLimited, "You're asking for your devices too often; try again in a minute.");
+        }
+
+        return new Response { Devices = this.DevicesOf(connection, me.UserId) };
+    }
+
+    /// <summary>
+    /// "Sign out everywhere else" (see <see cref="Database.SignOutOtherDevices"/>): every other login of the account is revoked,
+    /// this connection's is replaced by the one the client made (so a copy of it is no use either), and the account's key
+    /// can't sign in until the character is registered again through the Lodestone, so whoever holds a copy of it can't sign
+    /// straight back in. Signed by the account's current key (see <see cref="SignOutProof"/>), over this connection's login,
+    /// the new one, this server's address and the nonce this connection was last given, once: a login alone, which a copy
+    /// of the secrets file holds, could otherwise shut the owner out. This connection stays logged in, with the new login.
+    /// Another connection of the account that logged in while this ran (with a login it deleted) is closed afterwards.
+    /// </summary>
+    private Response SignOutOtherDevices(ClientConnection connection, SignOutOtherDevices request) {
+        var me = RequireUser(connection);
+        // Single use, whatever happens next. Each try needs a list for its nonce, and lists are limited.
+        var now = this._time.GetUtcNow();
+        var given = connection.SignOutNonces.FindIndex(entry => request.Nonce.Span.SequenceEqual(entry.Nonce));
+        var nonce = given < 0 ? null : connection.SignOutNonces[given].Nonce;
+        if (given >= 0) {
+            var expired = now >= connection.SignOutNonces[given].Expires;
+            connection.SignOutNonces.RemoveAt(given);
+            nonce = expired ? null : nonce;
+        }
+
+        if (nonce == null) {
+            throw new RequestException(ErrorCode.InvalidRequest, "List your devices again first, then sign out everywhere else.");
+        }
+
+        if (!DeviceTokens.IsWellFormed(request.NewDeviceToken)) {
+            throw new RequestException(ErrorCode.InvalidRequest, "That new login isn't one this server can use.");
+        }
+
+        // From here on each try costs a signature check, and perhaps a change.
+        if (!this._signOuts.TryTake(me.UserId)) {
+            throw new RequestException(ErrorCode.RateLimited, "You've signed out your other devices a lot recently; try again in a minute.");
+        }
+
+        // The account as it is now, and the login this connection uses now.
+        var user = db.GetUser(me.UserId);
+        if (user == null || connection.DeviceTokenHash is not { } tokenHash) {
+            throw new RequestException(ErrorCode.NotAuthenticated, "Log in first.");
+        }
+
+        // Before the signature, as for key login: one made for another server is what a relay would bring.
+        if (this.NotThisServer(connection, request.ServerUrl) is { } elsewhere) {
+            logger.LogWarning("Signing out the other devices of {User} from {Address} refused: {Reason}", user.UserId, connection.RemoteAddress, elsewhere);
+            throw new RequestException(ErrorCode.Forbidden,
+                this.WrongAddressMessage(connection, request.ServerUrl) + " Nothing was signed out: connect through an address this server accepts, then try again.");
+        }
+
+        var newHash = HashToken(request.NewDeviceToken);
+        if (!SignOutProof.Verify(user.SigningKey, user.UserId, tokenHash, newHash, request.ServerUrl, nonce, request.Signature.Span)) {
+            throw new RequestException(ErrorCode.Forbidden, "That isn't signed with this account's identity key for this login, so nothing was signed out.");
+        }
+
+        if (this.BeforeSignOutCommittedForTests is { } hook) {
+            this.BeforeSignOutCommittedForTests = null;
+            hook();
+        }
+
+        if (db.SignOutOtherDevices(user.UserId, tokenHash, newHash) is not { } count) {
+            // This login was revoked meanwhile (a registration, a retirement, or this from the account's other connection).
+            throw new RequestException(ErrorCode.NotAuthenticated, "This login was revoked meanwhile, so nothing was signed out.");
+        }
+
+        connection.DeviceTokenHash = newHash;
+        // A connection that logged in with another device's login while this ran (its checks passed before the deletion) would
+        // be left online with a login that is gone: only this connection may be.
+        registry.DisconnectOthers(user.UserId, connection, "Signed out from another computer");
+        logger.LogInformation("User {User} signed out their other devices ({Count})", user.UserId, count);
+        var devices = this.DevicesOf(connection, user.UserId);
+        devices.SignedOut = (uint) count;
+        return new Response { Devices = devices };
+    }
+
+    /// <summary>The account's devices, as <see cref="ListDevices"/> answers, with a fresh sign-out nonce for this connection.</summary>
+    private Devices DevicesOf(ClientConnection connection, long userId) {
+        var nonce = RandomNumberGenerator.GetBytes(SignOutProof.NonceSize);
+        // The last few stay good: a list asked for in the background meanwhile doesn't spoil the one a sign-out asked for.
+        var now = this._time.GetUtcNow();
+        connection.SignOutNonces.RemoveAll(entry => now >= entry.Expires);
+        if (connection.SignOutNonces.Count >= MaxSignOutNonces) {
+            connection.SignOutNonces.RemoveAt(0);
+        }
+
+        connection.SignOutNonces.Add((nonce, now + SignOutNonceLifetime));
+        var devices = new Devices { SignOutNonce = ByteString.CopyFrom(nonce), SignedOutAtUnix = db.SignedOut(userId)?.At ?? 0 };
+        var thisTokenHash = connection.DeviceTokenHash;
+        devices.List.AddRange(db.GetDevices(userId).Select(device => new Device {
+            Id = ByteString.CopyFrom(device.DeviceId),
+            AddedUnix = device.AddedAt,
+            LastUsedUnix = device.LastUsedAt,
+            ThisDevice = thisTokenHash != null && device.TokenHash.AsSpan().SequenceEqual(thisTokenHash),
+        }));
+        return devices;
+    }
+
+    /// <summary>Tells the account's connection that is logged in, if it isn't the new device's own, that the account has a new device.</summary>
+    private void TellOtherDevices(long userId, byte[] newTokenHash) {
+        if (db.GetDevices(userId).FirstOrDefault(device => device.TokenHash.AsSpan().SequenceEqual(newTokenHash)) is not { } added) {
+            return;
+        }
+
+        registry.SendDeviceAdded(userId, newTokenHash,
+            new Event { DeviceAdded = new DeviceAdded { AddedUnix = added.AddedAt, Id = ByteString.CopyFrom(added.DeviceId) } });
     }
 
     /// <summary>The key failed key logins are counted under for one account from one address.</summary>
@@ -2112,7 +2298,5 @@ public sealed class RequestHandler(
 
     internal static byte[] HashToken(string token) => SHA256.HashData(Encoding.UTF8.GetBytes(token));
 
-    private static string NewDeviceToken() => "lgt_" + Base64Url(RandomNumberGenerator.GetBytes(32));
-
-    private static string Base64Url(byte[] bytes) => Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+    private static string NewDeviceToken() => DeviceTokens.New();
 }

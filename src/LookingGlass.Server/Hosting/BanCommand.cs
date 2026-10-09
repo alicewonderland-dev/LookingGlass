@@ -16,6 +16,9 @@ namespace LookingGlass.Server.Hosting;
 /// <item><c>--unban &lt;the same&gt;</c> lifts it.</item>
 /// <item><c>--bans</c> lists the bans in force, the accounts and addresses flagged (see <see cref="Services.AbuseMonitor"/>),
 /// and the bans lifted or ended lately.</item>
+/// <item><c>--allow-key-login &lt;name@world | user ID&gt;</c> lets a character's identity key sign in again after its
+/// "Sign out everywhere else" (see <see cref="Database.AllowKeyLogin"/>), as registering again through the Lodestone would:
+/// for a player who can't. A running server goes by it at the character's next key login.</item>
 /// </list>
 /// </summary>
 public static class BanCommand {
@@ -23,6 +26,7 @@ public static class BanCommand {
         Ban,
         Unban,
         List,
+        AllowKeyLogin,
     }
 
     /// <param name="Target">Whom to ban or unban, as given.</param>
@@ -42,7 +46,7 @@ public static class BanCommand {
     /// <returns>The request, if the arguments ask for one of these; throws if they do but are wrong.</returns>
     /// <exception cref="ArgumentException">What's wrong with them, in words for the operator.</exception>
     public static Request? Parse(string[] args) {
-        var actions = new[] { ("--ban", BanAction.Ban), ("--unban", BanAction.Unban), ("--bans", BanAction.List) }
+        var actions = new[] { ("--ban", BanAction.Ban), ("--unban", BanAction.Unban), ("--bans", BanAction.List), ("--allow-key-login", BanAction.AllowKeyLogin) }
             .Where(option => Array.IndexOf(args, option.Item1) >= 0).ToList();
         var days = Array.IndexOf(args, "--days");
         var force = Array.IndexOf(args, "--force") >= 0;
@@ -52,7 +56,7 @@ public static class BanCommand {
         }
 
         if (actions.Count > 1) {
-            throw new ArgumentException("Use one of --ban, --unban and --bans at a time.");
+            throw new ArgumentException("Use one of --ban, --unban, --bans and --allow-key-login at a time.");
         }
 
         var (option, action) = actions[0];
@@ -66,7 +70,9 @@ public static class BanCommand {
 
         var at = Array.IndexOf(args, option);
         if (at + 1 >= args.Length || args[at + 1].StartsWith("--", StringComparison.Ordinal) || string.IsNullOrWhiteSpace(args[at + 1])) {
-            throw new ArgumentException($"{option} needs whom to {(action == BanAction.Ban ? "ban" : "unban")}: {Targets}.");
+            throw new ArgumentException(action == BanAction.AllowKeyLogin
+                ? "--allow-key-login needs which character: name@world (in quotes if the name has a space), or its user ID (its Lodestone ID)."
+                : $"{option} needs whom to {(action == BanAction.Ban ? "ban" : "unban")}: {Targets}.");
         }
 
         int? dayCount = null;
@@ -111,6 +117,7 @@ public static class BanCommand {
             return request.Action switch {
                 BanAction.Ban => Ban(db, request, settings, at, output, errors, trustedProxies),
                 BanAction.Unban => Unban(db, request, settings, at, output, errors),
+                BanAction.AllowKeyLogin => AllowKeyLogin(db, request, output, errors),
                 _ => List(db, settings, at, output),
             };
         } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or Microsoft.Data.Sqlite.SqliteException
@@ -155,6 +162,27 @@ public static class BanCommand {
 
         output.WriteLine($"Lifted the ban on {subject.Name}. A running server lets them back within {settings.BanCheckSeconds} seconds; " +
                          "the plugin tries again by itself within 5 minutes (or at once with \"Try again now\").");
+        return 0;
+    }
+
+    private static int AllowKeyLogin(Database db, Request request, TextWriter output, TextWriter errors) {
+        if (Resolve(db, request.Target!, errors) is not { } subject) {
+            return 1;
+        }
+
+        if (subject.UserId is not { } userId || db.GetUser(userId) == null) {
+            errors.WriteLine($"{subject.Name} isn't a character registered on this server: --allow-key-login needs name@world, or a registered character's user ID.");
+            return 1;
+        }
+
+        if (!db.AllowKeyLogin(userId)) {
+            errors.WriteLine($"Signing in with the identity key isn't turned off for {subject.Name}: nothing to do.");
+            return 1;
+        }
+
+        output.WriteLine($"{subject.Name} can sign in with their identity key again (their \"Sign out everywhere else\" had turned it off). Their " +
+                         "computers that were signed out sign in by themselves at their next connection, and so would anyone holding a copy of " +
+                         "that key: if the player thinks someone has one, they should reset their identity instead.");
         return 0;
     }
 

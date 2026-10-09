@@ -101,7 +101,7 @@ public sealed class BanTests : IDisposable {
         Database.ReleasePooledConnections(this._path);
 
         var migrated = new Database(this._path);
-        Assert.Equal(10L, Query(this._path, "SELECT MAX(version) FROM schema_version;"));
+        Assert.Equal((long) Database.SchemaVersion, Query(this._path, "SELECT MAX(version) FROM schema_version;"));
         Assert.NotNull(migrated.GetUser(77));
         Assert.Empty(migrated.GetActiveBans(this.Now));
         migrated.AddBan(77, null, "", null, false, this.Now, out _);

@@ -134,7 +134,21 @@ shouldn't stutter, and `/xllog` shouldn't name anyone.
 
 ### Settings: short labels and "?" bubbles, needs the build after 0.2.12
 
-- [ ] **The labels and the "?"s** ([settings](settings-checklist.md): steps 1–9). Open Settings (the gear in `/lg`). The sections and labels are as the checklist lists them, with no dimmed paragraphs, and every setting still does what it did. A small round **?** follows exactly eight of them. Click each → a small bubble opens beside it, in everyday words; a click elsewhere, the **?** again, or Escape closes it, and Escape doesn't close Settings. In advanced mode, the chat history's **?** says it's encrypted. With Settings in the bottom right corner, every bubble stays on the screen. Narrow the window → the buttons move under their line, nothing runs off the edge. Do it once with a bigger Dalamud font too. Needs: nothing extra.
+- [ ] **The labels and the "?"s** ([settings](settings-checklist.md): steps 1–9). Open Settings (the gear in `/lg`). The sections and labels are as the checklist lists them, with no dimmed paragraphs, and every setting still does what it did. A small round **?** follows exactly nine of them (eight before device notices, which added **Computers signed in**'s). Click each → a small bubble opens beside it, in everyday words; a click elsewhere, the **?** again, or Escape closes it, and Escape doesn't close Settings. In advanced mode, the chat history's **?** says it's encrypted. With Settings in the bottom right corner, every bubble stays on the screen. Narrow the window → the buttons move under their line, nothing runs off the edge. Do it once with a bigger Dalamud font too. Needs: nothing extra.
+
+### Other computers signing in, needs the first release after 0.2.12
+
+Setup for all of these: one character A on a **test server**, and two installs
+of the plugin under the same Windows user (your usual one, and a second Dalamud
+profile with its own config folder), as the checklist explains. Log out on one
+install before logging in on the other.
+
+- [ ] **The list in Settings** ([device-notices](device-notices-checklist.md): step 1). Settings > Your identity shows **Computers signed in** with a **?**, one line "This computer: added …, used just now", and **Sign out everywhere else...**. The **?** explains it in a sentence or two. Needs: nothing extra.
+- [ ] **A copy of this computer's login is noticed** ([device-notices](device-notices-checklist.md): steps 2–4). Copy A's secrets file to install 2 and log in there (one computer listed); then on install 1, at login, one light red line says this computer's saved login may have been used somewhere else at that time, pointing to Sign out everywhere else, then Reset my identity if it happens again; not said again at the next login. Needs: install 2.
+- [ ] **Told at the next login** ([device-notices](device-notices-checklist.md): steps 5–9). On install 2, Forget account (`/lgdebug`) and register again → on install 1, at login, a light red line "Your LookingGlass character signed in from another computer on <time>. If that wasn't you, …", and two computers listed; not told again at the next login. Install 2, at its next login, is told about install 1 the same way. Needs: install 2, the Lodestone.
+- [ ] **Sign out everywhere else** ([device-notices](device-notices-checklist.md): steps 10–14). On install 2, the button asks first (plain words; says this computer couldn't sign itself in either should its login be lost; mentions Reset my identity); confirming says "Signed out everywhere else (1 other computer), and this computer has a new login" and lists only this computer, which still logs in afterwards. Install 1 then shows **You were signed out from another computer** ("another of your computers"; label **Signed out**, no Retry now), even after a restart; advanced mode words it technically. Needs: install 2.
+- [ ] **Registering again lifts it** ([device-notices](device-notices-checklist.md): steps 15–16). Install 1 registers again → works, channels as before; install 2 is then told of it. Needs: install 2, the Lodestone.
+- [ ] **Signed out by a computer this one doesn't know, and clean up** ([device-notices](device-notices-checklist.md): steps 17–20). Copy install 1's file to install 2 again and sign out everywhere else there → install 1 says **Signed out by a computer this one doesn't know**, says when that computer was added, and has **Reset my identity...** as the main button, with registering again offered second ("only if that computer was yours"). Optional: with 0.2.12, being signed out shows "Login not recognised". Finish with Reset my identity on install 1, and delete install 2's copy. Needs: install 2, the Lodestone.
 
 ---
 
@@ -270,6 +284,12 @@ internet connection**.
 ### Name colours: echo bot, needs 0.2.9
 
 - [ ] **Echo bot colour key** ([name-colours](name-colours-checklist.md): step 23, echo bot part). On a test server with the echo bot, give it a name colour → its key in `LookingGlass.json` ends in `@` and the server's address. Change only the case of the server address's host in Settings (or add a trailing `/`) → the echo bot keeps its colour. Needs: a test server running the echo bot.
+
+### Other computers signing in: server side, needs the first release after 0.2.12
+
+- [ ] **Upgrading the server** (see [server.md](../server.md#upgrading), "From a server without device notices"). Update the test server and restart → it starts on schema 11 with no warning, and players already registered connect as before. Needs: SSH.
+- [ ] **Letting a key sign in again** (see [server.md](../server.md#letting-a-key-sign-in-again)). After the group 1 task's step 12 (install 1 signed out), `LG --allow-key-login "A@World"` → exit 0, and install 1 signs in by itself at its next connection (or at once after closing and reopening the plugin); install 2 is then told that another computer signed in. Run it again → exit 1, "isn't turned off". `LG --allow-key-login 203.0.113.5` → exit 1. Needs: SSH, a tester at step 12.
+- [ ] **What the journal says** ([device-notices](device-notices-checklist.md): steps 11–12, server part). After the group 1 task "Sign out everywhere else", the journal has "User … signed out their other devices (1)" and, when install 1 connects, "Key login for … refused: the account signed out its other devices": user IDs and the address only, never a name. Needs: journal access, the times the tester reports.
 
 ### Custom colours: the decision
 

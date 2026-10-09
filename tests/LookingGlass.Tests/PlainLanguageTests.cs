@@ -41,6 +41,9 @@ public sealed class PlainLanguageTests {
         Assert.Equal(["fingerprints", "epoch", "rekeying", "log", "forked", "signature", "encrypted", "pinned"],
             PlainLanguage.Jargon("Compare fingerprints. epoch 3, rekeying, the membership log forked, a bad signature, encrypted, pinned"));
         Assert.Empty(PlainLanguage.Jargon("Your login is tried again by itself, through the Lodestone, once you've logged in. Check with them over /tell."));
+        // Signing in and out is everyday; something signed is not.
+        Assert.Empty(PlainLanguage.Jargon("Your character signed in from another computer. You were signed out."));
+        Assert.Equal(["signed"], PlainLanguage.Jargon("The entry is signed by them."));
     }
 
     [Fact]

@@ -186,6 +186,12 @@ It shuts out your old keys on that server, then you register again through the
 Lodestone and get your channels back as on a new computer. It doesn't affect
 other servers.
 
+LookingGlass tells you when your character signs in from another computer, or
+when this computer's saved login seems to have been used elsewhere. **Computers
+signed in** (in the same place) lists them, and **Sign out everywhere else**
+signs out every computer but this one (which gets a new login) until you
+register again. If you didn't recognise one, use both.
+
 ## Troubleshooting
 
 - **No messages in chat.** Messages go to the game chat channel chosen under

@@ -304,7 +304,7 @@ public sealed partial class ClientSession : IAsyncDisposable {
                     this._challenge = null;
                     if (this._state == ConnectionState.Registering) {
                         this._state = this._loginRejected ? ConnectionState.LoginNotRecognized : ConnectionState.Unregistered;
-                        this._status = this._loginRejected ? PlainMessages.LoginNotRecognized : Wording.Same(NotRegistered);
+                        this._status = this._loginRejected ? this.RejectedStatus() : Wording.Same(NotRegistered);
                     }
                 }
 
@@ -389,6 +389,7 @@ public sealed partial class ClientSession : IAsyncDisposable {
 
             lock (this._lock) {
                 this._secrets.DeviceToken = complete.DeviceToken;
+                this.NewLogin();
                 this._secrets.UserId = complete.User.UserId;
                 this._challenge = null;
                 this._secretsVersion++;
@@ -568,6 +569,7 @@ public sealed partial class ClientSession : IAsyncDisposable {
     public void ForgetAccount() {
         lock (this._lock) {
             this._secrets.DeviceToken = null;
+            this.NewLogin();
             this._secrets.UserId = null;
             this._loginRejected = false;
             this._secretsVersion++;
@@ -1392,6 +1394,10 @@ public sealed partial class ClientSession : IAsyncDisposable {
             hello.Capabilities.Add(ProtocolInfo.Capabilities.Local);
         }
 
+        if (this._options.OfferDevices) {
+            hello.Capabilities.Add(ProtocolInfo.Capabilities.Devices);
+        }
+
         Response response;
         try {
             response = await this.RequestAsync(connection, new ClientFrame { Hello = hello }, ct);
@@ -1417,6 +1423,8 @@ public sealed partial class ClientSession : IAsyncDisposable {
             this._catchUpAgreed = this._options.OfferMessageCatchUp && welcome.Capabilities.Contains(ProtocolInfo.Capabilities.History);
             // Local chat likewise: a server that didn't agree is never sent a local message, and never sends one.
             this._localAgreed = this._options.OfferLocalChat && welcome.Capabilities.Contains(ProtocolInfo.Capabilities.Local);
+            // And the account's devices: an older server is never asked for them.
+            this._devicesAgreed = this._options.OfferDevices && welcome.Capabilities.Contains(ProtocolInfo.Capabilities.Devices);
         }
 
         if (!string.IsNullOrWhiteSpace(welcome.Announcement)) {
@@ -1473,7 +1481,7 @@ public sealed partial class ClientSession : IAsyncDisposable {
             // Registering again goes on (its challenge stays) whatever a try of the old login says.
             if (this._state != ConnectionState.Registering) {
                 this._state = ConnectionState.LoginNotRecognized;
-                this._status = PlainMessages.LoginNotRecognized;
+                this._status = this.RejectedStatus();
             }
         }
 
@@ -1588,12 +1596,14 @@ public sealed partial class ClientSession : IAsyncDisposable {
 
             lock (this._lock) {
                 this._secrets.DeviceToken = complete.DeviceToken;
+                this.NewLogin();
                 this._secretsVersion++;
             }
 
             this.SaveSecrets();
         } catch (ServerErrorException ex) when (ex.Code is ErrorCode.NotAuthenticated or ErrorCode.RateLimited or ErrorCode.InvalidRequest) {
             this.Log(NoticeLevel.Info, $"Signing in with the identity key didn't work: {ex.ServerMessage}");
+            this.NoteKeyLoginRefused(ex);
             return false;
         }
 
@@ -1613,7 +1623,7 @@ public sealed partial class ClientSession : IAsyncDisposable {
     }
 
     private async Task AuthenticateAsync(Connection connection, CancellationToken ct) {
-        var token = this.Read(() => this._secrets.DeviceToken) ?? throw new InvalidOperationException("Not registered.");
+        _ = this.Read(() => this._secrets.DeviceToken) ?? throw new InvalidOperationException("Not registered.");
         // Live messages are held back from before the login (the server relays to a connection as soon as it is logged in)
         // until each channel's missed messages are in, so a channel's messages are taken in the server's order.
         var catchUp = this.HoldLiveMessages(connection);
@@ -1624,8 +1634,8 @@ public sealed partial class ClientSession : IAsyncDisposable {
 
         AuthenticateOk ok;
         try {
-            var response = await this.RequestAsync(connection, new ClientFrame { Authenticate = new Authenticate { DeviceToken = token } }, ct);
-            ok = response.AuthenticateOk ?? throw Unexpected(response);
+            // The login a "Sign out everywhere else" whose answer was lost replaced it with first, if there is one.
+            ok = await this.AuthenticateWithSavedLoginAsync(connection, ct);
         } catch {
             lock (this._lock) {
                 this._loginSyncing = false;
@@ -1640,6 +1650,7 @@ public sealed partial class ClientSession : IAsyncDisposable {
             this._users[ok.User.UserId] = ok.User;
             this._secrets.UserId = ok.User.UserId;
             this._loginRejected = false;
+            this._signedOutBy = SignedOutBy.None;
             // Logged in: a registration under way (from before a saved login worked again) is moot, and so is any block.
             this._challenge = null;
             this._blockedReported = null;
@@ -1649,6 +1660,8 @@ public sealed partial class ClientSession : IAsyncDisposable {
             this._status = Wording.Same($"Connected as {ok.User.Name}@{ok.User.WorldName}");
         }
 
+        // Whether this computer's login was used elsewhere since it last logged in (see ClientSession.Devices).
+        this.NoteLogin(ok);
         this.Publish();
         try {
             // Identities cached before a disconnect may be stale: someone may have registered again meanwhile.
@@ -1665,6 +1678,8 @@ public sealed partial class ClientSession : IAsyncDisposable {
         // In the background: a long absence can take a while, and nothing else needs to wait for it.
         this.StartCatchUp(connection, catchUp);
         this.RunBackground(PlainMessages.Rekeying, keyAgeCt => this.ReplaceOldKeysAsync(connection, catchUp?.Done.Task, keyAgeCt));
+        // Whether another computer signed in meanwhile (see ClientSession.Devices).
+        this.RefreshDevicesSoon();
     }
 
     /// <param name="refreshIdentities">Fetch every identity again, not only those not cached yet.</param>
@@ -2302,7 +2317,8 @@ public sealed partial class ClientSession : IAsyncDisposable {
             return;
         }
 
-        if (ev.KindCase != Event.KindOneofCase.Announcement && ev.KindCase != Event.KindOneofCase.LocalMessage && !IsValidChannelId(ChannelIdOf(ev))) {
+        if (ev.KindCase is not (Event.KindOneofCase.Announcement or Event.KindOneofCase.LocalMessage or Event.KindOneofCase.DeviceAdded)
+            && !IsValidChannelId(ChannelIdOf(ev))) {
             this.Log(NoticeLevel.Debug, $"Ignored {ev.KindCase} with an invalid channel ID");
             return;
         }
@@ -2445,6 +2461,9 @@ public sealed partial class ClientSession : IAsyncDisposable {
                 break;
             case Event.KindOneofCase.LocalMessage:
                 this.ProcessLocalMessage(ev.LocalMessage);
+                break;
+            case Event.KindOneofCase.DeviceAdded:
+                this.OnDeviceAdded(ev.DeviceAdded);
                 break;
         }
     }
@@ -3695,7 +3714,11 @@ public sealed partial class ClientSession : IAsyncDisposable {
                 // Never registered here: what a registration would do is take an account over, not keep a key.
                 this._secrets.UserId == null,
                 LodestoneCode.Redact(this._status?.Plain, keep),
-                addressNotListed?.Plain);
+                addressNotListed?.Plain) {
+                Devices = this._devices,
+                DevicesAvailable = this._devicesAgreed && this._state == ConnectionState.Ready,
+                SignedOutBy = this._loginRejected && this._state is ConnectionState.LoginNotRecognized or ConnectionState.Registering ? this._signedOutBy : SignedOutBy.None,
+            };
             this._snapshot = snapshot;
         }
 
@@ -3765,13 +3788,18 @@ public sealed partial class ClientSession : IAsyncDisposable {
         var response = await connection.RequestAsync(frame, ct, timeout);
         if (response.Error != null) {
             // A block is noted as the answer arrives (see OnResponse).
-            throw new ServerErrorException(response.Error.Code, response.Error.Message, this.ShownCode()) { Block = response.Error.Block };
+            throw new ServerErrorException(response.Error.Code, response.Error.Message, this.ShownCode()) {
+                Block = response.Error.Block, SignedOut = response.Error.SignedOut, SignedOutBy = response.Error.SignedOutBy.ToByteArray(),
+                SignedOutByAddedUnix = response.Error.SignedOutByAddedUnix, SignedOutAtUnix = response.Error.SignedOutAtUnix,
+            };
         }
 
         return response;
     }
 
-    private void SaveSecrets() {
+    /// <summary>Saves the secrets if they changed since they were last saved.</summary>
+    /// <returns>Whether what they hold now is on disk (false if saving failed, which is logged).</returns>
+    private bool SaveSecrets() {
         ClientSecrets copy;
         long version;
         lock (this._lock) {
@@ -3784,7 +3812,7 @@ public sealed partial class ClientSession : IAsyncDisposable {
 
             version = this._secretsVersion;
             if (version == Interlocked.Read(ref this._savedSecretsVersion)) {
-                return;
+                return true;
             }
 
             copy = this._secrets.Clone();
@@ -3792,14 +3820,16 @@ public sealed partial class ClientSession : IAsyncDisposable {
 
         lock (this._saveLock) {
             if (version <= this._savedSecretsVersion) {
-                return;
+                return true;
             }
 
             try {
                 this._store.Save(copy);
                 Interlocked.Exchange(ref this._savedSecretsVersion, version);
+                return true;
             } catch (Exception ex) {
                 this.Log(NoticeLevel.Error, $"Couldn't save keys: {ex.Message}");
+                return false;
             }
         }
     }

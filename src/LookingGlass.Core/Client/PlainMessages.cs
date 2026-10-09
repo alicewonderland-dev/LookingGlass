@@ -755,5 +755,8 @@ public static class PlainMessages {
         yield return FetchingIdentities;
         yield return Failed(Rekeying, Failure(CantSealTo(who, "invalid point")));
         yield return Failed(Rekeying, new TimeoutException("The server didn't answer in time."));
+        foreach (var wording in DeviceWords.Examples()) {
+            yield return wording;
+        }
     }
 }

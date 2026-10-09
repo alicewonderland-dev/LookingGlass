@@ -25,6 +25,43 @@ public sealed class ClientSecrets {
     public byte[]? SigningPrivateKey { get; set; }
     public byte[]? AgreementPrivateKey { get; set; }
     public string? DeviceToken { get; set; }
+
+    /// <summary>
+    /// The login "Sign out everywhere else" is replacing <see cref="DeviceToken"/> with, saved before the request is sent, so
+    /// an answer lost on the way doesn't lose the only login the server still knows for this computer. The next login tries
+    /// it first: if it works it becomes <see cref="DeviceToken"/>, and if the old one works instead it is dropped.
+    /// </summary>
+    public string? PendingDeviceToken { get; set; }
+
+    /// <summary>The server's ID (hex) of this computer's device, as its list of devices last said.</summary>
+    public string? ThisDeviceId { get; set; }
+
+    /// <summary>
+    /// When the server says this computer's login was last used by this computer (AuthenticateOk.used_unix, Unix seconds): if
+    /// its next login says the login was used at another time since, a copy of it was used elsewhere. Null until this login
+    /// was used once (a new login starts afresh).
+    /// </summary>
+    public long? LastLoginUnix { get; set; }
+
+    /// <summary>
+    /// When this computer last used "Sign out everywhere else", as the server dated it (Devices.signed_out_at_unix), with this
+    /// login. If it is later signed out by its own device's ID at that same time, it lost its own login since; at another
+    /// time, a copy of its login did it.
+    /// </summary>
+    public long? SignedOutOthersAt { get; set; }
+
+    /// <summary>
+    /// The nonces (hex) of this computer's logins whose answers haven't come (yet), at most a few: if the server says the login
+    /// was last used with one of them, that was this computer, not a copy of its login elsewhere. Cleared once a login is answered.
+    /// </summary>
+    public List<string>? UnansweredLoginNonces { get; set; }
+
+    /// <summary>
+    /// This computer's "Sign out everywhere else" was done (its new login was taken at a login after the answer was lost), and
+    /// when is still to be learnt from the next list of devices (see <see cref="SignedOutOthersAt"/>).
+    /// </summary>
+    public bool LearnSignOutTime { get; set; }
+
     public long? UserId { get; set; }
 
     /// <summary>Identity keys seen for other users (trust on first use).</summary>
@@ -85,6 +122,14 @@ public sealed class ClientSecrets {
     public HashSet<long> BlockedUsers { get; set; } = new();
 
     /// <summary>
+    /// The IDs (hex) of the account's devices (logins) this computer has seen, those listed last first (at most
+    /// <see cref="ClientSession.MaxKnownDevices"/>): a device listed that isn't one of them, and isn't this computer's, signed in
+    /// since, and the player is told (see "Other computers signing in" in docs/design.md). Null until the list was first had
+    /// here (a new computer, or one from before this): that first list is taken as it is, without telling anything. Not secret.
+    /// </summary>
+    public List<string>? KnownDevices { get; set; }
+
+    /// <summary>
     /// Channel ID → the membership verified from its log, at the newest position verified. Not
     /// secret, but kept so the next session carries on from there and notices a server that
     /// shows an older log. Kept after leaving a channel, as name versions are.
@@ -99,7 +144,7 @@ public sealed class ClientSecrets {
     /// identity on this server. Call only while no session uses these secrets; the next session starts unregistered.
     /// <list type="bullet">
     /// <item>Replaced or dropped: the identity keys; the login (device token and user ID), which is the old registration's
-    /// and would otherwise log the new keys in as the old identity; every channel key and where it was made (sealed to the
+    /// and would otherwise log the new keys in as the old identity, and the devices of the account seen; every channel key and where it was made (sealed to the
     /// old keys, which the new ones can't open); and the pin of your own old keys.</item>
     /// <item>Kept, as they are about others or about the channels, not about the old keys: the keys pinned for other users
     /// (so a server can't swap them unnoticed now), blocked users, and per channel the newest verified log position, name
@@ -132,6 +177,14 @@ public sealed class ClientSecrets {
         this.AgreementPrivateKey = null;
         this.DeviceToken = null;
         this.UserId = null;
+        // The new identity registers afresh: its first list of devices is taken as it is, and its logins are new.
+        this.KnownDevices = null;
+        this.PendingDeviceToken = null;
+        this.ThisDeviceId = null;
+        this.LastLoginUnix = null;
+        this.SignedOutOthersAt = null;
+        this.UnansweredLoginNonces = null;
+        this.LearnSignOutTime = false;
         this.EpochKeys.Clear();
         this.EpochKeyPositions.Clear();
     }
