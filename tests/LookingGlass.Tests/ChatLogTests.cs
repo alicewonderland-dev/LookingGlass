@@ -649,10 +649,11 @@ public sealed class ChatLogTests : IDisposable {
 
         // Advanced mode keeps the owner's words; simple mode says "chat history" ("log" is one of its banned words).
         Assert.Equal("Keep a chat log on this computer", ChatLogWords.KeepIt.Technical);
-        Assert.Equal("Keep a chat history on this computer", ChatLogWords.KeepIt.Plain);
+        Assert.Equal("Keep chat history on this computer", ChatLogWords.KeepIt.Plain);
         Assert.Equal("Delete my chat log", ChatLogWords.Delete.Technical);
         Assert.Equal("Delete my chat history", ChatLogWords.Delete.Plain);
-        Assert.Contains("never uploaded or shared", ChatLogWords.Explanation("Windows DPAPI").Plain);
+        Assert.Contains("never uploaded", ChatLogWords.Explanation("Windows DPAPI").Plain);
+        Assert.Contains("never uploaded", ChatLogWords.Explanation("Windows DPAPI").Technical);
         Assert.Contains("Windows DPAPI", ChatLogWords.Explanation("Windows DPAPI").Technical);
         Assert.Contains("12.3 MB", ChatLogWords.Uses(12_900_000).Plain);
         Assert.Equal("Earlier: Tuesday 6 October 2026", ChatLogWords.Earlier(Start, TimeZoneInfo.Utc).Plain);

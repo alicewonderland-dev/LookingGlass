@@ -4,7 +4,7 @@ using static LookingGlass.Tests.CommandSlotTests;
 namespace LookingGlass.Tests;
 
 /// <summary>
-/// "Show LookingGlass messages only in windows": what still goes to game chat while it is on, where a window is found for
+/// "Show LookingGlass only in windows": what still goes to game chat while it is on, where a window is found for
 /// a channel no window shows, and the channels waiting for one while the game is busy (combat, a cutscene, a loading screen).
 /// </summary>
 public sealed class WindowsOnlyTests {
@@ -368,21 +368,19 @@ public sealed class WindowsOnlyTests {
     [Fact]
     public void ItsWordsArePlain() {
         PlainLanguage.AssertPlain(WindowsOnly.SettingName);
-        PlainLanguage.AssertPlain(WindowsOnly.SettingTooltip);
-        PlainLanguage.AssertPlain(WindowsOnly.SettingNote);
+        PlainLanguage.AssertPlain(WindowsOnly.HelpText);
         PlainLanguage.AssertPlain(WindowsOnly.GameChatItemTooltip);
         Assert.Contains("Settings", WindowsOnly.GameChatItemTooltip);
         Assert.Contains(WindowsOnly.SettingName, WindowsOnly.GameChatItemTooltip);
-        // No window shows local chat, so it stays in game chat, and the setting says so.
-        Assert.Contains(LocalChat.Command, WindowsOnly.SettingTooltip);
+        // What still shows in game chat is said in its "?".
+        Assert.Contains("Warnings", WindowsOnly.HelpText);
         foreach (var how in Enum.GetValues<WindowOpening>()) {
             PlainLanguage.AssertPlain(WindowsOnly.NameOf(how));
-            PlainLanguage.AssertPlain(WindowsOnly.TooltipOf(how));
         }
-    }
 
-    [Fact]
-    public void ANewWindowEachTimeSaysWhatHappensAtLogin() => Assert.Contains("away", WindowsOnly.TooltipOf(WindowOpening.NewWindow));
+        Assert.Equal("As a tab", WindowsOnly.NameOf(WindowOpening.AddToLastUsed));
+        Assert.Equal("In a new window", WindowsOnly.NameOf(WindowOpening.NewWindow));
+    }
 
     [Fact]
     public void AddingToTheWindowUsedLastIsTheDefault() => Assert.Equal(WindowOpening.AddToLastUsed, default(WindowOpening));
