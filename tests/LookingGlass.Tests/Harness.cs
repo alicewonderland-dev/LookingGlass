@@ -270,8 +270,19 @@ public sealed class Harness : IAsyncDisposable {
     /// and waits for that announcement: once it arrives, the events have been handled.
     /// (A client handles every event, announcements included, in one queue, in order.
     /// Work an event starts in the background, such as a rekey, may still be running.)
+    /// Many events go a few at a time, each lot settled before the next: the server queues only so many for a connection
+    /// (<see cref="LookingGlass.Server.LimitOptions.SendQueueLength"/>) and drops one that falls further behind as too slow,
+    /// which all at once they could, however fast the client, when the machine is busy.
     /// </summary>
     public async Task SendAndSettleAsync(TestClient client, params Event[] events) {
+        // Half the queue, leaving room for events the server sends meanwhile, and for the sentinel.
+        var lot = Math.Max(1, this.Factory.Services.GetRequiredService<Microsoft.Extensions.Options.IOptions<LookingGlass.Server.ServerOptions>>().Value.Limits.SendQueueLength / 2);
+        foreach (var chunk in events.Length == 0 ? [[]] : events.Chunk(lot)) {
+            await this.SendThenSettleAsync(client, chunk);
+        }
+    }
+
+    private async Task SendThenSettleAsync(TestClient client, Event[] events) {
         foreach (var ev in events) {
             this.Registry.Send(client.UserId, ev);
         }
