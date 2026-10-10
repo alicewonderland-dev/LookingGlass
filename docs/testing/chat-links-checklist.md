@@ -117,9 +117,11 @@ of their own in the Party Finder (any duty; a password keeps strangers out),
 so it stays up for the whole test (a listing ends when it fills, or after an
 hour).
 
-How to link a listing: open the listing's recruitment window (your own, or
-anyone's in the list) and click its chat button (the speech bubble). It
-should put `<pfinder>` in the chat input, as linking an item puts `<item>`.
+How to link a listing: open your recruitment window and click its chat
+button (the speech bubble). It should put `<pfinder>` in the chat input, as
+linking an item puts `<item>`. Square Enix's notes only mention your own
+recruitment window: check whether other players' listings have the button
+too, and write down what you find.
 
 - [ ] 20. **What the chat button puts in the input.** ChatTwo off, with
       `/xllog` open: `/lgc1` on its own (talking in `[sky]`), then click the
@@ -143,8 +145,12 @@ should put `<pfinder>` in the chat input, as linking an item puts `<item>`.
 - [ ] 24. **Home world only.** Edit the recruitment so it's limited to your
       own world, open it again and send it as in step 21 → the link has no
       cross-world mark. Set it back to the whole data centre and send again →
-      the mark is back. (The mark is the only thing this changes; report if
-      it's wrong either way.)
+      the mark is back. Then do both again, each time looking at another
+      player's listing in the Party Finder just before going back to your
+      recruitment window and its chat button: the mark should still be right
+      (taken from your own recruitment's settings when the Party Finder last
+      showed someone else's). (The mark is the only thing this changes;
+      report if it's wrong in any case, and which.)
 - [ ] 25. **Talking in the channel.** `/lgc1` on its own, then `join ` and the
       chat button, Enter → as step 21. The chat button alone, Enter → sent
       (no "Not sent" line). `/lgc sky ` and the chat button → the same.

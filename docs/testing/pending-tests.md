@@ -168,12 +168,14 @@ arrives", make one with `/lgdebug` > Channel tools > pick the channel >
 
 Setup for all of these: a channel `sky` on `/lgc1`, and a Party Finder
 recruitment of your own that stays up for the whole test (any duty, with a
-password so nobody joins). "The chat button" is the speech bubble on the
-listing's recruitment window. ChatTwo off until the ChatTwo task.
+password so nobody joins). "The chat button" is the speech bubble on your
+recruitment window (Square Enix's notes only mention yours: check whether
+other players' listings have it too, and say). ChatTwo off until the ChatTwo
+task.
 
 - [ ] **What the chat button puts in the input** ([chat-links](chat-links-checklist.md): step 20). With `/xllog` open and talking in `[sky]` (`/lgc1` alone), click the chat button → write down what appears in the chat input (expected `<pfinder>`) and the "kind" number in the `[sticky]` "link put in the chat input" line (expected 1120 or 1121). Needs: nothing extra.
 - [ ] **Sending one, and clicking it** ([chat-links](chat-links-checklist.md): steps 21–23). `/s` alone, then `/lgc1 join ` and the chat button, Enter → in `[sky]`, one link: the link arrow, a party finder icon, "Looking for Party (your name)", and the cross-world mark if the listing is open to other worlds. Screenshot it beside the game's own (`/e ` and the chat button). Clicking it opens your listing in the Party Finder. In a `sky` channel window it is orange with a small people icon; hovering says it's a party finder listing named by its sender; clicking opens the listing. Needs: nothing extra.
-- [ ] **Home world only, and talking in the channel** ([chat-links](chat-links-checklist.md): steps 24–25). Limit the recruitment to your world and send it again → no cross-world mark; back to the data centre → the mark is back. `/lgc1` alone, then `join ` and the chat button → the same link; the chat button alone → sent; `/lgc sky ` and the chat button → the same. Needs: nothing extra.
+- [ ] **Home world only, and talking in the channel** ([chat-links](chat-links-checklist.md): steps 24–25). Limit the recruitment to your world and send it again → no cross-world mark; back to the data centre → the mark is back. Both again, each time looking at another player's listing just before going back to your recruitment window → still right. `/lgc1` alone, then `join ` and the chat button → the same link; the chat button alone → sent; `/lgc sky ` and the chat button → the same. Needs: nothing extra.
 - [ ] **With ChatTwo** ([chat-links](chat-links-checklist.md): step 26). Click the chat button with ChatTwo's input focused → write down what appears there. Send it as above → the same link, and clicking it in ChatTwo's window opens the listing. Needs: ChatTwo installed and on.
 - [ ] **No names in the log** ([chat-links](chat-links-checklist.md): step 30). After the tasks above, `/xllog`'s `[sticky]` lines give counts only: no listing number, no name. Needs: nothing extra.
 

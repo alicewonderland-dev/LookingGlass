@@ -1566,7 +1566,7 @@ game with
   +1,000,000 for high quality; from 2,000,000 an `EventItem` row), a map flag
   (`TerritoryType` and `Map` rows, and world coordinates times 1,000, as the
   game's map links carry them), a status (a `Status` row) or, since
-  2026-10-10, a party finder listing (`PartyFinderLink`, on its own field of
+  2026-10-09, a party finder listing (`PartyFinderLink`, on its own field of
   the `TextLink` oneof, 6: the game's listing id, and whether the listing is
   limited to its leader's home world). Ids and numbers only: no name, no game
   bytes.
@@ -1614,12 +1614,16 @@ game with
   brackets as round ones, within a link's 67 characters. Since a sender can
   write anything there ("[Free gil]"), the recipient's plugin marks it as a
   listing whatever it says, and clicking it can only ever open a listing. In
-  game chat it is built as Dalamud's `SeString.CreatePartyFinderLink` builds
-  the game's own (the `PartyFinderPayload` with the listing id and the
-  home-world flag, the link arrow, the text, the cross-world mark if the
-  listing is open to other worlds, the link terminator), with the party
-  finder's icon (`BitmapFontIcon.LookingForParty`) before the text; the game,
-  or ChatTwo, opens the listing when it is clicked. In a channel window it is
+  game chat it is built of the pieces Dalamud's
+  `SeString.CreatePartyFinderLink` puts together for the game's own (the
+  `PartyFinderPayload` with the listing id and the home-world flag, the link
+  arrow, the text, the link terminator). There the text is the `Addon`
+  sheet's row 2265 evaluated with the leader's name and whether the listing
+  is open to other worlds, and the row adds the cross-world mark after the
+  name if it is; here the text is the sender's, so the plugin adds the
+  cross-world mark the same way, and the party finder's icon
+  (`BitmapFontIcon.LookingForParty`) before the text. The game, or ChatTwo,
+  opens the listing when it is clicked. In a channel window it is
   orange, with a people icon before it; hovering says it is a party finder
   listing named by whoever sent it; clicking opens it with
   `AgentLookingForGroup.OpenListing` (FFXIVClientStructs; what ChatTwo calls
@@ -1627,7 +1631,9 @@ game with
   or one the player's data centre can't see (listings are per data centre;
   channels are not), is the game's to answer, as for its own link; nothing
   is logged unless the call throws. The game's "advanced search results"
-  notice, a party finder link to no listing, is never sent as a link.
+  notice, a party finder link to no listing, is never sent as a link; nor is
+  a typed party finder link whose flag byte Dalamud doesn't recognise, which
+  it reads as that notice: it goes as plain text, which fails safe.
 - **Sending.** A link goes as a link only if the sender's own game data shows
   it (the same checks; a listing only needs its id); up to five per message,
   any more go as their names.
@@ -2619,8 +2625,8 @@ Sticky:
   name), `<status>` its `ContextStatusId` (`ContextStatusName` if the sheet has
   no name), `<flag>` the map flag (`AgentMap`, the first flag marker: world
   coordinates to a thousandth, as the game and ChatTwo make a map link of it).
-  `<pfinder>` (row 1120 of the game's `TextCommandParam` sheet; the party
-  finder's recruitment window has a chat button that puts a link to the
+  `<pfinder>` (rows 1120 and 1121 of the game's `TextCommandParam` sheet; the
+  player's recruitment window has a chat button that puts a link to the
   listing in the chat input, see the game's
   [QoLbringers](https://na.finalfantasyxiv.com/blog/002775.html) notes; ChatTwo's
   preview doesn't handle it) is the listing the chat log agent holds as linked
@@ -2631,6 +2637,9 @@ Sticky:
   name. Whether it is limited to the leader's home world is read from the
   party finder's last shown listing (`AgentLookingForGroup.LastViewedListing`,
   its "world" search area) if it is that listing, where the chat button is;
+  else, if it is the player's own recruitment (`OwnListingId`), from its
+  criteria as last set (`StoredRecruitmentInfo.LimitRecruitingToWorld`, 0
+  when on, as the FFXIVClientStructs this repository builds against has it);
   otherwise it is taken as open to other worlds, as most listings are, which
   only changes whether the link shows the cross-world mark.
   The order for each: what it points at, if the player's own game data shows
@@ -2887,7 +2896,7 @@ about it:
   a map link opens the map (`PayloadHandler.cs`: `HoverItem`, `HoverStatus`,
   `GameGui.OpenMapWithMapLink`), and a `PartyFinderPayload` link opens its
   listing (`GameFunctions.OpenPartyFinder`, `AgentLookingForGroup.OpenListing`;
-  checked 2026-10-10). So a link LookingGlass prints with those
+  checked 2026-10-09). So a link LookingGlass prints with those
   payloads is clickable in ChatTwo too, with nothing ChatTwo-specific. A
   `<pfinder>` placed in ChatTwo's input is plain text there, as `<item>` is
   (its preview shows it as typed), and LookingGlass resolves it the same way.
@@ -4722,7 +4731,7 @@ The owner's decisions, and why.
   chat log, if kept). See
   [Channel windows](#channel-windows) and
   [Windows only, never game chat](#windows-only-never-game-chat).
-- **Party finder links (2026-10-10).** The owner reported that party finder
+- **Party finder links (2026-10-09).** The owner reported that party finder
   links didn't work in channels: they arrived as dead text. They are now a
   fourth link kind, sent as the listing id and the home-world flag on a new
   field older clients skip (they show "[Looking for Party (name)]"), and
