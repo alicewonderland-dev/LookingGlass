@@ -2215,13 +2215,14 @@ These are plugin settings, kept per character, and never sent to the server.
 
   A line about a channel ("Now talking in [sky].") shows the tag in the
   channel's own colour within the blue.
-- **Unread counts.** The channel list counts messages from others since the
-  user last looked at a channel in the main window (or as the selected tab of
-  an open channel window, focused or not) or talked in it. A channel whose messages don't go to
-  game chat (turned off there, or every channel in windows only) is read only
-  in a channel window, as the main window shows no messages (see
-  [Channel windows](#channel-windows)). The window's title shows the total. The
-  counts start from zero at each login.
+- **Unread counts.** The channel list shows counts only for channels whose
+  messages don't go to game chat (turned off there, or every channel in
+  windows only): messages from others since the channel was last the
+  selected tab of an open channel window (focused or not), or since the user
+  talked in it. A channel whose messages go to game chat shows no count: what
+  reached game chat was there to read (the owner's rule, 2026-10-09;
+  `UnreadCounter.ShownCountOf`). The window's title shows the total of the
+  counts shown. The counts start from zero at each login.
 - **Member icons.** Besides the fingerprint state in advanced mode (see
   [Identity keys and fingerprints](#identity-keys-and-fingerprints)), the
   icon's colour shows presence: green while connected, grey when not. A
@@ -4649,8 +4650,9 @@ The owner's decisions, and why.
   window's tab or by talking in it; and a channel turned off game chat that no
   window shows no longer goes back to game chat ("[sky] shows in game chat
   again" is gone): its next line opens a window by itself, by the same rules
-  as windows only. Channels whose messages go to game chat keep today's
-  behaviour (see the open question on their counts). After review: one
+  as windows only. Channels whose messages go to game chat show no count in
+  the channel list or the title (owner, 2026-10-09: what reached game chat
+  was there to read). After review: one
   "read" rule for the tabs' and the channel list's counts (the selected tab of
   an open window, focused or not); a line waiting for a window always gets it,
   even if the settings change meanwhile; a line about a channel that can't
@@ -4699,5 +4701,5 @@ The owner's decisions, and why.
   count today, but the channel list has always counted every channel's
   messages from others (and the main window's title the total). The request
   also said those channels keep today's behaviour, so their counts were left
-  as they are. Undecided: should the channel list (and the title's total)
-  count only channels seen only in windows?
+  as they are. Answered (2026-10-09): yes, only channels seen only in
+  windows; what reached game chat was there to read, so it counts as read.

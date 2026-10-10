@@ -77,7 +77,8 @@ public sealed class MainWindow : Window {
     }
 
     public override void Update() {
-        var unread = this._sessions.Unread.Total;
+        // Only channels seen only in windows: what reached game chat was there to read.
+        var unread = this._sessions.Unread.ShownTotal(this._sessions.MessagesOnlyInWindows, this._sessions.GameChatOff);
         this.WindowName = unread > 0 ? $"{Title} ({UnreadCounter.Format(unread)}){Id}" : Title + Id;
     }
 
@@ -718,7 +719,7 @@ public sealed class MainWindow : Window {
         var slot = this._sessions.SlotOf(channel.Id);
         var nickname = this._sessions.NicknameOf(channel.Id);
         var colour = this._sessions.ColourOf(channel.Id) is { } own ? ChannelPalette.ColourOf(own) : null;
-        var unread = this._sessions.Unread.CountOf(channel.Id);
+        var unread = this._sessions.Unread.ShownCountOf(channel.Id, this._sessions.MessagesOnlyInWindows, this._sessions.GameChatOff);
         var attention = ChannelAttention.Of(channel, this._config.AdvancedMode);
         var displayName = channel.DisplayNameFor(this._config.AdvancedMode);
 

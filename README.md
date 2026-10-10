@@ -24,8 +24,9 @@ early testing (version 0.2).
 - **Name colours.** Give someone's name a colour of its own, to tell people
   apart at a glance in a busy channel. It shows in every channel, and only you
   see it.
-- **Unread counts.** The channel list counts new messages, and the window's
-  title shows the total.
+- **Unread counts.** The channel list counts new messages in channels that
+  don't show in game chat (all of them in windows-only mode), and the window's
+  title shows the total. What reached game chat counts as read.
 - **Channel windows.** Right-click a channel in the list to chat in a window
   of its own, with tabs for more channels (the **+**). What you type there only
   ever goes to that channel, never to game chat, and you can choose which
