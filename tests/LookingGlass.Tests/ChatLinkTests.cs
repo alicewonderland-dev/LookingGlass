@@ -525,6 +525,12 @@ public sealed class ChatLinkTests {
         Assert.True(ChatBoxLine.HasSomethingToSend("<pfinder>"));
         Assert.False(ChatBoxLine.HasText("<pfinder>"));
 
+        // A long name is cut, so the link is still sent, and received, as one.
+        var (longOne, _) = LinkText.Resolve("<pfinder>", _ => new TypedLink(Listing, "Looking for Party (" + new string('x', 200) + ")"));
+        Assert.True(longOne.Text.Length <= ChatLinks.MaxTextLength, $"{longOne.Text.Length} characters");
+        Assert.Equal(Listing, Assert.Single(MessageContent.ValidLinks(longOne.Text, MessageContent.Encode(longOne).Text.Links)).Target);
+        Assert.True(new MessagePart.Link(Listing, longOne.Text).Name(new FakeSheets())!.Length <= ChatLinks.MaxTextLength - 2);
+
         // Nothing known: left out, as any link. A name but no listing id: the name only.
         Assert.Equal((LinkedText.Plain("join"), true), LinkText.Resolve("join <pfinder>", _ => null));
         Assert.Equal(new TypedLink(null, "Alice Test"), LinkText.PlaceholderLink(new ChatLink.PartyFinder(0, false), null, "Alice Test"));
@@ -564,6 +570,38 @@ public sealed class ChatLinkTests {
     }
 
     [Fact]
+    public void AClientThatDoesntKnowTheListingFieldDropsTheLinkAndShowsTheText() {
+        // The link as encoded: start, length, and the listing on field 6.
+        var (message, _) = LinkText.Compose(new TypedLine($"join {M(0)}", [Recruiting]));
+        var encoded = MessageContent.Encode(message).Text.Links.Single();
+        var input = new CodedInputStream(encoded.ToByteArray());
+        Assert.Equal(WireFormat.MakeTag(1, WireFormat.WireType.Varint), input.ReadTag());
+        input.ReadUInt32();
+        Assert.Equal(WireFormat.MakeTag(2, WireFormat.WireType.Varint), input.ReadTag());
+        input.ReadUInt32();
+        Assert.Equal(WireFormat.MakeTag(6, WireFormat.WireType.LengthDelimited), input.ReadTag());
+        var listing = input.ReadBytes();
+        Assert.True(input.IsAtEnd);
+
+        // An older client has no field 6 in its TextLink, as this one has no field 7: the same bytes on field 7 stand in
+        // for what it reads. The field is kept as unknown, the link has no kind, and it is dropped; the text stays.
+        var stream = new MemoryStream();
+        var output = new CodedOutputStream(stream);
+        output.WriteTag(1, WireFormat.WireType.Varint);
+        output.WriteUInt32(encoded.Start);
+        output.WriteTag(2, WireFormat.WireType.Varint);
+        output.WriteUInt32(encoded.Length);
+        output.WriteTag(7, WireFormat.WireType.LengthDelimited);
+        output.WriteBytes(listing);
+        output.Flush();
+        var unknown = TextLink.Parser.ParseFrom(stream.ToArray());
+        Assert.Equal(TextLink.TargetOneofCase.None, unknown.TargetCase);
+
+        var content = new Content { Text = new TextContent { Text = message.Text, Links = { unknown } } };
+        Assert.Equal(LinkedText.Plain("join [Looking for Party (Alice Test)]"), MessageContent.Decode(Content.Parser.ParseFrom(content.ToByteArray())));
+    }
+
+    [Fact]
     public void APartyFinderListingIsNamedByTheSendersTextAsPlainText() {
         // No game data holds a listing: the name shown is the sender's, with no game formatting or icons of its own (the
         // recipient's plugin adds the party finder's marks around it).
@@ -572,6 +610,12 @@ public sealed class ChatLinkTests {
         Assert.Equal("Looking for Party (Alice Test)", new MessagePart.Link(Listing, "[Looking for Party (Alice Test)]").Name(sheets));
         Assert.Equal("Free gil", new MessagePart.Link(Listing, "[Free\u0002 gil]").Name(sheets));
         Assert.Equal("a (b) (c)", new MessagePart.Link(Listing, "[a [b] <c>]").Name(sheets));
+        // The game's link arrow and party finder and cross-world marks, and private-use characters past U+FFFF (two
+        // UTF-16 units each), never come from the sender: the recipient adds its own marks.
+        Assert.Equal("Free gil", new MessagePart.Link(Listing, "[ Free gil]").Name(sheets));
+        Assert.Equal("Free gil", new MessagePart.Link(Listing, "[\U000F0001Free \U0010FFFDgil\U000F0000]").Name(sheets));
+        Assert.Equal("abc", LinkText.Clean("a\U000F0001b\U0010FFFDc"));
+        Assert.Equal("a\U0001F600b", LinkText.Clean("a\U0001F600b")); // other characters past U+FFFF stay
         Assert.Null(new MessagePart.Link(Listing, "[ \u0002]").Name(sheets));
         Assert.Null(new MessagePart.Link(new ChatLink.PartyFinder(0, false), "[Free gil]").Name(sheets));
         Assert.Equal(MessagePart.UnknownLink, new MessagePart.Link(Listing, "[\u0002]").Fallback);

@@ -283,7 +283,10 @@ public static partial class LinkText {
 
         name = StripMarkers(TextSanitizer.Name(name));
         // The game's own icons (the link arrow, the high-quality mark) are private-use characters: not part of a name.
-        name = new string(name.Where(c => char.GetUnicodeCategory(c) != System.Globalization.UnicodeCategory.PrivateUse).ToArray());
+        // By code point, so those past U+FFFF (two UTF-16 units each) go too.
+        name = string.Concat(name.EnumerateRunes()
+            .Where(rune => Rune.GetUnicodeCategory(rune) != System.Globalization.UnicodeCategory.PrivateUse)
+            .Select(rune => rune.ToString()));
         name = name.Replace('<', '(').Replace('>', ')').Replace('[', '(').Replace(']', ')').Trim();
         name = Spaces().Replace(name, " ");
 

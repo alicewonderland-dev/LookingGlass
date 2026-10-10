@@ -58,7 +58,8 @@ internal static unsafe class GameLinks {
                 ItemPayload item => new ChatLink.Item(item.RawItemId),
                 MapLinkPayload map => new ChatLink.MapFlag(map.TerritoryType.RowId, map.Map.RowId, map.RawX, map.RawY),
                 StatusPayload status => new ChatLink.Status(status.Status.RowId),
-                // The "advanced search results" notice is a party finder link to no listing: left as its text.
+                // The "advanced search results" notice is a party finder link to no listing: left as its text. So is a link
+                // whose flag Dalamud doesn't know, which it reads as the notice.
                 PartyFinderPayload { LinkType: not PartyFinderPayload.PartyFinderLinkType.PartyFinderNotification } listing =>
                     new ChatLink.PartyFinder(listing.ListingId, listing.LinkType == PartyFinderPayload.PartyFinderLinkType.LimitedToHomeWorld),
                 _ => null,
@@ -138,14 +139,22 @@ internal static unsafe class GameLinks {
     }
 
     /// <summary>
-    /// Whether a listing is limited to its leader's home world, if it is the one the party finder showed last (where its
-    /// chat button is): its "world" search area. Otherwise it isn't known, and taken as open to other worlds, as most
-    /// listings are; that only changes whether the link shows the cross-world mark.
+    /// Whether a listing is limited to its leader's home world: if it is the one the party finder showed last (where its
+    /// chat button is), its "world" search area; else if it is the player's own recruitment, its criteria as last set
+    /// ("limit recruiting to world", 0 when on, as FFXIVClientStructs has it). Otherwise it isn't known, and taken as
+    /// open to other worlds, as most listings are; that only changes whether the link shows the cross-world mark.
     /// </summary>
     private static bool HomeWorldOnly(ulong listingId) {
         var agent = AgentLookingForGroup.Instance();
-        return agent != null && agent->LastViewedListing.ListingId == listingId
-                             && agent->LastViewedListing.JoinConditionFlags.HasFlag(AgentLookingForGroup.JoinCondition.World);
+        if (agent == null) {
+            return false;
+        }
+
+        if (agent->LastViewedListing.ListingId == listingId) {
+            return agent->LastViewedListing.JoinConditionFlags.HasFlag(AgentLookingForGroup.JoinCondition.World);
+        }
+
+        return agent->OwnListingId != 0 && agent->OwnListingId == listingId && agent->StoredRecruitmentInfo.LimitRecruitingToWorld == 0;
     }
 
     /// <summary>A listing's link text as the game writes it, in the player's language (Dalamud's <c>CreatePartyFinderLink</c>), or null.</summary>
@@ -318,9 +327,11 @@ internal static unsafe class GameLinks {
     }
 
     /// <summary>
-    /// A party finder link as the game makes one (Dalamud's <c>CreatePartyFinderLink</c>: the link, the arrow, its text,
-    /// the cross-world mark if the listing is open to other worlds, the end of the link), with the party finder's mark
-    /// before the text: the text is the sender's, so whatever it says, it is seen to be a listing.
+    /// A party finder link as the game makes one: the link, the arrow, its text, the end of the link, as Dalamud's
+    /// <c>CreatePartyFinderLink</c> puts them together. There the text is the Addon sheet's row 2265 evaluated with the
+    /// leader's name and whether the listing is open to other worlds, which adds the cross-world mark after it if so;
+    /// here the text is the sender's, so the cross-world mark is added the same way, and the party finder's mark goes
+    /// before the text: whatever it says, it is seen to be a listing.
     /// </summary>
     private static SeString PartyFinderLink(ChatLink.PartyFinder listing, string name) {
         var builder = new SeStringBuilder()
