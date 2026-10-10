@@ -1982,6 +1982,33 @@ again.
   meanwhile.
 - **The log only grows.** Clients fetch just the new entries, but someone new
   to a channel (or invited to it) replays it from the start.
+  - *How big it gets.* An entry is about 300 bytes. Each person who comes and
+    goes adds about three (invite, accept, leave or remove), and a rank change
+    one. Messages add none. A replay runs on the session's threads, never the
+    game's, so a long log only delays when a new member's channel is ready.
+    Estimated, not measured: 5,000 entries is about 1.5 MB and a second; 20,000
+    about 6 MB and a few seconds.
+  - *Where it starts to show.* A sync fetches at most 40 pages of 500 entries
+    (20,000). A longer log is caught up over several syncs. The fork check
+    that replays the server's whole log stops at the same 20,000 entries, so in
+    a longer log a fork past that point is caught only by the other checks
+    (log heads in messages, freshness of keys and names).
+  - *Not expected to matter* (owner's assessment, 2026-10-10). Most channels
+    are small groups of 2 to 20 people, whose logs stay in the hundreds of
+    entries; no channel is expected to reach 20,000.
+  - *If one ever does: checkpoints.* The planned answer, not built. The admin's
+    client would sign a checkpoint entry (a log entry, unlike the
+    `MembershipCheckpoint` each client saves locally) once the log passes a set size: the
+    members, ranks, keys and open invites at that position. Every member who
+    has already verified the log checks the checkpoint against their own
+    replay and treats a mismatch as a fork. Newcomers replay from the newest
+    checkpoint instead of entry 0, and the server drops entries before it only
+    after a grace period (say a month), so members who were away catch up as
+    now. Newcomers then trust the admin's summary, rather than every entry. The
+    admin can already invite or remove anyone, and a false checkpoint shows up
+    to every existing member and, through log heads in messages, to
+    newcomers. It would change the protocol and the server, and need its own
+    adversarial review.
 - **Metadata and availability.** The server sees who is in which channel, when
   messages are sent and who is online, and can drop or delay anything.
 - **Stored messages widen what a stolen key reads** (message catch-up, owner's
