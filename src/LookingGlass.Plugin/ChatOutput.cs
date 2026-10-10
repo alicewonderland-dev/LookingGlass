@@ -71,7 +71,7 @@ public sealed class ChatOutput(Configuration config) {
                 case MessagePart.Text text:
                     builder.AddText(text.Value);
                     break;
-                case MessagePart.Link link when !GameLinks.TryAppend(builder, link.Target):
+                case MessagePart.Link link when !GameLinks.TryAppend(builder, link):
                     builder.AddText(link.Fallback);
                     break;
             }

@@ -164,6 +164,21 @@ arrives", make one with `/lgdebug` > Channel tools > pick the channel >
 - [ ] **The flash** ([channel-windows](channel-windows-checklist.md): steps 37c–37f). A window that opens by itself → title bar and border pulse three times in the channel's colour over about 1.5 s, without coming to the front or taking the keyboard. A tab added by itself → its window flashes once. Windows you open yourself, and windows reopened at login, don't flash. With Dalamud's reduced motion on → a steady, softer tint for about 1.5 s, no pulsing. Report whether the flash is noticeable enough, or too much (the owner will tune it). Needs: Simulate incoming; a screen recording helps.
 - [ ] **No count for channels shown in game chat** ([channel-windows](channel-windows-checklist.md): step 36b). B sends in a channel that shows in game chat → no count for it in the channel list or the main window's title. Turn it off game chat, close its window, and B sends again → now it counts, and its window opens. Needs: B in the channel; the build after 0.2.13.
 
+### Party finder links, needs the build after 0.2.14
+
+Setup for all of these: a channel `sky` on `/lgc1`, and a Party Finder
+recruitment of your own that stays up for the whole test (any duty, with a
+password so nobody joins). "The chat button" is the speech bubble on your
+recruitment window (Square Enix's notes only mention yours: check whether
+other players' listings have it too, and say). ChatTwo off until the ChatTwo
+task.
+
+- [ ] **What the chat button puts in the input** ([chat-links](chat-links-checklist.md): step 20). With `/xllog` open and talking in `[sky]` (`/lgc1` alone), click the chat button → write down what appears in the chat input (expected `<pfinder>`) and the "kind" number in the `[sticky]` "link put in the chat input" line (expected 1120 or 1121). Needs: nothing extra.
+- [ ] **Sending one, and clicking it** ([chat-links](chat-links-checklist.md): steps 21–23). `/s` alone, then `/lgc1 join ` and the chat button, Enter → in `[sky]`, one link: the link arrow, a party finder icon, "Looking for Party (your name)", and the cross-world mark if the listing is open to other worlds. Screenshot it beside the game's own (`/e ` and the chat button). Clicking it opens your listing in the Party Finder. In a `sky` channel window it is orange with a small people icon; hovering says it's a party finder listing named by its sender; clicking opens the listing. Needs: nothing extra.
+- [ ] **Home world only, and talking in the channel** ([chat-links](chat-links-checklist.md): steps 24–25). Limit the recruitment to your world and send it again → no cross-world mark; back to the data centre → the mark is back. Both again, each time looking at another player's listing just before going back to your recruitment window → still right. `/lgc1` alone, then `join ` and the chat button → the same link; the chat button alone → sent; `/lgc sky ` and the chat button → the same. Needs: nothing extra.
+- [ ] **With ChatTwo** ([chat-links](chat-links-checklist.md): step 26). Click the chat button with ChatTwo's input focused → write down what appears there. Send it as above → the same link, and clicking it in ChatTwo's window opens the listing. Needs: ChatTwo installed and on.
+- [ ] **No names in the log** ([chat-links](chat-links-checklist.md): step 30). After the tasks above, `/xllog`'s `[sticky]` lines give counts only: no listing number, no name. Needs: nothing extra.
+
 ---
 
 # Group 2: two players (or more)
@@ -214,6 +229,16 @@ Setup: as in group 1's task of the same name, with B in `sky` and `fc`.
 - [ ] **Messages from B in tabs and new windows** ([channel-windows](channel-windows-checklist.md): steps 17b, 17d; [windows-only](windows-only-checklist.md): steps 3, 6). With `raid` selected in a window that also has `fc`, B sends twice in `fc` → `fc (2)`; someone joining `fc` adds nothing. Relog while B sends in a tab behind the selected one → once the window is back, that tab counts it. Tick **Show LookingGlass only in windows**, close every window, B sends in `sky` → a window opens and flashes three times; B leaves `fc` and A invites B back → an `fc` tab is added behind `sky` and the window flashes once. Needs: B sending at the right moments.
 - [ ] **Missed messages open a window for a channel off game chat** ([channel-windows](channel-windows-checklist.md): step 33c, second part). `sky` off game chat, no window with `sky`. A logs out, B sends in `sky`, A logs back in → no game chat lines for `sky`; a window opens with the missed messages once the channel list is in. Needs: B sending while A is logged out, a server that keeps messages.
 - [ ] **An information line alone opens a window for a channel off game chat** ([channel-windows](channel-windows-checklist.md): step 33f, second part). `sky` off game chat, no window with `sky`, windows only off. B leaves `sky` (or A invites someone) → the line isn't in game chat; a `sky` window opens by itself, flashing, with that line. Needs: B leaving, or someone to invite.
+
+### Party finder links, needs the build after 0.2.14 on A and B
+
+Setup: as in group 1's task of the same name, with B in `sky`. A sends
+`/lgc1 join ` and the chat button.
+
+- [ ] **B opens A's listing** ([chat-links](chat-links-checklist.md): step 27). B sees the link as A does (in A's wording: the name comes from the sender). Clicking it opens A's listing: in the game's chat log with ChatTwo off, in ChatTwo's window with ChatTwo on, and in B's `sky` channel window. Needs: B on the same data centre.
+- [ ] **A listing that has ended** ([chat-links](chat-links-checklist.md): step 28). A ends the recruitment; B clicks the old link in chat and in the window → the game's own answer (or nothing), no crash, no LookingGlass error or warning. Needs: do after the task above.
+- [ ] **Another data centre** ([chat-links](chat-links-checklist.md): step 29). Optional. B in `sky` from another data centre clicks A's link → the game's own answer, no crash, no LookingGlass error, and clicking again doesn't fill `/xllog`. Needs: B on another data centre.
+- [ ] **An older plugin** ([chat-links](chat-links-checklist.md): step 31). Optional. B on 0.2.14 or older sees `join [Looking for Party (A's name)]` as plain text, no error. Needs: B on an older build.
 
 ### Windows only, needs 0.2.9 on A
 

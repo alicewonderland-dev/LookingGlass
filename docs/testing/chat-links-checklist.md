@@ -1,6 +1,7 @@
 # Chat links: in-game checklist
 
-Item, map flag and status links in LookingGlass channel messages (see
+Item, map flag, status and party finder links in LookingGlass channel
+messages (party finder links have their own section at the end; see
 [Links in messages](../design.md#links-in-messages)). You need two characters
 in the same channel, **A** (sending) and **B** (receiving, on another PC or
 client), both on this build. Do it once with ChatTwo off and once with
@@ -105,3 +106,71 @@ same check code. Both A and B on this build unless a step says otherwise.
       for, in plain words in simple mode. After step 17's change, both codes
       move on to the same new one (the number at the start goes up). No member
       shows a warning sign for "Sees a different member list".
+
+## Party finder links (new in the build after 0.2.14)
+
+Party finder links now work in channels (see
+[Links in messages](../design.md#links-in-messages), *Party finder
+listings*). A and B as above, both on this build, on the same data centre
+unless a step says otherwise. For a listing to link, A starts a recruitment
+of their own in the Party Finder (any duty; a password keeps strangers out),
+so it stays up for the whole test (a listing ends when it fills, or after an
+hour).
+
+How to link a listing: open your recruitment window and click its chat
+button (the speech bubble). It should put `<pfinder>` in the chat input, as
+linking an item puts `<item>`. Square Enix's notes only mention your own
+recruitment window: check whether other players' listings have the button
+too, and write down what you find.
+
+- [ ] 20. **What the chat button puts in the input.** ChatTwo off, with
+      `/xllog` open: `/lgc1` on its own (talking in `[sky]`), then click the
+      chat button. Write down what appears in the chat input (expected:
+      `<pfinder>`), and the number after "kind" in the `[sticky]` line
+      "link put in the chat input" (expected: 1120 or 1121).
+- [ ] 21. **Sending.** `/s` on its own, then `/lgc1 join ` and the chat
+      button, Enter. A sees, in `[sky]` in game chat: `join ` and then one
+      link made of the game's link arrow, a party finder icon, "Looking for
+      Party (A's name)", and, for a listing open to other worlds, the
+      cross-world mark. Nothing in Say or Party. Screenshot it next to the
+      game's own party finder link (type `/e `, click the chat button, Enter:
+      echo, which only you see) so the two can be compared.
+- [ ] 22. **Clicking it in game chat.** Click the link from step 21 → the
+      Party Finder opens on that listing, as clicking the game's own party
+      finder link does.
+- [ ] 23. **In a channel window.** The same message in a `[sky]` channel
+      window shows the listing as an orange link with a small people icon
+      before it. Hovering says it is a party finder listing, named by whoever
+      sent it; clicking it opens the listing in the Party Finder.
+- [ ] 24. **Home world only.** Edit the recruitment so it's limited to your
+      own world, open it again and send it as in step 21 → the link has no
+      cross-world mark. Set it back to the whole data centre and send again →
+      the mark is back. Then do both again, each time looking at another
+      player's listing in the Party Finder just before going back to your
+      recruitment window and its chat button: the mark should still be right
+      (taken from your own recruitment's settings when the Party Finder last
+      showed someone else's). (The mark is the only thing this changes;
+      report if it's wrong in any case, and which.)
+- [ ] 25. **Talking in the channel.** `/lgc1` on its own, then `join ` and the
+      chat button, Enter → as step 21. The chat button alone, Enter → sent
+      (no "Not sent" line). `/lgc sky ` and the chat button → the same.
+- [ ] 26. **ChatTwo on (A).** Click the chat button with ChatTwo's input
+      focused: write down what appears in ChatTwo's input. Send it as in steps
+      21 and 25 → as there. Clicking the link in ChatTwo's window opens the
+      listing.
+- [ ] 27. **B receives it (needs B).** B sees A's message from step 21 with
+      the same link (in A's wording: the name comes from the sender). Clicking
+      it opens A's listing: in the game's chat log with ChatTwo off, in
+      ChatTwo's window with ChatTwo on, and in B's channel window.
+- [ ] 28. **A listing that has ended (needs B).** A ends the recruitment. B
+      clicks the old link (in chat and in the window) → the game's own answer
+      (a message that the listing can't be found, or nothing); no crash, and
+      no LookingGlass error or warning in chat or in `/xllog`.
+- [ ] 29. **Another data centre (optional, needs B on another data centre).**
+      B, in the channel from another data centre, clicks A's link → the
+      game's own answer; no crash, no LookingGlass error or warning, and
+      clicking again doesn't fill `/xllog` with lines.
+- [ ] 30. **The log.** In `dalamud.log`, the `[sticky]` lines for these
+      messages give counts only: no listing number and no leader's name.
+- [ ] 31. **An older build (optional, needs B on 0.2.14 or older).** B sees
+      `join [Looking for Party (A's name)]` as plain text, with no error.

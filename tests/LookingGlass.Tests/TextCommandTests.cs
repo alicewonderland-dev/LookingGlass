@@ -82,13 +82,13 @@ public sealed class TextCommandTests {
     [Fact]
     public void LinksAndLinkPlaceholdersAreLeftForTheLinkRules() {
         var asked = new List<string>();
-        var line = new TypedLine($"look {M(0)} <t> <item> <flag> <status>", [Potion]);
+        var line = new TypedLine($"look {M(0)} <t> <item> <flag> <status> <pfinder>", [Potion]);
         var (resolved, replaced) = TextCommands.Resolve(line, command => {
             asked.Add(command);
             return Game(command);
         });
 
-        Assert.Equal($"look {M(0)} Bob Builder <item> <flag> <status>", resolved.Text);
+        Assert.Equal($"look {M(0)} Bob Builder <item> <flag> <status> <pfinder>", resolved.Text);
         Assert.Equal(1, replaced);
         Assert.Equal(["<t>"], asked);
         Assert.Equal(line.Links, resolved.Links);

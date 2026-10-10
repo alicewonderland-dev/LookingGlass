@@ -88,7 +88,7 @@ stop. Starting and stopping aren't also said in chat unless you turn on **Say
 when I start or stop talking in a channel** in Settings (off by default), but
 a stop you didn't choose, such as a disconnect, always is. If a
 message can't be sent, you're told, and it doesn't go to game chat either.
-Item, map flag and status links work as in normal chat, and so do text
+Item, map flag, status and party finder links work as in normal chat, and so do text
 commands such as `<t>` and `<me>`, which are sent as the names they stand for.
 
 `/p hi`, `/s hi` and the like still talk in that game channel once, as usual

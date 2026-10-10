@@ -1546,10 +1546,12 @@ moved clock.
 
 #### Links in messages
 
-An item, a map flag or a status linked in a message reaches the other members
-as the game's own interactive link, where it was in the sentence: hovering an
-item or a status shows its tooltip, clicking a map flag opens the map there,
-in the game's chat log and in ChatTwo. The format and the rules are in the
+An item, a map flag, a status or a party finder listing linked in a message
+reaches the other members as the game's own interactive link, where it was in
+the sentence: hovering an item or a status shows its tooltip, clicking a map
+flag opens the map there, clicking a listing opens it in the party finder, in
+the game's chat log and in ChatTwo (and in channel windows, see
+[Channel windows](#channel-windows)). The format and the rules are in the
 core library (`MessageContent`, `ChatLinks`, `LinkText`), and unit tested;
 the plugin's `GameLinks` reads and builds the game's side, and is checked in
 game with
@@ -1563,10 +1565,16 @@ game with
   item (the game's raw item id: an `Item` row, +500,000 for a collectable,
   +1,000,000 for high quality; from 2,000,000 an `EventItem` row), a map flag
   (`TerritoryType` and `Map` rows, and world coordinates times 1,000, as the
-  game's map links carry them) or a status (a `Status` row). Ids and numbers
-  only: no name, no game bytes.
+  game's map links carry them), a status (a `Status` row) or, since
+  2026-10-09, a party finder listing (`PartyFinderLink`, on its own field of
+  the `TextLink` oneof, 6: the game's listing id, and whether the listing is
+  limited to its leader's home world). Ids and numbers only: no name, no game
+  bytes.
 - **Compatibility.** Older clients skip the unknown field and show the text,
-  "look [Potion]", as they always showed links. Messages without links are
+  "look [Potion]", as they always showed links. A client from before party
+  finder links skips that kind the same way (a link of a kind it doesn't
+  know is dropped) and shows "[Looking for Party (Alice Test)]" as text.
+  Messages without links are
   exactly as before. Nothing about it reaches the server, which needed no
   change: the field is inside the encrypted, signed plaintext, under the same
   4 KiB ciphertext limit (five links with the longest names add well under
@@ -1586,7 +1594,9 @@ game with
   another territory's map, so either is enough; the position must be on that
   map (inside its square at its size factor and offset, give or take a
   little), and the territory have a place name; a status must be a `Status`
-  row with a name.
+  row with a name. A party finder listing must have an id other than 0; no
+  game data holds listings, so nothing more can be checked, and its name is
+  the sender's (*Party finder listings*, below).
 - **Rebuilt, never copied.** A link that passes is built afresh from its ids
   with Dalamud's own link builders (`SeString.CreateItemLink`,
   `CreateMapLink`; a status as `StatusPayload`, the link arrow, its name and
@@ -1596,8 +1606,37 @@ game with
   from the network reaches the chat log except as sanitised text, and a
   message with links is held to the same 1,000-character limit as one
   without, across all its pieces (a link counting as its "[name]").
+- **Party finder listings.** A listing can't be looked up in game data, so
+  the name shown is the sender's "[name]" ("Looking for Party (Alice Test)",
+  the game's own text for the link in the sender's language), as plain text:
+  sanitised like all remote text, without game formatting or icons (the
+  game's icons are private-use characters, taken out), square and angle
+  brackets as round ones, within a link's 67 characters. Since a sender can
+  write anything there ("[Free gil]"), the recipient's plugin marks it as a
+  listing whatever it says, and clicking it can only ever open a listing. In
+  game chat it is built of the pieces Dalamud's
+  `SeString.CreatePartyFinderLink` puts together for the game's own (the
+  `PartyFinderPayload` with the listing id and the home-world flag, the link
+  arrow, the text, the link terminator). There the text is the `Addon`
+  sheet's row 2265 evaluated with the leader's name and whether the listing
+  is open to other worlds, and the row adds the cross-world mark after the
+  name if it is; here the text is the sender's, so the plugin adds the
+  cross-world mark the same way, and the party finder's icon
+  (`BitmapFontIcon.LookingForParty`) before the text. The game, or ChatTwo,
+  opens the listing when it is clicked. In a channel window it is
+  orange, with a people icon before it; hovering says it is a party finder
+  listing named by whoever sent it; clicking opens it with
+  `AgentLookingForGroup.OpenListing` (FFXIVClientStructs; what ChatTwo calls
+  for a party finder link), on the game thread. A listing that has ended,
+  or one the player's data centre can't see (listings are per data centre;
+  channels are not), is the game's to answer, as for its own link; nothing
+  is logged unless the call throws. The game's "advanced search results"
+  notice, a party finder link to no listing, is never sent as a link; nor is
+  a typed party finder link whose flag byte Dalamud doesn't recognise, which
+  it reads as that notice: it goes as plain text, which fails safe.
 - **Sending.** A link goes as a link only if the sender's own game data shows
-  it (the same checks); up to five per message, any more go as their names.
+  it (the same checks; a listing only needs its id); up to five per message,
+  any more go as their names.
   How a typed line's links are found is under
   [Talking in a channel without /lgc](#talking-in-a-channel-without-lgc)
   (*Links*); `/lgcN` and `/lgc <nickname>` find them the same way.
@@ -1620,7 +1659,7 @@ core library (`TextCommands`) and unit tested; the plugin's
   `<8>` (party members), `<r>` (last tell partner) and `<pos>` (the player's
   position). Anything else between angle brackets (`<se.1>`, `<hp>`,
   `<wait.3>`) is text, sent as typed. The link placeholders (`<item>`,
-  `<flag>`, `<status>`) are links, as above.
+  `<flag>`, `<status>`, `<pfinder>`) are links, as above.
 - **How: the game's own expander.** Each text command in the line, on its
   own, goes through `PronounModule.ProcessString` (FFXIVClientStructs; the
   function the game runs on a chat line, and the one ChatTwo uses for its
@@ -2551,27 +2590,32 @@ Sticky:
 - Anything else goes to the channel, trimmed, as text and links. A line with
   only a link goes too (it used to be kept from the game, "not sent", while
   links couldn't be sent): that is a line with only links (payloads) or only
-  link placeholders (`<item>`, `<flag>`, `<status>`: what the chat input holds
+  link placeholders (`<item>`, `<flag>`, `<status>`, `<pfinder>`: what the chat input holds
   for a link until the line is sent, put there by
   `AgentChatLog.InsertTextCommandParam`; the game makes them links only while
   running the line, after the gate, and ChatTwo's input holds them the same
   way; the owner's log shows the placeholder in both chat boxes). A short
   command whose line goes to LookingGlass (above) with only a link goes the
   same way. A line with something in it but nothing LookingGlass can send (a
-  payload that is neither text nor an item, map or status link) is kept from
+  payload that is neither text nor an item, map, status or party finder link) is kept from
   the game, with "Not sent to [sky] or game chat: nothing in it can be sent to
   a channel." A blank line goes nowhere, quietly.
 - *Links* (`LinkText`, and the plugin's `GameLinks`). A link goes as its name
   in square brackets in the text, "look `<item>`" sent as "look [Potion]"
   (what older clients show), and over that as the link itself (see
   [Links in messages](#links-in-messages)). The plugin reads the line's bytes
-  with Dalamud (`SeString.Parse`): an `ItemPayload`, `MapLinkPayload` or
-  `StatusPayload` and the text up to its link terminator become one link (its
-  raw item id, territory, map and coordinates, or status id), held in the
-  line's text as a marker (a Unicode noncharacter, U+FDD0 on, which never
-  stands for anything in game text and is taken out of anything typed) so the
+  with Dalamud (`SeString.Parse`): an `ItemPayload`, `MapLinkPayload`,
+  `StatusPayload` or `PartyFinderPayload` and the text up to its link
+  terminator become one link (its raw item id, territory, map and
+  coordinates, status id, or listing id and whether it is limited to the
+  leader's home world: `LimitedToHomeWorld`, where the game's own link has no
+  cross-world mark), held in the line's text as a marker (a Unicode
+  noncharacter, U+FDD0 on, which never stands for anything in game text and
+  is taken out of anything typed) so the
   routing rules above see "text" and "links" apart and can cut the command off
-  without losing them. Any other link (a player, a quest) stays as its text.
+  without losing them. Any other link (a player, a quest, the party finder's
+  "advanced search results" notice) stays as its text. A listing's name is
+  always the link's text, "Looking for Party (name)" (no sheet holds it).
   A placeholder is resolved where the game keeps what it stands for, as
   ChatTwo's input preview does (`Message.cs`, `DecodeTextParam`, 1.40.9):
   `<item>` the item the chat log agent holds as linked
@@ -2581,6 +2625,23 @@ Sticky:
   name), `<status>` its `ContextStatusId` (`ContextStatusName` if the sheet has
   no name), `<flag>` the map flag (`AgentMap`, the first flag marker: world
   coordinates to a thousandth, as the game and ChatTwo make a map link of it).
+  `<pfinder>` (rows 1120 and 1121 of the game's `TextCommandParam` sheet; the
+  player's recruitment window has a chat button that puts a link to the
+  listing in the chat input, see the game's
+  [QoLbringers](https://na.finalfantasyxiv.com/blog/002775.html) notes; ChatTwo's
+  preview doesn't handle it) is the listing the chat log agent holds as linked
+  (`AgentChatLog.LinkedPartyFinderId`, a listing id that fits in 32 bits, and
+  `LinkedPartyFinderLeaderName`), named by the game's own text for its link in
+  the player's language (Dalamud's `SeString.CreatePartyFinderLink`, the
+  `Addon` sheet's row 2265, "Looking for Party (name)"), else the leader's
+  name. Whether it is limited to the leader's home world is read from the
+  party finder's last shown listing (`AgentLookingForGroup.LastViewedListing`,
+  its "world" search area) if it is that listing, where the chat button is;
+  else, if it is the player's own recruitment (`OwnListingId`), from its
+  criteria as last set (`StoredRecruitmentInfo.LimitRecruitingToWorld`, 0
+  when on, as the FFXIVClientStructs this repository builds against has it);
+  otherwise it is taken as open to other worlds, as most listings are, which
+  only changes whether the link shows the cross-world mark.
   The order for each: what it points at, if the player's own game data shows
   it (the checks in Links in messages), else name only; the name from the
   player's sheet (in their language), else the game's text for it; neither:
@@ -2833,8 +2894,12 @@ about it:
   and Dalamud's map link both end with), and `UIForeground` and `UIGlow` set
   its colours. Hovering an item or a status shows ChatTwo's tooltip, clicking
   a map link opens the map (`PayloadHandler.cs`: `HoverItem`, `HoverStatus`,
-  `GameGui.OpenMapWithMapLink`). So a link LookingGlass prints with those
-  payloads is clickable in ChatTwo too, with nothing ChatTwo-specific.
+  `GameGui.OpenMapWithMapLink`), and a `PartyFinderPayload` link opens its
+  listing (`GameFunctions.OpenPartyFinder`, `AgentLookingForGroup.OpenListing`;
+  checked 2026-10-09). So a link LookingGlass prints with those
+  payloads is clickable in ChatTwo too, with nothing ChatTwo-specific. A
+  `<pfinder>` placed in ChatTwo's input is plain text there, as `<item>` is
+  (its preview shows it as typed), and LookingGlass resolves it the same way.
 - *A channel command on its own (verified on ChatTwo's side).* Typed in
   ChatTwo, `/s` is sent as it is through `ProcessChatBoxEntry`, like any line
   starting with `/` (`SendHandler.SendChatBox`); ChatTwo doesn't act on it
@@ -3043,6 +3108,10 @@ the plugin's `ChannelWindows` opens and remembers the windows and
   an item shows its name (and high quality, collectable or key item), a
   status its name, and clicking a map flag opens the map there (Dalamud's
   `OpenMapWithMapLink`, on the game thread), as the game's own links do. A
+  party finder listing is orange, after a people icon, named by its sender
+  (hovering says so), and clicking it opens the listing in the party finder
+  (`AgentLookingForGroup.OpenListing`, on the game thread; see
+  [Links in messages](#links-in-messages)). A
   link passes the same checks as in chat (`ChatLinks.Check`, against the
   player's own sheets) and shows the player's own game's name for it; one that
   doesn't shows the sender's "[name]" as text. All remote text is sanitised as
@@ -3063,9 +3132,10 @@ the plugin's `ChannelWindows` opens and remembers the windows and
   typed in has ended), and what was typed goes back into the box to send
   again, once the box is empty, into the box's own text if it is being typed
   in (the same callback), so what it shows is what Enter sends.
-- **Links typed in the box.** `<item>`, `<flag>` and `<status>` resolve as
-  they do in chat, from what the game holds now (the item last linked, the
-  map flag, the status). The game's own ways of linking (an item's **Link**,
+- **Links typed in the box.** `<item>`, `<flag>`, `<status>` and `<pfinder>`
+  resolve as they do in chat, from what the game holds now (the item last
+  linked, the map flag, the status, the listing last linked). The game's own
+  ways of linking (an item's **Link**, the party finder's chat button,
   or a shortcut) insert the link into the game's chat box, not into this
   window, so a link made that way goes to game chat unless it is cleared
   there. No supported way to route it to the window is known, and nothing is
@@ -4661,6 +4731,20 @@ The owner's decisions, and why.
   chat log, if kept). See
   [Channel windows](#channel-windows) and
   [Windows only, never game chat](#windows-only-never-game-chat).
+- **Party finder links (2026-10-09).** The owner reported that party finder
+  links didn't work in channels: they arrived as dead text. They are now a
+  fourth link kind, sent as the listing id and the home-world flag on a new
+  field older clients skip (they show "[Looking for Party (name)]"), and
+  shown as a working link in game chat, ChatTwo and channel windows; no
+  server change. Unlike the other kinds, a listing can't be looked up in the
+  recipient's game data, so the name shown is the sender's, as plain text;
+  to keep a made-up name ("Free gil") from passing for something else, the
+  recipient's plugin puts the party finder's mark before it (the party
+  finder icon in game chat, a people icon in windows), and clicking it can
+  only open a listing. A listing the recipient can't open (ended, or on
+  another data centre) gets the game's own answer. The party finder's
+  "advanced search results" notice is never sent as a link. See
+  [Links in messages](#links-in-messages).
 
 ## Open questions
 
