@@ -768,7 +768,7 @@ public sealed class ChannelWindow : Window {
                     case MessagePart.Text text:
                         pieces.Add(new Piece(text.Value));
                         break;
-                    case MessagePart.Link link when GameLinks.SheetName(link.Target) is { } linkName:
+                    case MessagePart.Link link when GameLinks.ShownName(link) is { } linkName:
                         pieces.Add(new Piece($"[{TextSanitizer.Name(linkName)}]", link.Target, LinkTooltip(link.Target, TextSanitizer.Name(linkName))));
                         break;
                     case MessagePart.Link link:
@@ -791,8 +791,16 @@ public sealed class ChannelWindow : Window {
             _ => name,
         },
         ChatLink.MapFlag => $"{name}\nClick to open the map there.",
+        ChatLink.PartyFinder => $"{name}\nA party finder listing, named by whoever sent it.\nClick to open it in the party finder.",
         _ => name,
     };
+
+    /// <summary>The mark before a party finder link: its name is the sender's, so this shows it is a listing whatever it says.</summary>
+    private const FontAwesomeIcon PartyFinderMark = FontAwesomeIcon.Users;
+
+    /// <summary>The width a link takes: its text, and a party finder link's mark.</summary>
+    private static float LinkWidth(string text, ChatLink link) =>
+        ImGui.CalcTextSize(text).X + (link is ChatLink.PartyFinder ? Widgets.IconSize(PartyFinderMark).X + 3 * Widgets.Scale : 0);
 
     /// <summary>
     /// The time (muted), the sender (in their name colour if they have one, else the channel's colour), then the words, wrapped
@@ -816,7 +824,7 @@ public sealed class ChannelWindow : Window {
         var first = true;
         foreach (var piece in line.Pieces) {
             foreach (var word in piece.Link != null ? [piece.Text] : Words(piece.Text)) {
-                var size = ImGui.CalcTextSize(word).X;
+                var size = piece.Link is { } linked ? LinkWidth(word, linked) : ImGui.CalcTextSize(word).X;
                 if (!first) {
                     ImGui.SameLine(0, 0);
                 }
@@ -846,14 +854,25 @@ public sealed class ChannelWindow : Window {
         }
     }
 
-    /// <summary>A link: hover for what it is; a map flag opens the map at it when clicked, as the game's own link does.</summary>
+    /// <summary>
+    /// A link: hover for what it is; a map flag opens the map at it when clicked, and a party finder listing (after its
+    /// mark) the listing, as the game's own links do.
+    /// </summary>
     private static void DrawLink(string text, ChatLink link, string? tooltip) {
         var colour = link switch {
             ChatLink.Item => ImGuiColors.DalamudYellow,
             ChatLink.MapFlag => ImGuiColors.TankBlue,
+            ChatLink.PartyFinder => ImGuiColors.DalamudOrange,
             _ => ImGuiColors.DalamudViolet,
         };
+        ImGui.BeginGroup();
+        if (link is ChatLink.PartyFinder) {
+            Widgets.Icon(PartyFinderMark, colour);
+            ImGui.SameLine(0, 3 * Widgets.Scale);
+        }
+
         ImGui.TextColored(colour, text);
+        ImGui.EndGroup();
         if (!ImGui.IsItemHovered()) {
             return;
         }
@@ -869,6 +888,11 @@ public sealed class ChannelWindow : Window {
             ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
             if (ImGui.IsMouseClicked(ImGuiMouseButton.Left)) {
                 _ = Services.Framework.RunOnFrameworkThread(() => GameLinks.OpenMap(map));
+            }
+        } else if (link is ChatLink.PartyFinder listing) {
+            ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
+            if (ImGui.IsMouseClicked(ImGuiMouseButton.Left)) {
+                _ = Services.Framework.RunOnFrameworkThread(() => GameLinks.OpenPartyFinder(listing));
             }
         }
     }

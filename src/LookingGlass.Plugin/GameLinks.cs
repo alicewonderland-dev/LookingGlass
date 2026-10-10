@@ -23,8 +23,9 @@ internal static unsafe class GameLinks {
 
     /// <summary>
     /// A line's bytes as LookingGlass reads it: its text (as Dalamud reads it: auto-translate phrases as their text), with
-    /// a marker for each item, map or status link, and those links (what each points at, and its name: the sender's own
-    /// sheet's, else the link's text). Any other link (a player, a quest) is left as its text.
+    /// a marker for each item, map, status or party finder link, and those links (what each points at, and its name: the
+    /// sender's own sheet's, else the link's text; a listing's is always its text, "Looking for Party (name)"). Any other
+    /// link (a player, a quest, the party finder's "advanced search" notice) is left as its text.
     /// </summary>
     public static TypedLine ReadLine(ReadOnlySpan<byte> raw) {
         var text = new StringBuilder();
@@ -37,9 +38,11 @@ internal static unsafe class GameLinks {
                 return;
             }
 
-            // Only a link the player's own game can show goes as one; any other as its text.
-            var sheetName = SheetName(target);
-            var link = new TypedLink(sheetName == null ? null : target, sheetName ?? name.ToString());
+            // Only a link the player's own game can show goes as one; any other as its text. A listing is in no sheet: it
+            // goes by its text.
+            var link = target is ChatLink.PartyFinder ? new TypedLink(target, name.ToString())
+                : SheetName(target) is { } sheetName ? new TypedLink(target, sheetName)
+                : new TypedLink(null, name.ToString());
             if (links.Count < LinkText.MaxMarkers) {
                 text.Append(LinkText.Marker(links.Count));
                 links.Add(link);
@@ -55,6 +58,9 @@ internal static unsafe class GameLinks {
                 ItemPayload item => new ChatLink.Item(item.RawItemId),
                 MapLinkPayload map => new ChatLink.MapFlag(map.TerritoryType.RowId, map.Map.RowId, map.RawX, map.RawY),
                 StatusPayload status => new ChatLink.Status(status.Status.RowId),
+                // The "advanced search results" notice is a party finder link to no listing: left as its text.
+                PartyFinderPayload { LinkType: not PartyFinderPayload.PartyFinderLinkType.PartyFinderNotification } listing =>
+                    new ChatLink.PartyFinder(listing.ListingId, listing.LinkType == PartyFinderPayload.PartyFinderLinkType.LimitedToHomeWorld),
                 _ => null,
             };
             if (starts != null) {
@@ -74,8 +80,9 @@ internal static unsafe class GameLinks {
     /// <summary>
     /// What a link placeholder in the chat input stands for now (see <see cref="LinkText.ResolvePlaceholders"/>):
     /// "&lt;item&gt;" the item the chat log agent holds as linked, "&lt;flag&gt;" the map flag, "&lt;status&gt;" the
-    /// status; null if there is none, or it can't be read. Where the game keeps them is as ChatTwo 1.40.9 reads them for
-    /// its input preview (<c>Message.DecodeTextParam</c>).
+    /// status, "&lt;pfinder&gt;" the party finder listing; null if there is none, or it can't be read. Where the game keeps
+    /// the first three is as ChatTwo 1.40.9 reads them for its input preview (<c>Message.DecodeTextParam</c>); the listing
+    /// is beside them (FFXIVClientStructs' <c>AgentChatLog.LinkedPartyFinderId</c>; ChatTwo doesn't preview it).
     /// </summary>
     public static TypedLink? Placeholder(string placeholder) {
         switch (placeholder) {
@@ -112,8 +119,42 @@ internal static unsafe class GameLinks {
                 // A flag the game can't show as a link (it shouldn't happen) still goes, as its place.
                 return Checked(link, LinkText.FlagName(Sheets, flag.TerritoryId));
             }
+            case "<pfinder>": {
+                var agent = AgentChatLog.Instance();
+                if (agent == null) {
+                    return null;
+                }
+
+                // The fields, as for <item>: the listing, and its leader's name. No sheet holds a listing, so its name is
+                // the game's own text for its link, "Looking for Party (name)", else the leader's name.
+                var id = agent->LinkedPartyFinderId;
+                var leader = TextOf(agent->LinkedPartyFinderLeaderName);
+                var listing = id is > 0 and <= uint.MaxValue ? new ChatLink.PartyFinder((uint) id, HomeWorldOnly(id)) : null;
+                return LinkText.PlaceholderLink(listing, listing != null && leader != null ? PartyFinderText(listing, leader) : null, leader);
+            }
             default:
                 return null;
+        }
+    }
+
+    /// <summary>
+    /// Whether a listing is limited to its leader's home world, if it is the one the party finder showed last (where its
+    /// chat button is): its "world" search area. Otherwise it isn't known, and taken as open to other worlds, as most
+    /// listings are; that only changes whether the link shows the cross-world mark.
+    /// </summary>
+    private static bool HomeWorldOnly(ulong listingId) {
+        var agent = AgentLookingForGroup.Instance();
+        return agent != null && agent->LastViewedListing.ListingId == listingId
+                             && agent->LastViewedListing.JoinConditionFlags.HasFlag(AgentLookingForGroup.JoinCondition.World);
+    }
+
+    /// <summary>A listing's link text as the game writes it, in the player's language (Dalamud's <c>CreatePartyFinderLink</c>), or null.</summary>
+    private static string? PartyFinderText(ChatLink.PartyFinder listing, string leader) {
+        try {
+            return SeString.CreatePartyFinderLink(listing.ListingId, leader, !listing.HomeWorldOnly).TextValue;
+        } catch (Exception ex) {
+            Services.Log.Warning(ex, "Couldn't write a party finder link's text");
+            return null;
         }
     }
 
@@ -184,22 +225,32 @@ internal static unsafe class GameLinks {
     }
 
     /// <summary>
+    /// The name a channel window shows a received link by, or null if it isn't shown as one: an item's or a status's in
+    /// the player's own sheets, a map flag's place and coordinates (see <see cref="SheetName"/>), a party finder listing's
+    /// the sender's, as plain text (<see cref="MessagePart.Link.Name"/>).
+    /// </summary>
+    internal static string? ShownName(MessagePart.Link link) =>
+        link.Target is ChatLink.PartyFinder ? link.Name(Sheets) : SheetName(link.Target);
+
+    /// <summary>
     /// Adds a received link to a chat line as the game's own interactive link, rebuilt from its ids only, if it checks out
-    /// against the player's own sheets (<see cref="ChatLinks.Check"/>): an item as the game links one (its rarity's
-    /// colour, its high-quality mark), a map flag with the link arrow, the place and coordinates, a status with the arrow
-    /// and its name. The name is the player's own game's, never the sender's.
+    /// (<see cref="MessagePart.Link.Name"/>): an item as the game links one (its rarity's colour, its high-quality mark),
+    /// a map flag with the link arrow, the place and coordinates, a status with the arrow and its name, all named by the
+    /// player's own game, never the sender; a party finder listing with the arrow, the party finder's mark and the
+    /// sender's name for it (see <see cref="PartyFinderLink"/>).
     /// </summary>
     /// <returns>False if it doesn't check out, or couldn't be built: then nothing was added.</returns>
-    public static bool TryAppend(SeStringBuilder builder, ChatLink link) {
+    public static bool TryAppend(SeStringBuilder builder, MessagePart.Link link) {
         try {
-            if (ChatLinks.Check(link, Sheets) is not { } name) {
+            if (link.Name(Sheets) is not { } name) {
                 return false;
             }
 
-            var built = link switch {
+            var built = link.Target switch {
                 ChatLink.Item item => ItemLink(item),
                 ChatLink.MapFlag map => SeString.CreateMapLink(map.TerritoryId, map.MapId, map.RawX, map.RawY),
                 ChatLink.Status status => StatusLink(status, name),
+                ChatLink.PartyFinder listing => PartyFinderLink(listing, name),
                 _ => null,
             };
             if (built == null) {
@@ -228,6 +279,22 @@ internal static unsafe class GameLinks {
         }
     }
 
+    /// <summary>
+    /// Opens a received party finder listing, as clicking the game's own link does: the party finder's
+    /// <c>AgentLookingForGroup.OpenListing</c>, which ChatTwo calls for one. A listing that has ended, or that the player's
+    /// data centre can't see, is the game's to answer, as it is for its own link. Game thread.
+    /// </summary>
+    public static void OpenPartyFinder(ChatLink.PartyFinder listing) {
+        try {
+            var agent = AgentLookingForGroup.Instance();
+            if (agent != null && ChatLinks.IsWellFormed(listing)) {
+                agent->OpenListing(listing.ListingId);
+            }
+        } catch (Exception ex) {
+            Services.Log.Warning(ex, "Couldn't open a party finder listing");
+        }
+    }
+
     private static SeString ItemLink(ChatLink.Item item) {
         var (id, kind) = ItemUtil.GetBaseId(item.RawId);
         return SeString.CreateItemLink(id, kind);
@@ -248,6 +315,26 @@ internal static unsafe class GameLinks {
             .AddText(mark + name)
             .Add(RawPayload.LinkTerminator)
             .Build();
+    }
+
+    /// <summary>
+    /// A party finder link as the game makes one (Dalamud's <c>CreatePartyFinderLink</c>: the link, the arrow, its text,
+    /// the cross-world mark if the listing is open to other worlds, the end of the link), with the party finder's mark
+    /// before the text: the text is the sender's, so whatever it says, it is seen to be a listing.
+    /// </summary>
+    private static SeString PartyFinderLink(ChatLink.PartyFinder listing, string name) {
+        var builder = new SeStringBuilder()
+            .Add(new PartyFinderPayload(listing.ListingId, listing.HomeWorldOnly
+                ? PartyFinderPayload.PartyFinderLinkType.LimitedToHomeWorld
+                : PartyFinderPayload.PartyFinderLinkType.NotSpecified))
+            .Append(SeString.TextArrowPayloads)
+            .AddIcon(BitmapFontIcon.LookingForParty)
+            .AddText(name);
+        if (!listing.HomeWorldOnly) {
+            builder.AddText(" ").AddIcon(BitmapFontIcon.CrossWorld);
+        }
+
+        return builder.Add(RawPayload.LinkTerminator).Build();
     }
 
     /// <summary>The sheets in the client's language, through Dalamud's data manager.</summary>
