@@ -1996,7 +1996,9 @@ again.
   - *Not expected to matter* (owner's assessment, 2026-10-10). Most channels
     are small groups of 2 to 20 people, whose logs stay in the hundreds of
     entries; no channel is expected to reach 20,000.
-  - *If one ever does: checkpoints.* The planned answer, not built. The admin's
+  - *If one ever does: checkpoints, perhaps.* Not built. If a channel's log ever
+    nears 10,000 to 20,000 entries, solutions are considered then (owner's
+    decision, 2026-10-10); checkpoints are one option. The admin's
     client would sign a checkpoint entry (a log entry, unlike the
     `MembershipCheckpoint` each client saves locally) once the log passes a set size: the
     members, ranks, keys and open invites at that position. Every member who
