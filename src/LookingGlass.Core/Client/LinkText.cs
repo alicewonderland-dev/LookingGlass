@@ -12,7 +12,7 @@ public sealed record TypedLink(ChatLink? Target, string? Name);
 
 /// <summary>
 /// A line typed in game, as LookingGlass reads it: its text, with a marker (<see cref="LinkText.Marker"/>) where each
-/// link was, and the links. The game's link placeholders (&lt;item&gt;, &lt;flag&gt;, &lt;status&gt;) may still be in
+/// link was, and the links. The game's link placeholders (&lt;item&gt;, &lt;flag&gt;, &lt;status&gt;, &lt;pfinder&gt;) may still be in
 /// the text as typed, until <see cref="LinkText.ResolvePlaceholders"/>. A marker's number is its link's place in
 /// <see cref="Links"/>, so the text can be cut (the command taken off) and the links still found.
 /// </summary>
@@ -98,12 +98,12 @@ public sealed record TypedLine(string Text, IReadOnlyList<TypedLink> Links) {
 /// <summary>
 /// Links in a message sent to a LookingGlass channel. A link goes in two forms (see <see cref="MessageContent"/>): as its
 /// name in square brackets in the text, "look &lt;item&gt;" sent as "look [Potion]", which older clients show; and over
-/// that, as what it points at (an item, a map flag, a status), which a client that knows links shows as the game's own
-/// interactive link.
+/// that, as what it points at (an item, a map flag, a status, a party finder listing), which a client that knows links
+/// shows as the game's own interactive link.
 /// <para>
 /// A line typed in game holds a link in one of two ways, in both the game's chat box and ChatTwo's: as a placeholder
 /// (<see cref="ChatBoxLine.LinkPlaceholders"/>) until the game runs the line, the game keeping what it stands for
-/// elsewhere (the linked item, the map flag, the status), which the plugin reads; or as the link's own bytes, which the
+/// elsewhere (the linked item, the map flag, the status, the listing), which the plugin reads; or as the link's own bytes, which the
 /// plugin reads into a <see cref="TypedLink"/> where the line has a marker.
 /// </para>
 /// </summary>
@@ -114,7 +114,7 @@ public static partial class LinkText {
     /// <summary>The most links one typed line can mark (the rest go as their names).</summary>
     public const int MaxMarkers = 32;
 
-    [GeneratedRegex("<item>|<flag>|<status>", RegexOptions.IgnoreCase)]
+    [GeneratedRegex("<item>|<flag>|<status>|<pfinder>", RegexOptions.IgnoreCase)]
     private static partial Regex Placeholder();
 
     [GeneratedRegex(" {2,}")]
@@ -140,7 +140,7 @@ public static partial class LinkText {
     /// <summary>Whether <paramref name="text"/> holds a link: a marker or a placeholder.</summary>
     public static bool HasLink(string text) => text.Any(c => MarkerIndex(c) != null) || Placeholder().IsMatch(text);
 
-    /// <summary>Whether <paramref name="text"/> is exactly one link placeholder (&lt;item&gt;, &lt;flag&gt;, &lt;status&gt;, any case).</summary>
+    /// <summary>Whether <paramref name="text"/> is exactly one link placeholder (&lt;item&gt;, &lt;flag&gt;, &lt;status&gt;, &lt;pfinder&gt;, any case).</summary>
     public static bool IsPlaceholder(string text) => Placeholder().Match(text) is { Success: true } match && match.Length == text.Length;
 
     /// <summary><paramref name="text"/> with every placeholder and marker taken out: what is left as typed text.</summary>

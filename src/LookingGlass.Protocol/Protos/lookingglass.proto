@@ -826,6 +826,9 @@ message TextLink {
     ItemLink item = 3;
     MapLink map = 4;
     StatusLink status = 5;
+    // Added with party finder links (October 2026): an older client skips
+    // the field, as an unknown kind, and shows the "[name]".
+    PartyFinderLink party_finder = 6;
   }
 }
 
@@ -847,6 +850,15 @@ message MapLink {
 message StatusLink {
   // A Status row.
   uint32 status_id = 1;
+}
+
+message PartyFinderLink {
+  // The game's party finder listing id, as its party finder links carry it.
+  // No game data names a listing: the name shown is the sender's "[name]".
+  uint32 listing_id = 1;
+  // The listing is limited to its leader's home world (the game's link has
+  // no cross-world mark then).
+  bool home_world_only = 2;
 }
 
 // ---------------------------------------------------------------- message catch-up

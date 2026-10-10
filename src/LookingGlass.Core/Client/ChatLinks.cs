@@ -4,8 +4,9 @@ using LookingGlass.Protocol;
 namespace LookingGlass.Core.Client;
 
 /// <summary>
-/// What a link in a channel message points at: an item, a map flag or a status, as the game's own chat links do. Only
-/// ids and numbers: the name a recipient sees comes from their own game data (see <see cref="ChatLinks.Check"/>).
+/// What a link in a channel message points at: an item, a map flag, a status or a party finder listing, as the game's
+/// own chat links do. Only ids and numbers: the name a recipient sees comes from their own game data (see
+/// <see cref="ChatLinks.Check"/>), except a listing's, which no game data holds (see <see cref="MessagePart.Link.Name"/>).
 /// </summary>
 public abstract record ChatLink {
     private ChatLink() {
@@ -19,6 +20,12 @@ public abstract record ChatLink {
 
     /// <summary>A status (a Status row).</summary>
     public sealed record Status(uint StatusId) : ChatLink;
+
+    /// <summary>
+    /// A party finder listing, by the game's listing id, and whether it is limited to its leader's home world (the game's
+    /// link has its cross-world mark otherwise).
+    /// </summary>
+    public sealed record PartyFinder(uint ListingId, bool HomeWorldOnly) : ChatLink;
 }
 
 /// <summary>The kinds of item a raw item id stands for, as the game numbers them.</summary>
@@ -106,12 +113,16 @@ public static class ChatLinks {
         _ => id,
     };
 
-    /// <summary>The numbers are in range, before any game data is asked: ids that can be rows, coordinates that can be on a map.</summary>
+    /// <summary>
+    /// The numbers are in range, before any game data is asked: ids that can be rows, coordinates that can be on a map,
+    /// a listing id that isn't 0.
+    /// </summary>
     public static bool IsWellFormed(ChatLink link) => link switch {
         ChatLink.Item item => ItemParts(item.RawId) != null,
         ChatLink.MapFlag map => map.TerritoryId is > 0 and <= MaxRowId && map.MapId is > 0 and <= MaxRowId
                                 && Math.Abs((long) map.RawX) <= MaxRawCoordinate && Math.Abs((long) map.RawY) <= MaxRawCoordinate,
         ChatLink.Status status => status.StatusId is > 0 and <= MaxRowId,
+        ChatLink.PartyFinder listing => listing.ListingId > 0,
         _ => false,
     };
 
@@ -138,7 +149,8 @@ public static class ChatLinks {
     /// row (high quality only if it can be, a collectable only if it is one) or an EventItem row; a map flag's territory
     /// and map must exist, the map be the territory's own (its default map) or the map's territory be the flag's (nearly
     /// half the game's territories, its duties and instanced copies of zones, use another's map), and the position be on
-    /// it; a status must be a Status row; each with a name.
+    /// it; a status must be a Status row; each with a name. A party finder listing is in no game data: null (its name is
+    /// the sender's, see <see cref="MessagePart.Link.Name"/>).
     /// </summary>
     public static string? Check(ChatLink link, ILinkSheets sheets) {
         if (!IsWellFormed(link)) {
@@ -261,16 +273,30 @@ public abstract record MessagePart {
 
     /// <param name="Shown">The sender's text for it, "[Potion]": shown, as plain text, if the link doesn't check out.</param>
     public sealed record Link(ChatLink Target, string Shown) : MessagePart {
+        /// <summary>The sender's name for it: <see cref="Shown"/> without its brackets.</summary>
+        private string SendersName => this.Shown.Length >= 2 ? this.Shown[1..^1] : this.Shown;
+
         /// <summary>
         /// What to show instead of the link: the sender's "[name]", sanitised like all remote text, or "[unknown link]" if
         /// nothing is left of the name.
         /// </summary>
         public string Fallback {
             get {
-                var name = TextSanitizer.Name(this.Shown.Length >= 2 ? this.Shown[1..^1] : this.Shown).Trim();
+                var name = TextSanitizer.Name(this.SendersName).Trim();
                 return name.Length == 0 ? UnknownLink : $"[{name}]";
             }
         }
+
+        /// <summary>
+        /// The name to show it as a link by, or null if it isn't shown as one (<see cref="Fallback"/> is shown instead): an
+        /// item, a map flag or a status by the recipient's own game data (<see cref="ChatLinks.Check"/>), never the
+        /// sender's text. A party finder listing, which no game data holds, by the sender's name for it, as plain text (no
+        /// game formatting or icons, see <see cref="LinkText.Clean"/>): whoever shows it marks it as a listing, so a name
+        /// like "Free gil" is still seen to be one, and it can only ever open a listing.
+        /// </summary>
+        public string? Name(ILinkSheets sheets) => this.Target is ChatLink.PartyFinder listing
+            ? ChatLinks.IsWellFormed(listing) ? LinkText.Clean(this.SendersName) : null
+            : ChatLinks.Check(this.Target, sheets);
     }
 
     public const string UnknownLink = "[unknown link]";
@@ -295,6 +321,9 @@ public static class MessageContent {
                     break;
                 case ChatLink.Status status:
                     encoded.Status = new StatusLink { StatusId = status.StatusId };
+                    break;
+                case ChatLink.PartyFinder listing:
+                    encoded.PartyFinder = new PartyFinderLink { ListingId = listing.ListingId, HomeWorldOnly = listing.HomeWorldOnly };
                     break;
                 default:
                     continue;
@@ -340,6 +369,7 @@ public static class MessageContent {
                 TextLink.TargetOneofCase.Item => new ChatLink.Item(link.Item.RawId),
                 TextLink.TargetOneofCase.Map => new ChatLink.MapFlag(link.Map.TerritoryId, link.Map.MapId, link.Map.RawX, link.Map.RawY),
                 TextLink.TargetOneofCase.Status => new ChatLink.Status(link.Status.StatusId),
+                TextLink.TargetOneofCase.PartyFinder => new ChatLink.PartyFinder(link.PartyFinder.ListingId, link.PartyFinder.HomeWorldOnly),
                 _ => null,
             };
             if (target == null || !ChatLinks.IsWellFormed(target)) {

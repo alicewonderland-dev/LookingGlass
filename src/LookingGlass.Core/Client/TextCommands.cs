@@ -9,7 +9,7 @@ namespace LookingGlass.Core.Client;
 /// and the like, which the game replaces with what they stand for when it sends a chat line, and which LookingGlass
 /// replaces the same way before a message is encrypted (see docs/design.md, Text commands). Only on the sender's side: a
 /// received message is never looked at for them. The game's link placeholders (&lt;item&gt;, &lt;flag&gt;,
-/// &lt;status&gt;) are links, not text commands (see <see cref="LinkText"/>).
+/// &lt;status&gt;, &lt;pfinder&gt;) are links, not text commands (see <see cref="LinkText"/>).
 /// </summary>
 public static partial class TextCommands {
     /// <summary>

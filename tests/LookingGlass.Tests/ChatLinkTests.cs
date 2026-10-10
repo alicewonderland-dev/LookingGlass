@@ -13,10 +13,12 @@ public sealed class ChatLinkTests {
     private static readonly ChatLink.Item PotionItem = new(4551);
     private static readonly ChatLink.MapFlag LimsaFlag = new(129, 11, 9500, -11200);
     private static readonly ChatLink.Status Sprint = new(50);
+    private static readonly ChatLink.PartyFinder Listing = new(31_337, false);
 
     private static readonly TypedLink Potion = new(PotionItem, "Potion");
     private static readonly TypedLink Flag = new(LimsaFlag, "Limsa Lominsa Lower Decks ( 9.5 , 11.2 )");
     private static readonly TypedLink Running = new(Sprint, "Sprint");
+    private static readonly TypedLink Recruiting = new(Listing, "Looking for Party (Alice Test)");
 
     private static string M(int index) => LinkText.Marker(index).ToString();
 
@@ -24,6 +26,7 @@ public sealed class ChatLinkTests {
         "<item>" => Potion,
         "<flag>" => Flag,
         "<status>" => Running,
+        "<pfinder>" => Recruiting,
         _ => null,
     };
 
@@ -233,6 +236,8 @@ public sealed class ChatLinkTests {
                      new TypedLine($"meet at {M(0)}", [Flag]),
                      new TypedLine($"{M(0)}", [Running]),
                      new TypedLine($"{M(0)}{M(1)} and {M(2)}", [Potion, Running, Flag]),
+                     new TypedLine($"join {M(0)}!", [Recruiting]),
+                     new TypedLine($"{M(0)} for {M(1)}", [new TypedLink(Listing with { HomeWorldOnly = true }, "Looking for Party (Bob Test)"), Potion]),
                  }) {
             var (message, _) = LinkText.Compose(typed);
             Assert.Equal(message, RoundTrip(message));
@@ -503,6 +508,78 @@ public sealed class ChatLinkTests {
         Assert.Equal("[Potion]", new MessagePart.Link(PotionItem, "[Po\u0002\u0003tion]").Fallback);
         Assert.Equal(MessagePart.UnknownLink, new MessagePart.Link(PotionItem, "[\u0002\u001F]").Fallback);
         Assert.Equal(MessagePart.UnknownLink, new MessagePart.Link(PotionItem, "[ ]").Fallback);
+    }
+
+    // ---------------------------------------------------------------- party finder listings
+
+    [Fact]
+    public void APartyFinderLinkGoesAsTheListingUnderTheSendersTextForIt() {
+        // The recruitment window's chat button puts <pfinder> in the chat input, as linking an item puts <item>.
+        var (message, leftOut) = LinkText.Resolve("join <PFinder> now", Placeholders);
+        Assert.False(leftOut);
+        Assert.Equal("join [Looking for Party (Alice Test)] now", message.Text);
+        AssertLinks(message, ("[Looking for Party (Alice Test)]", Listing));
+
+        Assert.True(LinkText.IsPlaceholder("<pfinder>"));
+        Assert.Contains("<pfinder>", ChatBoxLine.LinkPlaceholders);
+        Assert.True(ChatBoxLine.HasSomethingToSend("<pfinder>"));
+        Assert.False(ChatBoxLine.HasText("<pfinder>"));
+
+        // Nothing known: left out, as any link. A name but no listing id: the name only.
+        Assert.Equal((LinkedText.Plain("join"), true), LinkText.Resolve("join <pfinder>", _ => null));
+        Assert.Equal(new TypedLink(null, "Alice Test"), LinkText.PlaceholderLink(new ChatLink.PartyFinder(0, false), null, "Alice Test"));
+        Assert.Equal(LinkedText.Plain("join [Alice Test]"),
+            LinkText.Resolve("join <pfinder>", _ => LinkText.PlaceholderLink(new ChatLink.PartyFinder(0, false), null, "Alice Test")).Message);
+    }
+
+    private static TextLink ListingAt(int start, int length, uint listingId = 31_337, bool homeWorldOnly = false) =>
+        new() { Start = (uint) start, Length = (uint) length, PartyFinder = new PartyFinderLink { ListingId = listingId, HomeWorldOnly = homeWorldOnly } };
+
+    [Fact]
+    public void AReceivedPartyFinderLinkNeedsAListingIdAndABracketedName() {
+        const string text = "join [Looking for Party (Alice Test)]!";
+        var link = Assert.Single(MessageContent.ValidLinks(text, [ListingAt(5, 32)]));
+        Assert.Equal(new MessageLink(5, 32, Listing), link);
+        Assert.Equal(new ChatLink.PartyFinder(31_337, true), Assert.Single(MessageContent.ValidLinks(text, [ListingAt(5, 32, homeWorldOnly: true)])).Target);
+        Assert.Single(MessageContent.ValidLinks(text, [ListingAt(5, 32, 1)]));
+        Assert.Single(MessageContent.ValidLinks(text, [ListingAt(5, 32, uint.MaxValue)]));
+
+        Assert.Empty(MessageContent.ValidLinks(text, [ListingAt(5, 32, 0)])); // no listing
+        Assert.Empty(MessageContent.ValidLinks(text, [ListingAt(4, 32)])); // not over the brackets
+        Assert.Empty(MessageContent.ValidLinks(text, [ListingAt(5, 33)]));
+        Assert.Empty(MessageContent.ValidLinks(text, [ListingAt(6, 31)]));
+        Assert.False(ChatLinks.IsWellFormed(new ChatLink.PartyFinder(0, true)));
+        Assert.True(ChatLinks.IsWellFormed(Listing));
+
+        // A new link kind on its own field: what older clients skip.
+        Assert.Equal(6, TextLink.PartyFinderFieldNumber);
+    }
+
+    [Fact]
+    public void AnOlderClientReadsAPartyFinderLinkAsItsText() {
+        var (message, _) = LinkText.Compose(new TypedLine($"join {M(0)}", [Recruiting]));
+        var input = new CodedInputStream(MessageContent.Encode(message).ToByteArray());
+        Assert.Equal(WireFormat.MakeTag(1, WireFormat.WireType.LengthDelimited), input.ReadTag());
+        Assert.Equal("join [Looking for Party (Alice Test)]", Announcement.Parser.ParseFrom(input.ReadBytes()).Text);
+    }
+
+    [Fact]
+    public void APartyFinderListingIsNamedByTheSendersTextAsPlainText() {
+        // No game data holds a listing: the name shown is the sender's, with no game formatting or icons of its own (the
+        // recipient's plugin adds the party finder's marks around it).
+        var sheets = new FakeSheets();
+        Assert.Null(ChatLinks.Check(Listing, sheets));
+        Assert.Equal("Looking for Party (Alice Test)", new MessagePart.Link(Listing, "[Looking for Party (Alice Test)]").Name(sheets));
+        Assert.Equal("Free gil", new MessagePart.Link(Listing, "[Free\u0002 gil]").Name(sheets));
+        Assert.Equal("a (b) (c)", new MessagePart.Link(Listing, "[a [b] <c>]").Name(sheets));
+        Assert.Null(new MessagePart.Link(Listing, "[ \u0002]").Name(sheets));
+        Assert.Null(new MessagePart.Link(new ChatLink.PartyFinder(0, false), "[Free gil]").Name(sheets));
+        Assert.Equal(MessagePart.UnknownLink, new MessagePart.Link(Listing, "[\u0002]").Fallback);
+
+        // Every other kind is named by the recipient's own game, whatever the sender's text.
+        Assert.Equal("Potion", new MessagePart.Link(PotionItem, "[Free gil]").Name(sheets));
+        Assert.Equal("Sprint", new MessagePart.Link(Sprint, "[x]").Name(sheets));
+        Assert.Null(new MessagePart.Link(new ChatLink.Item(9999), "[Potion]").Name(sheets));
     }
 
     // ---------------------------------------------------------------- end to end

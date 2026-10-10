@@ -101,8 +101,8 @@ public static class ChatChannelPrefixes {
 /// Its bytes: an SeString, so text, with links and auto-translate phrases as payloads (each starts with the byte 2).
 /// </param>
 /// <param name="Text">
-/// Its text (the plugin reads it with Dalamud: auto-translate phrases become their text, and an item, map or status
-/// link a marker for it, see <see cref="TypedLine"/>; <see cref="Links"/> has what the markers stand for).
+/// Its text (the plugin reads it with Dalamud: auto-translate phrases become their text, and an item, map, status or
+/// party finder link a marker for it, see <see cref="TypedLine"/>; <see cref="Links"/> has what the markers stand for).
 /// </param>
 public sealed record ChatBoxLine(byte[] Raw, string Text) {
     /// <summary>The links the markers in <see cref="Text"/> stand for (none for a line of plain text).</summary>
@@ -113,10 +113,10 @@ public sealed record ChatBoxLine(byte[] Raw, string Text) {
 
     /// <summary>
     /// What the chat box holds for a link until it is sent: the game puts these in the chat input when an item, a map
-    /// flag or a status is linked, and makes them links only after the line has left the chat box function. ChatTwo's
-    /// input holds them the same way (see docs/design.md).
+    /// flag, a status or a party finder listing (the recruitment window's chat button) is linked, and makes them links
+    /// only after the line has left the chat box function. ChatTwo's input holds them the same way (see docs/design.md).
     /// </summary>
-    public static readonly IReadOnlyList<string> LinkPlaceholders = ["<item>", "<flag>", "<status>"];
+    public static readonly IReadOnlyList<string> LinkPlaceholders = ["<item>", "<flag>", "<status>", "<pfinder>"];
 
     /// <summary>A line of plain text, as typed.</summary>
     public static ChatBoxLine Plain(string text) => new(Encoding.UTF8.GetBytes(text), text);
