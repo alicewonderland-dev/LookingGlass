@@ -85,6 +85,20 @@ public sealed class UnreadCounter {
         WindowsOnly.MessageToGameChat(windowsOnly, off, channelId);
 
     /// <summary>
+    /// A channel's count as the channel list shows it: none for a channel whose messages go to game chat, since what
+    /// reached game chat was there to read (the owner's rule, 2026-10-09); the count for one seen only in windows.
+    /// </summary>
+    public int ShownCountOf(string channelId, bool windowsOnly, IReadOnlySet<string> off) =>
+        WindowsOnly.MessageToGameChat(windowsOnly, off, channelId) ? 0 : this.CountOf(channelId);
+
+    /// <summary>The total the main window's title shows: the counts of the channels seen only in windows (see <see cref="ShownCountOf"/>).</summary>
+    public int ShownTotal(bool windowsOnly, IReadOnlySet<string> off) {
+        lock (this._lock) {
+            return this._counts.Where(entry => !WindowsOnly.MessageToGameChat(windowsOnly, off, entry.Key)).Sum(entry => entry.Value);
+        }
+    }
+
+    /// <summary>
     /// A window is showing this channel (call every frame it shows it), or none: one of several, each with a name of its
     /// own (<see cref="MainWindow"/>, or a channel window's). A channel any of them shows is read, and what arrives meanwhile
     /// doesn't count.

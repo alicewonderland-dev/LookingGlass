@@ -187,4 +187,26 @@ public sealed class UnreadCounterTests {
     public void CountsAreShownUpTo99(int count, string shown) {
         Assert.Equal(shown, UnreadCounter.Format(count));
     }
+
+    [Fact]
+    public void TheListShowsCountsOnlyForChannelsSeenOnlyInWindows() {
+        // The owner's rule (2026-10-09): a message that reached game chat was there to read, so a channel whose messages go
+        // to game chat shows no count in the channel list or the title; one whose messages go only to windows does.
+        var unread = new UnreadCounter(new ManualClock());
+        unread.Add(From(Bob, "aaa"));
+        unread.Add(From(Bob, "aaa"));
+        unread.Add(From(Bob, "bbb"));
+        var off = new HashSet<string> { "bbb" };
+
+        Assert.Equal(0, unread.ShownCountOf("aaa", windowsOnly: false, off));
+        Assert.Equal(1, unread.ShownCountOf("bbb", windowsOnly: false, off));
+        Assert.Equal(1, unread.ShownTotal(windowsOnly: false, off));
+
+        // Windows only: every channel's messages go only to windows, so every count shows.
+        Assert.Equal(2, unread.ShownCountOf("aaa", windowsOnly: true, off));
+        Assert.Equal(3, unread.ShownTotal(windowsOnly: true, off));
+
+        // The counts themselves are kept either way.
+        Assert.Equal(3, unread.Total);
+    }
 }

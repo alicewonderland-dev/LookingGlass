@@ -168,6 +168,11 @@ any linkshell, for A or B.
       have B send again: the channel list counts it, and so does the `sky` tab.
       Collapse the window (double-click its title bar): what arrives in its
       selected channel counts again.
+- [ ] 36b. **(new, after 0.2.13)** A channel that shows in game chat never
+      gets a count in the channel list or the main window's title, even with
+      its window closed: B sends in `fc` (Show in game chat on) and the list
+      shows no count for `fc`. Turn `fc` off game chat, close its window, and
+      B sends again: now `fc` counts (and its window opens).
 - [ ] 37. With a count on `sky` in the channel list, select the `sky` tab in a
       window (no need to click into it otherwise): the count goes, in the
       channel list and on that tab.
