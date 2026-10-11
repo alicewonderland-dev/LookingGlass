@@ -196,8 +196,9 @@ arrives as a message from "Simulated Sender"). Step 29 needs B.
 - [ ] 31b. With Notepad++ or Excel holding the oldest text file open (one that
       locks it), keep chatting until the size limit is reached (5 MB helps):
       nothing goes wrong in game, the encrypted history goes on, and `/xllog`
-      has one line saying the text files couldn't make room, naming no
-      channel.
+      has one line saying the text files couldn't make room (and, if new lines
+      couldn't be added to that file either, one more saying they couldn't be
+      written), naming no channel.
 - [ ] 32. Untick **Keep my chat history unencrypted**: no dialog, **Open
       folder** disappears. Send more lines: the text files don't change, but
       after a relog **Show older messages** still shows them (the encrypted

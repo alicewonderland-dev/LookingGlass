@@ -3676,7 +3676,9 @@ messages**.
     its start; one that can't be, edited or cut short, counts as oldest),
     as long as those lines arrived no later than the newest record of the
     oldest encrypted segment. Otherwise that segment goes, whole.
-  - So the guarantee, at any size, however busy a month: the text files never
+  - So the guarantee in normal operation, at any size, however busy a month
+    (files that can't be trimmed, and an encrypted log that can't be read or
+    opened, are below and above): the text files never
     reach back further than the encrypted log's oldest segment, and the
     encrypted log never further than one segment (a sixteenth of the limit)
     beyond the text files. Neither is ever wiped to make room for the other:
@@ -3691,14 +3693,21 @@ messages**.
     beside it (`2026-10.txt.trim`), handed to the disk, then put in its place
     in one step: a crash leaves the old file or the new one, whole, never half
     of either (a `.trim` file left behind is deleted when the log next
-    opens). A file left with nothing is deleted, and a channel folder left
-    empty too. Lines queued in the batch being written are written first, so
+    opens; only one named so, `2026-10.txt.trim`, never another file of the
+    player's). A file left with nothing is deleted, and a channel folder left
+    empty too. An older file without a whole line in it (empty, or only a line
+    cut short or someone else's words) goes first, as the oldest: it never
+    leaves the text side unable to make room, so the encrypted log is never
+    deleted in its place. Lines queued in the batch being written are written first, so
     they can be trimmed like the rest.
   - Text files kept before, while the setting is off, still count and still
     go oldest first. A file that can't be trimmed (open in a program that
     locks it) stays counted and isn't picked again that session: trimming
     moves on to the next oldest, said once in the diagnostic log, and it never
     costs the encrypted log a line, nor the encrypted log's trimming the text.
+    A text folder that can't be looked at while making room is left alone for
+    the session the same way (said once, without a path), and the encrypted
+    log makes room from its own segments.
   - The count is taken from the disk when the log opens and again whenever it
     is full, so files deleted or edited by hand are counted as they are; one
     folder that can't be looked at counts as nothing, and the rest still
