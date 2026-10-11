@@ -315,7 +315,7 @@ public sealed class Database {
                    }.ToString())) {
                 from.Open();
                 to.Open();
-                from.BackupDatabase(to);
+                BackUpWhenFree(from, to);
                 Execute(to, null, "PRAGMA journal_mode = DELETE;");
                 var check = Convert.ToString(Scalar(to, null, "PRAGMA quick_check;"));
                 if (check != "ok") {
@@ -328,6 +328,27 @@ public sealed class Database {
         } finally {
             File.Delete(partial);
             File.Delete(partial + "-journal");
+        }
+    }
+
+    /// <summary>
+    /// Copies <paramref name="from"/> into <paramref name="to"/>, waiting (up to <paramref name="from"/>'s default timeout) while
+    /// the source is locked for a moment: as when a server's last connection to it closes and folds the write-ahead log in, or
+    /// another opens it and recovers the log. A statement waits by itself; a backup doesn't (Microsoft.Data.Sqlite sets SQLite
+    /// no busy timeout, and copies in one step), and would fail at once with "database is locked". Nothing is copied by a try
+    /// that fails so: the next starts over.
+    /// </summary>
+    private static void BackUpWhenFree(SqliteConnection from, SqliteConnection to) {
+        const int busy = 5;
+        const int locked = 6;
+        var waited = System.Diagnostics.Stopwatch.StartNew();
+        while (true) {
+            try {
+                from.BackupDatabase(to);
+                return;
+            } catch (SqliteException ex) when ((ex.SqliteErrorCode & 0xFF) is busy or locked && waited.Elapsed < TimeSpan.FromSeconds(from.DefaultTimeout)) {
+                Thread.Sleep(50);
+            }
         }
     }
 
