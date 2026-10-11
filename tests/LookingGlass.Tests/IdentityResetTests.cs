@@ -178,8 +178,10 @@ public sealed class IdentityResetTests : IAsyncLifetime {
         Assert.Equal(ErrorCode.RegistrationFailed, refused.Error?.Code);
         Assert.Contains("Reset my identity", refused.Error!.Message);
 
-        // The new identity keeps its login and its key.
+        // The new identity keeps its login and its key. (Its session closed first: the login below replaces it, one
+        // connection per user, and it reconnecting before the login is answered would replace that unanswered.)
         Assert.Equal(renewed.Keys().SigningKeyArray(), this._server.Database.GetUser(alice.UserId)!.SigningKey);
+        await renewed.Session.DisposeAsync();
         await using var check = await this._server.ConnectRawAsync();
         Assert.NotNull((await check.SendAsync(new ClientFrame { Authenticate = new Authenticate { DeviceToken = renewed.Store.Load().DeviceToken } })).AuthenticateOk);
 
