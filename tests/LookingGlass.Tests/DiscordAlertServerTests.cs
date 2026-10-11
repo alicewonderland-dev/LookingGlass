@@ -161,6 +161,44 @@ public sealed class DiscordAlertServerTests {
         }
     }
 
+    /// <summary>
+    /// Someone with many addresses (a /48, proxies) getting one blocked after another: every block is posted, but the role is
+    /// pinged once (at most once every ten minutes), and the later ones wait for the minute's message.
+    /// </summary>
+    [Fact]
+    public async Task AStormOfAutomaticBlocksPingsOnce() {
+        var discord = new FakeDiscord();
+        await using var server = new Harness(discord: discord, settings: [
+            FakeDiscord.On, ("LookingGlass:Alerts:PingRoleId", Role), ("LookingGlass:Abuse:AutoBlockAfterRefusals", "100"),
+        ]);
+        PostSoon(server);
+        await discord.WaitForPost(posted => posted.Content.StartsWith("**Server started:**"));
+        var monitor = server.Factory.Services.GetRequiredService<AbuseMonitor>();
+        for (var block = 0; block < 6; block++) {
+            for (var i = 0; i < 100; i++) {
+                monitor.Refused("ConnectionsPerMinutePerIp", null, $"2001:db8:{block}::1");
+            }
+
+            await Task.Delay(500, Ct);
+        }
+
+        await WaitFor(() => discord.Posts.Sum(posted => posted.Content.Split("blocked automatically:").Length - 1) == 6 ? new object() : null);
+        Assert.Single(discord.Posts, posted => posted.Roles.Count > 0);
+        Assert.StartsWith($"<@&{Role}> **Urgent: blocked automatically:** address 2001:db8::/40 (shortened)", discord.Posts.Single(posted => posted.Roles.Count > 0).Content);
+    }
+
+    /// <summary>The webhook's client follows no redirect: the message, and the webhook's path, go to Discord alone.</summary>
+    [Fact]
+    public async Task TheWebhooksClientFollowsNoRedirect() {
+        await using var server = new Harness();
+        HttpMessageHandler handler = server.Factory.Services.GetRequiredService<IHttpMessageHandlerFactory>().CreateHandler(ServerAlerts.HttpClientName);
+        while (handler is DelegatingHandler delegating) {
+            handler = delegating.InnerHandler!;
+        }
+
+        Assert.False(Assert.IsType<SocketsHttpHandler>(handler).AllowAutoRedirect);
+    }
+
     /// <summary>A ban made inside the server (the web page's, when it comes) is posted at once, not at the next look (30 seconds here).</summary>
     [Fact]
     public async Task ABanMadeInsideTheServerIsPostedAtOnce() {

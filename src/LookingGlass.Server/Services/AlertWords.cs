@@ -19,7 +19,11 @@ public enum AlertKind {
 }
 
 /// <summary>One alert for the Discord channel: its text in Discord's markdown, everything from outside already escaped.</summary>
-public sealed record Alert(string Text, AlertKind Kind) {
+/// <param name="Public">
+/// Urgent, but something anyone on the internet can set off (an automatic block, a request through Funnel): it pings, and goes at
+/// once, only once every <see cref="AlertPoster.PublicPingEvery"/>; between, it waits for the minute's message, without a ping.
+/// </param>
+public sealed record Alert(string Text, AlertKind Kind, bool Public = false) {
     public bool Urgent => this.Kind == AlertKind.Urgent;
 }
 
@@ -142,7 +146,7 @@ public static class AlertWords {
         return new Alert(
             $"**Urgent: blocked automatically:** {Address(block.Address ?? "")}, refused {Number(abuse.AutoBlockAfterRefusals)} times within " +
             $"{Count(abuse.WindowMinutes, "minute")}. Blocked for {minutes}{until}.\n" +
-            "Look: `LG --bans` (ban it for longer, or lift the block with `LG --unban` and the full address it shows)", AlertKind.Urgent);
+            "Look: `LG --bans` (ban it for longer, or lift the block with `LG --unban` and the full address it shows)", AlertKind.Urgent, Public: true);
     }
 
     /// <summary>A ban made, by any tool; with the ban it replaced, if it replaced one (told here, once, rather than as a lift).</summary>
@@ -191,7 +195,7 @@ public static class AlertWords {
         "**Urgent: the web page was asked for through Tailscale Funnel**, from the public internet. It was refused, but Funnel must never lead to " +
         "the page. On the server, `tailscale funnel status` shows which public port does; turn that one off (`sudo tailscale funnel --https=<port> off`), " +
         "and check the public server still answers." + (more > 0 ? $" ({Count(more, "more request")} like it since the last of these alerts.)" : ""),
-        AlertKind.Urgent);
+        AlertKind.Urgent, Public: true);
 
     /// <summary>The server started, and whether it last stopped cleanly (unknown the first time it keeps track).</summary>
     /// <param name="previousStart">When the run before this one started, if known.</param>
@@ -258,12 +262,17 @@ public static class AlertWords {
 
     /// <summary>An operator character's keys pinned, or pinned again (restored) after they changed (urgent).</summary>
     /// <param name="previous">The key hash pinned before, as last posted; null for a first pin.</param>
+    /// <remarks>
+    /// Says when it was pinned: one made while alerts were off (or the server was stopped) is posted when the server next looks,
+    /// still urgent, as it is what someone with a stolen tailnet device would do.
+    /// </remarks>
     public static Alert OperatorPinned(long userId, UserRow? user, OperatorPinRow pin, byte[]? previous) {
         var via = Via(pin.PinnedVia, pin.PinnedVia == BanTools.Plugin ? pin.PinnedBy : null);
+        var how = $"{(via != null ? " " + via : "")} at {Time(pin.PinnedAt, 'f')}";
         var keys = IdentityKeys.FingerprintOfHash(pin.KeyHash);
         var what = previous == null
-            ? $"**Operator keys pinned**{(via != null ? " " + via : "")}: {Character(userId, user)}, pinned to keys {keys}."
-            : $"**Operator status restored**{(via != null ? " " + via : "")}: {Character(userId, user)}, now pinned to keys {keys} " +
+            ? $"**Operator keys pinned**{how}: {Character(userId, user)}, pinned to keys {keys}."
+            : $"**Operator status restored**{how}: {Character(userId, user)}, now pinned to keys {keys} " +
               $"(was {IdentityKeys.FingerprintOfHash(previous)}).";
         return new Alert(
             what + "\nIf you didn't do this, unlist the character in the server's settings and restart, then check `LG --audit`.", AlertKind.Urgent);
@@ -273,14 +282,15 @@ public static class AlertWords {
 
     /// <summary>
     /// Alerts as one Discord message: urgent ones first (so the cut never takes them), each apart from the next by a blank line,
-    /// the ping role's mention at the start if any is urgent and a role is set; past <see cref="MaxMessageLength"/>, as many as
-    /// fit, then "and N more".
+    /// the ping role's mention at the start if <paramref name="ping"/> says to, one is urgent and a role is set; past
+    /// <see cref="MaxMessageLength"/>, as many as fit, then "and N more".
     /// </summary>
+    /// <param name="ping">Whether the message may ping (the poster's budget for alerts the public can set off allows it).</param>
     /// <param name="pinged">The message mentions the role (so <c>allowed_mentions</c> must list it).</param>
     /// <param name="included">How many alerts it holds in full.</param>
-    public static string Message(IReadOnlyList<Alert> alerts, string? roleId, out bool pinged, out int included) {
+    public static string Message(IReadOnlyList<Alert> alerts, string? roleId, bool ping, out bool pinged, out int included) {
         var ordered = alerts.Where(alert => alert.Urgent).Concat(alerts.Where(alert => !alert.Urgent)).ToList();
-        pinged = roleId != null && ordered.Count > 0 && ordered[0].Urgent;
+        pinged = ping && roleId != null && ordered.Count > 0 && ordered[0].Urgent;
         var message = new StringBuilder(pinged ? $"<@&{roleId}> " : "");
         included = 0;
         foreach (var alert in ordered) {
@@ -292,8 +302,13 @@ public static class AlertWords {
                     break;
                 }
 
-                // One alert longer than a message (none is, by far): cut.
-                message.Append(alert.Text.AsSpan(0, Math.Max(0, room - 1))).Append('…');
+                // One alert longer than a message (none is, by far): cut, never between the halves of a surrogate pair.
+                var cut = Math.Max(0, room - 1);
+                if (cut > 0 && char.IsHighSurrogate(alert.Text[cut - 1])) {
+                    cut--;
+                }
+
+                message.Append(alert.Text.AsSpan(0, cut)).Append('…');
                 included = 1;
                 continue;
             }

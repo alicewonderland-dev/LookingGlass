@@ -371,6 +371,107 @@ public sealed class DiscordAlertTests : IDisposable {
         Assert.Contains("more than 1000 alerts were waiting", Assert.Single(this._logs.AtLeast(LogLevel.Warning)));
     }
 
+    /// <summary>
+    /// What waits for the minute is kept to the queue's length too, while the poster runs: the rest are counted as not delivered,
+    /// and an urgent alert still goes at once.
+    /// </summary>
+    [Fact]
+    public async Task AlertsWaitingForTheMinuteAreKeptToTheQueuesLength() {
+        var poster = this.Poster(time: TimeProvider.System, batch: TimeSpan.FromHours(1));
+        using var stop = new CancellationTokenSource();
+        var running = poster.RunAsync(stop.Token);
+        for (var lot = 0; lot < 20; lot++) {
+            for (var i = 0; i < 500; i++) {
+                poster.Post(Batched($"flag {lot}.{i}"));
+            }
+
+            await Task.Delay(30, Ct);
+        }
+
+        await WaitFor(() => poster.Undelivered >= 9000 ? new object() : null);
+        Assert.Equal(9000, poster.Undelivered);
+        Assert.Empty(this._discord.Attempts);
+        poster.Post(new Alert("**Urgent: an operator character signed in with other keys**", AlertKind.Urgent));
+        var posted = await this._discord.WaitForPost(_ => true);
+        Assert.StartsWith($"<@&{Role}> **Urgent: an operator character signed in with other keys**\n\nflag 0.0\n\n", posted.Content);
+        Assert.Matches(@"\n\nand [0-9,]+ more: see", posted.Content);
+        await stop.CancelAsync();
+        await running;
+    }
+
+    /// <summary>
+    /// The public can set off automatic blocks (and requests through Funnel) as often as it likes: across ten minutes of a block
+    /// every 2 seconds, the role is pinged once; then once again. An operator character's keys ping whenever they come.
+    /// </summary>
+    [Fact]
+    public async Task AlertsThePublicCanSetOffPingOnceEveryTenMinutes() {
+        var poster = this.Poster();
+        for (var second = 0; second < 600; second += 2) {
+            poster.Post(new Alert($"**Urgent: blocked automatically:** {second}", AlertKind.Urgent, Public: true));
+            await poster.FlushAsync(Ct);
+            if (second == 300) {
+                poster.Post(new Alert("**Urgent: an operator character signed in with other keys**", AlertKind.Urgent));
+                await poster.FlushAsync(Ct);
+            }
+
+            this._clock.Advance(TimeSpan.FromSeconds(2));
+        }
+
+        var pinged = this._discord.Posts.Where(posted => posted.Roles.Count > 0).Select(posted => posted.Content).ToList();
+        Assert.Equal(2, pinged.Count);
+        Assert.StartsWith($"<@&{Role}> **Urgent: blocked automatically:** 0", pinged[0]);
+        Assert.StartsWith($"<@&{Role}> **Urgent: an operator character signed in with other keys**", pinged[1]);
+        Assert.All(this._discord.Posts.Where(posted => posted.Roles.Count == 0), posted => Assert.DoesNotContain("<@&", posted.Content));
+        Assert.Equal(301, this._discord.Posts.Count);
+
+        poster.Post(new Alert("**Urgent: blocked automatically:** later", AlertKind.Urgent, Public: true));
+        await poster.FlushAsync(Ct);
+        Assert.Equal(Role, Assert.Single(this._discord.Posts[^1].Roles));
+    }
+
+    /// <summary>
+    /// Running, with the real 2 seconds between messages: a burst of automatic blocks sends the first at once with the ping, and the
+    /// rest with the minute's message (here a short one), without it; an operator character's keys still go at once, with the ping.
+    /// </summary>
+    [Fact]
+    public async Task ABurstOfAutomaticBlocksPingsOnceAndWaitsForTheMinute() {
+        var poster = new AlertPoster(FakeDiscord.Url, Role, () => new HttpClient(this._discord, disposeHandler: false), this.Logger<AlertPoster>()) {
+            BatchWindow = TimeSpan.FromSeconds(1),
+        };
+        using var stop = new CancellationTokenSource();
+        var running = poster.RunAsync(stop.Token);
+        for (var block = 0; block < 25; block++) {
+            poster.Post(new Alert($"**Urgent: blocked automatically:** number {block}", AlertKind.Urgent, Public: true));
+            await Task.Delay(100, Ct);
+        }
+
+        var first = await this._discord.WaitForPost(_ => true);
+        Assert.Equal($"<@&{Role}> **Urgent: blocked automatically:** number 0", first.Content);
+        await WaitFor(() => this._discord.Posts.Any(posted => posted.Content.Contains("number 24")) ? new object() : null);
+        Assert.InRange(this._discord.Posts.Count, 2, 6);
+        Assert.Single(this._discord.Posts, posted => posted.Roles.Count > 0);
+        Assert.Equal(25, this._discord.Posts.Sum(posted => posted.Content.Split("blocked automatically").Length - 1));
+
+        poster.Post(new Alert("**Urgent: an operator character signed in with other keys**", AlertKind.Urgent));
+        var keys = await this._discord.WaitForPost(posted => posted.Content.Contains("other keys"));
+        Assert.Equal(Role, Assert.Single(keys.Roles));
+        await stop.CancelAsync();
+        await running;
+    }
+
+    /// <summary>One alert longer than a message is cut, never between the halves of a surrogate pair (an emoji).</summary>
+    [Fact]
+    public void AnAlertCutInTheMiddleKeepsEmojiWhole() {
+        for (var shift = 0; shift < 4; shift++) {
+            var text = new string('a', 1995 + shift) + "\U0001F600\U0001F600\U0001F600" + new string('b', 100);
+            var content = AlertWords.Message([new Alert(text, AlertKind.AtOnce)], null, true, out _, out _);
+            Assert.InRange(content.Length, 1, AlertWords.MaxMessageLength);
+            Assert.EndsWith("…", content);
+            Assert.False(char.IsHighSurrogate(content[^2]), $"A lone surrogate at {content.Length - 2}");
+            Assert.NotEmpty(AlertPoster.Payload(content, null));
+        }
+    }
+
     // ================================================================ bans, posted once by the server
 
     /// <summary>With alerts off nothing is posted (and nothing breaks); "alerts on since" is forgotten.</summary>
@@ -468,6 +569,20 @@ public sealed class DiscordAlertTests : IDisposable {
         Assert.Null(await this.PostedAsync(this.Alerts()));
     }
 
+    /// <summary>
+    /// An automatic block found already ended (an older server made it, before going back to this one) isn't posted, and doesn't
+    /// ping: there is nothing to do about it. It is marked, and counted by the daily summary.
+    /// </summary>
+    [Fact]
+    public async Task AnAutomaticBlockThatHasEndedIsntPosted() {
+        var alerts = this.Alerts();
+        this._clock.Advance(TimeSpan.FromMinutes(1));
+        var block = this._db.AddAutomaticBlock("198.51.100.7", "198.51.100.7", this.Now + 15 * 60, this.Now)!;
+        this._clock.Advance(TimeSpan.FromMinutes(20));
+        Assert.Null(await this.PostedAsync(alerts));
+        Assert.True(this._db.GetBanHistory(this.Now).Single(ban => ban.BanId == block.BanId).MadeAnnounced);
+        Assert.Contains(this._logs.Entries, entry => entry.Message.Contains("Marked 1 automatic blocks that had already ended as posted"));
+    }
     /// <summary>
     /// Banning someone banned already replaces the ban: posted once, as the new ban "replacing the ban made ...", and the old
     /// ban's lift isn't posted on its own (it is marked as posted with the new one).
@@ -567,7 +682,7 @@ public sealed class DiscordAlertTests : IDisposable {
         var alice = this._db.GetUser(Alice)!;
         Assert.True(this.Actions().PinByFingerprint(CommandLine, Alice.ToString(), alice.Keys.Fingerprint).Done);
         Assert.Equal(
-            $"<@&{Role}> **Operator keys pinned** on the command line: Alice Wonderland@Lich (user 55555), pinned to keys {alice.Keys.Fingerprint}.\n" +
+            $"<@&{Role}> **Operator keys pinned** on the command line at <t:{this.Now}:f>: Alice Wonderland@Lich (user 55555), pinned to keys {alice.Keys.Fingerprint}.\n" +
             "If you didn't do this, unlist the character in the server's settings and restart, then check `LG --audit`.",
             await this.PostedAsync(alerts));
         Assert.Equal(Role, Assert.Single(this._discord.Posts[^1].Roles));
@@ -575,7 +690,7 @@ public sealed class DiscordAlertTests : IDisposable {
 
         var again = this.Register(Alice, "Alice Wonderland", "Lich");
         Assert.True(this.Actions().PinByFingerprint(CommandLine, Alice.ToString(), again.Keys.Fingerprint).Done);
-        Assert.StartsWith($"<@&{Role}> **Operator status restored** on the command line: Alice Wonderland@Lich (user 55555), now pinned to keys " +
+        Assert.StartsWith($"<@&{Role}> **Operator status restored** on the command line at <t:{this.Now}:f>: Alice Wonderland@Lich (user 55555), now pinned to keys " +
                           $"{again.Keys.Fingerprint} (was {alice.Keys.Fingerprint}).", await this.PostedAsync(alerts));
         Assert.Null(await this.PostedAsync(alerts));
     }

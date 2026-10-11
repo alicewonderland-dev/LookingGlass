@@ -80,8 +80,10 @@ builder.Services.AddSingleton<AbuseMonitor>();
 builder.Services.AddSingleton<BanEnforcer>();
 builder.Services.AddHostedService(services => services.GetRequiredService<BanEnforcer>());
 // Alerts to a Discord channel (off without a webhook), posted on a task of their own. The HTTP client logs nothing: its
-// request lines would hold the webhook, which is a secret.
-builder.Services.AddHttpClient(ServerAlerts.HttpClientName, client => client.Timeout = TimeSpan.FromSeconds(15)).RemoveAllLoggers();
+// request lines would hold the webhook, which is a secret. It follows no redirect: a webhook's answer is never one, and the
+// message (and the webhook's path) goes to Discord alone.
+builder.Services.AddHttpClient(ServerAlerts.HttpClientName, client => client.Timeout = TimeSpan.FromSeconds(15)).RemoveAllLoggers()
+    .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false });
 builder.Services.AddSingleton(services => {
     var http = services.GetRequiredService<IHttpClientFactory>();
     return new ServerAlerts(services.GetRequiredService<Database>(), services.GetRequiredService<IOptions<ServerOptions>>().Value,

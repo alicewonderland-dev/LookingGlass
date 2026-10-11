@@ -11,7 +11,11 @@ namespace LookingGlass.Server.Services;
 /// into a bounded queue (<see cref="QueueLength"/>; past it they are counted as not delivered), and are posted from there.
 /// Alerts within <see cref="BatchWindow"/> of the first waiting go as one message; an urgent one, or one to go at once, goes
 /// straight away with whatever is waiting, but never sooner than <see cref="MinGap"/> after the last message (Discord allows
-/// a webhook a few a second), so a burst becomes one message. A message holds at most 2,000 characters (see
+/// a webhook a few a second), so a burst becomes one message. An urgent alert anyone on the internet can set off (an automatic
+/// block, a request through Funnel: <see cref="Alert.Public"/>) goes at once, and pings, only once every
+/// <see cref="PublicPingEvery"/>; between, such alerts wait for the minute's message, without a ping, so nobody outside can make the
+/// role ping again and again, or fill the channel. The other urgent ones (an operator's keys) always go at once and ping. Alerts
+/// waiting for the minute are kept to <see cref="QueueLength"/> too. A message holds at most 2,000 characters (see
 /// <see cref="AlertWords.Message"/>). Every message has <c>allowed_mentions</c> empty, or naming only the ping role when it
 /// holds an urgent alert, and link previews off (the suppress-embeds flag). A 429's <c>Retry-After</c> is honoured; other
 /// failures are tried a few times, then counted (<see cref="Undelivered"/>) and logged at most every
@@ -23,6 +27,9 @@ public sealed class AlertPoster {
 
     /// <summary>How often a failure to post is logged, at most.</summary>
     public static readonly TimeSpan FailureLogEvery = TimeSpan.FromMinutes(10);
+
+    /// <summary>How often an alert the public can set off (<see cref="Alert.Public"/>) may go at once and ping, at most.</summary>
+    public static readonly TimeSpan PublicPingEvery = TimeSpan.FromMinutes(10);
 
     /// <summary>The longest <c>Retry-After</c> waited for; a longer one counts as a failure.</summary>
     public static readonly TimeSpan MaxRetryAfter = TimeSpan.FromMinutes(15);
@@ -46,6 +53,8 @@ public sealed class AlertPoster {
     private int _undeliveredSinceTaken;
     private long _failureLogged = long.MinValue;
     private bool _failing;
+    // When an alert the public can set off last went at once (and pinged); MinValue: never.
+    private DateTimeOffset _publicPinged = DateTimeOffset.MinValue;
 
     /// <param name="url">The webhook (checked at startup: see <see cref="AlertOptions.Problem"/>). Never logged.</param>
     /// <param name="roleId">The role urgent alerts ping, or null.</param>
@@ -97,16 +106,23 @@ public sealed class AlertPoster {
                     return;
                 }
 
+                var now = this._time.GetUtcNow();
                 while (this._queue.Reader.TryRead(out var alert)) {
-                    waiting.Add((alert, this._time.GetUtcNow()));
+                    // What waits for the minute is kept to the queue's length too; what goes at once never waits long.
+                    if (waiting.Count >= QueueLength && !this.GoesAtOnce(alert, now)) {
+                        this.CountUndelivered(1);
+                        this.LogFailure($"more than {QueueLength} alerts were waiting to be posted");
+                        continue;
+                    }
+
+                    waiting.Add((alert, now));
                 }
 
                 if (waiting.Count == 0) {
                     continue;
                 }
 
-                var now = this._time.GetUtcNow();
-                var due = waiting.Any(entry => entry.Alert.Kind != AlertKind.Batched)
+                var due = waiting.Any(entry => this.GoesAtOnce(entry.Alert, now))
                     ? (lastSent == DateTimeOffset.MinValue ? now : lastSent + this.MinGap)
                     : waiting.Min(entry => entry.At) + this.BatchWindow;
                 if (due > now && !await this.WaitUntilDueOrMoreAsync(due - now, stopping)) {
@@ -149,6 +165,15 @@ public sealed class AlertPoster {
         }
     }
 
+    /// <summary>
+    /// Whether an alert goes at once rather than with the minute's message: one to go at once, or an urgent one, unless it is one the
+    /// public can set off and one of those went at once less than <see cref="PublicPingEvery"/> ago.
+    /// </summary>
+    private bool GoesAtOnce(Alert alert, DateTimeOffset now) =>
+        alert.Kind == AlertKind.AtOnce || (alert.Urgent && (!alert.Public || this.PublicPingFree(now)));
+
+    private bool PublicPingFree(DateTimeOffset now) => this._publicPinged == DateTimeOffset.MinValue || now - this._publicPinged >= PublicPingEvery;
+
     /// <returns>True once <paramref name="wait"/> has passed; false if more alerts came first.</returns>
     private async Task<bool> WaitUntilDueOrMoreAsync(TimeSpan wait, CancellationToken stopping) {
         using var either = CancellationTokenSource.CreateLinkedTokenSource(stopping);
@@ -166,7 +191,14 @@ public sealed class AlertPoster {
 
     /// <summary>Posts one message holding <paramref name="batch"/>, trying again as Discord asks, or a few times after a failure.</summary>
     private async Task SendAsync(IReadOnlyList<Alert> batch, CancellationToken ct, bool finalTry = false) {
-        var content = AlertWords.Message(batch, this._roleId, out var pinged, out _);
+        // An urgent alert pings, unless every urgent one here is one the public can set off and such a ping went out lately.
+        var now = this._time.GetUtcNow();
+        var ping = batch.Any(alert => alert.Urgent && (!alert.Public || this.PublicPingFree(now)));
+        if (ping && batch.Any(alert => alert.Urgent && alert.Public)) {
+            this._publicPinged = now;
+        }
+
+        var content = AlertWords.Message(batch, this._roleId, ping, out var pinged, out _);
         var body = Payload(content, pinged ? this._roleId : null);
         var failures = 0;
         var rateLimited = 0;

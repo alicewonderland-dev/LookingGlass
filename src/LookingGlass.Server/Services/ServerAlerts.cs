@@ -127,7 +127,8 @@ public sealed class ServerAlerts : BackgroundService {
 
             this._summaryPostedTo = Number(this._db.GetServerState(State.SummaryPostedTo));
             if (this._summaryPostedTo == null && this._settings.DailySummaryHourUtc >= 0) {
-                // The first summary covers a whole day of alerts being on.
+                // The first summary comes when the hour next comes round (perhaps minutes from now); like every one, it covers the
+                // 24 hours before it, from the database.
                 this._summaryPostedTo = LatestDue(this._time.GetUtcNow(), this._settings.DailySummaryHourUtc).ToUnixTimeSeconds();
                 this._db.SetServerState(State.SummaryPostedTo, Text(this._summaryPostedTo.Value));
             }
@@ -294,7 +295,8 @@ public sealed class ServerAlerts : BackgroundService {
     /// <summary>
     /// Posts each ban made and lifted that hasn't been (marking it first, so it is posted once), in the order they happened: a
     /// ban that replaced another says so, and the other's lift isn't posted on its own; an automatic block is urgent. Those from
-    /// before "alerts on since" are marked without being posted. Bans that ran out aren't posted (the daily summary counts them).
+    /// before "alerts on since" are marked without being posted, and so are automatic blocks that have ended by the time they are seen.
+    /// Bans that ran out aren't posted (the daily summary counts them).
     /// </summary>
     internal void ScanBans() {
         var bans = this._db.GetUnannouncedBans();
@@ -307,6 +309,8 @@ public sealed class ServerAlerts : BackgroundService {
             .Concat(bans.Where(ban => ban.LiftedAt != null && !ban.LiftedAnnounced).Select(ban => (At: ban.LiftedAt!.Value, Lift: true, Ban: ban)))
             .OrderBy(entry => entry.At).ThenBy(entry => entry.Lift).ThenBy(entry => entry.Ban.BanId).ToList();
         var quiet = 0;
+        var ended = 0;
+        var now = this.Now;
         foreach (var (at, lift, ban) in events) {
             var user = ban.UserId is { } id ? users.GetValueOrDefault(id) : null;
             if (!lift) {
@@ -316,6 +320,13 @@ public sealed class ServerAlerts : BackgroundService {
 
                 if (at < this._alertsOnSince) {
                     quiet++;
+                    continue;
+                }
+
+                if (ban.Automatic && ban.ExpiresAt <= now) {
+                    // A block that has ended already (one an older server made, before going back to this one): nothing to do
+                    // about it, so no urgent alert; the daily summary counts it.
+                    ended++;
                     continue;
                 }
 
@@ -337,6 +348,10 @@ public sealed class ServerAlerts : BackgroundService {
 
         if (quiet > 0) {
             this._logger.LogInformation("Marked {Count} bans and lifts made before Discord alerts were on as posted, without posting them", quiet);
+        }
+
+        if (ended > 0) {
+            this._logger.LogInformation("Marked {Count} automatic blocks that had already ended as posted, without posting them", ended);
         }
     }
 
