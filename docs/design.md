@@ -4395,7 +4395,9 @@ uses it is in [server.md](server.md#flags-and-bans).
 ### Banning is the operator's decision
 
 - **No automatic permanent ban.** A ban is made from the server's command
-  line (the server runs as a service, and has no admin interface yet), safely
+  line (the server runs as a service, and has no admin interface yet; a web
+  page over Tailscale and a panel in the plugin are planned, see
+  [Operator actions, one layer for every tool](#operator-actions-one-layer-for-every-tool)), safely
   while the service runs, as `--backup` is: `--ban <name@world | user ID |
   address or prefix> [--days N] [--reason "..."]`, `--unban <the same>`, and
   `--bans`, which lists the bans in force, the flags, and the bans lifted or
@@ -4605,10 +4607,146 @@ or GagSpeak is gone, the message is sent as typed (it is cosmetic), with a
 warning in the log that never holds the text. The same words in simple and
 advanced mode.
 
+### Operator actions, one layer for every tool
+
+Status: planned, not started; the plan awaits the owner's approval of its
+wording and appearance (2026-10-10; its open choices were decided the same
+day, with key-pinned operators). Mockups, the security analysis, the
+settings, the build order and the tests are in
+[operator-tools-plan.md](operator-tools-plan.md).
+
+Banning needs SSH and a command today. The owner asked (2026-10-10) for a web
+page, a panel in the plugin, and Discord alerts, designed together. All
+three, and the command line, go through one server service,
+`OperatorActions`: list the flags, list the bans, ban, lift a ban (and, for
+the plugin's operators, pin or restore their keys: see
+[An operator panel in the plugin](#an-operator-panel-in-the-plugin)), with the
+command line's rules (a character by user ID or name@world, or an address or
+prefix within today's widths; never the server's own or its proxy's address
+without `--force`; days; a reason of one line). One policy table says what
+each tool may do:
+
+| | Command line | Web page | Plugin |
+| --- | --- | --- | --- |
+| See flags and bans | Full addresses | Full addresses | Addresses shortened |
+| Ban or lift a character | Yes | Yes | Yes |
+| Ban or lift an address or prefix | Yes | Yes | No |
+| `--force` | Yes | Yes (a tick box) | No |
+| Ban a character listed as an operator | Only with `--force` | No | No |
+| Bans an hour | No limit | 30 | 10 per operator character |
+| Pin or restore an operator's keys | Yes (`--operator-pin`, the fingerprint typed) | Yes (a confirmation page) | No |
+
+- **Applied at once** when made inside the server (web page, plugin); the
+  command line's within `Abuse:BanCheckSeconds`, as now.
+- **Recorded:** each ban says which tool made or lifted it, and who (the Unix
+  user from `SUDO_USER`, the Tailscale login, or the operator character), and
+  every attempt, refused ones too, goes into an audit trail kept 365 days,
+  shown on the web page and by a new `--audit`. Schema 12 (new columns on
+  `bans`, an `operator_log` table, a `server_state` table for the alerts'
+  bookkeeping, an `operator_pins` table, and `users.keys_registered_at`); an
+  older server ignores them.
+
+### An operator web page, over Tailscale only
+
+Status: planned, not started (owner, 2026-10-10); see
+[operator-tools-plan.md](operator-tools-plan.md#the-web-page).
+
+So a ban can be made without logging in to the game. The owner's decision:
+**Tailscale only**, never on the public internet.
+
+- **Its own listener:** a second, small web host in the server process with
+  only the page's routes, on a Unix socket (`/run/lookingglass/admin.sock`,
+  only the service user and root can open it), or loopback TCP with a
+  warning. The public host has no admin routes, so nothing in front of it
+  can reach the page.
+- **Reached through `tailscale serve`**, tailnet only, on an HTTPS port Funnel
+  can't use (not 443, 8443 or 10000; the server won't start otherwise), such
+  as `https://<machine>.<tailnet>.ts.net:8444/`.
+- **Only listed Tailscale accounts** (`Admin:TailscaleLogins`): `tailscale
+  serve` strips identity headers a request brings and sets
+  `Tailscale-User-Login` from the tailnet's record of the device (none for
+  tagged devices, the machine itself, or Funnel, which it marks
+  `Tailscale-Funnel-Request`). Anything without a listed login, marked as
+  Funnel, or asked for under another name gets 403; a Funnel request also
+  raises an urgent alert.
+- **What it shows:** counts; a ban form with a confirmation page; flags with
+  full addresses and Lodestone links; bans in force with who made each and
+  **Lift...**; bans lifted or ended in 90 days; the plugin's operators, each
+  with its pinned and current fingerprints and **Pin...** or **Restore
+  operator status...** where they differ; the last 50 audit entries; a
+  **Send a test alert** button.
+- **Times in the owner's time zone** (owner, 2026-10-10): `Admin:TimeZone`,
+  an IANA name (UTC by default), each time with the zone's abbreviation;
+  `--bans` stays in UTC.
+- **Plain and safe:** server-rendered HTML and one stylesheet, no JavaScript,
+  nothing from other sites, no cookies; works on a phone. Forms carry tokens
+  bound to the login and the exact action, `Origin` must be the page's own,
+  nothing changes on a GET, and a strict Content Security Policy (no script,
+  no framing), `no-store` and `no-referrer` on every answer.
+
+### An operator panel in the plugin
+
+Status: planned, not started (owner, 2026-10-10); see
+[operator-tools-plan.md](operator-tools-plan.md#the-plugins-operator-panel).
+
+- **Key-pinned operators** (owner, 2026-10-10). Registering a character needs
+  only control of its Lodestone profile, so someone who took over the
+  owner's Square Enix account could register the operator character again
+  with keys of their own. So an operator is a character **and its keys**:
+  - `Operators:Characters` (configuration) lists, by user ID, the characters
+    that may be operators; only the settings, and a restart, add one.
+  - The database (`operator_pins`) holds each one's **pinned key hash**: the
+    full SHA-256 the fingerprint is cut from (`IdentityKeys.KeyHash`, under
+    `lookingglass/fingerprint/v1`, of the signing and agreement public keys),
+    shown as the 25-digit fingerprint players compare (`FingerprintOf`; the
+    one under **Your identity** in Settings, advanced mode). The full hash
+    is compared, never the 25 digits.
+  - A listed character is an operator only while its account's current keys
+    match its pin, checked at login and on every operator request.
+  - **Never pinned automatically**, not even on first login (that would trust
+    whatever keys it has when listed): the operator pins it on the web page
+    (**Pin...**, a confirmation page with the fingerprint to compare) or
+    with `--operator-pin <whom> --fingerprint "..."` (which must be the
+    current keys'). `--operators` lists them.
+  - **Registering again** (a new computer, "Reset my identity", recovery)
+    drops operator status at once. **Restore operator status...** on the web
+    page (a confirmation page with the old and new fingerprints, when the
+    keys changed, and advice to compare with the plugin's Settings first;
+    its token names the keys shown) or `--operator-pin` re-pins it. Audited,
+    and posted to Discord with the ping.
+  - The character's own login is told (`AuthenticateOk.operator_status`:
+    an operator, keys changed, or not pinned yet; "not listed" for everyone
+    else, with the capability `operator.v1`); the plugin says once in chat,
+    and in place of the Operator section, that the server no longer treats
+    it as an operator and to restore it on the web page. A listed character
+    logging in with keys that don't match its pin is posted to Discord as
+    urgent, with the ping, once per new set of keys.
+  - So a taken Square Enix account gives nothing operator-wise; a copy of the
+    secrets file still holds the pinned keys and gives the panel, which
+    "Reset my identity" ends (the new keys drop the pin).
+- **An Operator section at the end of Settings** (owner, 2026-10-10; flags, bans in force,
+  lately lifted, a ban field), and **Ban from server...** in the right-click
+  menus beside **Invite to LookingGlass**, opening a dialog with how long
+  (1, 7 or 30 days, until lifted, or a number) and the reason.
+- **Narrower than the web page**, because the operator's character keys are
+  worth more now: characters only (owner, 2026-10-10: it may not lift
+  automatic address blocks either), addresses shortened, no `--force`, no
+  banning an operator character, no pinning or restoring, 10 bans an hour.
+  Reading needs the login;
+  each ban and lift is also signed by the character's current identity key
+  (as "Sign out everywhere else"), over the action, whom, days, the reason's
+  hash, the login's hash, the server's address and a single-use nonce. Every
+  plugin action is posted to Discord naming the character.
+- **Protocol:** additive behind `operator.v1` (`GetOperatorView`,
+  `OperatorView`, `OperatorBan`, `OperatorUnban`), no version change. Older
+  plugins never see it; with an older server the plugin shows nothing.
+
 ### Alerts to a Discord channel
 
 Status: planned, not started (owner, 2026-10-08), for when the server is
-public and the plugin has a Discord with an admin channel. Flags and automatic
+public and the plugin has a Discord with an admin channel; its open questions
+answered by the owner on 2026-10-10 (below), and example messages in
+[operator-tools-plan.md](operator-tools-plan.md#discord-alerts). Flags and automatic
 blocks (see [Spotting abuse, and banning](#spotting-abuse-and-banning)) today
 show only in the log and in `--bans`, so the operator has to remember to look.
 
@@ -4617,38 +4755,60 @@ show only in the log and in `--bans`, so the operator has to remember to look.
   The URL is a secret (anyone holding it can post in the channel), so it goes
   in a root-only drop-in or `EnvironmentFile=`, never in `appsettings.json` or
   the repository, and is never logged; the startup line says only "Discord
-  alerts on". A `--alert-test` command posts one test message, to check it.
+  alerts on". The restart alert shows alerts work, and the web page's **Send
+  a test alert** posts one at will (the `--alert-test` command first planned
+  is dropped: only the service reads the secret, so the `LG` helper can't
+  post).
 - **What is posted:** someone flagged (account or address, the limits, how
-  often), an address blocked automatically, a ban made or lifted with the
-  command line (the server posts it when it picks the change up, so the
-  command needs no network), and the proxy warning (every player seeming to
-  come from 127.0.0.1: worth knowing at once). Each says what to do next, as
-  a command to copy (`LG --ban 4242 --days 7 --reason "..."`, `LG --bans`),
-  and links the character's Lodestone page.
+  often), an address blocked automatically, a ban made or lifted with any
+  tool (saying which: the command line, the web page, or the plugin with the
+  operator character's name; the server posts a command line's when it picks
+  the change up, so the command needs no network, and each ban once, across
+  restarts), the proxy warning (every player seeming to come from 127.0.0.1:
+  worth knowing at once), a request to the web page through Funnel, the
+  server starting (with its version, and whether it last stopped cleanly),
+  and a daily summary. Each says what to do next: the web page's link
+  (`Admin:Url`, if set) and a command to copy (`LG --ban 4242 --days 7
+  --reason "..."`, `LG --bans`; never `--force`), and links the character's
+  Lodestone page.
+- **How much (owner, 2026-10-10):** characters as name@world with the user
+  ID and the Lodestone link; **addresses shortened**: an IPv4 address to its
+  first three parts (`203.0.113.x`), an IPv6 one to its /40
+  (`2001:db8:ab00::/40`; the owner chose it on 2026-10-10 over the /48 in
+  the AI's planning brief, since a /48 is often one customer's whole
+  allocation), and a prefix wider than those as it is. Full addresses stay on the server,
+  in `--bans` and on the web page. Tailscale logins and Unix users aren't
+  posted. Times are Discord time stamps, shown in each reader's time zone,
+  and link previews are off.
+- **Pings (owner, 2026-10-10):** an optional role (`Alerts:PingRoleId`) is
+  pinged for urgent alerts only: an address blocked automatically, the proxy
+  warning, a request through Funnel, an operator character logging in with
+  keys that don't match its pin, and an operator's keys pinned or restored.
+  Flags, bans and the rest never ping.
+- **The daily summary (owner, 2026-10-10)**, at `Alerts:DailySummaryHourUtc`
+  (09:00 UTC by default): flagged (characters and addresses), blocked
+  automatically, bans made (by tool), lifted and ended, bans in force, and
+  what the server knows for next to nothing: the most players online at once,
+  characters registered for the first time, uptime, the database's size, and
+  alerts that couldn't be posted. A day with nothing to report says so ("a
+  quiet day ... Alerts are working"), so silence never means broken alerts.
 - **Never in the way of the server.** Alerts go through a bounded queue on
   their own task: a slow or failing Discord never delays a request. Discord
   limits a webhook to a few messages a second, so alerts within a minute are
   batched into one message, a flood is summed up ("and 37 more"), a `429`'s
   `Retry-After` is honoured, and a failure is logged at most once every ten
   minutes, without the URL.
-- **Safe to post.** `allowed_mentions` is empty, so no character name or ban
-  reason can ping `@everyone` or anyone; names and reasons are escaped so they
-  can't format the message. Nothing anyone said is ever posted (the server
-  never has it).
+- **Safe to post.** `allowed_mentions` is empty, or on an urgent alert lists
+  only the ping role, so no character name or ban reason can ping
+  `@everyone` or anyone; names and reasons are escaped so they can't format
+  the message. Nothing anyone said is ever posted (the server never has it).
 - **Built and tested like the rest:** a fake webhook in the tests (batching,
-  limits, retries, escaping, nothing posted when unset), and steps in the bans
-  checklist with a private test channel.
+  limits, retries, escaping, shortening, pings only on urgent alerts, each
+  ban once, nothing posted when unset), and steps in the bans checklist with
+  a private test channel.
 
-**To decide when it's built:**
-
-- **How much to post to Discord**, a third party that keeps what it's sent:
-  character names (public on the Lodestone anyway) or only user IDs with the
-  Lodestone link; and addresses in full, shortened (`203.0.113.x`), or left
-  out (they're in `--bans` on the server).
-- **Whether to ping a role** for the urgent ones (an automatic block, the
-  proxy warning), or never ping.
-- **Anything else worth an alert:** the server restarting, a daily summary
-  ("3 flagged, 1 blocked, nothing else"), or nothing more.
+The questions this plan left open (how much to post, whether to ping, what
+else to post) were answered by the owner on 2026-10-10, as above.
 
 ### Strict mode for keys not compared
 
@@ -4953,6 +5113,46 @@ The owner's decisions, and why.
   another data centre) gets the game's own answer. The party finder's
   "advanced search results" notice is never sent as a link. See
   [Links in messages](#links-in-messages).
+- **Operator tools: a web page, a plugin panel and Discord alerts, on one
+  layer (2026-10-10).** Banning needed SSH and a command. The owner asked for
+  three tools, designed together on one server-side layer with the command
+  line's rules, and decided: the **web page is reachable over Tailscale
+  only** (`tailscale serve` on the tailnet, never Funnel, never the public
+  proxy), letting in only listed Tailscale accounts; the **plugin shows an
+  Operator section and "Ban from server..."** only to characters listed as
+  operators, its requests checked against their identity keys; and the
+  **Discord alerts** post characters as name@world with the Lodestone link
+  but **addresses shortened** (full ones stay on the server and its page),
+  **ping an optional role for urgent alerts only** (an automatic block, the
+  proxy warning), add **server restarts** and a **daily summary** with a
+  quiet-day message, link the web page as well as the command, and say which
+  tool made a ban. Proposed with it, for the owner's approval with the
+  mockups: the page on its own listener (a Unix socket) and on a port Funnel
+  can't serve; the plugin limited to characters (no address bans, no
+  `--force`, addresses shortened, 10 bans an hour, every action posted);
+  an audit trail of every tool's actions. See
+  [Operator actions, one layer for every tool](#operator-actions-one-layer-for-every-tool)
+  and [operator-tools-plan.md](operator-tools-plan.md).
+- **Key-pinned operators (2026-10-10).** Registering a character needs only
+  control of its Lodestone profile, so with operators listed by Lodestone ID
+  alone, someone who took over the owner's Square Enix account could
+  register the operator character again with their own keys and get the
+  plugin's panel. The owner decided an operator is a character and its keys:
+  the configuration lists which characters may be operators, the database
+  holds each one's pinned key hash (shown as the fingerprint players
+  compare), set and restored only by the operator on the web page (the
+  owner's request: **Restore operator status...**, showing the old and new
+  fingerprints) or the command line, never automatically. A key change drops
+  operator status until restored; only the character's own login is told,
+  and Discord gets an urgent alert, as it does for every pin and restore.
+  See [An operator panel in the plugin](#an-operator-panel-in-the-plugin).
+- **Operator tools: the open choices (2026-10-10).** The owner took every
+  recommendation: IPv6 addresses shortened to a /40 in Discord (the /48
+  first mentioned came from the AI's planning brief, not the owner); the
+  plugin acts on characters only, and may not lift automatic address blocks;
+  its panel is a section at the end of Settings; the daily summary is at
+  09:00 UTC by default (a setting). Also accepted: the web page shows times
+  in the owner's time zone (`Admin:TimeZone`, an IANA name, UTC by default).
 
 ## Open questions
 
@@ -4995,3 +5195,10 @@ The owner's decisions, and why.
   also said those channels keep today's behaviour, so their counts were left
   as they are. Answered (2026-10-09): yes, only channels seen only in
   windows; what reached game chat was there to read, so it counts as read.
+- **Operator tools** (2026-10-10): the owner approves the wording and
+  appearance (the mockups in
+  [operator-tools-plan.md](operator-tools-plan.md)) before anything is built.
+  The four smaller choices are answered (2026-10-10): IPv6 shortened to a
+  /40; the plugin may not lift automatic address blocks; the panel is a
+  section in Settings; the daily summary at 09:00 UTC by default (see
+  Decisions).
