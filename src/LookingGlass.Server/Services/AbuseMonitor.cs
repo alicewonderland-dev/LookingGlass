@@ -23,7 +23,8 @@ namespace LookingGlass.Server.Services;
 /// the cap, the least recently refused are forgotten (a flag already made stays in the database).
 /// </para>
 /// </summary>
-public sealed class AbuseMonitor(Database db, BanList bans, IOptions<ServerOptions> options, ILogger<AbuseMonitor> logger, TimeProvider? time = null) {
+public sealed class AbuseMonitor(Database db, BanList bans, IOptions<ServerOptions> options, ILogger<AbuseMonitor> logger, TimeProvider? time = null,
+    ServerAlerts? alerts = null) {
     // How often a flag still being refused has its last refusal written to the database: it lasts a day by default, so
     // this need not be at every refusal.
     private static readonly TimeSpan SaveFlagEvery = TimeSpan.FromMinutes(5);
@@ -103,6 +104,7 @@ public sealed class AbuseMonitor(Database db, BanList bans, IOptions<ServerOptio
                     "address on (X-Forwarded-For) and that LookingGlass:TrustedProxies lists it: see \"Behind a reverse proxy\" in docs/server.md. " +
                     "It isn't flagged or blocked; accounts still are.",
                     address, over, decision.Limits);
+                alerts?.ProxyWarning(address!);
             }
 
             return;
@@ -183,11 +185,13 @@ public sealed class AbuseMonitor(Database db, BanList bans, IOptions<ServerOptio
             return;
         }
 
-        db.SaveFlag(new FlagRow(subject, userId, address, at, at, limits, why));
+        var flag = new FlagRow(subject, userId, address, at, at, limits, why);
+        db.SaveFlag(flag);
         logger.LogWarning(
             "Flagged {Subject}: {Why}, by {Limits}. Repeated refusals by limits like these are unlikely to be by accident; see it with --bans, " +
             "and ban it with --ban {Target} if it is abuse. The flag expires {Hours} hours after the last refusal.",
             subject, why, limits, userId?.ToString(CultureInfo.InvariantCulture) ?? address, this._settings.FlagExpiresAfterHours);
+        alerts?.Flagged(flag);
     }
 
     private void SaveFlag(string subject, long? userId, string? address, DateTimeOffset now, string limits) {
@@ -215,6 +219,8 @@ public sealed class AbuseMonitor(Database db, BanList bans, IOptions<ServerOptio
             "Blocked address {Address} for {Minutes} minutes automatically: refused {Refusals} times within {Window} minutes " +
             "(LookingGlass:Abuse:AutoBlockAfterRefusals). It is listed by --bans, and --unban {Address} lifts it.",
             prefix, minutes, refusals, Math.Clamp(this._settings.WindowMinutes, 10, 1440), prefix);
+        // Posted (urgent) from the bans table, as every ban is, once: now rather than at the next look.
+        alerts?.Nudge();
     }
 
     /// <summary>Two comma separated lists of limits, as one, in order.</summary>

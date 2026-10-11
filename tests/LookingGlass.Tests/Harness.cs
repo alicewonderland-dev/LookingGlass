@@ -34,9 +34,10 @@ public sealed class Harness : IAsyncDisposable {
     /// </param>
     /// <param name="logs">Also gets everything the server logs.</param>
     /// <param name="lodestone">Answers the server's Lodestone requests instead of the real Lodestone, for registering real characters.</param>
+    /// <param name="discord">Takes the server's Discord alerts instead of Discord (they are on only with <see cref="FakeDiscord.On"/> in <paramref name="settings"/>).</param>
     /// <param name="settings">Extra server configuration, for example <c>("LookingGlass:Limits:MaxIdentitiesPerRequest", "2")</c>.</param>
     public Harness(string? dataDirectory = null, bool allowDebugAccounts = true, TimeProvider? serverTime = null, string environment = "Development",
-        CapturingLoggerProvider? logs = null, FakeLodestone? lodestone = null, params (string Key, string Value)[] settings) {
+        CapturingLoggerProvider? logs = null, FakeLodestone? lodestone = null, FakeDiscord? discord = null, params (string Key, string Value)[] settings) {
         this._ownsDataDirectory = dataDirectory == null;
         this.DataDirectory = dataDirectory ?? Path.Combine(Path.GetTempPath(), "lgt-" + Guid.NewGuid().ToString("N"));
         Live[LiveKey(this.DataDirectory)] = this;
@@ -71,6 +72,11 @@ public sealed class Harness : IAsyncDisposable {
                 builder.UseSetting("LookingGlass:Lodestone:MinDelaySeconds", "0");
                 builder.ConfigureTestServices(services => services.AddHttpClient<LookingGlass.Server.Services.LodestoneClient>()
                     .ConfigurePrimaryHttpMessageHandler(() => lodestone));
+            }
+
+            if (discord != null) {
+                builder.ConfigureTestServices(services => services.AddHttpClient(LookingGlass.Server.Services.ServerAlerts.HttpClientName)
+                    .ConfigurePrimaryHttpMessageHandler(() => discord));
             }
         });
         try {
@@ -679,6 +685,60 @@ public sealed class FakeLodestone : HttpMessageHandler {
         return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent(html) });
     }
 }
+
+/// <summary>
+/// A Discord webhook as the server sees it: records every message posted to it (<see cref="Posts"/>, those it took), and answers
+/// 204, or as <see cref="Answer"/> says. Nothing reaches Discord.
+/// </summary>
+public sealed class FakeDiscord : HttpMessageHandler {
+    /// <summary>A webhook address of the right shape (its token is what the tests look for in the logs).</summary>
+    public const string Url = "https://discord.com/api/webhooks/123456789012345678/Fake-Webhook_Token-0123456789";
+
+    /// <summary>The webhook's token, which must never be logged.</summary>
+    public const string Token = "Fake-Webhook_Token-0123456789";
+
+    /// <summary>The setting that turns alerts on, to this webhook.</summary>
+    public static readonly (string Key, string Value) On = ("LookingGlass:Alerts:DiscordWebhookUrl", Url);
+
+    private readonly ConcurrentQueue<Posted> _posts = new();
+    private readonly ConcurrentQueue<Posted> _attempts = new();
+    private int _requests;
+
+    /// <summary>The messages taken (answered with success), in order.</summary>
+    public IReadOnlyList<Posted> Posts => this._posts.ToArray();
+
+    /// <summary>Every message sent, taken or not.</summary>
+    public IReadOnlyList<Posted> Attempts => this._attempts.ToArray();
+
+    /// <summary>The answer to the request with this number (1 for the first); null for 204.</summary>
+    public Func<int, HttpResponseMessage?>? Answer { get; set; }
+
+    /// <summary>Waits for a message taken that <paramref name="match"/> likes.</summary>
+    public Task<Posted> WaitForPost(Func<Posted, bool> match) => Harness.WaitFor(() => this.Posts.FirstOrDefault(match));
+
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) {
+        var number = Interlocked.Increment(ref this._requests);
+        using var json = System.Text.Json.JsonDocument.Parse(await request.Content!.ReadAsStringAsync(cancellationToken));
+        var root = json.RootElement;
+        var mentions = root.GetProperty("allowed_mentions");
+        var posted = new Posted(request.Method.Method, request.RequestUri!.ToString(), root.GetProperty("content").GetString()!,
+            mentions.GetProperty("parse").GetArrayLength(), mentions.GetProperty("roles").EnumerateArray().Select(role => role.GetString()!).ToList(),
+            root.GetProperty("flags").GetInt32(), request.Content.Headers.ContentType?.MediaType);
+        this._attempts.Enqueue(posted);
+        var answer = this.Answer?.Invoke(number) ?? new HttpResponseMessage(System.Net.HttpStatusCode.NoContent);
+        if (answer.IsSuccessStatusCode) {
+            this._posts.Enqueue(posted);
+        }
+
+        return answer;
+    }
+}
+
+/// <summary>One message posted to a <see cref="FakeDiscord"/>.</summary>
+/// <param name="Parse">How many kinds of mention <c>allowed_mentions.parse</c> allows (always 0: no @everyone, no users, no roles by name).</param>
+/// <param name="Roles">The roles <c>allowed_mentions</c> lets it ping.</param>
+/// <param name="Flags">The message flags (4: link previews off).</param>
+public sealed record Posted(string Method, string Url, string Content, int Parse, IReadOnlyList<string> Roles, int Flags, string? ContentType);
 
 /// <summary>
 /// A WebSocket to the server driven request by request, with no client logic in between. Events are kept (in

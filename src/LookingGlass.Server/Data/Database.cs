@@ -2219,6 +2219,72 @@ public sealed class Database {
             ("$key", key), ("$value", value));
     }
 
+    public void DeleteServerState(string key) {
+        using var connection = this.Open();
+        Execute(connection, null, "DELETE FROM server_state WHERE key = $key;", ("$key", key));
+    }
+
+    /// <summary>The values the server keeps whose keys start with <paramref name="prefix"/>, by key.</summary>
+    public Dictionary<string, string> GetServerStates(string prefix) {
+        using var connection = this.Open();
+        return Query(connection, null, "SELECT key, value FROM server_state WHERE substr(key, 1, length($prefix)) = $prefix;",
+            reader => (Key: reader.GetString(0), Value: reader.GetString(1)), ("$prefix", prefix)).ToDictionary(row => row.Key, row => row.Value, StringComparer.Ordinal);
+    }
+
+    // ================================================================ Discord alerts (see "Alerts to a Discord channel" in docs/design.md)
+
+    /// <summary>The bans whose making, or lifting, hasn't been posted to the alerts channel, oldest first.</summary>
+    public List<BanRow> GetUnannouncedBans() {
+        using var connection = this.Open();
+        return Query(connection, null, "SELECT * FROM bans WHERE made_announced = 0 OR (lifted_at IS NOT NULL AND lifted_announced = 0) ORDER BY ban_id;", ReadBan);
+    }
+
+    /// <summary>
+    /// Marks a ban's making as posted, if it wasn't: whoever marks it posts it (or, made before alerts were on, doesn't), so it
+    /// is posted once, whichever server or scan sees it first.
+    /// </summary>
+    /// <returns>Whether this call marked it.</returns>
+    public bool ClaimBanMade(long banId) {
+        using var connection = this.Open();
+        return Execute(connection, null, "UPDATE bans SET made_announced = 1 WHERE ban_id = $id AND made_announced = 0;", ("$id", banId)) == 1;
+    }
+
+    /// <summary>Marks a ban's lifting as posted, if it was lifted and that wasn't (see <see cref="ClaimBanMade"/>).</summary>
+    /// <returns>Whether this call marked it.</returns>
+    public bool ClaimBanLifted(long banId) {
+        using var connection = this.Open();
+        return Execute(connection, null, "UPDATE bans SET lifted_announced = 1 WHERE ban_id = $id AND lifted_at IS NOT NULL AND lifted_announced = 0;",
+            ("$id", banId)) == 1;
+    }
+
+    /// <summary>
+    /// Records that an operator character signing in with the keys whose hash is <paramref name="keyHash"/>, which aren't its
+    /// pinned ones, is being posted, unless those keys are the pinned ones or were posted already: so each new set of keys is
+    /// posted once (a pin clears it: see <see cref="PinOperator"/>).
+    /// </summary>
+    /// <returns>Whether this call recorded it (and so should post it).</returns>
+    public bool ClaimOperatorMismatch(long userId, byte[] keyHash) {
+        using var connection = this.Open();
+        return Execute(connection, null, """
+            UPDATE operator_pins SET mismatch_announced_hash = $hash
+            WHERE user_id = $id AND key_hash <> $hash AND (mismatch_announced_hash IS NULL OR mismatch_announced_hash <> $hash);
+            """, ("$id", userId), ("$hash", keyHash)) == 1;
+    }
+
+    /// <summary>The bans made, lifted or ended at or after <paramref name="since"/> (and not yet swept), oldest first: for the daily summary.</summary>
+    public List<BanRow> GetBansChangedSince(long since) {
+        using var connection = this.Open();
+        return Query(connection, null, "SELECT * FROM bans WHERE created_at >= $since OR lifted_at >= $since OR expires_at >= $since ORDER BY ban_id;", ReadBan,
+            ("$since", since));
+    }
+
+    /// <summary>How many characters were first registered on this server after <paramref name="after"/> and at or before <paramref name="until"/>.</summary>
+    public int CountUsersRegistered(long after, long until) {
+        using var connection = this.Open();
+        return Convert.ToInt32(Scalar(connection, null, "SELECT COUNT(*) FROM users WHERE created_at > $after AND created_at <= $until;",
+            ("$after", after), ("$until", until)));
+    }
+
     private static OperatorPinRow ReadPin(SqliteDataReader reader) {
         return new OperatorPinRow(
             reader.GetInt64(reader.GetOrdinal("user_id")),

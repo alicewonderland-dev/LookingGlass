@@ -35,6 +35,70 @@ public sealed class ServerOptions {
     public MessageOptions Messages { get; set; } = new();
     public AbuseOptions Abuse { get; set; } = new();
     public OperatorOptions Operators { get; set; } = new();
+    public AlertOptions Alerts { get; set; } = new();
+}
+
+/// <summary>
+/// Alerts to a Discord channel, through a webhook: see "Alerts to a Discord channel" in docs/design.md and "Alerts to Discord"
+/// in docs/server.md. Off unless <see cref="DiscordWebhookUrl"/> is set.
+/// </summary>
+public sealed class AlertOptions {
+    /// <summary>
+    /// The webhook alerts are posted to, as Discord's <b>Copy Webhook URL</b> gives it
+    /// (<c>https://discord.com/api/webhooks/&lt;number&gt;/&lt;token&gt;</c>); empty for no alerts. A secret: anyone holding it can
+    /// post in the channel. It belongs in a root-only <c>EnvironmentFile=</c>, never in appsettings.json, and is never logged.
+    /// </summary>
+    public string DiscordWebhookUrl { get; set; } = "";
+
+    /// <summary>The Discord role pinged by urgent alerts, by its ID (a number); empty for no ping.</summary>
+    public string PingRoleId { get; set; } = "";
+
+    /// <summary>Post when the server starts (and whether it last stopped cleanly).</summary>
+    public bool Restarts { get; set; } = true;
+
+    /// <summary>The hour, 0 to 23 UTC, the daily summary is posted at; -1 for none. 9 by default (the owner's choice, 2026-10-10).</summary>
+    public int DailySummaryHourUtc { get; set; } = 9;
+
+    /// <summary>Whether alerts are on: a webhook is set.</summary>
+    public bool On => !string.IsNullOrWhiteSpace(this.DiscordWebhookUrl);
+
+    /// <summary>The webhook, as posted to.</summary>
+    public string WebhookUrl => this.DiscordWebhookUrl.Trim();
+
+    /// <summary>The ping role's ID, or null for none.</summary>
+    public string? RoleId => string.IsNullOrWhiteSpace(this.PingRoleId) ? null : this.PingRoleId.Trim();
+
+    // https://discord.com/api/webhooks/<the webhook's ID>/<its token>, and nothing else: no other host, port, query or fragment.
+    private static readonly System.Text.RegularExpressions.Regex WebhookShape =
+        new(@"^https://discord\.com/api/webhooks/[0-9]{1,20}/[A-Za-z0-9_\-]{1,200}$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// Why the settings are wrong (the server doesn't start then), or null if they aren't. Never quotes the webhook: it is a
+    /// secret, and this goes to the log.
+    /// </summary>
+    public string? Problem() {
+        if (this.On && !WebhookShape.IsMatch(this.WebhookUrl)) {
+            var url = this.WebhookUrl;
+            var hint = !url.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ? "it doesn't start with https://"
+                : !url.StartsWith("https://discord.com/", StringComparison.Ordinal) ? "its address isn't discord.com"
+                : "after https://discord.com/ it isn't api/webhooks/<number>/<token>, with nothing more";
+            return "LookingGlass:Alerts:DiscordWebhookUrl isn't a Discord webhook, so the server won't start: " + hint + ". It must be exactly what " +
+                   "Discord's Copy Webhook URL gives, https://discord.com/api/webhooks/<number>/<token>, or empty for no alerts. (Its value isn't " +
+                   "shown here: it is a secret.)";
+        }
+
+        if (this.RoleId is { } role && (!ulong.TryParse(role, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var id) || id == 0)) {
+            return $"LookingGlass:Alerts:PingRoleId is \"{Services.VisibleText.Of(role, 40)}\", so the server won't start: it must be the role's ID, a number " +
+                   "(in Discord, with Developer Mode on, right-click the role and Copy Role ID), or empty for no ping.";
+        }
+
+        if (this.DailySummaryHourUtc is < -1 or > 23) {
+            return $"LookingGlass:Alerts:DailySummaryHourUtc is {this.DailySummaryHourUtc}, so the server won't start: it must be 0 to 23 (the hour, UTC, " +
+                   "the daily summary is posted at; 9 by default), or -1 for none.";
+        }
+
+        return null;
+    }
 }
 
 /// <summary>

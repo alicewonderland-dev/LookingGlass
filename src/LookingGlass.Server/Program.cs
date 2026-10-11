@@ -79,10 +79,27 @@ builder.Services.AddSingleton<BanList>();
 builder.Services.AddSingleton<AbuseMonitor>();
 builder.Services.AddSingleton<BanEnforcer>();
 builder.Services.AddHostedService(services => services.GetRequiredService<BanEnforcer>());
-// The operator's actions, for every tool, under one policy; made here (the web page, the plugin), a ban applies at once.
-builder.Services.AddSingleton(services => new OperatorActions(services.GetRequiredService<Database>(),
-    OperatorSettings.From(services.GetRequiredService<IOptions<ServerOptions>>().Value), services.GetService<TimeProvider>(),
-    services.GetRequiredService<BanEnforcer>().ApplyNow, services.GetRequiredService<ILogger<OperatorActions>>()));
+// Alerts to a Discord channel (off without a webhook), posted on a task of their own. The HTTP client logs nothing: its
+// request lines would hold the webhook, which is a secret.
+builder.Services.AddHttpClient(ServerAlerts.HttpClientName, client => client.Timeout = TimeSpan.FromSeconds(15)).RemoveAllLoggers();
+builder.Services.AddSingleton(services => {
+    var http = services.GetRequiredService<IHttpClientFactory>();
+    return new ServerAlerts(services.GetRequiredService<Database>(), services.GetRequiredService<IOptions<ServerOptions>>().Value,
+        () => http.CreateClient(ServerAlerts.HttpClientName), services.GetRequiredService<ConnectionRegistry>(), builder.Environment.EnvironmentName,
+        services.GetRequiredService<ILogger<ServerAlerts>>(), services.GetService<TimeProvider>());
+});
+builder.Services.AddHostedService(services => services.GetRequiredService<ServerAlerts>());
+// The operator's actions, for every tool, under one policy; made here (the web page, the plugin), a ban applies at once, and
+// is posted to Discord at once.
+builder.Services.AddSingleton(services => {
+    var enforcer = services.GetRequiredService<BanEnforcer>();
+    var alerts = services.GetRequiredService<ServerAlerts>();
+    return new OperatorActions(services.GetRequiredService<Database>(), OperatorSettings.From(services.GetRequiredService<IOptions<ServerOptions>>().Value),
+        services.GetService<TimeProvider>(), () => {
+            enforcer.ApplyNow();
+            alerts.Nudge();
+        }, services.GetRequiredService<ILogger<OperatorActions>>());
+});
 builder.Services.AddSingleton<RequestHandler>();
 builder.Services.AddHttpClient<LodestoneClient>(client => {
     client.DefaultRequestHeaders.UserAgent.ParseAdd("LookingGlass/0.1 (+character verification)");
@@ -147,6 +164,13 @@ if (options.Abuse.Problem() is { } abuseSettings) {
 // Who may be an operator: user IDs only. Pins for characters no longer listed go now, and how each listed one stands is logged.
 if (options.Operators.Problem() is { } operatorSettings) {
     app.Logger.LogCritical("{Problem}", operatorSettings);
+    Environment.ExitCode = 1;
+    return;
+}
+
+// Alerts to Discord: the webhook must be one (it is never quoted: it is a secret), the ping role a number, the summary's hour an hour.
+if (options.Alerts.Problem() is { } alertSettings) {
+    app.Logger.LogCritical("{Problem}", alertSettings);
     Environment.ExitCode = 1;
     return;
 }
@@ -224,7 +248,7 @@ if (options.Dev.AllowDebugAccounts && app.Environment.IsDevelopment()) {
 
 // One line saying how this server is set up, for the operator to check after every start or update.
 app.Logger.LogInformation(
-    "LookingGlass server {Version} in {Environment}: debug accounts {DebugAccounts}, echo bot {EchoBot}; {Messages}; {Abuse}; {Addresses}; database {Database}",
+    "LookingGlass server {Version} in {Environment}: debug accounts {DebugAccounts}, echo bot {EchoBot}; {Messages}; {Abuse}; {Addresses}; {Alerts}; database {Database}",
     RequestHandler.ServerVersion, app.Environment.EnvironmentName, options.Dev.AllowDebugAccounts ? "ON" : "off",
     options.Dev.HostEchoBot && options.Dev.AllowDebugAccounts ? "ON" : "off",
     options.Messages.Enabled
@@ -238,6 +262,8 @@ app.Logger.LogInformation(
     publicOrigins.Count == 0 ? "no PublicUrls (going by each connection's Host header)"
     : sharedAddresses == 0 ? $"every address is wss:// with a fully qualified name ({publicOrigins.Count})"
     : $"{sharedAddresses} of {publicOrigins.Count} addresses may not be this server's alone (see the warnings above)",
+    // Only whether they are on: never the webhook.
+    options.Alerts.On ? "Discord alerts on" : "Discord alerts off",
     app.Services.GetRequiredService<Database>().FilePath);
 
 app.UseForwardedHeaders();
