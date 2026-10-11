@@ -49,6 +49,11 @@ public static class OperatorWords {
         "Operators are tied to their keys, so someone who registers your character again elsewhere doesn't become one. Only the web page can restore it.",
         "Operators are tied to their LookingGlass setup, so someone who sets up your character elsewhere doesn't become one. Only the web page can restore it.");
 
+    /// <summary>The "?" of the notice in the section's place while no keys are pinned yet (<see cref="SettingHelp.OperatorNotPinned"/>).</summary>
+    public static readonly Wording NotPinnedHelp = new(NoticeKind.General,
+        "Operators are tied to their keys, so someone who registers your character elsewhere doesn't become one. Approve these keys on the web page.",
+        "Operators are tied to their LookingGlass setup, so someone who sets up your character elsewhere doesn't become one. Approve it on the web page.");
+
     // ---- the menu and the dialog
     public const string MenuLabel = "Ban from server...";
 
@@ -96,8 +101,12 @@ public static class OperatorWords {
     public static string NotRegistered(string who) =>
         $"{who} isn't registered on this server, so there's nothing to ban here. To stop the character registering, ban its Lodestone ID on the web page.";
 
+    /// <summary>The dialog for a character not registered here, with a ban in force (on its Lodestone ID): it can be lifted here, not banned again.</summary>
+    public static string LiftOnly(PanelBan ban, string? me, DateTimeOffset now) =>
+        AlreadyBanned(ban, me, now) + " It isn't registered on this server, so only the web page can ban it again; you can lift this ban here.";
+
     /// <summary>The dialog for a character listed as an operator.</summary>
-    public static string IsAnOperator(string who) => $"{who} is listed as one of this server's operators, so it can't be banned here.";
+    public static string IsAnOperator(string who) => $"{who} is listed as one of this server's operators, so it can't be banned here, nor its bans lifted (the web page does that).";
 
     /// <summary>The dialog for a character banned already: "Banned until Oct 17 (7 days), made on the web page. Reason: Spamming invites."</summary>
     public static string AlreadyBanned(PanelBan ban, string? me, DateTimeOffset now) {
@@ -118,12 +127,44 @@ public static class OperatorWords {
     public static string Lifted(string who) => $"Lifted the ban on {who}.";
 
     /// <summary>"Couldn't ban Bob Hatter@Lich: " and why, in the mode's words (what a server said, without its error code in simple mode).</summary>
-    public static string NotBanned(string who, Exception ex, bool advanced) =>
-        LodestoneCode.Redact(PlainMessages.Of($"Couldn't ban {who}: {PlainMessages.MessageOf(ex, advanced)}", advanced));
+    public static string NotBanned(string who, Exception ex, bool advanced) => $"Couldn't ban {who}: {WhyNot(ex, advanced)}";
 
     /// <summary>"Couldn't lift the ban on Bob Hatter@Lich: " and why, in the mode's words.</summary>
-    public static string NotLifted(string who, Exception ex, bool advanced) =>
-        LodestoneCode.Redact(PlainMessages.Of($"Couldn't lift the ban on {who}: {PlainMessages.MessageOf(ex, advanced)}", advanced));
+    public static string NotLifted(string who, Exception ex, bool advanced) => $"Couldn't lift the ban on {who}: {WhyNot(ex, advanced)}";
+
+    /// <summary>
+    /// Why an operator request failed, in the mode's words: a refusal the server gave a reason for (<see cref="OperatorRefusalReason"/>)
+    /// in the plugin's own words, in both modes (advanced mode adds what the server said); never the server's text in simple mode.
+    /// Anything else (no answer, not connected) as the plugin says it elsewhere.
+    /// </summary>
+    public static string WhyNot(Exception ex, bool advanced) {
+        if (ex is not ServerErrorException server) {
+            return LodestoneCode.Redact(PlainMessages.Of(PlainMessages.MessageOf(ex, advanced), advanced));
+        }
+
+        var words = Refusal(server.OperatorRefusal).For(advanced);
+        return advanced ? LodestoneCode.Redact($"{words} The server says: {server.Message}") : words;
+    }
+
+    /// <summary>What a refusal of an operator request means, in both modes' words.</summary>
+    public static Wording Refusal(OperatorRefusalReason reason) => reason switch {
+        OperatorRefusalReason.NotAnOperator => new Wording(NoticeKind.General,
+            "This server doesn't treat this character as an operator now (its keys changed, or it isn't listed any more).",
+            "This server doesn't treat you as an operator now."),
+        OperatorRefusalReason.WrongAddress => Wording.Same("The server doesn't accept the address you're connected to for this. Use one of its own addresses in Settings."),
+        OperatorRefusalReason.BadSignature => new Wording(NoticeKind.General,
+            "The server says it isn't signed with this character's identity key for this login.",
+            "The server didn't accept it as coming from this computer's LookingGlass setup."),
+        OperatorRefusalReason.NonceStale => Wording.Same("It took too long. Try again."),
+        OperatorRefusalReason.TooOften => Wording.Same("You're doing this too often. Wait a minute, then try again."),
+        OperatorRefusalReason.NotValid => Wording.Same("The server didn't accept the days, the reason or the character."),
+        OperatorRefusalReason.OperatorCharacter => Wording.Same("That character is one of this server's operators: its bans are made and lifted on the web page."),
+        OperatorRefusalReason.NotRegistered => Wording.Same("That character isn't registered on this server: ban its Lodestone ID on the web page."),
+        OperatorRefusalReason.HourLimit => Wording.Same($"You've made {OperatorPanel.BansPerHour} bans in the last hour, the most the plugin allows. Use the web page for more."),
+        OperatorRefusalReason.NothingToLift => Wording.Same("There's no ban on that character in force."),
+        OperatorRefusalReason.NotHere => Wording.Same("The server's rules don't allow that from the plugin. Use the web page."),
+        _ => Wording.Same("The server couldn't do it. Try again later."),
+    };
 
     // ---- this character isn't an operator now
 
@@ -136,8 +177,8 @@ public static class OperatorWords {
     public static Wording NotOperatorNotice(OperatorStanding standing, string? mine, string? pinned) => standing == OperatorStanding.NotPinned
         ? new Wording(NoticeKind.NotOperatorNow,
             $"This server lists this character as an operator, but its keys aren't pinned yet (yours are {mine ?? "unknown"}). Compare the fingerprint, then " +
-            "pin them on the server's operator web page.",
-            "This server lists this character as an operator, but hasn't confirmed your LookingGlass setup yet. Confirm it on the server's operator web page.")
+            "approve them on the server's operator web page.",
+            "This server lists this character as an operator, but hasn't approved your LookingGlass setup yet. Approve it on the server's operator web page.")
         : new Wording(NoticeKind.NotOperatorNow,
             $"Your identity keys changed (now {mine ?? "unknown"}; the server's operator pin is {pinned ?? "unknown"}), so this server no longer treats you as an " +
             "operator. Compare the fingerprint, then restore operator status on the web page.",
@@ -145,8 +186,8 @@ public static class OperatorWords {
 
     /// <summary>What the Operator section says in its place, before the fingerprints.</summary>
     public static Wording NotOperatorSection(OperatorStanding standing) => standing == OperatorStanding.NotPinned
-        ? new Wording(NoticeKind.NotOperatorNow, "This server's operator hasn't pinned your keys yet.",
-            "This server's operator hasn't confirmed your LookingGlass setup yet.")
+        ? new Wording(NoticeKind.NotOperatorNow, "This server's operator hasn't pinned (approved) your keys yet.",
+            "This server's operator hasn't approved your LookingGlass setup yet.")
         : new Wording(NoticeKind.NotOperatorNow,
             "This server no longer treats you as an operator: your identity keys changed (a new computer, or a reset), so they aren't the ones pinned for you.",
             "This server no longer treats you as an operator: you set up LookingGlass again on this character (new computer, or a reset).");
@@ -159,16 +200,15 @@ public static class OperatorWords {
 
     /// <summary>What to do, after the fingerprints.</summary>
     public static Wording NotOperatorAdvice(OperatorStanding standing) => standing == OperatorStanding.NotPinned
-        ? new Wording(NoticeKind.NotOperatorNow, "To pin them, open the web page and check it shows these same numbers.",
-            "To confirm it, open the web page and check it shows these same numbers.")
+        ? Wording.Same("To approve it, open the web page and check it shows these same numbers.", NoticeKind.NotOperatorNow)
         : Wording.Same("To restore it, open the web page and check it shows these same numbers.", NoticeKind.NotOperatorNow);
 
     // ---- the lists
 
     /// <summary>"2 flagged · 3 bans in force · 1 blocked automatically".</summary>
+    /// <remarks>As the plan's mockup: the automatic blocks are among the bans in force, and counted again after them.</remarks>
     public static string Counts(OperatorLists lists) =>
-        $"{lists.FlagsTotal} flagged · {Math.Max(0, lists.InForceTotal - lists.BlockedAutomatically)} {(lists.InForceTotal - lists.BlockedAutomatically == 1 ? "ban" : "bans")} " +
-        $"in force · {lists.BlockedAutomatically} blocked automatically";
+        $"{lists.FlagsTotal} flagged · {lists.InForceTotal} {(lists.InForceTotal == 1 ? "ban" : "bans")} in force · {lists.BlockedAutomatically} blocked automatically";
 
     /// <summary>"and 4 more (see the web page)".</summary>
     public static string More(int more) => $"and {more.ToString(CultureInfo.InvariantCulture)} more (see the web page)";
@@ -273,6 +313,11 @@ public static class OperatorWords {
 
         yield return Help;
         yield return KeysHelp;
+        yield return NotPinnedHelp;
+        foreach (var reason in Enum.GetValues<OperatorRefusalReason>()) {
+            yield return Refusal(reason);
+        }
+
         yield return NotAvailable;
     }
 }

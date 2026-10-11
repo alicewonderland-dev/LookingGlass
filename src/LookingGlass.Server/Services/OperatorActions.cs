@@ -11,7 +11,12 @@ namespace LookingGlass.Server.Services;
 /// <param name="Who">As the tool knows them: the Unix user (<c>SUDO_USER</c>), the Tailscale login, or the operator character's name@world.</param>
 /// <param name="From">Where from, if the tool knows (the web page: the device's tailnet address); empty otherwise.</param>
 /// <param name="UserId">The operator character's user ID, for the plugin (its bans an hour are counted by it).</param>
-public sealed record OperatorActor(OperatorTool Tool, string Who, string From = "", long? UserId = null);
+/// <param name="KeyHash">
+/// For the plugin: the full hash of the keys whose signature the request was checked with. The character must still be an operator,
+/// with these keys, when the change is made (checked again under the lock that makes it), so keys registered while the request was
+/// on its way end it. Null: not checked here (the caller checked it; the plugin's requests always give it).
+/// </param>
+public sealed record OperatorActor(OperatorTool Tool, string Who, string From = "", long? UserId = null, byte[]? KeyHash = null);
 
 /// <summary>What <see cref="OperatorActions"/> goes by: the server's settings that bear on bans and operators.</summary>
 /// <param name="TrustedProxies"><c>LookingGlass:TrustedProxies</c>, whose addresses (like this machine's) are banned only when forced.</param>
@@ -250,6 +255,10 @@ public sealed class OperatorActions(Database db, OperatorSettings settings, Time
             var now = this.Now;
             OperatorResult Refused(OperatorResult result) => change ? this.Record(actor, Actions.Ban, result, detail, now) : result;
 
+            if (this.NoLongerOperator(actor, whom) is { } gone) {
+                return Refused(gone);
+            }
+
             if (days is < 1 or > MaxDays || reason is { Length: > MaxReasonLength } || (reason != null && !TextSanitizer.IsPlain(reason))) {
                 return Refused(new OperatorResult(OperatorRefusal.NotValid, whom,
                     $"A ban lasts 1 to {MaxDays} days, or until lifted, and its reason is one line of plain text, at most {MaxReasonLength} characters."));
@@ -261,13 +270,14 @@ public sealed class OperatorActions(Database db, OperatorSettings settings, Time
             }
 
             var proxy = subject.Address != null ? ClientAddresses.ProxyProblem(subject.Address, settings.TrustedProxies) : null;
-            var target = new PolicyTarget(subject.Address != null, proxy != null, subject.UserId is { } id && this._operators.Contains(id));
+            var target = new PolicyTarget(subject.Address != null, proxy != null, subject.UserId is { } id && this._operators.Contains(id),
+                subject.UserId is { } character && db.GetUser(character) == null);
             var rules = OperatorPolicy.For(actor.Tool);
             var bansThisHour = rules.BansPerHour == null ? 0
                 : db.CountOperatorBans(OperatorPolicy.Code(actor.Tool), now - 3600, rules.BansPerHourPerOperator ? actor.UserId ?? -1 : null);
             var refusal = OperatorPolicy.Check(actor.Tool, OperatorAction.Ban, target, force, bansThisHour);
             if (refusal != OperatorRefusal.None) {
-                return Refused(subject with { Refusal = refusal, Why = this.WhyNot(refusal, actor.Tool, subject.Whom, proxy), Problem = proxy });
+                return Refused(subject with { Refusal = refusal, Why = this.WhyNot(refusal, actor.Tool, subject.Whom, proxy, action: Actions.Ban), Problem = proxy });
             }
 
             if (!change) {
@@ -292,12 +302,17 @@ public sealed class OperatorActions(Database db, OperatorSettings settings, Time
         whom = CleanWhom(whom);
         lock (this._changing) {
             var now = this.Now;
+            if (this.NoLongerOperator(actor, whom) is { } gone) {
+                return this.Record(actor, Actions.Lift, gone, "", now);
+            }
+
             var subject = this.Resolve(whom);
             if (!subject.Done) {
                 return this.Record(actor, Actions.Lift, subject, "", now);
             }
 
-            var refusal = OperatorPolicy.Check(actor.Tool, OperatorAction.Lift, new PolicyTarget(subject.Address != null));
+            var refusal = OperatorPolicy.Check(actor.Tool, OperatorAction.Lift,
+                new PolicyTarget(subject.Address != null, IsOperatorCharacter: subject.UserId is { } id && this._operators.Contains(id)));
             if (refusal == OperatorRefusal.None && banId is { } shown
                 && !db.GetActiveBans(now).Any(ban => ban.BanId == shown && ban.UserId == subject.UserId && ban.Address == subject.Address)) {
                 return this.Record(actor, Actions.Lift, subject with {
@@ -312,7 +327,7 @@ public sealed class OperatorActions(Database db, OperatorSettings settings, Time
             }
 
             if (refusal != OperatorRefusal.None) {
-                return this.Record(actor, Actions.Lift, subject with { Refusal = refusal, Why = this.WhyNot(refusal, actor.Tool, subject.Whom, null) }, "", now);
+                return this.Record(actor, Actions.Lift, subject with { Refusal = refusal, Why = this.WhyNot(refusal, actor.Tool, subject.Whom, null, action: Actions.Lift) }, "", now);
             }
 
             this.Apply();
@@ -504,6 +519,21 @@ public sealed class OperatorActions(Database db, OperatorSettings settings, Time
 
     // ================================================================ helpers
 
+    /// <summary>
+    /// For a plugin action: why it can't go ahead because its character isn't an operator now, checked under the lock that makes
+    /// the change (listed, its account's current keys the pinned ones, and the keys the request was checked with); null if it is.
+    /// A request checked before keys were registered again, and still on its way, so changes nothing.
+    /// </summary>
+    private OperatorResult? NoLongerOperator(OperatorActor actor, string whom) {
+        if (actor.Tool != OperatorTool.Plugin || actor.KeyHash is not { } signed) {
+            return null;
+        }
+
+        var still = actor.UserId is { } id && this.StatusOf(id) == OperatorStatus.Operator
+                    && db.GetUser(id) is { } user && CryptographicOperations.FixedTimeEquals(user.Keys.Hash, signed);
+        return still ? null : new OperatorResult(OperatorRefusal.NotAnOperator, whom, this.WhyNot(OperatorRefusal.NotAnOperator, actor.Tool, whom, null));
+    }
+
     /// <summary>The character or address a target names (as a result to fill in), or why it names none.</summary>
     private OperatorResult Resolve(string target) {
         target = target.Trim();
@@ -534,7 +564,12 @@ public sealed class OperatorActions(Database db, OperatorSettings settings, Time
     }
 
     /// <summary>Why a refusal, in words for any tool.</summary>
-    private string WhyNot(OperatorRefusal refusal, OperatorTool tool, string whom, string? problem, string? fingerprint = null) => refusal switch {
+    private string WhyNot(OperatorRefusal refusal, OperatorTool tool, string whom, string? problem, string? fingerprint = null, string? action = null) => refusal switch {
+        OperatorRefusal.OperatorCharacter when action == Actions.Lift =>
+            $"{whom} is listed as an operator (LookingGlass:Operators:Characters): its bans are lifted on the web page or the command line. Nothing was lifted.",
+        OperatorRefusal.NotRegistered when action == Actions.Ban =>
+            $"{whom} isn't registered on this server, so it can't be banned here: ban its Lodestone ID on the web page. Nothing was banned.",
+        OperatorRefusal.NotAnOperator => "Only this server's operators can do that, and this character isn't one now (its keys changed, or it isn't listed). Nothing was done.",
         OperatorRefusal.NotThisTool => $"That can't be done {ToolWords(OperatorPolicy.Code(tool), null)}.",
         OperatorRefusal.AddressesNotHere => "Only characters can be banned here; address bans, and lifting them, are on the web page and the command line.",
         OperatorRefusal.ForceNotHere => "The server's own or its proxy's address can't be banned here.",

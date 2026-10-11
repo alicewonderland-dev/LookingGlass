@@ -3804,6 +3804,7 @@ public sealed partial class ClientSession : IAsyncDisposable {
             throw new ServerErrorException(response.Error.Code, response.Error.Message, this.ShownCode()) {
                 Block = response.Error.Block, SignedOut = response.Error.SignedOut, SignedOutBy = response.Error.SignedOutBy.ToByteArray(),
                 SignedOutByAddedUnix = response.Error.SignedOutByAddedUnix, SignedOutAtUnix = response.Error.SignedOutAtUnix,
+                OperatorRefusal = response.Error.OperatorRefusal,
             };
         }
 

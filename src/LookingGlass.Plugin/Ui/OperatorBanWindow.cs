@@ -24,7 +24,8 @@ public sealed class OperatorBanWindow : Window {
     // Finding it (and how it stands), and the answer.
     private Task<PanelSubject?>? _finding;
     private PanelSubject? _subject;
-    private bool _notRegistered;
+    // The answer came (_subject null then: nobody registered by that name).
+    private bool _found;
     private string? _problem;
     // The form.
     private OperatorDuration _duration = OperatorDuration.SevenDays;
@@ -61,7 +62,7 @@ public sealed class OperatorBanWindow : Window {
         this._who = who;
         this._userId = 0;
         this._subject = null;
-        this._notRegistered = false;
+        this._found = false;
         this._problem = null;
         this._duration = OperatorDuration.SevenDays;
         this._customDays = "";
@@ -90,6 +91,7 @@ public sealed class OperatorBanWindow : Window {
         // What was found goes; a ban under way still says how it went in chat.
         this._finding = null;
         this._subject = null;
+        this._found = false;
     }
 
     public override void Draw() {
@@ -111,21 +113,19 @@ public sealed class OperatorBanWindow : Window {
         this._finding = null;
         if (!finding.IsCompletedSuccessfully) {
             var error = finding.Exception?.InnerException ?? finding.Exception;
-            this._problem = error == null ? null : PlainMessages.Of(PlainMessages.MessageOf(error, advanced), advanced);
+            this._problem = error == null ? null : OperatorWords.WhyNot(error, advanced);
             return;
         }
 
-        // A character listed as an operator says so, registered or not; any other must be registered to be banned here.
-        if (finding.Result is not { } subject || (subject.User == null && !subject.ListedOperator)) {
-            this._notRegistered = true;
-            return;
+        this._subject = finding.Result;
+        if (finding.Result is { } subject) {
+            this._userId = subject.UserId;
+            if (subject.User is { } user) {
+                this._who = $"{user.Name}@{user.WorldName}";
+            }
         }
 
-        this._subject = subject;
-        this._userId = subject.UserId;
-        if (subject.User is { } user) {
-            this._who = $"{user.Name}@{user.WorldName}";
-        }
+        this._found = true;
     }
 
     private void DrawBody(bool advanced) {
@@ -137,52 +137,56 @@ public sealed class OperatorBanWindow : Window {
             return;
         }
 
-        if (this._problem is { } problem && this._subject == null) {
-            ImGui.TextColored(Widgets.Error, problem);
-            this.DrawClose();
-            return;
-        }
+        if (!this._found) {
+            if (this._problem is { } problem) {
+                ImGui.TextColored(Widgets.Error, problem);
+            }
 
-        if (this._notRegistered) {
-            ImGui.TextUnformatted(OperatorWords.NotRegistered(this._who));
-            this.DrawClose();
-            return;
-        }
-
-        if (this._subject is not { } subject) {
             this.DrawClose();
             return;
         }
 
         var me = this._session?.Snapshot.Me;
+        var myName = me == null ? null : $"{me.Name}@{me.WorldName}";
         var now = DateTimeOffset.UtcNow;
-        if (me != null && me.UserId == subject.UserId) {
-            ImGui.TextUnformatted(OperatorWords.NotYourself);
-            this.DrawClose();
-            return;
+        var subject = this._subject;
+        var dialog = OperatorPanel.DialogFor(subject, me?.UserId);
+        switch (dialog) {
+            case OperatorDialog.NotRegistered:
+                ImGui.TextUnformatted(OperatorWords.NotRegistered(this._who));
+                this.DrawClose();
+                return;
+            case OperatorDialog.Yourself:
+                ImGui.TextUnformatted(OperatorWords.NotYourself);
+                this.DrawClose();
+                return;
+            case OperatorDialog.OperatorCharacter:
+                ImGui.TextUnformatted(OperatorWords.IsAnOperator(this._who));
+                this.DrawClose();
+                return;
         }
 
-        if (subject.ListedOperator) {
-            ImGui.TextUnformatted(OperatorWords.IsAnOperator(this._who));
-            this.DrawClose();
-            return;
-        }
-
-        if (subject.Flag is { } flag) {
+        if (subject!.Flag is { } flag) {
             ImGui.TextColored(Widgets.Warning, OperatorWords.FlaggedLine(flag, now));
             ImGui.Spacing();
         }
 
-        var myName = me == null ? null : $"{me.Name}@{me.WorldName}";
         if (subject.Ban is { } ban) {
-            Widgets.IconText(FontAwesomeIcon.Ban, OperatorWords.AlreadyBanned(ban, myName, now), Widgets.Warning);
+            Widgets.IconText(FontAwesomeIcon.Ban,
+                dialog == OperatorDialog.LiftOnly ? OperatorWords.LiftOnly(ban, myName, now) : OperatorWords.AlreadyBanned(ban, myName, now), Widgets.Warning);
             ImGui.Spacing();
         }
 
-        var days = this.DrawHowLong();
-        var reasonFits = this.DrawReason();
-        ImGui.Spacing();
-        ImGui.TextColored(Widgets.Muted, OperatorWords.WhatABanDoes);
+        // A character not registered can't be banned again here: only its ban lifted (the web page bans Lodestone IDs).
+        int? days = null;
+        var reasonFits = false;
+        if (dialog != OperatorDialog.LiftOnly) {
+            days = this.DrawHowLong();
+            reasonFits = this.DrawReason();
+            ImGui.Spacing();
+            ImGui.TextColored(Widgets.Muted, OperatorWords.WhatABanDoes);
+        }
+
         if (this._problem is { } failed) {
             ImGui.Spacing();
             ImGui.TextColored(Widgets.Error, failed);
@@ -192,18 +196,22 @@ public sealed class OperatorBanWindow : Window {
         ImGui.Separator();
         ImGui.Spacing();
         var busy = this._acting is { IsCompleted: false };
-        if (ImGui.Button(OperatorWords.Cancel) || ImGui.IsKeyPressed(ImGuiKey.Escape)) {
+        if (ImGui.Button(OperatorWords.Cancel) || this.EscapePressed()) {
             this.IsOpen = false;
         }
 
-        ImGui.SameLine();
-        ImGui.BeginDisabled(busy || days == null || !reasonFits);
-        if (ImGui.Button((subject.Ban != null ? OperatorWords.ReplaceBan : OperatorWords.BanFor(this._who)) + "###lg-operator-do-ban") && days is { } count && !busy) {
-            this.Ban(count, this._reason.Trim(), advanced);
+        if (dialog != OperatorDialog.LiftOnly) {
+            ImGui.SameLine();
+            ImGui.BeginDisabled(busy || days == null || !reasonFits);
+            if (ImGui.Button((dialog == OperatorDialog.AlreadyBanned ? OperatorWords.ReplaceBan : OperatorWords.BanFor(this._who)) + "###lg-operator-do-ban")
+                && days is { } count && !busy) {
+                this.Ban(count, this._reason.Trim(), advanced);
+            }
+
+            ImGui.EndDisabled();
         }
 
-        ImGui.EndDisabled();
-        if (subject.Ban != null) {
+        if (dialog is OperatorDialog.AlreadyBanned or OperatorDialog.LiftOnly) {
             ImGui.SameLine();
             ImGui.BeginDisabled(busy);
             if (ImGui.Button(OperatorWords.LiftBan) && !busy) {
@@ -214,6 +222,8 @@ public sealed class OperatorBanWindow : Window {
         }
     }
 
+    /// <summary>Escape, while this dialog has the keyboard (not while another window has it).</summary>
+    private bool EscapePressed() => ImGui.IsWindowFocused(ImGuiFocusedFlags.RootAndChildWindows) && ImGui.IsKeyPressed(ImGuiKey.Escape);
     /// <summary>How long: 1, 7 or 30 days, until lifted, or a number of days. Returns the days (0: until lifted), or null if a typed number isn't one.</summary>
     private int? DrawHowLong() {
         Widgets.Label(OperatorWords.HowLong);
@@ -271,7 +281,7 @@ public sealed class OperatorBanWindow : Window {
 
     private void DrawClose() {
         ImGui.Spacing();
-        if (ImGui.Button("Close") || ImGui.IsKeyPressed(ImGuiKey.Escape)) {
+        if (ImGui.Button("Close") || this.EscapePressed()) {
             this.IsOpen = false;
         }
     }

@@ -88,13 +88,29 @@ public sealed class OperatorWordsTests {
         }
     }
 
-    /// <summary>A failed ban or lift says why in the mode's words: what the server said, without its error code in simple mode.</summary>
+    /// <summary>
+    /// A failed ban or lift says why in the plugin's own words, by the reason the server gave, in both modes: never the server's
+    /// text in simple mode (advanced mode adds it); a refusal with no reason is said generally.
+    /// </summary>
     [Fact]
     public void AFailedActionSaysWhyInTheModesWords() {
-        var refused = new ServerErrorException(ErrorCode.LimitReached, "This operator character has made 10 bans in the last hour, the most the plugin allows; use the web page for more.");
-        Assert.Equal("Couldn't ban Bob Hatter@Lich: This operator character has made 10 bans in the last hour, the most the plugin allows; use the web page for more.",
+        var refused = new ServerErrorException(ErrorCode.LimitReached, "Server words: LookingGlass:Operators:Characters and the like.") {
+            OperatorRefusal = OperatorRefusalReason.HourLimit,
+        };
+        Assert.Equal("Couldn't ban Bob Hatter@Lich: You've made 10 bans in the last hour, the most the plugin allows. Use the web page for more.",
             OperatorWords.NotBanned("Bob Hatter@Lich", refused, advanced: false));
+        Assert.Contains("The server says: Server words", OperatorWords.NotBanned("Bob Hatter@Lich", refused, advanced: true));
         Assert.Contains("(LimitReached)", OperatorWords.NotBanned("Bob Hatter@Lich", refused, advanced: true));
+        var unexplained = new ServerErrorException(ErrorCode.Internal, "Internal server error.");
+        Assert.Equal("Couldn't ban Bob Hatter@Lich: The server couldn't do it. Try again later.", OperatorWords.NotBanned("Bob Hatter@Lich", unexplained, advanced: false));
+        foreach (var reason in Enum.GetValues<OperatorRefusalReason>()) {
+            var text = OperatorWords.WhyNot(new ServerErrorException(ErrorCode.Forbidden, "Server words.") { OperatorRefusal = reason }, advanced: false);
+            Assert.DoesNotContain("Server words", text);
+            PlainLanguage.AssertPlain(text);
+        }
+
+        // Not an answer from the server (not connected, no answer): as the plugin says it elsewhere.
+        Assert.Contains("Not connected", OperatorWords.WhyNot(new SessionDisconnectedException("Not connected to the server."), advanced: false));
         Assert.StartsWith("Couldn't lift the ban on Bob Hatter@Lich: ", OperatorWords.NotLifted("Bob Hatter@Lich", refused, advanced: false));
     }
 
@@ -137,7 +153,8 @@ public sealed class OperatorWordsTests {
         Assert.StartsWith("on ", OperatorWords.Ago(Now.AddDays(-3), Now));
 
         var lists = Lists(flags: [flag], inForce: [ban, block], flagsTotal: 2, inForceTotal: 3, automatic: 1);
-        Assert.Equal("2 flagged · 2 bans in force · 1 blocked automatically", OperatorWords.Counts(lists));
+        // As the mockup: the block is among the bans in force, and counted again after them.
+        Assert.Equal("2 flagged · 3 bans in force · 1 blocked automatically", OperatorWords.Counts(lists));
         Assert.Equal((1, 1), (lists.MoreFlags, lists.MoreInForce));
         Assert.Equal("1 flagged · 1 ban in force · 0 blocked automatically", OperatorWords.Counts(Lists(flagsTotal: 1, inForceTotal: 1)));
     }
@@ -174,6 +191,44 @@ public sealed class OperatorWordsTests {
         var listed = operating with { OperatorLists = Lists(operators: [new User { UserId = 55555, Name = "Bob Hatter", WorldName = "Lich" }]) };
         Assert.Equal(("Ban from server... (an operator)", false), OperatorPanel.MenuItem(listed, new InviteTarget("bob hatter", "LICH")));
         Assert.Equal((OperatorWords.MenuLabel, true), OperatorPanel.MenuItem(listed, new InviteTarget("Carol Queen", "Odin")));
+    }
+
+    /// <summary>
+    /// What the dialog offers, by how the character stands: nothing for nobody registered, the player's own character, or a
+    /// listed operator (registered or not); only Lift for a ban on a character not registered (no dead end); a ban, or Replace and
+    /// Lift, otherwise.
+    /// </summary>
+    [Fact]
+    public void TheDialogOffersWhatTheServerAllows() {
+        var bob = new User { UserId = 4242, Name = "Bob Hatter", WorldName = "Lich" };
+        var ban = new PanelBan(4242, null, null, "", Now.AddHours(-1), null, false, "web page", "", null, "", "", false);
+        Assert.Equal(OperatorDialog.NotRegistered, OperatorPanel.DialogFor(null, 31337));
+        Assert.Equal(OperatorDialog.NotRegistered, OperatorPanel.DialogFor(new PanelSubject(4242, null, false, null, null), 31337));
+        Assert.Equal(OperatorDialog.LiftOnly, OperatorPanel.DialogFor(new PanelSubject(4242, null, false, ban, null), 31337));
+        Assert.Equal(OperatorDialog.OperatorCharacter, OperatorPanel.DialogFor(new PanelSubject(55555, null, true, null, null), 31337));
+        Assert.Equal(OperatorDialog.OperatorCharacter, OperatorPanel.DialogFor(new PanelSubject(55555, null, true, ban with { UserId = 55555 }, null), 31337));
+        Assert.Equal(OperatorDialog.OperatorCharacter, OperatorPanel.DialogFor(new PanelSubject(4242, bob, true, null, null), 31337));
+        Assert.Equal(OperatorDialog.Yourself, OperatorPanel.DialogFor(new PanelSubject(31337, bob, true, null, null), 31337));
+        Assert.Equal(OperatorDialog.Ban, OperatorPanel.DialogFor(new PanelSubject(4242, bob, false, null, null), 31337));
+        Assert.Equal(OperatorDialog.AlreadyBanned, OperatorPanel.DialogFor(new PanelSubject(4242, bob, false, ban, null), 31337));
+        Assert.EndsWith("you can lift this ban here.", OperatorWords.LiftOnly(ban, null, Now));
+        PlainLanguage.AssertPlain(OperatorWords.LiftOnly(ban, null, Now));
+    }
+
+    /// <summary>For a character not pinned yet, nothing says "restore": it was never an operator; it is approved on the web page.</summary>
+    [Fact]
+    public void NotPinnedYetSaysApproveNotRestore() {
+        foreach (var advanced in new[] { false, true }) {
+            foreach (var text in new[] {
+                         SettingsWords.Help(SettingHelp.OperatorNotPinned, "x").For(advanced), OperatorWords.NotOperatorNotice(OperatorStanding.NotPinned, "1", null).For(advanced),
+                         OperatorWords.NotOperatorSection(OperatorStanding.NotPinned).For(advanced), OperatorWords.NotOperatorAdvice(OperatorStanding.NotPinned).For(advanced),
+                     }) {
+                Assert.DoesNotContain("restore", text, StringComparison.OrdinalIgnoreCase);
+                Assert.Contains("approve", text, StringComparison.OrdinalIgnoreCase);
+            }
+        }
+
+        Assert.Contains("restore", OperatorWords.KeysHelp.Plain);
     }
 
     [Fact]

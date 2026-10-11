@@ -74,13 +74,17 @@ public enum OperatorRefusal {
 
     /// <summary>Its key login isn't turned off: nothing to do.</summary>
     KeyLoginNotOff,
+
+    /// <summary>The plugin's operator character isn't an operator now (its keys changed while the request was on its way, say).</summary>
+    NotAnOperator,
 }
 
 /// <summary>What a ban by one tool is about, as far as the policy goes.</summary>
 /// <param name="IsAddress">An address or prefix, not a character.</param>
 /// <param name="IsProxyAddress">The server's own or its proxy's address, or a prefix holding one (see <see cref="Hosting.ClientAddresses.ProxyProblem"/>).</param>
 /// <param name="IsOperatorCharacter">A character listed in <c>LookingGlass:Operators:Characters</c>.</param>
-public readonly record struct PolicyTarget(bool IsAddress, bool IsProxyAddress = false, bool IsOperatorCharacter = false);
+/// <param name="IsUnregistered">A character (by its user ID) not registered on this server.</param>
+public readonly record struct PolicyTarget(bool IsAddress, bool IsProxyAddress = false, bool IsOperatorCharacter = false, bool IsUnregistered = false);
 
 /// <summary>What one tool may do: one row of <see cref="OperatorPolicy"/>'s table.</summary>
 /// <param name="FullAddresses">Sees addresses in full; otherwise shortened (see <see cref="Hosting.ClientAddresses.Shorten"/>).</param>
@@ -93,8 +97,10 @@ public readonly record struct PolicyTarget(bool IsAddress, bool IsProxyAddress =
 /// <param name="Pin">May pin or restore an operator character's keys.</param>
 /// <param name="AllowKeyLogin">May let a character's key sign in again.</param>
 /// <param name="Who">Who the tool records as having done it.</param>
+/// <param name="UnregisteredCharacters">May ban a character not registered on this server (by its Lodestone ID, so it can't register).</param>
+/// <param name="OperatorCharacterLifts">May lift a ban on a character listed as an operator.</param>
 public sealed record ToolRules(bool FullAddresses, bool Characters, bool Addresses, bool Force, bool OperatorCharactersWithForce, int? BansPerHour,
-    bool BansPerHourPerOperator, bool Pin, bool AllowKeyLogin, string Who);
+    bool BansPerHourPerOperator, bool Pin, bool AllowKeyLogin, string Who, bool UnregisteredCharacters = true, bool OperatorCharacterLifts = true);
 
 /// <summary>
 /// What each operator tool may do, written once (see the table in "Operator actions, one layer for every tool" in
@@ -115,7 +121,8 @@ public static class OperatorPolicy {
         BansPerHour: WebPageBansPerHour, BansPerHourPerOperator: false, Pin: true, AllowKeyLogin: false, Who: "the Tailscale login");
 
     private static readonly ToolRules Plugin = new(FullAddresses: false, Characters: true, Addresses: false, Force: false, OperatorCharactersWithForce: false,
-        BansPerHour: PluginBansPerHour, BansPerHourPerOperator: true, Pin: false, AllowKeyLogin: false, Who: "the operator character");
+        BansPerHour: PluginBansPerHour, BansPerHourPerOperator: true, Pin: false, AllowKeyLogin: false, Who: "the operator character",
+        UnregisteredCharacters: false, OperatorCharacterLifts: false);
 
     /// <summary>One tool's row of the table.</summary>
     public static ToolRules For(OperatorTool tool) => tool switch {
@@ -147,7 +154,9 @@ public static class OperatorPolicy {
                 return rules.AllowKeyLogin ? OperatorRefusal.None : OperatorRefusal.NotThisTool;
             case OperatorAction.Lift:
                 return target.IsAddress ? (rules.Addresses ? OperatorRefusal.None : OperatorRefusal.AddressesNotHere)
-                    : rules.Characters ? OperatorRefusal.None : OperatorRefusal.NotThisTool;
+                    : !rules.Characters ? OperatorRefusal.NotThisTool
+                    : target.IsOperatorCharacter && !rules.OperatorCharacterLifts ? OperatorRefusal.OperatorCharacter
+                    : OperatorRefusal.None;
             case OperatorAction.Ban:
                 if (target.IsAddress ? !rules.Addresses : !rules.Characters) {
                     return target.IsAddress ? OperatorRefusal.AddressesNotHere : OperatorRefusal.NotThisTool;
@@ -163,6 +172,10 @@ public static class OperatorPolicy {
 
                 if (target.IsOperatorCharacter && !(rules.OperatorCharactersWithForce && force)) {
                     return OperatorRefusal.OperatorCharacter;
+                }
+
+                if (!target.IsAddress && target.IsUnregistered && !rules.UnregisteredCharacters) {
+                    return OperatorRefusal.NotRegistered;
                 }
 
                 return rules.BansPerHour is { } limit && bansThisHour >= limit ? OperatorRefusal.HourLimit : OperatorRefusal.None;

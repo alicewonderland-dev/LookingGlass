@@ -358,6 +358,9 @@ public sealed class ServerErrorException(ErrorCode code, string message, string?
 
     /// <inheritdoc cref="SignedOutByAddedUnix"/>
     public long SignedOutAtUnix { get; init; }
+
+    /// <summary>For an operator request: why the server refused it (see <see cref="Protocol.Error.OperatorRefusal"/>), to say in the plugin's own words.</summary>
+    public OperatorRefusalReason OperatorRefusal { get; init; }
 }
 
 /// <summary>The connection closed before the request was answered.</summary>

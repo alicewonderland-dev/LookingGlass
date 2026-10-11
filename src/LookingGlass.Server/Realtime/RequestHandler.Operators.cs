@@ -83,7 +83,7 @@ public sealed partial class RequestHandler {
         this.CheckOperatorAction(connection, me, OperatorActionProof.Actions.Ban, request.UserId, request.Days, request.Reason, request.ServerUrl,
             request.Nonce, request.Signature);
         var days = request.Days == 0 ? (int?) null : (int) Math.Min(request.Days, int.MaxValue);
-        var result = operators!.Ban(OperatorActorOf(connection, me), request.UserId.ToString(CultureInfo.InvariantCulture), days, request.Reason);
+        var result = operators!.Ban(OperatorActorOf(connection, me, signed: true), request.UserId.ToString(CultureInfo.InvariantCulture), days, request.Reason);
         if (!result.Done) {
             throw OperatorRefused(result);
         }
@@ -97,7 +97,7 @@ public sealed partial class RequestHandler {
         var me = this.RequireOperator(connection);
         this.TakeOperatorRead(me);
         this.CheckOperatorAction(connection, me, OperatorActionProof.Actions.Lift, request.UserId, 0, "", request.ServerUrl, request.Nonce, request.Signature);
-        var result = operators!.Lift(OperatorActorOf(connection, me), request.UserId.ToString(CultureInfo.InvariantCulture));
+        var result = operators!.Lift(OperatorActorOf(connection, me, signed: true), request.UserId.ToString(CultureInfo.InvariantCulture));
         if (!result.Done) {
             throw OperatorRefused(result);
         }
@@ -108,9 +108,10 @@ public sealed partial class RequestHandler {
 
     /// <summary>
     /// The account behind an operator request, as it is now, if it is an operator now: logged in, on a connection that agreed
-    /// to "operator.v1", its character listed and its account's current keys the pinned ones (checked again at every
-    /// request, so keys registered since, even while this request was on its way, end it). Anyone else is refused, in the same
-    /// words whatever the reason, and the refusal counts towards flagging, as one by a limit does.
+    /// to "operator.v1", its character listed and its account's current keys the pinned ones (checked at every request; a ban
+    /// or lift is checked once more, with the keys its signature was checked with, under the lock that makes the change, so keys
+    /// registered while it was on its way end it). Anyone else is refused, in the same words whatever the reason, and the refusal
+    /// counts towards flagging, as one by a limit does.
     /// </summary>
     private UserRow RequireOperator(ClientConnection connection) {
         var me = RequireUser(connection);
@@ -120,7 +121,7 @@ public sealed partial class RequestHandler {
         }
 
         if (operators.StatusOf(me.UserId) != OperatorStatus.Operator || db.GetUser(me.UserId) is not { } user) {
-            throw new RequestException(ErrorCode.Forbidden, OperatorsOnly) { Limit = OperatorRequestsLimit };
+            throw new RequestException(ErrorCode.Forbidden, OperatorsOnly) { Limit = OperatorRequestsLimit, OperatorRefusal = OperatorRefusalReason.NotAnOperator };
         }
 
         return user;
@@ -129,7 +130,7 @@ public sealed partial class RequestHandler {
     private void TakeOperatorRead(UserRow me) {
         if (!this._operatorViews.TryTake(me.UserId, out var wait)) {
             throw new RequestException(ErrorCode.RateLimited, $"You're asking for the operator lists too often; try again in {AboutHowLong(wait)}.") {
-                Limit = OperatorViewsLimit,
+                Limit = OperatorViewsLimit, OperatorRefusal = OperatorRefusalReason.TooOften,
             };
         }
     }
@@ -149,14 +150,20 @@ public sealed partial class RequestHandler {
         if (this.NotThisServer(connection, serverUrl) is { } elsewhere) {
             logger.LogWarning("Operator {Action} by user {User} from {Address} refused: {Reason}", action, me.UserId, connection.RemoteAddress, elsewhere);
             throw new RequestException(ErrorCode.Forbidden,
-                this.WrongAddressMessage(connection, serverUrl) + " Nothing was done: connect through an address this server accepts, then try again.");
+                this.WrongAddressMessage(connection, serverUrl) + " Nothing was done: connect through an address this server accepts, then try again.") {
+                OperatorRefusal = OperatorRefusalReason.WrongAddress,
+            };
         }
 
         if (!OperatorActionProof.Verify(me.SigningKey, action, me.UserId, target, days, reason, tokenHash, serverUrl, nonce.Span, signature.Span)) {
             // A copy of the login without the key, or a plugin with keys the account no longer has: worth the operator's notice.
             logger.LogWarning("Operator {Action} by user {User} from {Address} refused: not signed by the account's identity key for this login", action, me.UserId,
                 connection.RemoteAddress);
-            throw new RequestException(ErrorCode.Forbidden, "That isn't signed with this character's identity key for this login, so nothing was done.");
+            // And to the alerts channel, urgent: from an operator's own login, it is the sign of a copy of that login in use.
+            alerts?.OperatorBadSignature(me);
+            throw new RequestException(ErrorCode.Forbidden, "That isn't signed with this character's identity key for this login, so nothing was done.") {
+                OperatorRefusal = OperatorRefusalReason.BadSignature,
+            };
         }
 
         // Single use: found or not, it can't be named again.
@@ -168,20 +175,32 @@ public sealed partial class RequestHandler {
         }
 
         if (!good) {
-            throw new RequestException(ErrorCode.InvalidRequest, "Refresh the operator lists, then try again.");
+            throw new RequestException(ErrorCode.InvalidRequest, "Refresh the operator lists, then try again.") { OperatorRefusal = OperatorRefusalReason.NonceStale };
         }
     }
 
-    private static OperatorActor OperatorActorOf(ClientConnection connection, UserRow me) =>
-        new(OperatorTool.Plugin, $"{me.Name}@{me.WorldName}", connection.RemoteAddress, me.UserId);
+    /// <param name="signed">For a ban or lift: the keys its signature was checked with must still be the account's, and an operator's, as it is made.</param>
+    private static OperatorActor OperatorActorOf(ClientConnection connection, UserRow me, bool signed = false) =>
+        new(OperatorTool.Plugin, $"{me.Name}@{me.WorldName}", connection.RemoteAddress, me.UserId, signed ? me.Keys.Hash : null);
 
     /// <summary>A ban or lift <see cref="OperatorActions"/> refused, as the plugin is told: why, in its words for any tool.</summary>
-    private static RequestException OperatorRefused(OperatorResult result) => new(result.Refusal switch {
-        OperatorRefusal.NotValid or OperatorRefusal.NotATarget => ErrorCode.InvalidRequest,
-        OperatorRefusal.NothingToLift or OperatorRefusal.NoSuchCharacter => ErrorCode.NotFound,
-        OperatorRefusal.HourLimit => ErrorCode.LimitReached,
-        _ => ErrorCode.Forbidden,
-    }, result.Why);
+    private static RequestException OperatorRefused(OperatorResult result) => result.Refusal == OperatorRefusal.NotAnOperator
+        ? new RequestException(ErrorCode.Forbidden, OperatorsOnly) { Limit = OperatorRequestsLimit, OperatorRefusal = OperatorRefusalReason.NotAnOperator }
+        : new RequestException(result.Refusal switch {
+            OperatorRefusal.NotValid or OperatorRefusal.NotATarget => ErrorCode.InvalidRequest,
+            OperatorRefusal.NothingToLift or OperatorRefusal.NoSuchCharacter or OperatorRefusal.NotRegistered => ErrorCode.NotFound,
+            OperatorRefusal.HourLimit => ErrorCode.LimitReached,
+            _ => ErrorCode.Forbidden,
+        }, result.Why) {
+            OperatorRefusal = result.Refusal switch {
+                OperatorRefusal.NotValid or OperatorRefusal.NotATarget or OperatorRefusal.NoSuchCharacter => OperatorRefusalReason.NotValid,
+                OperatorRefusal.OperatorCharacter => OperatorRefusalReason.OperatorCharacter,
+                OperatorRefusal.NotRegistered => OperatorRefusalReason.NotRegistered,
+                OperatorRefusal.HourLimit => OperatorRefusalReason.HourLimit,
+                OperatorRefusal.NothingToLift => OperatorRefusalReason.NothingToLift,
+                _ => OperatorRefusalReason.NotHere,
+            },
+        };
 
     /// <summary>The operator's lists, at most <see cref="OperatorListLines"/> lines of each, never a full address, with a fresh nonce.</summary>
     private OperatorViewMessage OperatorViewFor(ClientConnection connection, UserRow me, long aboutUserId) {

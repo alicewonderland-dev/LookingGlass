@@ -192,7 +192,7 @@ public sealed class OperatorPanelTests {
         Assert.Null(snapshot.OperatorPinnedFingerprint);
         var told = await WaitFor(() => alice.Notices.FirstOrDefault(notice => notice.Kind == NoticeKind.NotOperatorNow));
         Assert.Contains(snapshot.MyFingerprint!, told.Text);
-        Assert.Contains("hasn't confirmed", told.TextFor(advanced: false));
+        Assert.Contains("hasn't approved", told.TextFor(advanced: false));
         Assert.Empty(server.Database.GetOperatorPins());
 
         var (token, _) = await TakeOverAsync(alice);
@@ -418,24 +418,27 @@ public sealed class OperatorPanelTests {
     public async Task ThePluginMakesTenBansAnHour() {
         var lodestone = AliceOnTheLodestone();
         await using var server = Server(lodestone);
+        var bob = await server.RegisterAsync("Bob Hatter");
+        var carol = await server.RegisterAsync("Carol Queen");
         var (token, keys) = await TakeOverAsync(await PinnedAliceAsync(server, lodestone));
         var url = server.ServerUri.AbsoluteUri;
         var (raw, _, _) = await LogInAsync(server, token);
 
+        // Banning the same character again replaces its ban, and is a ban made all the same.
         var nonce = (await ViewAsync(raw)).Nonce;
         for (var i = 0; i < OperatorPolicy.PluginBansPerHour; i++) {
-            var view = (await raw.SendAsync(BanFrame(keys, token, 1000 + i, 1, "", nonce, url))).OperatorView;
+            var view = (await raw.SendAsync(BanFrame(keys, token, bob.UserId, 1, "", nonce, url))).OperatorView;
             Assert.NotNull(view);
             Assert.Equal((uint) (OperatorPolicy.PluginBansPerHour - i - 1), view.BansLeftThisHour);
             nonce = view.Nonce;
         }
 
-        var lifted = (await raw.SendAsync(LiftFrame(keys, token, 1000, nonce, url))).OperatorView;
+        var lifted = (await raw.SendAsync(LiftFrame(keys, token, bob.UserId, nonce, url))).OperatorView;
         Assert.NotNull(lifted);
-        var error = (await raw.SendAsync(BanFrame(keys, token, 2000, 1, "", lifted.Nonce, url))).Error;
-        Assert.Equal(ErrorCode.LimitReached, error.Code);
+        var error = (await raw.SendAsync(BanFrame(keys, token, carol.UserId, 1, "", lifted.Nonce, url))).Error;
+        Assert.Equal((ErrorCode.LimitReached, OperatorRefusalReason.HourLimit), (error.Code, error.OperatorRefusal));
         Assert.Contains("use the web page", error.Message);
-        Assert.DoesNotContain(BansInForce(server), ban => ban.UserId == 2000);
+        Assert.DoesNotContain(BansInForce(server), ban => ban.UserId == carol.UserId);
         keys.Dispose();
     }
 
@@ -543,8 +546,9 @@ public sealed class OperatorPanelTests {
 
         // Nothing to lift now: why, from the server.
         var refused = await Assert.ThrowsAsync<ServerErrorException>(() => alice.Session.OperatorLiftAsync(bob.UserId, Ct));
-        Assert.Equal(ErrorCode.NotFound, refused.Code);
-        Assert.Contains("Couldn't lift the ban on Bob Hatter@Debug: There is no ban", OperatorWords.NotLifted("Bob Hatter@Debug", refused, advanced: false));
+        Assert.Equal((ErrorCode.NotFound, OperatorRefusalReason.NothingToLift), (refused.Code, refused.OperatorRefusal));
+        Assert.Equal("Couldn't lift the ban on Bob Hatter@Debug: There's no ban on that character in force.", OperatorWords.NotLifted("Bob Hatter@Debug", refused, advanced: false));
+        Assert.Contains("The server says: There is no ban", OperatorWords.NotLifted("Bob Hatter@Debug", refused, advanced: true));
         await Assert.ThrowsAsync<ArgumentException>(() => alice.Session.OperatorBanAsync(bob.UserId, 7, new string('x', OperatorPanel.MaxReasonLength + 1), Ct));
         await Assert.ThrowsAsync<ArgumentException>(() => alice.Session.OperatorBanAsync(bob.UserId, 7, "two\nlines", Ct));
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => alice.Session.OperatorBanAsync(bob.UserId, OperatorPanel.MaxDays + 1, "", Ct));
@@ -578,5 +582,227 @@ public sealed class OperatorPanelTests {
         lock (asked) {
             Assert.DoesNotContain(ClientFrame.BodyOneofCase.GetOperatorView, asked);
         }
+    }
+
+    // ================================================================ after the review (2026-10-11)
+
+    /// <summary>
+    /// A ban on a Lodestone ID nobody registered (made on the web page or the command line) can be lifted from the plugin, and
+    /// the dialog offers that; the plugin can't ban such an ID itself (the owner's default: the web page does), and is told why
+    /// in its own words.
+    /// </summary>
+    [Fact]
+    public async Task AnUnregisteredIdsBanIsLiftedButNotMadeFromThePlugin() {
+        var lodestone = AliceOnTheLodestone();
+        await using var server = Server(lodestone);
+        var alice = await PinnedAliceAsync(server, lodestone);
+        var actions = server.Factory.Services.GetRequiredService<OperatorActions>();
+        Assert.True(actions.Ban(new OperatorActor(OperatorTool.CommandLine, "alice"), "4242", null, "Ban evasion").Done);
+
+        var about = (await alice.Session.RefreshOperatorListsAsync(4242, Ct)).About!;
+        Assert.Null(about.User);
+        Assert.Equal("user 4242", about.Ban!.Who);
+        Assert.Equal(OperatorDialog.LiftOnly, OperatorPanel.DialogFor(about, alice.UserId));
+
+        var refused = await Assert.ThrowsAsync<ServerErrorException>(() => alice.Session.OperatorBanAsync(4242, 7, "", Ct));
+        Assert.Equal((ErrorCode.NotFound, OperatorRefusalReason.NotRegistered), (refused.Code, refused.OperatorRefusal));
+        Assert.Equal("Couldn't ban user 4242: That character isn't registered on this server: ban its Lodestone ID on the web page.",
+            OperatorWords.NotBanned("user 4242", refused, advanced: false));
+        Assert.Single(BansInForce(server), ban => ban.UserId == 4242 && ban.Reason == "Ban evasion");
+
+        var lists = await alice.Session.OperatorLiftAsync(4242, Ct);
+        Assert.Empty(lists.InForce);
+        Assert.Equal(OperatorDialog.NotRegistered, OperatorPanel.DialogFor(lists.About, alice.UserId));
+    }
+
+    /// <summary>
+    /// The plugin neither bans nor lifts bans on a character listed as an operator: one the command line banned with --force
+    /// stays banned, and the dialog says it is an operator.
+    /// </summary>
+    [Fact]
+    public async Task AnOperatorCharactersBanIsNotLiftedFromThePlugin() {
+        var lodestone = AliceOnTheLodestone();
+        await using var server = Server(lodestone);
+        var actions = server.Factory.Services.GetRequiredService<OperatorActions>();
+        Assert.True(actions.Ban(new OperatorActor(OperatorTool.CommandLine, "alice"), OtherOperator.ToString(System.Globalization.CultureInfo.InvariantCulture), 1, null, force: true).Done);
+        var alice = await PinnedAliceAsync(server, lodestone);
+
+        var about = (await alice.Session.RefreshOperatorListsAsync(OtherOperator, Ct)).About!;
+        Assert.True(about.ListedOperator);
+        Assert.NotNull(about.Ban);
+        Assert.Equal(OperatorDialog.OperatorCharacter, OperatorPanel.DialogFor(about, alice.UserId));
+
+        var refused = await Assert.ThrowsAsync<ServerErrorException>(() => alice.Session.OperatorLiftAsync(OtherOperator, Ct));
+        Assert.Equal((ErrorCode.Forbidden, OperatorRefusalReason.OperatorCharacter), (refused.Code, refused.OperatorRefusal));
+        Assert.Single(BansInForce(server), ban => ban.UserId == OtherOperator);
+        Assert.Contains(server.Database.GetOperatorLog(0, 10), entry => entry is { Tool: "plugin", Action: "lift", Done: false });
+    }
+
+    /// <summary>
+    /// A ban or lift is checked once more where it is made, with the keys its signature was checked with: keys registered (and
+    /// even pinned) while it was on its way, or a pin taken away, change nothing.
+    /// </summary>
+    [Fact]
+    public async Task AChangeIsCheckedAgainWithTheKeysItWasSignedWith() {
+        var lodestone = AliceOnTheLodestone();
+        await using var server = Server(lodestone);
+        var bob = await server.RegisterAsync("Bob Hatter");
+        var alice = await PinnedAliceAsync(server, lodestone);
+        var actions = server.Factory.Services.GetRequiredService<OperatorActions>();
+        var oldKeys = server.Database.GetUser(Alice)!.Keys.Hash;
+        OperatorActor Plugin(byte[] keys) => new(OperatorTool.Plugin, $"{AliceName}@{AliceWorld}", "", Alice, keys);
+        var whom = bob.UserId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        Assert.True(actions.Ban(Plugin(oldKeys), whom, 1, null).Done);
+
+        await alice.Session.DisposeAsync();
+        await RegisterAliceAsync(server, lodestone);
+        PinAlice(server);
+        Assert.Equal(OperatorRefusal.NotAnOperator, actions.Lift(Plugin(oldKeys), whom).Refusal);
+        Assert.Equal(OperatorRefusal.NotAnOperator, actions.Ban(Plugin(oldKeys), whom, 7, null).Refusal);
+        var newKeys = server.Database.GetUser(Alice)!.Keys.Hash;
+        server.ExecuteSql("DELETE FROM operator_pins;");
+        Assert.Equal(OperatorRefusal.NotAnOperator, actions.Lift(Plugin(newKeys), whom).Refusal);
+        Assert.Single(BansInForce(server), ban => ban.UserId == bob.UserId);
+        Assert.Equal(3, server.Database.GetOperatorLog(0, 20).Count(entry => entry is { Tool: "plugin", Done: false }));
+    }
+
+    /// <summary>
+    /// The plugin signs the nonce of the lists it last fetched; one the server no longer holds is refused for that reason (not
+    /// by its words), and the plugin asks for fresh lists and tries exactly once more: one ban, never two.
+    /// </summary>
+    [Fact]
+    public async Task AStaleNonceIsTriedAgainOnceAndBansOnce() {
+        var lodestone = AliceOnTheLodestone();
+        var clock = new ManualClock();
+        await using var server = Server(lodestone, time: clock);
+        var bob = await server.RegisterAsync("Bob Hatter");
+        var alice = await PinnedAliceAsync(server, lodestone);
+        await alice.Session.DisposeAsync();
+        var sent = new System.Collections.Concurrent.ConcurrentQueue<ClientFrame.BodyOneofCase>();
+        alice = await server.RestartAsync(alice, server.Options(wrap: socket => new RewritingWebSocket(socket, frame => frame, frame => sent.Enqueue(frame.BodyCase))));
+        await WaitFor(() => alice.Session.IsOperator ? new object() : null);
+
+        await alice.Session.RefreshOperatorListsAsync(ct: Ct);
+        // Past the server's few minutes, within the plugin's own.
+        clock.Offset = RequestHandler.OperatorNonceLifetime + TimeSpan.FromSeconds(30);
+        sent.Clear();
+        var lists = await alice.Session.OperatorBanAsync(bob.UserId, 1, "Once", Ct);
+
+        Assert.Single(lists.InForce, ban => ban.UserId == bob.UserId);
+        Assert.Equal([ClientFrame.BodyOneofCase.OperatorBan, ClientFrame.BodyOneofCase.GetOperatorView, ClientFrame.BodyOneofCase.OperatorBan],
+            sent.Where(kind => kind is ClientFrame.BodyOneofCase.OperatorBan or ClientFrame.BodyOneofCase.GetOperatorView).ToArray());
+        Assert.Single(server.Database.GetOperatorLog(0, 20), entry => entry is { Action: "ban", Done: true });
+    }
+
+    /// <summary>
+    /// A ban or lift from an operator's own login without its key's signature is posted to Discord as urgent, with the ping (a
+    /// copy of the login may be in use), at most once in ten minutes for each character.
+    /// </summary>
+    [Fact]
+    public async Task ABadSignatureFromAnOperatorsLoginIsPostedOnceInTenMinutes() {
+        const string role = "424242424242424242";
+        var lodestone = AliceOnTheLodestone();
+        var discord = new FakeDiscord();
+        await using var server = Server(lodestone, discord, more: [FakeDiscord.On, ("LookingGlass:Alerts:Restarts", "false"), ("LookingGlass:Alerts:PingRoleId", role)]);
+        server.Factory.Services.GetRequiredService<ServerAlerts>().Poster!.BatchWindow = TimeSpan.FromMilliseconds(200);
+        var bob = await server.RegisterAsync("Bob Hatter");
+        var (token, keys) = await TakeOverAsync(await PinnedAliceAsync(server, lodestone));
+        var (raw, _, _) = await LogInAsync(server, token);
+        using var stranger = IdentityKeys.Generate();
+
+        for (var i = 0; i < 2; i++) {
+            var view = await ViewAsync(raw);
+            var error = (await raw.SendAsync(BanFrame(stranger, token, bob.UserId, 1, "", view.Nonce, server.ServerUri.AbsoluteUri))).Error;
+            Assert.Equal(OperatorRefusalReason.BadSignature, error.OperatorRefusal);
+        }
+
+        var posted = await discord.WaitForPost(message => message.Content.Contains("without its identity key's signature"));
+        Assert.Contains($"<@&{role}>", posted.Content);
+        Assert.Contains("Alice Operator", posted.Content);
+        Assert.Equal(role, Assert.Single(posted.Roles));
+        await Task.Delay(500, Ct);
+        Assert.Single(discord.Posts, message => message.Content.Contains("without its identity key's signature"));
+        keys.Dispose();
+    }
+
+    /// <summary>A connection holds the nonces of its last four views: the fifth view's pushes the first out.</summary>
+    [Fact]
+    public async Task OnlyTheLastFourNoncesAreGood() {
+        var lodestone = AliceOnTheLodestone();
+        await using var server = Server(lodestone);
+        var bob = await server.RegisterAsync("Bob Hatter");
+        var (token, keys) = await TakeOverAsync(await PinnedAliceAsync(server, lodestone));
+        var (raw, _, _) = await LogInAsync(server, token);
+        var url = server.ServerUri.AbsoluteUri;
+
+        var nonces = new List<ByteString>();
+        for (var i = 0; i < 5; i++) {
+            nonces.Add((await ViewAsync(raw)).Nonce);
+        }
+
+        var error = (await raw.SendAsync(BanFrame(keys, token, bob.UserId, 1, "", nonces[0], url))).Error;
+        Assert.Equal((ErrorCode.InvalidRequest, OperatorRefusalReason.NonceStale), (error.Code, error.OperatorRefusal));
+        Assert.NotNull((await raw.SendAsync(BanFrame(keys, token, bob.UserId, 1, "", nonces[1], url))).OperatorView);
+        keys.Dispose();
+    }
+
+    /// <summary>
+    /// The address signed for is checked by its origin, as every signed request's: this server's (ws or http, any path, any case)
+    /// is accepted; another port, TLS where the server has none, nothing, or not an address, refused before the signature.
+    /// </summary>
+    [Fact]
+    public async Task TheAddressSignedForIsCheckedByItsOrigin() {
+        var lodestone = AliceOnTheLodestone();
+        await using var server = Server(lodestone);
+        var bob = await server.RegisterAsync("Bob Hatter");
+        var (token, keys) = await TakeOverAsync(await PinnedAliceAsync(server, lodestone));
+        var (raw, _, _) = await LogInAsync(server, token);
+
+        var nonce = (await ViewAsync(raw)).Nonce;
+        foreach (var url in new[] { "ws://localhost/ws", "http://localhost/ws", "ws://LOCALHOST/another/path" }) {
+            var view = (await raw.SendAsync(BanFrame(keys, token, bob.UserId, 1, "", nonce, url))).OperatorView;
+            Assert.NotNull(view);
+            nonce = view.Nonce;
+        }
+
+        foreach (var url in new[] { "ws://localhost:5180/ws", "wss://localhost/ws", "", "not an address" }) {
+            var error = (await raw.SendAsync(BanFrame(keys, token, bob.UserId, 1, "", nonce, url))).Error;
+            Assert.Equal((ErrorCode.Forbidden, OperatorRefusalReason.WrongAddress), (error.Code, error.OperatorRefusal));
+        }
+
+        keys.Dispose();
+    }
+
+    /// <summary>If how a character stands can't be read (the database failing), its login still works, and is told nothing.</summary>
+    [Fact]
+    public async Task ALoginIsToldNothingWhenItsStandingCantBeRead() {
+        var lodestone = AliceOnTheLodestone();
+        var logs = new CapturingLoggerProvider();
+        await using var server = Server(lodestone, logs: logs);
+        var (token, _) = await TakeOverAsync(await PinnedAliceAsync(server, lodestone));
+        server.ExecuteSql("ALTER TABLE operator_pins RENAME TO operator_pins_gone;");
+        try {
+            var (_, _, ok) = await LogInAsync(server, token);
+            Assert.Equal(OperatorLoginStatus.NotListed, ok.OperatorStatus);
+            Assert.Equal(Alice, ok.User.UserId);
+            Assert.Contains(logs.AtLeast(Microsoft.Extensions.Logging.LogLevel.Warning), line => line.Contains($"Couldn't tell whether user {Alice} is an operator"));
+        } finally {
+            server.ExecuteSql("ALTER TABLE operator_pins_gone RENAME TO operator_pins;");
+        }
+    }
+
+    /// <summary>Each login drops the lists the last connection showed, so Settings asks for them again (a reconnect included).</summary>
+    [Fact]
+    public async Task TheListsAreDroppedAtEachLogin() {
+        var lodestone = AliceOnTheLodestone();
+        await using var server = Server(lodestone);
+        var alice = await PinnedAliceAsync(server, lodestone);
+        await alice.Session.RefreshOperatorListsAsync(ct: Ct);
+        Assert.NotNull(alice.Session.Snapshot.OperatorLists);
+
+        alice.Session.Reconnect();
+        await WaitFor(() => alice.Session.Snapshot is { State: ConnectionState.Ready, Operator: OperatorStanding.Operator, OperatorLists: null } ? new object() : null);
+        await alice.Session.RefreshOperatorListsAsync(ct: Ct);
+        Assert.NotNull(alice.Session.Snapshot.OperatorLists);
     }
 }

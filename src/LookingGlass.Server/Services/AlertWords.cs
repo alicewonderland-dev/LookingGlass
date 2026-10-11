@@ -278,6 +278,18 @@ public static class AlertWords {
             "operator powers.", AlertKind.Urgent);
     }
 
+    /// <summary>
+    /// A ban or lift from an operator character's own login, not signed by its identity key (urgent): the sign of a copy of its
+    /// login in use without the key. Posted at most every ten minutes per character, with how many more came meanwhile.
+    /// </summary>
+    /// <param name="more">Further such requests from the character since the last of these alerts.</param>
+    public static Alert OperatorBadSignature(UserRow user, int more, string? page = null) => new(
+        $"**Urgent: an operator character's login asked to ban or lift without its identity key's signature:** {Character(user.UserId, user)}. " +
+        "Nothing was done. A copy of that character's login (its secrets file) may be in use elsewhere, without the key." +
+        (more > 0 ? $" ({Count(more, "more request")} like it since the last of these alerts.)" : "") + "\n" +
+        $"Check what operators did ({PageOr(page, "LG --audit")}), use \"Sign out everywhere else\" on that character in the plugin, and if it " +
+        "happens again, \"Reset my identity\" and restore operator status for its new keys.", AlertKind.Urgent);
+
     /// <summary>An operator character's keys pinned, or pinned again (restored) after they changed (urgent).</summary>
     /// <param name="previous">The key hash pinned before, as last posted; null for a first pin.</param>
     /// <remarks>

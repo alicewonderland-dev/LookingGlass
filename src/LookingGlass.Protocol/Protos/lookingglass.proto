@@ -157,6 +157,37 @@ message Error {
   // signed out everywhere else, which the device that did it was told (Devices.signed_out_at_unix).
   int64 signed_out_by_added_unix = 6;
   int64 signed_out_at_unix = 7;
+  // In answer to an operator request (capability "operator.v1"): why it was refused, so the plugin says it in its own words in
+  // either mode (and asks for fresh lists, once, on OPERATOR_REFUSAL_REASON_NONCE_STALE) rather than going by the message's text.
+  // Added without a version change.
+  OperatorRefusalReason operator_refusal = 8;
+}
+
+// Why an operator request (GetOperatorView, OperatorBan, OperatorUnban) was refused: Error.operator_refusal.
+enum OperatorRefusalReason {
+  OPERATOR_REFUSAL_REASON_UNSPECIFIED = 0;
+  // Not one of the server's operators now (the same for every reason: who is one is never told).
+  OPERATOR_REFUSAL_REASON_NOT_AN_OPERATOR = 1;
+  // Signed for an address that isn't this server's.
+  OPERATOR_REFUSAL_REASON_WRONG_ADDRESS = 2;
+  // Not signed by the account's current identity key for this login.
+  OPERATOR_REFUSAL_REASON_BAD_SIGNATURE = 3;
+  // The nonce isn't one of this connection's, fresh and unused: ask for the lists again, then try once more.
+  OPERATOR_REFUSAL_REASON_NONCE_STALE = 4;
+  // The lists asked for too often (or bans and lifts made too fast).
+  OPERATOR_REFUSAL_REASON_TOO_OFTEN = 5;
+  // The days or the reason aren't allowed, or the user ID names nobody.
+  OPERATOR_REFUSAL_REASON_NOT_VALID = 6;
+  // A character listed as an operator: the plugin neither bans nor lifts bans on one.
+  OPERATOR_REFUSAL_REASON_OPERATOR_CHARACTER = 7;
+  // A character not registered on this server: the plugin doesn't ban one (the web page does).
+  OPERATOR_REFUSAL_REASON_NOT_REGISTERED = 8;
+  // This operator character's bans for the hour are used up.
+  OPERATOR_REFUSAL_REASON_HOUR_LIMIT = 9;
+  // No ban on that character is in force.
+  OPERATOR_REFUSAL_REASON_NOTHING_TO_LIFT = 10;
+  // Anything else the plugin's rules refuse.
+  OPERATOR_REFUSAL_REASON_NOT_HERE = 11;
 }
 
 // A block (ban) made by the server's operator.

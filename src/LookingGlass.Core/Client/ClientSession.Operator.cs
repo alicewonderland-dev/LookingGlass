@@ -102,7 +102,7 @@ public sealed partial class ClientSession {
 
             try {
                 return await this.SignAndSendAsync(connection, action, target, days, reason, nonce, ct);
-            } catch (ServerErrorException ex) when (ex.Code == ErrorCode.InvalidRequest && ex.ServerMessage.Contains("Refresh the operator lists", StringComparison.Ordinal)) {
+            } catch (ServerErrorException ex) when (ex.OperatorRefusal == OperatorRefusalReason.NonceStale) {
                 // Too old after all (the server keeps only a connection's last few): once more, with a fresh one.
                 return await this.SignAndSendAsync(connection, action, target, days, reason, await this.FreshOperatorNonceAsync(connection, target, ct), ct);
             }
@@ -209,9 +209,8 @@ public sealed partial class ClientSession {
             this._operatorPinnedFingerprint = standing == OperatorStanding.KeysChanged && ok.OperatorPinnedKeyHash.Length == 32
                 ? IdentityKeys.FingerprintOfHash(ok.OperatorPinnedKeyHash.Span)
                 : null;
-            if (standing != OperatorStanding.Operator) {
-                this._operatorLists = null;
-            }
+            // Fetched afresh after every login (Settings asks again if it is open): what the last connection showed may be stale.
+            this._operatorLists = null;
 
             if (standing is OperatorStanding.KeysChanged or OperatorStanding.NotPinned) {
                 var mine = this._myKeys?.Fingerprint;

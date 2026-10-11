@@ -143,6 +143,27 @@ public enum OperatorDuration {
     Custom,
 }
 
+/// <summary>What the "Ban from server" dialog offers for a character, once it knows how it stands (<see cref="OperatorPanel.DialogFor"/>).</summary>
+public enum OperatorDialog {
+    /// <summary>Nobody registered by that name or ID, and no ban on it: nothing to do here (the web page bans Lodestone IDs).</summary>
+    NotRegistered,
+
+    /// <summary>The player's own character.</summary>
+    Yourself,
+
+    /// <summary>Listed as one of the server's operators (registered or not): neither banned nor lifted here.</summary>
+    OperatorCharacter,
+
+    /// <summary>Registered, not banned: how long, the reason, and Ban.</summary>
+    Ban,
+
+    /// <summary>Registered and banned: Replace the ban, or Lift the ban.</summary>
+    AlreadyBanned,
+
+    /// <summary>Not registered, but its Lodestone ID is banned (from the web page or the command line): Lift the ban only.</summary>
+    LiftOnly,
+}
+
 /// <summary>Whom "Ban someone" names: a registered character by name@world, or any character by its Lodestone ID.</summary>
 /// <param name="Name">With <paramref name="WorldName"/>: a character's name, as typed.</param>
 /// <param name="UserId">A Lodestone ID; 0 for a name.</param>
@@ -190,6 +211,21 @@ public static class OperatorPanel {
             ? ($"{OperatorWords.MenuLabel} ({OperatorWords.MenuOperatorReason})", false)
             : (OperatorWords.MenuLabel, true);
     }
+
+    /// <summary>
+    /// What the dialog offers for a character, as the server said it stands (null: nobody registered by that name): the
+    /// player's own character and a listed operator nothing; a character not registered only the lifting of a ban it has
+    /// (the server bans no unregistered character from the plugin); otherwise a ban, or replacing or lifting the one it has.
+    /// </summary>
+    public static OperatorDialog DialogFor(PanelSubject? subject, long? myUserId) => subject switch {
+        null => OperatorDialog.NotRegistered,
+        _ when subject.UserId == myUserId => OperatorDialog.Yourself,
+        { ListedOperator: true } => OperatorDialog.OperatorCharacter,
+        { User: null, Ban: not null } => OperatorDialog.LiftOnly,
+        { User: null } => OperatorDialog.NotRegistered,
+        { Ban: not null } => OperatorDialog.AlreadyBanned,
+        _ => OperatorDialog.Ban,
+    };
 
     /// <summary>Whom "Ban someone" names: "First Last@World" or a Lodestone ID (a positive number); null if neither.</summary>
     public static OperatorTarget? ParseTarget(string? typed) {

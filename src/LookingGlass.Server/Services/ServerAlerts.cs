@@ -257,6 +257,38 @@ public sealed class ServerAlerts : BackgroundService {
         this.Poster.Post(AlertWords.FunnelRequest(more));
     }
 
+    /// <summary>The least time between two alerts about one operator character's unsigned bans or lifts (later ones are counted into the next).</summary>
+    public static readonly TimeSpan BadSignatureAlertEvery = TimeSpan.FromMinutes(10);
+
+    // Per operator character: when its last bad-signature alert was posted, and how many came since. Only listed characters
+    // whose keys are pinned get here, so it stays as small as the list.
+    private readonly Dictionary<long, (DateTimeOffset Posted, int More)> _badSignatures = new();
+
+    /// <summary>
+    /// A ban or lift from an operator character's own login wasn't signed by its identity key (the plugin's requests call this):
+    /// urgent, as a copy of its login may be in use, but posted at most every <see cref="BadSignatureAlertEvery"/> per character,
+    /// with how many more came meanwhile, so whoever holds the copy can't make it ping again and again.
+    /// </summary>
+    public void OperatorBadSignature(UserRow user) {
+        if (this.Poster == null) {
+            return;
+        }
+
+        int more;
+        lock (this._badSignatures) {
+            var now = this._time.GetUtcNow();
+            if (this._badSignatures.TryGetValue(user.UserId, out var last) && now - last.Posted < BadSignatureAlertEvery) {
+                this._badSignatures[user.UserId] = last with { More = last.More + 1 };
+                return;
+            }
+
+            more = last.More;
+            this._badSignatures[user.UserId] = (now, 0);
+        }
+
+        this.Poster.Post(AlertWords.OperatorBadSignature(user, more, this._page));
+    }
+
     /// <summary>The operator web page couldn't start where its settings say (the chat server runs on without it): urgent.</summary>
     public void PageFailed(string why) => this.Poster?.Post(AlertWords.PageFailed(why));
 

@@ -859,7 +859,11 @@ public sealed class SettingsWindow : Window {
         ImGui.Spacing();
         ImGui.AlignTextToFramePadding();
         ImGui.TextColored(Widgets.Muted, OperatorWords.Heading);
-        this.Help(snapshot.Operator == OperatorStanding.Operator ? SettingHelp.Operator : SettingHelp.OperatorKeys);
+        this.Help(snapshot.Operator switch {
+            OperatorStanding.Operator => SettingHelp.Operator,
+            OperatorStanding.NotPinned => SettingHelp.OperatorNotPinned,
+            _ => SettingHelp.OperatorKeys,
+        });
         ImGui.Separator();
         ImGui.Spacing();
         ImGui.PushID("operator");
@@ -893,14 +897,16 @@ public sealed class SettingsWindow : Window {
 
     /// <summary>The operator's lists, asked for once when the window opens (and on Refresh); actions bring them back fresh.</summary>
     private void DrawOperatorLists(ClientSession session, SessionSnapshot snapshot, bool advanced) {
-        if (this._operatorLoadedFor != session) {
-            // Opened, or a new session since: asked for once.
+        var lists = snapshot.OperatorLists;
+        if (this._operatorLoadedFor != session
+            || (lists == null && this._operatorLoad is { IsCompletedSuccessfully: true } && this._operatorProblem == null)) {
+            // Opened, or a new session since; or logged in again (a reconnect), which drops the lists: asked for once. (After a
+            // failure, only Refresh asks again.)
             this._operatorLoadedFor = session;
             this.LoadOperatorLists(session, advanced);
         }
 
         var loading = this._operatorLoad is { IsCompleted: false };
-        var lists = snapshot.OperatorLists;
         var now = DateTimeOffset.UtcNow;
         ImGui.AlignTextToFramePadding();
         ImGui.TextUnformatted(lists == null ? (loading ? OperatorWords.Asking : "") : OperatorWords.Counts(lists));
@@ -954,7 +960,10 @@ public sealed class SettingsWindow : Window {
             var ban = lists.InForce[i];
             ImGui.PushID($"ban{i}");
             this.Line(ban.Who, OperatorWords.BanDetail(ban, now), OperatorWords.MadeWords(ban, me),
-                ban.OnCharacter ? OperatorWords.LiftButton : null, () => this._operatorBan.Open(ban.UserId, ban.Who));
+                // Not on an operator character's ban, which only the web page and the command line lift (the dialog says so for one
+                // the lists don't name).
+                ban.OnCharacter && !lists.Operators.Any(user => user.UserId == ban.UserId) ? OperatorWords.LiftButton : null,
+                () => this._operatorBan.Open(ban.UserId, ban.Who));
             ImGui.PopID();
         }
 
@@ -1049,7 +1058,7 @@ public sealed class SettingsWindow : Window {
             try {
                 await session.RefreshOperatorListsAsync();
             } catch (Exception ex) {
-                this._operatorProblem = PlainMessages.Of(PlainMessages.MessageOf(ex, advanced), advanced);
+                this._operatorProblem = OperatorWords.WhyNot(ex, advanced);
             }
         });
     }

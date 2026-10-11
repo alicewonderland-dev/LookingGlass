@@ -36,6 +36,9 @@ public sealed class RequestException(ErrorCode code, string message) : Exception
 
     /// <summary>With <see cref="SignedOut"/>: which device signed out everywhere else, and when (see <see cref="Protocol.Error.SignedOutBy"/>).</summary>
     public SignOutRow? SignedOutBy { get; init; }
+
+    /// <summary>For an operator request: why it was refused (see <see cref="Protocol.Error.OperatorRefusal"/>).</summary>
+    public OperatorRefusalReason OperatorRefusal { get; init; }
 }
 
 /// <summary>
@@ -308,6 +311,7 @@ public sealed partial class RequestHandler(
             var error = Error(ex.Code, ex.Message);
             error.Error.Block = ex.Block;
             error.Error.SignedOut = ex.SignedOut;
+            error.Error.OperatorRefusal = ex.OperatorRefusal;
             if (ex.SignedOutBy is { } by) {
                 error.Error.SignedOutBy = ByteString.CopyFrom(by.DeviceId);
                 error.Error.SignedOutByAddedUnix = by.DeviceAddedAt;
