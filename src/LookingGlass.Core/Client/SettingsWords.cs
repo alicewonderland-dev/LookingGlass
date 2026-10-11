@@ -15,6 +15,15 @@ public enum SettingHelp {
     AdvancedMode,
     ResetIdentity,
     SignedInComputers,
+
+    /// <summary>The Operator section, for one of the server's operators (see <see cref="OperatorWords.Help"/>).</summary>
+    Operator,
+
+    /// <summary>The notice in the Operator section's place, when this character's keys aren't the pinned ones (see <see cref="OperatorWords.KeysHelp"/>).</summary>
+    OperatorKeys,
+
+    /// <summary>The notice in the Operator section's place while no keys are pinned for this character yet (see <see cref="OperatorWords.NotPinnedHelp"/>).</summary>
+    OperatorNotPinned,
 }
 
 /// <summary>
@@ -91,6 +100,9 @@ public static class SettingsWords {
             "Sets LookingGlass up again for this character, if its files were lost or someone may have copied them. Your " +
             "channels come back when you register again."),
         SettingHelp.SignedInComputers => DeviceWords.Explanation,
+        SettingHelp.Operator => OperatorWords.Help,
+        SettingHelp.OperatorKeys => OperatorWords.KeysHelp,
+        SettingHelp.OperatorNotPinned => OperatorWords.NotPinnedHelp,
         _ => throw new ArgumentOutOfRangeException(nameof(setting), setting, null),
     };
 }

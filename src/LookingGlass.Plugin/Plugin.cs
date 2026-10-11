@@ -40,7 +40,9 @@ public sealed class Plugin : IDalamudPlugin {
         var actions = new UiActions(() => this._sessions.Snapshot.PendingChallenge?.Code, () => this._config.AdvancedMode);
         this._fonts = new UiFonts(pluginInterface.UiBuilder);
         this._channelWindows = new ChannelWindows(this._windows, this._config, this._sessions, sender);
-        this._settingsWindow = new SettingsWindow(this._config, this._sessions, actions, () => localPrivacy.Ask(LocalPrivacyAsked.FromSettings));
+        // "Ban from server", for one of the server's operators: from the right-click menus and the Operator section of Settings.
+        var operatorBan = new OperatorBanWindow(this._config, this._sessions, chat);
+        this._settingsWindow = new SettingsWindow(this._config, this._sessions, actions, () => localPrivacy.Ask(LocalPrivacyAsked.FromSettings), operatorBan);
         this._mainWindow = new MainWindow(this._config, this._sessions, actions, this._fonts, this._channelWindows, this._settingsWindow.Toggle, () => {
             this._settingsWindow.IsOpen = true;
             this._settingsWindow.BringToFront();
@@ -50,13 +52,15 @@ public sealed class Plugin : IDalamudPlugin {
         this._windows.AddWindow(this._settingsWindow);
         this._windows.AddWindow(this._debugWindow);
         this._windows.AddWindow(localPrivacy);
+        this._windows.AddWindow(operatorBan);
 
         this._commands = new Commands(this._sessions, chat, sender, local, this._sticky, this._mainWindow.Toggle, this._debugWindow.Toggle);
 
-        // "Invite to LookingGlass" when right-clicking a player, in the game's menus and in ChatTwo's.
+        // "Invite to LookingGlass" when right-clicking a player, in the game's menus and in ChatTwo's; and, for an operator, "Ban from server...".
         var inviter = new ContextInviter(this._config, this._sessions, chat);
-        this._gameMenuInvites = new GameContextMenuInvites(inviter);
-        this._chatTwoMenuInvites = new ChatTwoContextMenuInvites(inviter);
+        var banner = new ContextOperator(this._sessions, operatorBan);
+        this._gameMenuInvites = new GameContextMenuInvites(inviter, banner);
+        this._chatTwoMenuInvites = new ChatTwoContextMenuInvites(inviter, banner);
 
         pluginInterface.UiBuilder.Draw += this.Draw;
         pluginInterface.UiBuilder.OpenMainUi += this._mainWindow.Toggle;

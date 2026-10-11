@@ -9,7 +9,10 @@ using LookingGlass.Core.Client;
 
 namespace LookingGlass.Plugin.Ui;
 
-/// <summary>Server, chat, identity and blocked users. Opened from the main window's gear, or Dalamud's plugin settings button.</summary>
+/// <summary>
+/// Server, chat, identity and blocked users, and for one of the server's operators the Operator section, last. Opened from the main
+/// window's gear, or Dalamud's plugin settings button.
+/// </summary>
 public sealed class SettingsWindow : Window {
     private static readonly XivChatType[] ChatTypes = [XivChatType.Debug, XivChatType.Echo, XivChatType.Notice, XivChatType.SystemMessage];
 
@@ -44,8 +47,19 @@ public sealed class SettingsWindow : Window {
     private bool _localCustomOpen;
     private readonly ColourWheel _localWheel = new();
 
-    public SettingsWindow(Configuration config, SessionManager sessions, UiActions actions, Action reviewLocalPrivacy) : base("LookingGlass settings###lookingglass-settings") {
+    // The Operator section (for one of the server's operators): the "Ban from server" dialog, the lists being asked for (only when
+    // the window opens, after an action, and on Refresh: nothing in the background), why that failed, and what "Ban someone" holds.
+    private readonly OperatorBanWindow _operatorBan;
+    private Task? _operatorLoad;
+    private ClientSession? _operatorLoadedFor;
+    private string? _operatorProblem;
+    private string _banSomeone = "";
+    private bool _banSomeoneBad;
+
+    public SettingsWindow(Configuration config, SessionManager sessions, UiActions actions, Action reviewLocalPrivacy, OperatorBanWindow operatorBan)
+        : base("LookingGlass settings###lookingglass-settings") {
         this._config = config;
+        this._operatorBan = operatorBan;
         this._sessions = sessions;
         this._actions = actions;
         this._reviewLocalPrivacy = reviewLocalPrivacy;
@@ -68,6 +82,10 @@ public sealed class SettingsWindow : Window {
         this._logSize = null;
         // And the computers signed in, with when each was last used.
         this._sessions.Session?.RefreshDevicesSoon();
+        // And, for an operator, the flags and bans.
+        this._operatorLoad = null;
+        this._operatorLoadedFor = null;
+        this._banSomeoneBad = false;
     }
 
     public override void OnClose() {
@@ -83,6 +101,7 @@ public sealed class SettingsWindow : Window {
         this.DrawChatLog();
         this.DrawIdentity();
         this.DrawBlockedUsers();
+        this.DrawOperator();
         ImGui.Spacing();
         this._actions.DrawStatus();
         this._modals.Draw(this._sessions.Snapshot, this._sessions.Session);
@@ -819,5 +838,228 @@ public sealed class SettingsWindow : Window {
             ImGui.EndDisabled();
             ImGui.PopID();
         }
+    }
+
+    // ================================================================ the Operator section
+
+    /// <summary>
+    /// The Operator section, last, only for one of the server's operators (see "The plugin's operator panel" in
+    /// docs/operator-tools-plan.md): the counts, the flags, the bans in force and those lifted or ended lately (at most 10 each,
+    /// addresses shortened by the server), "Ban someone", and the web page's address. For a character the server lists but
+    /// whose keys aren't the pinned ones (or none are yet), what to do instead. Nothing at all for anyone else.
+    /// </summary>
+    private void DrawOperator() {
+        var session = this._sessions.Session;
+        var snapshot = this._sessions.Snapshot;
+        if (session == null || snapshot.Operator == OperatorStanding.None) {
+            return;
+        }
+
+        var advanced = this._config.AdvancedMode;
+        ImGui.Spacing();
+        ImGui.AlignTextToFramePadding();
+        ImGui.TextColored(Widgets.Muted, OperatorWords.Heading);
+        this.Help(snapshot.Operator switch {
+            OperatorStanding.Operator => SettingHelp.Operator,
+            OperatorStanding.NotPinned => SettingHelp.OperatorNotPinned,
+            _ => SettingHelp.OperatorKeys,
+        });
+        ImGui.Separator();
+        ImGui.Spacing();
+        ImGui.PushID("operator");
+        ImGui.PushTextWrapPos();
+        try {
+            if (snapshot.Operator == OperatorStanding.Operator) {
+                this.DrawOperatorLists(session, snapshot, advanced);
+            } else {
+                this.DrawNotOperator(snapshot, advanced);
+            }
+        } finally {
+            ImGui.PopTextWrapPos();
+            ImGui.PopID();
+        }
+    }
+
+    /// <summary>In the section's place: the server lists this character, but its keys aren't the pinned ones (or none are yet).</summary>
+    private void DrawNotOperator(SessionSnapshot snapshot, bool advanced) {
+        ImGui.TextUnformatted(OperatorWords.NotOperatorSection(snapshot.Operator).For(advanced));
+        ImGui.Spacing();
+        ImGui.TextColored(Widgets.Muted, OperatorWords.YourFingerprint(advanced));
+        Modals.Fingerprint(snapshot.MyFingerprint, "##copy-operator-fingerprint");
+        if (advanced && snapshot.OperatorPinnedFingerprint is { } pinned) {
+            ImGui.TextColored(Widgets.Muted, OperatorWords.PinnedFingerprint);
+            Modals.Fingerprint(pinned, null);
+        }
+
+        ImGui.Spacing();
+        ImGui.TextUnformatted(OperatorWords.NotOperatorAdvice(snapshot.Operator).For(advanced));
+    }
+
+    /// <summary>The operator's lists, asked for once when the window opens (and on Refresh); actions bring them back fresh.</summary>
+    private void DrawOperatorLists(ClientSession session, SessionSnapshot snapshot, bool advanced) {
+        var lists = snapshot.OperatorLists;
+        if (this._operatorLoadedFor != session
+            || (lists == null && this._operatorLoad is { IsCompletedSuccessfully: true } && this._operatorProblem == null)) {
+            // Opened, or a new session since; or logged in again (a reconnect), which drops the lists: asked for once. (After a
+            // failure, only Refresh asks again.)
+            this._operatorLoadedFor = session;
+            this.LoadOperatorLists(session, advanced);
+        }
+
+        var loading = this._operatorLoad is { IsCompleted: false };
+        var now = DateTimeOffset.UtcNow;
+        ImGui.AlignTextToFramePadding();
+        ImGui.TextUnformatted(lists == null ? (loading ? OperatorWords.Asking : "") : OperatorWords.Counts(lists));
+        Widgets.SameLineRightIfFits(Widgets.ButtonWidth(OperatorWords.Refresh));
+        ImGui.BeginDisabled(loading);
+        if (ImGui.Button(OperatorWords.Refresh)) {
+            this.LoadOperatorLists(session, advanced);
+        }
+
+        ImGui.EndDisabled();
+        if (this._operatorProblem is { } problem) {
+            ImGui.TextColored(Widgets.Error, problem);
+        }
+
+        if (lists == null) {
+            return;
+        }
+
+        if (lists.BansLeftThisHour < OperatorPanel.BansPerHour) {
+            ImGui.TextColored(Widgets.Muted, OperatorWords.BansLeft(lists.BansLeftThisHour));
+        }
+
+        var me = snapshot.Me is { } user ? $"{user.Name}@{user.WorldName}" : null;
+        ImGui.Spacing();
+        ImGui.TextUnformatted(OperatorWords.FlaggedHeading);
+        ImGui.Indent();
+        if (lists.Flags.IsEmpty) {
+            ImGui.TextColored(Widgets.Muted, OperatorWords.NobodyFlagged);
+        }
+
+        for (var i = 0; i < lists.Flags.Length; i++) {
+            var flag = lists.Flags[i];
+            ImGui.PushID($"flag{i}");
+            // A character not banned already can be, from here; an address only on the web page.
+            this.Line(flag.Who, $"{flag.Why} · {OperatorWords.Ago(flag.Last, now)}", null,
+                flag.OnCharacter && !flag.Banned ? OperatorWords.BanButton : null, () => this._operatorBan.Open(flag.UserId, flag.Who));
+            ImGui.PopID();
+        }
+
+        this.More(lists.MoreFlags);
+        ImGui.Unindent();
+
+        ImGui.Spacing();
+        ImGui.TextUnformatted(OperatorWords.InForceHeading);
+        ImGui.Indent();
+        if (lists.InForce.IsEmpty) {
+            ImGui.TextColored(Widgets.Muted, OperatorWords.NoBans);
+        }
+
+        for (var i = 0; i < lists.InForce.Length; i++) {
+            var ban = lists.InForce[i];
+            ImGui.PushID($"ban{i}");
+            this.Line(ban.Who, OperatorWords.BanDetail(ban, now), OperatorWords.MadeWords(ban, me),
+                // Not on an operator character's ban, which only the web page and the command line lift (the dialog says so for one
+                // the lists don't name).
+                ban.OnCharacter && !lists.Operators.Any(user => user.UserId == ban.UserId) ? OperatorWords.LiftButton : null,
+                () => this._operatorBan.Open(ban.UserId, ban.Who));
+            ImGui.PopID();
+        }
+
+        this.More(lists.MoreInForce);
+        ImGui.Unindent();
+
+        ImGui.Spacing();
+        if (ImGui.TreeNode($"{OperatorWords.HistoryHeading}###history")) {
+            if (lists.History.IsEmpty) {
+                ImGui.TextColored(Widgets.Muted, OperatorWords.NoHistory);
+            }
+
+            for (var i = 0; i < lists.History.Length; i++) {
+                var ban = lists.History[i];
+                ImGui.PushID($"history{i}");
+                this.Line(ban.Who, OperatorWords.HistoryDetail(ban, me, now), OperatorWords.MadeWords(ban, me), null, null);
+                ImGui.PopID();
+            }
+
+            this.More(lists.MoreHistory);
+            ImGui.TreePop();
+        }
+
+        ImGui.Spacing();
+        this.DrawBanSomeone();
+        ImGui.Spacing();
+        ImGui.TextColored(Widgets.Muted, OperatorWords.AddressesShortened);
+        if (lists.PageUrl is { } page) {
+            if (Widgets.GhostButton(OperatorWords.CopyPageAddress, page)) {
+                ImGui.SetClipboardText(page);
+            }
+        }
+    }
+
+    /// <summary>"Ban someone": a name@world or a Lodestone ID, opening the dialog for it.</summary>
+    private void DrawBanSomeone() {
+        Widgets.Label(OperatorWords.BanSomeone);
+        ImGui.SameLine();
+        var button = Widgets.ButtonWidth(OperatorWords.BanButton);
+        ImGui.SetNextItemWidth(Math.Max(120 * Widgets.Scale, ImGui.GetContentRegionAvail().X - button - ImGui.GetStyle().ItemSpacing.X));
+        var enter = ImGui.InputTextWithHint("##ban-someone", OperatorWords.BanSomeoneHint, ref this._banSomeone, 64, ImGuiInputTextFlags.EnterReturnsTrue);
+        ImGui.SameLine();
+        if ((ImGui.Button(OperatorWords.BanButton + "###ban-someone-button") || enter) && this._banSomeone.Trim().Length > 0) {
+            if (OperatorPanel.ParseTarget(this._banSomeone) is { } target) {
+                this._banSomeoneBad = false;
+                this._operatorBan.Open(target);
+            } else {
+                this._banSomeoneBad = true;
+            }
+        }
+
+        if (this._banSomeoneBad) {
+            ImGui.TextColored(Widgets.Warning, OperatorWords.NotATarget);
+        }
+    }
+
+    /// <summary>One line of a list: whom, with a button at the right if it has one, and what about it (and who made it) under.</summary>
+    private void Line(string who, string detail, string? made, string? button, Action? clicked) {
+        var width = button == null ? 0 : Widgets.ButtonWidth(button);
+        ImGui.AlignTextToFramePadding();
+        Widgets.TextEllipsis(who, ImGui.GetContentRegionAvail().X - width - ImGui.GetStyle().ItemSpacing.X);
+        if (button != null && clicked != null) {
+            Widgets.SameLineRightIfFits(width);
+            ImGui.BeginDisabled(this._actions.Busy);
+            if (ImGui.Button(button)) {
+                clicked();
+            }
+
+            ImGui.EndDisabled();
+        }
+
+        ImGui.Indent();
+        ImGui.TextColored(Widgets.Muted, detail);
+        if (!string.IsNullOrEmpty(made)) {
+            ImGui.TextColored(Widgets.Muted, made);
+        }
+
+        ImGui.Unindent();
+    }
+
+    /// <summary>"and 4 more (see the web page)", when a list has more than it shows.</summary>
+    private void More(int more) {
+        if (more > 0) {
+            ImGui.TextColored(Widgets.Muted, OperatorWords.More(more));
+        }
+    }
+
+    /// <summary>Asks for the lists, off the draw thread; what goes wrong is shown in the section.</summary>
+    private void LoadOperatorLists(ClientSession session, bool advanced) {
+        this._operatorProblem = null;
+        this._operatorLoad = Task.Run(async () => {
+            try {
+                await session.RefreshOperatorListsAsync();
+            } catch (Exception ex) {
+                this._operatorProblem = OperatorWords.WhyNot(ex, advanced);
+            }
+        });
     }
 }

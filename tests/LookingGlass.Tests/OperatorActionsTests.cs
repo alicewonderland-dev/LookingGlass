@@ -40,6 +40,12 @@ public sealed class OperatorActionsTests : IDisposable {
 
     public void Dispose() => DeleteDirectory(this._directory);
 
+    /// <summary>Registers a character (the plugin bans only registered ones).</summary>
+    private void Register(long id, string name, string world = "Lich") {
+        using var keys = IdentityKeys.Generate();
+        this._db.RegisterUser(id, name, 73, world, keys.ToBundle(), false);
+    }
+
     private long Now => this._clock.GetUtcNow().ToUnixTimeSeconds();
 
     private OperatorActions Actions(Action? applied = null) =>
@@ -114,6 +120,23 @@ public sealed class OperatorActionsTests : IDisposable {
         Assert.Equal(expected, OperatorPolicy.Check(tool, action, new PolicyTarget(address, proxy, operatorCharacter), force, bansThisHour));
     }
 
+    /// <summary>
+    /// The plugin neither bans a character not registered here (by its Lodestone ID; the web page and the command line do) nor
+    /// lifts a ban on a character listed as an operator (whose bans the other tools make and lift); it lifts any other
+    /// character's ban, registered or not.
+    /// </summary>
+    [Theory]
+    [InlineData(CommandLine, Ban, false, true, None)]
+    [InlineData(WebPage, Ban, false, true, None)]
+    [InlineData(Plugin, Ban, false, true, NotRegistered)]
+    [InlineData(Plugin, Lift, false, true, None)]
+    [InlineData(CommandLine, Lift, true, false, None)]
+    [InlineData(WebPage, Lift, true, false, None)]
+    [InlineData(Plugin, Lift, true, false, OperatorCharacter)]
+    public void ThePluginLeavesUnregisteredAndOperatorCharactersToTheOtherTools(OperatorTool tool, OperatorAction action, bool operatorCharacter, bool unregistered,
+        OperatorRefusal expected) =>
+        Assert.Equal(expected, OperatorPolicy.Check(tool, action, new PolicyTarget(false, IsOperatorCharacter: operatorCharacter, IsUnregistered: unregistered)));
+
     /// <summary>The rest of each tool's row: what it sees, its hour's limit, and who it records as having done it.</summary>
     [Fact]
     public void EachToolsRowSaysWhatItSeesAndWhoItRecords() {
@@ -144,7 +167,8 @@ public sealed class OperatorActionsTests : IDisposable {
     [InlineData(Plugin, "Bob Hatter@Lich", false, None)]
     [InlineData(CommandLine, "4242", false, None)]
     [InlineData(WebPage, "4242", false, None)]
-    [InlineData(Plugin, "4242", false, None)]
+    // A character not registered here: not from the plugin (owner's default, 2026-10-11, after the review).
+    [InlineData(Plugin, "4242", false, NotRegistered)]
     [InlineData(CommandLine, "Nobody Here@Lich", false, NoSuchCharacter)]
     [InlineData(WebPage, "Nobody Here@Lich", false, NoSuchCharacter)]
     [InlineData(Plugin, "Nobody Here@Lich", false, NoSuchCharacter)]
@@ -243,6 +267,11 @@ public sealed class OperatorActionsTests : IDisposable {
         Assert.Contains("30", refused.Why);
         // Lifting isn't limited.
         Assert.True(actions.Lift(Actor(WebPage), "2000").Done);
+
+        // The plugin bans registered characters only.
+        foreach (var id in new long[] { 3000, 3001, 3002, 3003, 3004, 3005, 3006, 3007, 3008, 3009, 3500, 3999 }) {
+            this.Register(id, $"Spare Character{id}");
+        }
 
         for (var i = 0; i < 10; i++) {
             Assert.True(actions.Ban(Actor(Plugin), (3000 + i).ToString(System.Globalization.CultureInfo.InvariantCulture), 1, null).Done);
@@ -443,6 +472,7 @@ public sealed class OperatorActionsTests : IDisposable {
         var actions = this.Actions();
         actions.Ban(Actor(CommandLine), "Bob Hatter@Lich", null, "Spamming invites");
         actions.Ban(Actor(WebPage), "203.0.113.0/24", 1, "Flooding");
+        this.Register(4242, "Carol Queen", "Odin");
         actions.Ban(Actor(Plugin), "4242", 7, null);
         this._db.AddBan(null, "198.51.100.7", "", start + 900, true, start, out _);
         this._db.AddBan(777, null, "", null, false, start, out _);

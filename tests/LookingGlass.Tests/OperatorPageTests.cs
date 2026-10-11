@@ -615,7 +615,7 @@ public sealed class OperatorPageTests {
         Assert.Contains($"Keys now (key {server.Database.GetUser(55555)!.KeyVersion}) {third}", fresh.Text);
         var done = await page.SubmitAsync(fresh, "/pin/confirm");
         Assert.Equal(HttpStatusCode.SeeOther, done.Status);
-        Assert.Contains($"Alice Rabbit@Odin is an operator again, with keys {third}.", (await page.GetAsync(done.Response.Headers.Location!.ToString())).Text);
+        Assert.Contains($"Alice Rabbit@Odin is an operator again, with keys {third}. Its plugin sees the Operator section from its next login.", (await page.GetAsync(done.Response.Headers.Location!.ToString())).Text);
         var pin = server.Database.GetOperatorPin(55555)!;
         Assert.Equal((third, "web page", PageServer.Login), (IdentityKeys.FingerprintOfHash(pin.KeyHash), pin.PinnedVia, pin.PinnedBy));
         Assert.Equal(OperatorStatus.Operator, Actions(server).StatusOf(55555));
@@ -651,7 +651,7 @@ public sealed class OperatorPageTests {
         Assert.Contains($"Keys now (key {server.Database.GetUser(77777)!.KeyVersion}) {keys}", pin.Text);
         var done = await page.SubmitAsync(pin, "/pin/confirm");
         Assert.Equal(HttpStatusCode.SeeOther, done.Status);
-        Assert.Contains($"Alice Hearts@Lich is an operator now, with keys {keys}.", (await page.GetAsync(done.Response.Headers.Location!.ToString())).Text);
+        Assert.Contains($"Alice Hearts@Lich is an operator now, with keys {keys}. Its plugin sees the Operator section from its next login.", (await page.GetAsync(done.Response.Headers.Location!.ToString())).Text);
         Assert.Contains("Operator. Keys", (await page.GetAsync("/")).Text);
         Assert.Contains("nothing to pin", (await page.GetAsync("/pin?user=77777")).Text);
 

@@ -109,6 +109,18 @@ public sealed class ClientConnection {
     /// </summary>
     public List<(byte[] Nonce, DateTimeOffset Expires)> SignOutNonces { get; } = [];
 
+    /// <summary>
+    /// The client offered "operator.v1" in Hello and the server agreed: only such a connection's login is told whether its
+    /// character is an operator (AuthenticateOk.operator_status), and only it may ask for the operator's lists, ban or lift.
+    /// </summary>
+    public bool OperatorAgreed { get; set; }
+
+    /// <summary>
+    /// The nonces the last few operator views sent on this connection gave, each for one signed ban or lift, and until when.
+    /// Only the request being handled uses them (one at a time per connection).
+    /// </summary>
+    public List<(byte[] Nonce, DateTimeOffset Expires)> OperatorNonces { get; } = [];
+
     public UserRow? User { get; set; }
 
     /// <summary>The hash of the device token <see cref="User"/> logged in with (what RetireIdentity's signature covers).</summary>

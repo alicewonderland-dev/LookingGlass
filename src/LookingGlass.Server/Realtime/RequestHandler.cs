@@ -36,6 +36,9 @@ public sealed class RequestException(ErrorCode code, string message) : Exception
 
     /// <summary>With <see cref="SignedOut"/>: which device signed out everywhere else, and when (see <see cref="Protocol.Error.SignedOutBy"/>).</summary>
     public SignOutRow? SignedOutBy { get; init; }
+
+    /// <summary>For an operator request: why it was refused (see <see cref="Protocol.Error.OperatorRefusal"/>).</summary>
+    public OperatorRefusalReason OperatorRefusal { get; init; }
 }
 
 /// <summary>
@@ -43,7 +46,8 @@ public sealed class RequestException(ErrorCode code, string message) : Exception
 /// Membership changes arrive as signed log entries, which are checked with the same rules clients
 /// use (<see cref="IMembershipProvider"/>) before they are stored; clients never rely on that check.
 /// </summary>
-public sealed class RequestHandler(
+/// <param name="operators">The operator actions, for the plugin's operator panel (capability "operator.v1"); without them, no character is one.</param>
+public sealed partial class RequestHandler(
     Database db,
     ConnectionRegistry registry,
     LodestoneClient lodestone,
@@ -55,7 +59,8 @@ public sealed class RequestHandler(
     TimeProvider? time = null,
     AbuseMonitor? abuse = null,
     BanList? bans = null,
-    ServerAlerts? alerts = null) {
+    ServerAlerts? alerts = null,
+    OperatorActions? operators = null) {
     /// <summary>This server's version, as Welcome and /health give it.</summary>
     public static readonly string ServerVersion = typeof(RequestHandler).Assembly.GetName().Version?.ToString(3) ?? "0.1.0";
 
@@ -292,6 +297,9 @@ public sealed class RequestHandler(
                 ClientFrame.BodyOneofCase.SendLocalMessage => this.SendLocalMessage(connection, frame.SendLocalMessage),
                 ClientFrame.BodyOneofCase.ListDevices => this.ListDevices(connection),
                 ClientFrame.BodyOneofCase.SignOutOtherDevices => this.SignOutOtherDevices(connection, frame.SignOutOtherDevices),
+                ClientFrame.BodyOneofCase.GetOperatorView => this.GetOperatorView(connection, frame.GetOperatorView),
+                ClientFrame.BodyOneofCase.OperatorBan => this.OperatorBan(connection, frame.OperatorBan),
+                ClientFrame.BodyOneofCase.OperatorUnban => this.OperatorUnban(connection, frame.OperatorUnban),
                 _ => throw new RequestException(ErrorCode.InvalidRequest, "Unknown request."),
             };
         } catch (RequestException ex) {
@@ -303,6 +311,7 @@ public sealed class RequestHandler(
             var error = Error(ex.Code, ex.Message);
             error.Error.Block = ex.Block;
             error.Error.SignedOut = ex.SignedOut;
+            error.Error.OperatorRefusal = ex.OperatorRefusal;
             if (ex.SignedOutBy is { } by) {
                 error.Error.SignedOutBy = ByteString.CopyFrom(by.DeviceId);
                 error.Error.SignedOutByAddedUnix = by.DeviceAddedAt;
@@ -427,11 +436,15 @@ public sealed class RequestHandler(
         welcome.Capabilities.AddRange(hello.Capabilities.Where(capability => capability == ProtocolInfo.Capabilities.Chat
                                                                              || (capability == ProtocolInfo.Capabilities.History && options.Value.Messages.Enabled)
                                                                              || (capability == ProtocolInfo.Capabilities.Local && this.Limits.MaxLocalRecipients > 0)
-                                                                             || capability == ProtocolInfo.Capabilities.Devices).Distinct());
+                                                                             || capability == ProtocolInfo.Capabilities.Devices
+                                                                             // Whatever the settings list: agreeing tells nobody who, or whether anyone, is an operator.
+                                                                             || (capability == ProtocolInfo.Capabilities.Operator && operators != null)).Distinct());
         // Local messages go only to connections that agreed, so an older plugin never sees one.
         connection.LocalChatAgreed = welcome.Capabilities.Contains(ProtocolInfo.Capabilities.Local);
         // And DeviceAdded likewise.
         connection.DevicesAgreed = welcome.Capabilities.Contains(ProtocolInfo.Capabilities.Devices);
+        // And whether a login is told its character is an operator.
+        connection.OperatorAgreed = welcome.Capabilities.Contains(ProtocolInfo.Capabilities.Operator);
         // The operator's own addresses, which clients moving to one of them trust because this server, at the address
         // they already use, lists it. Never the Host-header fallback: that's whatever the connecting side said.
         welcome.PublicUrls.AddRange(this._advertisedUrls);
@@ -850,12 +863,13 @@ public sealed class RequestHandler(
 
         // A character listed as an operator signing in with keys that aren't its pinned ones is posted to Discord (once per set of keys).
         alerts?.OperatorSignedIn(current);
-        return new Response {
-            AuthenticateOk = new AuthenticateOk {
-                User = user.ToProto(), KeyVersion = user.KeyVersion, PreviousUsedUnix = previousUse, UsedUnix = thisUse,
-                PreviousLoginNonceHash = previousNonce.Length == 0 ? ByteString.Empty : ByteString.CopyFrom(SHA256.HashData(previousNonce)),
-            },
+        var ok = new AuthenticateOk {
+            User = user.ToProto(), KeyVersion = user.KeyVersion, PreviousUsedUnix = previousUse, UsedUnix = thisUse,
+            PreviousLoginNonceHash = previousNonce.Length == 0 ? ByteString.Empty : ByteString.CopyFrom(SHA256.HashData(previousNonce)),
         };
+        // Only the character's own login, and only with the capability, is told how it stands as an operator.
+        this.TellOperatorStatus(connection, current, ok);
+        return new Response { AuthenticateOk = ok };
     }
 
     /// <summary>

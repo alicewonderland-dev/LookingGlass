@@ -825,6 +825,8 @@ public sealed class DiscordAlertTests : IDisposable {
         Assert.NotNull(this._db.AddAutomaticBlock("198.51.100.7", "198.51.100.7", this.Now + 15 * 60, this.Now));
         Assert.True(this.Actions().Ban(CommandLine, Bob.ToString(), 7, null).Done);
         Assert.True(this.Actions().Ban(WebPage, Carol.ToString(), null, null).Done);
+        // The plugin bans only characters registered here.
+        this.Register(777, "Dan Dodo", "Ragnarok");
         Assert.True(this.Actions().Ban(Plugin, "777", null, null).Done);
         Assert.Equal(1, this.Actions().Ban(CommandLine, Bob.ToString(), 30, null).Replaced);
         Assert.True(this.Actions().Lift(CommandLine, Carol.ToString()).Done);

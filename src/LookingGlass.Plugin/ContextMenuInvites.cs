@@ -62,15 +62,31 @@ internal sealed class ContextInviter(Configuration config, SessionManager sessio
 }
 
 /// <summary>
+/// "Ban from server..." in the same menus, for one of the server's operators (see "The plugin's operator panel" in
+/// docs/operator-tools-plan.md): on the same players as the invite item, never the player's own character, and greyed out,
+/// saying why, on a character listed as an operator. It opens the "Ban from server" dialog. Whether it shows is
+/// <see cref="OperatorPanel.MenuItem"/>'s.
+/// </summary>
+internal sealed class ContextOperator(SessionManager sessions, OperatorBanWindow window) {
+    /// <summary>The item for <paramref name="target"/> (its label, and whether it can be picked), or null for none.</summary>
+    public (string Label, bool Enabled)? ItemFor(InviteTarget target) => OperatorPanel.MenuItem(sessions.Snapshot, target);
+
+    /// <summary>Opens the dialog for <paramref name="target"/> (on the framework thread, where windows are drawn).</summary>
+    public void Open(InviteTarget target) => Services.Framework.RunOnFrameworkThread(() => window.Open(target));
+}
+
+/// <summary>
 /// "Invite to LookingGlass ▸" in the game's own menus on a player (a name in chat, the party list, a target, the friend
 /// list and the like), through Dalamud's <see cref="Dalamud.Plugin.Services.IContextMenu"/>: no hooks of LookingGlass's own.
 /// Game thread only.
 /// </summary>
 internal sealed class GameContextMenuInvites : IDisposable {
     private readonly ContextInviter _inviter;
+    private readonly ContextOperator _operator;
 
-    public GameContextMenuInvites(ContextInviter inviter) {
+    public GameContextMenuInvites(ContextInviter inviter, ContextOperator @operator) {
         this._inviter = inviter;
+        this._operator = @operator;
         Services.ContextMenu.OnMenuOpened += this.OnMenuOpened;
     }
 
@@ -100,22 +116,31 @@ internal sealed class GameContextMenuInvites : IDisposable {
             }
 
             var offers = this._inviter.OffersFor(invitee);
-            if (offers.Count == 0) {
-                return;
+            if (offers.Count > 0) {
+                args.AddMenuItem(new MenuItem {
+                    Name = ContextInvites.MenuLabel,
+                    PrefixChar = 'L',
+                    PrefixColor = NoticeColours.Blue,
+                    IsSubmenu = true,
+                    OnClicked = clicked => clicked.OpenSubmenu(offers.Select(offer => (IMenuItem) new MenuItem {
+                        // The tag in the channel's colour: a custom colour layered over its closest game colour, as in chat.
+                        Name = GameText.Build(ColouredText.MenuEntry(offer, GameText.Nearest)),
+                        IsEnabled = offer.Available,
+                        OnClicked = offer.Available ? _ => this._inviter.Invite(invitee, offer) : null,
+                    }).ToList()),
+                });
             }
 
-            args.AddMenuItem(new MenuItem {
-                Name = ContextInvites.MenuLabel,
-                PrefixChar = 'L',
-                PrefixColor = NoticeColours.Blue,
-                IsSubmenu = true,
-                OnClicked = clicked => clicked.OpenSubmenu(offers.Select(offer => (IMenuItem) new MenuItem {
-                    // The tag in the channel's colour: a custom colour layered over its closest game colour, as in chat.
-                    Name = GameText.Build(ColouredText.MenuEntry(offer, GameText.Nearest)),
-                    IsEnabled = offer.Available,
-                    OnClicked = offer.Available ? _ => this._inviter.Invite(invitee, offer) : null,
-                }).ToList()),
-            });
+            // "Ban from server...", for one of the server's operators, whether or not there is a channel to invite them to.
+            if (this._operator.ItemFor(invitee) is { } item) {
+                args.AddMenuItem(new MenuItem {
+                    Name = item.Label,
+                    PrefixChar = 'L',
+                    PrefixColor = NoticeColours.Blue,
+                    IsEnabled = item.Enabled,
+                    OnClicked = item.Enabled ? _ => this._operator.Open(invitee) : null,
+                });
+            }
         } catch (Exception ex) {
             Services.Log.Warning(ex, "Couldn't add the invite item to a menu");
         }
@@ -136,14 +161,16 @@ internal sealed class GameContextMenuInvites : IDisposable {
 /// </summary>
 internal sealed class ChatTwoContextMenuInvites : IDisposable {
     private readonly ContextInviter _inviter;
+    private readonly ContextOperator _operator;
     private readonly ICallGateSubscriber<string> _register;
     private readonly ICallGateSubscriber<string, object?> _unregister;
     private readonly ICallGateSubscriber<object?> _available;
     private readonly ICallGateSubscriber<string, PlayerPayload?, ulong, Payload?, SeString?, SeString?, object?> _invoke;
     private volatile string? _id;
 
-    public ChatTwoContextMenuInvites(ContextInviter inviter) {
+    public ChatTwoContextMenuInvites(ContextInviter inviter, ContextOperator @operator) {
         this._inviter = inviter;
+        this._operator = @operator;
         var plugin = Services.PluginInterface;
         this._register = plugin.GetIpcSubscriber<string>("ChatTwo.Register");
         this._unregister = plugin.GetIpcSubscriber<string, object?>("ChatTwo.Unregister");
@@ -179,41 +206,66 @@ internal sealed class ChatTwoContextMenuInvites : IDisposable {
                 return;
             }
 
-            var offers = this._inviter.OffersFor(invitee);
-            if (offers.Count == 0 || !ImGui.BeginMenu(ContextInvites.MenuLabel)) {
-                return;
-            }
-
-            try {
-                foreach (var offer in offers) {
-                    var colour = ChannelPalette.ChatColourOf(offer.Colour);
-                    bool picked;
-                    ImGui.BeginDisabled(!offer.Available);
-                    try {
-                        if (colour != null) {
-                            ImGui.PushStyleColor(ImGuiCol.Text, colour.Value);
-                        }
-
-                        try {
-                            picked = ImGui.Selectable($"{WithoutIdMarks(offer.Label)}##lg-invite-{offer.ChannelId}");
-                        } finally {
-                            if (colour != null) {
-                                ImGui.PopStyleColor();
-                            }
-                        }
-                    } finally {
-                        ImGui.EndDisabled();
-                    }
-
-                    if (picked && offer.Available) {
-                        this._inviter.Invite(invitee, offer);
-                    }
-                }
-            } finally {
-                ImGui.EndMenu();
-            }
+            this.DrawInvites(invitee);
+            this.DrawBan(invitee);
         } catch (Exception ex) {
-            Services.Log.Warning(ex, "Couldn't draw the invite item in ChatTwo's menu");
+            Services.Log.Warning(ex, "Couldn't draw LookingGlass's items in ChatTwo's menu");
+        }
+    }
+
+    /// <summary>"Invite to LookingGlass ▸", with the channels the player can invite to (none: no item).</summary>
+    private void DrawInvites(InviteTarget invitee) {
+        var offers = this._inviter.OffersFor(invitee);
+        if (offers.Count == 0 || !ImGui.BeginMenu(ContextInvites.MenuLabel)) {
+            return;
+        }
+
+        try {
+            foreach (var offer in offers) {
+                var colour = ChannelPalette.ChatColourOf(offer.Colour);
+                bool picked;
+                ImGui.BeginDisabled(!offer.Available);
+                try {
+                    if (colour != null) {
+                        ImGui.PushStyleColor(ImGuiCol.Text, colour.Value);
+                    }
+
+                    try {
+                        picked = ImGui.Selectable($"{WithoutIdMarks(offer.Label)}##lg-invite-{offer.ChannelId}");
+                    } finally {
+                        if (colour != null) {
+                            ImGui.PopStyleColor();
+                        }
+                    }
+                } finally {
+                    ImGui.EndDisabled();
+                }
+
+                if (picked && offer.Available) {
+                    this._inviter.Invite(invitee, offer);
+                }
+            }
+        } finally {
+            ImGui.EndMenu();
+        }
+    }
+
+    /// <summary>"Ban from server...", for one of the server's operators: greyed out, saying why, for a character listed as an operator.</summary>
+    private void DrawBan(InviteTarget invitee) {
+        if (this._operator.ItemFor(invitee) is not { } item) {
+            return;
+        }
+
+        bool picked;
+        ImGui.BeginDisabled(!item.Enabled);
+        try {
+            picked = ImGui.Selectable($"{item.Label}##lg-operator-ban");
+        } finally {
+            ImGui.EndDisabled();
+        }
+
+        if (picked && item.Enabled) {
+            this._operator.Open(invitee);
         }
     }
 
