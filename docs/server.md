@@ -219,6 +219,7 @@ All of these are under `LookingGlass`.
 | `Limits:LocalMessagesBetweenBurst` | 30 | Local chat messages one user may send one other at once; past it those copies are dropped. 1 to 10,000, and less than `LocalMessagesReceivedBurst` |
 | `Limits:LocalMessagesBetweenIntervalSeconds` | 2 | Seconds between them once those are spent. 1 to 86,400, and more than `LocalMessagesReceivedIntervalSeconds` |
 | `Abuse:...` | | When an account or address refused by limits again and again is flagged, how bans are picked up, and automatic blocks (on): see [Flags and bans](#flags-and-bans) |
+| `Operators:Characters` | empty | User IDs (Lodestone IDs) of the characters that may be operators in the plugin's operator panel (coming in a later update). Each is one only once its keys are pinned (`--operator-pin`), and only while its keys match the pin; `--ban` bans one only with `--force`. User IDs only: the server won't start with anything else. See [Operator characters](#operator-characters) |
 
 The server won't start with an invite, lookup, registration lookup or local chat setting outside its range: see
 [Limits worth knowing](#limits-worth-knowing).
@@ -623,7 +624,9 @@ Client addresses appear only in lines about registrations and key logins
 (refused ones, and key logins that add a device), flags, bans (a banned
 account refused, a banned connection closed, an address blocked
 automatically) and opened and closed connections (at Debug level only), for
-dealing with abuse.
+dealing with abuse. At startup, the characters listed as operators are logged
+by name and user ID, with whether their keys are pinned (see
+[Operator characters](#operator-characters)).
 
 ### Flags and bans
 
@@ -677,13 +680,38 @@ your public address (an IPv6 one as its /64), not 127.0.0.1, ::1, the
 server's own address, or a 100.x Tailscale address. Take the line out again
 afterwards.
 
+**One set of rules for every tool.** The commands below go through one layer
+in the server (`OperatorActions`), which the operator web page and the
+plugin's operator panel will use too when they come (see
+[operator-tools-plan.md](operator-tools-plan.md)), so the rules are written
+once. What each tool may do:
+
+| | Command line | Web page (coming) | Plugin (coming) |
+| --- | --- | --- | --- |
+| See flags and bans | Yes, full addresses | Yes, full addresses | Yes, addresses shortened |
+| Ban or lift a character | Yes | Yes | Yes |
+| Ban or lift an address or prefix | Yes | Yes | No |
+| `--force` (the server's own or the proxy's address) | Yes | Yes (a tick box) | No |
+| Ban a character listed as an operator | Only with `--force` | No | No |
+| Bans an hour | No limit | 30 | 10 per operator character |
+| Pin or restore an operator's keys | Yes, with the fingerprint typed | Yes, after a confirmation page | No |
+| Let a key sign in again (`--allow-key-login`) | Yes | No | No |
+| Recorded as made by | The Unix user (`SUDO_USER`) | The Tailscale login | The operator character |
+
+A ban made on the web page or in the plugin will apply at once (the server
+makes it itself); one from the command line, another process, within 30
+seconds, as below.
+
 **The commands.** Run them as the service's user, with the service's
 settings (as for `--backup`), while the server runs or not. They start no
 server, and the running one picks up a change within 30 seconds
-(`Abuse:BanCheckSeconds`), without a restart. The service's settings are the
+(`Abuse:BanCheckSeconds`), without a restart. Each is recorded, with the user
+who ran it through sudo (`SUDO_USER`, or the user it runs as without sudo):
+see [the audit trail](#the-audit-trail). The service's settings are the
 `Environment=` lines of its unit and drop-ins (the data folder, and any
-`LookingGlass__Abuse__...` or `LookingGlass__TrustedProxies__...` you added),
-and `appsettings.json` beside the binary, which the commands read anyway.
+`LookingGlass__Abuse__...`, `LookingGlass__TrustedProxies__...` or
+`LookingGlass__Operators__...` you added), and `appsettings.json` beside the
+binary, which the commands read anyway.
 This shell function (bash) runs a command with the unit's own: `systemctl
 show` gives every `Environment=` of the unit and its drop-ins, and only those
 the commands use are passed on (so a value with spaces elsewhere, such as an
@@ -691,50 +719,73 @@ announcement, does no harm). It doesn't pick up settings from an
 `EnvironmentFile=` (the installed unit has none) or from an
 environment-specific `appsettings.<Environment>.json` (the commands run in
 Production): pass those on the command line, as `--LookingGlass:Abuse:...=`,
-if you use them.
+if you use them. That matters most for `Operators:Characters`: without it,
+`--ban` can't tell an operator character from another, and bans one without
+`--force`. Keep it in an `Environment=` line, or pass it on
+(`--LookingGlass:Operators:Characters:0=31337`); `--ban` and `--operators`
+warn when they see no list while the database holds operator pins (which
+means the server's own settings list someone).
 
 ```sh
 LG() {
     local settings
     mapfile -t settings < <(systemctl show lookingglass -p Environment --value | tr ' ' '\n' |
-        grep -E '^LookingGlass__(DataDirectory|Abuse__|TrustedProxies__)')
+        grep -E '^LookingGlass__(DataDirectory|Abuse__|TrustedProxies__|Operators__)')
     sudo -u lookingglass env "${settings[@]}" /opt/lookingglass/LookingGlass.Server "$@"
 }
 
-LG --bans                                                  # bans in force, flags, and recent history
+LG --bans                                                  # bans in force (and who made each), flags, and recent history
 LG --ban "Bob Hatter@Lich" --reason "Spamming invites"      # a registered character, until lifted
 LG --ban 31337 --days 7                                     # any character by user ID (its Lodestone ID), for 7 days
 LG --ban 203.0.113.5                                        # an IPv4 address
 LG --ban 203.0.113.0/24 --days 1 --reason "Flooding"        # an IPv4 network, a /16 at the widest
 LG --ban 2001:db8:1:2::/64                                  # an IPv6 prefix, /32 to /64 (an address alone means its /64)
 LG --unban "Bob Hatter@Lich"                                # lift a ban (an address exactly as --bans lists it)
+LG --audit                                                  # what operators did: the last 50 entries
+LG --audit --days 30                                        # ...or all of the last 30 days
 ```
 
 Run them as `lookingglass`, not as root: SQLite may create the database's
 `-wal` and `-shm` files, which the service must be able to open. A user ID is
 the number in the character's Lodestone address
 (`https://na.finalfantasyxiv.com/lodestone/character/31337/`); `--bans` and
-the flag lines give it too. `--ban` on someone banned already replaces their
-ban. The reason is shown to the player, so write it for them: one line, at
+the flag lines give it too. It is a positive number (debug accounts, on a
+test server that allows them, have negative ones). `--ban` on someone banned
+already replaces their ban. Whatever the commands print, anything a terminal
+would act on (control characters, invisible formatting) is shown as an
+escape such as `\u001B`, whether it was typed or came from the database. The reason is shown to the player, so write it for them: one line, at
 most 300 characters. `--ban` refuses this machine's own address, the
 unspecified address, a trusted proxy's, or a prefix holding one: when the
 forwarded address is missing that is every player, so it says so and bans
-nothing (add `--force` if you really mean it). Exit codes: 0 done, 1 not done
-(no such character, no ban to lift, the proxy's address, no database), 2 the
-command line was wrong.
+nothing (add `--force` if you really mean it). It refuses a character listed
+in `Operators:Characters` too, which would lock an operator out, unless
+`--force` says it is meant. Exit codes: 0 done, 1 not done (no such
+character, no ban to lift, the proxy's address, an operator character, no
+database), 2 the command line was wrong.
 
-`--bans` lists, with names for registered characters:
+`--bans` lists, with names for registered characters, and who made each ban:
 
 ```text
 Bans in force (2):
-  user 31337 (Bob Hatter@Lich): since 2026-10-07 12:00 UTC, until lifted. Reason: Spamming invites
-  address 203.0.113.0/24: since 2026-10-07 12:05 UTC, until 2026-10-08 12:05 UTC (1 day). Reason: Flooding
+  user 31337 (Bob Hatter@Lich): since 2026-10-07 12:00 UTC, until lifted, made on the command line by alice. Reason: Spamming invites
+  address 203.0.113.0/24: since 2026-10-07 12:05 UTC, until 2026-10-08 12:05 UTC (1 day), made on the command line by alice. Reason: Flooding
 
 Flagged in the last 24 hours (1):
   user 4242 (Carol Queen@Odin): refused by 4 different limits within 10 minutes; flagged 2026-10-07 11:00 UTC, last refused 2026-10-07 11:55 UTC; limits: CreateChannel, InviteBurstPerInviter, LookupBurst, SendMessage
 
 No bans lifted or ended in the last 90 days.
 ```
+
+Each ban says which tool made it, and who: "made on the command line by
+alice" (the user who ran sudo), and later "on the web page by alice@github"
+or "in the plugin by Alice Wonderland@Lich"; "(made automatically)" for an
+automatic block. A lifted one says who lifted it the same way ("lifted
+2026-10-08 09:00 UTC on the command line by alice"), and one replaced by
+banning the same subject again says so ("replaced by a new ban ... on the
+web page by alice@github"). An automatic block never replaces a ban. Bans from before the
+upgrade to schema 12 say "made on the command line" without a name (nobody
+recorded it then); one an older server made, after going back to it for a
+while, says nothing about it.
 
 **What a ban does.** A banned character can't sign in (its saved logins and
 its identity key are refused, and no new login is made) or register again,
@@ -781,6 +832,79 @@ of range):
 Raise `FlagAfterMinutesRefused` or `FlagAfterLimits` if innocent players get
 flagged (behind a large shared NAT, say); lower them to hear sooner.
 
+#### The audit trail
+
+Every ban, lift, operator pin and key login allowed again, tried with any
+tool, done or refused, is recorded: when, which tool, who, from where (the
+web page's device, once there is one), what, and the outcome, with why if it
+was refused. A change and its entry are written in one transaction, so
+nothing is ever banned without its entry. Lists aren't recorded, only
+attempts to change something; nor is a command line that couldn't be read
+(a missing target, a bad `--days`, `--reason` or `--fingerprint`: exit code
+2), which never reaches the database. What was typed is kept with anything
+hidden in it shown as escapes, and cut (whom at 200 characters). Entries are
+kept 365 days, then deleted (the running server sweeps them with old bans,
+at startup and every ten minutes).
+
+```text
+$ LG --audit
+What operators did, newest first (the last 3):
+  2026-10-10 14:20 UTC  command line  alice: banned address 203.0.113.0/24, for 1 day. Reason: Flooding
+  2026-10-10 14:19 UTC  command line  alice: refused to ban address 127.0.0.1: 127.0.0.1 is or holds this machine's own (loopback) address: ...
+  2026-10-09 23:10 UTC  command line  alice: lifted the ban on user 777 (Dan Dodo@Ragnarok)
+```
+
+`LG --audit` lists the last 50 entries; `LG --audit --days N` (1 to 365)
+lists all of the last N days. The user named is what sudo says
+(`SUDO_USER`): a record, not proof, since whoever can run the commands could
+set it.
+
+#### Operator characters
+
+The plugin's operator panel (an Operator section in Settings, and **Ban from
+server...** in right-click menus) comes in a later update, for the owner's
+own characters; the characters and their keys can be set up now. An operator
+is a character **and its keys**: registering a character needs only control
+of its Lodestone page, so someone who took over its Square Enix account could
+register it again with keys of their own, and must get nothing from it.
+
+- **Listed in the settings.** `LookingGlass:Operators:Characters` lists, by
+  user ID, the characters that may ever be operators (in a drop-in:
+  `Environment=LookingGlass__Operators__Characters__0=31337`, then restart).
+  Only the settings, and a restart, add one. The `LG` helper passes these on,
+  so `--ban` refuses a listed character without `--force`.
+- **Pinned by you, never automatically.** A listed character is an operator
+  only once its keys are pinned, and only while its account's keys are still
+  those. In game, open LookingGlass's Settings with Advanced mode on and note
+  the fingerprint under **Your identity**; then pin it:
+
+  ```sh
+  LG --operators                                              # each listed character: pinned and current keys
+  LG --operator-pin 31337 --fingerprint "48213 90551 17342 66018 30927"
+  ```
+
+  It pins only if the fingerprint typed is the character's current keys'
+  (spaces don't matter), and keeps the full hash the fingerprint is cut from,
+  which is what is compared. Not on the character's first login: that would
+  trust whatever keys it has when it is listed.
+- **A key change drops it.** Registering the character again (a new
+  computer, **Reset my identity**, recovering it) gives it new keys, which
+  aren't the pinned ones: from then on it isn't an operator, and nothing
+  pins the new keys by itself. `--operators` shows it as `NOT an operator
+  now`, with the pinned and current fingerprints and when the keys changed.
+  If its player did that, compare the new fingerprint in the plugin's
+  Settings and run `--operator-pin` again to restore it. If not, someone else
+  registered it: secure that Square Enix account first, and don't pin.
+- **Unlisted means gone.** At startup the server deletes the pin of any
+  character the settings no longer list (a warning in the log says so), and
+  logs how each listed one stands (`Operators: user 31337 (Alice
+  Wonderland@Lich), keys pinned`).
+
+Exit codes for `--operator-pin`: 0 pinned (or pinned already), 1 not done
+(not listed, not registered, or the fingerprint isn't the current keys'), 2
+the command line was wrong. Every pin, refused ones too, is in the audit
+trail.
+
 #### Letting a key sign in again
 
 A player's **Sign out everywhere else** stops their identity key signing in
@@ -798,9 +922,9 @@ Their computers that were signed out then sign in with the key by themselves
 at their next connection; so would anyone holding a copy of the key, so only
 do it when the player is sure it was them who signed out (otherwise they
 should reset their identity). It works on a running server at once (it reads
-this at each key login), and revokes no login. Exit codes: 0 done, 1 not done
-(no such character, or key login wasn't turned off), 2 the command line was
-wrong.
+this at each key login), and revokes no login. It is in the audit trail too.
+Exit codes: 0 done, 1 not done (no such character, or key login wasn't
+turned off), 2 the command line was wrong.
 
 ### Stopping and restarting
 
@@ -996,12 +1120,34 @@ any of these (made by an earlier development build) gains them at start. Plugins
 aren't told of new devices, and one that was signed out shows "Login not
 recognised".
 
-**Going back to an older version** works with a schema 11 database (an older
-server opens it, and ignores what it doesn't know), but an older server
-doesn't read bans (everyone banned gets back in until the new version runs
-again), nor `key_login_off` (the key of a player who signed out everywhere
-else can sign in with a key login again). Devices it adds have no ID; the new
-version gives them one when it next lists them.
+**From a server without operator tools (schema 11).** The `bans` table gains
+`made_via`, `made_by`, `lifted_via` and `lifted_by` (which tool made and
+lifted each ban, and who), `replaced_by` (the ban that replaced it, when it
+was replaced by banning the same subject again) and `made_announced` and
+`lifted_announced`
+(whether the alerts channel was told, for the Discord alerts to come). Bans
+from before are marked as made on the command line, or automatically, with
+nobody named, and as posted, and so are the lifts already made. New tables:
+`operator_log` (the audit trail, empty to begin with), `server_state` (the
+server's own bookkeeping, for the alerts) and `operator_pins` (operator
+characters' pinned keys). `users` gains `keys_registered_at`, when the
+account's current keys were registered: unknown (empty) for keys registered
+before the upgrade, and kept from then on by triggers in the database. Nothing
+else changes, and nothing needs setting (`Operators:Characters` is empty by
+default). Add `Operators__` to the `LG` helper's list, as in
+[Flags and bans](#flags-and-bans). Plugins are unaffected.
+
+**Going back to an older version** works with a schema 12 database: an older
+server opens it and ignores what it doesn't know (checked with the schema 11
+server's `--bans`, `--ban` and `--unban`). What it doesn't know, it doesn't
+do. A schema 11 server records no tool or name for the bans and lifts it
+makes (`--bans` then says nothing about who made them), keeps no audit trail,
+and has no operators. One from before schema 11 doesn't read `key_login_off`
+(the key of a player who signed out everywhere else can sign in with a key
+login again), and the devices it adds have no ID until the new version next
+lists them. One from before schema 10 doesn't read bans at all (everyone
+banned gets back in until the new version runs again). Keys any of them
+registers still get their time: the triggers are in the database.
 
 ## Loading a development build of the plugin
 

@@ -237,6 +237,37 @@ public sealed class BanTests : IDisposable {
         Assert.Null(bans.ForAddress("2001:db8:1:2ff::/64"));
     }
 
+    /// <summary>
+    /// Two reads of the bans at once (the regular check, and a ban made inside the server applying at once): one that read the
+    /// database earlier but finished later never replaces the newer list, so a ban applied at once stays applied.
+    /// </summary>
+    [Fact]
+    public async Task AnOlderReadOfTheBansNeverReplacesANewerOne() {
+        var bans = new BanList(this._db, Microsoft.Extensions.Options.Options.Create(new ServerOptions()));
+        bans.Refresh();
+        using var read = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        bans.AfterRead = () => {
+            if (!read.IsSet) {
+                read.Set();
+                release.Wait(Harness.Timeout, Ct);
+            }
+        };
+
+        // The regular check reads the database (no ban yet), and is held before it publishes what it read...
+        var slow = Task.Run(bans.Refresh, Ct);
+        Assert.True(read.Wait(Harness.Timeout, Ct));
+        // ...while a ban is made and applied at once.
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        this._db.AddBan(31337, null, "Applied at once", null, false, now, out _);
+        bans.Refresh();
+        Assert.NotNull(bans.ForUser(31337));
+
+        release.Set();
+        await slow;
+        Assert.Equal("Applied at once", bans.ForUser(31337)?.Reason);
+    }
+
     // ================================================================ the commands
 
     [Fact]

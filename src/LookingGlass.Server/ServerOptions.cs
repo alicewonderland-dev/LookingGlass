@@ -34,6 +34,35 @@ public sealed class ServerOptions {
     public DatabaseOptions Database { get; set; } = new();
     public MessageOptions Messages { get; set; } = new();
     public AbuseOptions Abuse { get; set; } = new();
+    public OperatorOptions Operators { get; set; } = new();
+}
+
+/// <summary>
+/// Who may be an operator in the plugin: see "Key-pinned operators" in docs/operator-tools-plan.md. Only this list (the
+/// settings, and a restart) makes a character one; its keys must also be pinned (with <c>--operator-pin</c>, or on the web
+/// page), and it is one only while its account's keys match the pin.
+/// </summary>
+public sealed class OperatorOptions {
+    /// <summary>User IDs (Lodestone IDs) of the characters that may be operators. Empty: nobody.</summary>
+    public string[] Characters { get; set; } = [];
+
+    /// <summary>The characters listed, by user ID, once <see cref="Problem"/> has found nothing wrong.</summary>
+    public IReadOnlyList<long> UserIds =>
+        this.Characters.Where(entry => !string.IsNullOrWhiteSpace(entry))
+            .Select(entry => long.TryParse(entry.Trim(), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var id) ? id : 0)
+            .Where(id => id > 0).Distinct().ToList();
+
+    /// <summary>Why the list is wrong (the server doesn't start then, and the commands don't run), or null if it isn't.</summary>
+    public string? Problem() {
+        foreach (var entry in this.Characters.Where(entry => !string.IsNullOrWhiteSpace(entry))) {
+            if (!long.TryParse(entry.Trim(), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var id) || id <= 0) {
+                return $"LookingGlass:Operators:Characters lists \"{entry.Trim()}\", so the server won't start: each entry must be a character's user ID, " +
+                       "the number in its Lodestone address (https://na.finalfantasyxiv.com/lodestone/character/<ID>/), not a name.";
+            }
+        }
+
+        return null;
+    }
 }
 
 /// <summary>

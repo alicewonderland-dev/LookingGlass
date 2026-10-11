@@ -21,6 +21,12 @@ public sealed record UserRow(
     /// <summary>The identity keys the user is registered with now.</summary>
     public MemberKeys Keys => new(this.SigningKey, this.AgreementKey);
 
+    /// <summary>
+    /// When the account's current keys were registered (Unix seconds), as schema 12 records it; null if they were registered
+    /// before the upgrade to schema 12, when nobody recorded it.
+    /// </summary>
+    public long? KeysRegisteredAt { get; init; }
+
     public UserIdentity ToIdentity() => new() {
         User = this.ToProto(),
         KeyVersion = this.KeyVersion,
@@ -117,7 +123,86 @@ public sealed record BanRow(long BanId, long? UserId, string? Address, string Re
 
     /// <summary>What it is on, as flags and the command line name it: "user 123" or "address 203.0.113.0/24".</summary>
     public string Subject => this.UserId is { } id ? $"user {id}" : $"address {this.Address}";
+
+    /// <summary>
+    /// Which tool made it (see <see cref="BanTools"/>); null for a ban an older server made, which didn't record it. Bans from
+    /// before schema 12 are "command line" or "automatic".
+    /// </summary>
+    public string? MadeVia { get; init; }
+
+    /// <summary>Who made it, as the tool knows them (a Unix user, a Tailscale login, an operator character); null if not known.</summary>
+    public string? MadeBy { get; init; }
+
+    /// <summary>Which tool lifted it (see <see cref="BanTools"/>), if it was lifted and that was recorded.</summary>
+    public string? LiftedVia { get; init; }
+
+    /// <summary>Who lifted it, if known.</summary>
+    public string? LiftedBy { get; init; }
+
+    /// <summary>Whether it has been posted to the alerts channel (Discord alerts; bans from before schema 12 count as posted).</summary>
+    public bool MadeAnnounced { get; init; }
+
+    /// <summary>Whether its lifting has been posted to the alerts channel.</summary>
+    public bool LiftedAnnounced { get; init; }
+
+    /// <summary>
+    /// The ban that replaced it, if it was lifted by banning the same subject again (then <see cref="LiftedVia"/> and
+    /// <see cref="LiftedBy"/> are that ban's tool and maker); null if it was lifted otherwise, or before schema 12.
+    /// </summary>
+    public long? ReplacedBy { get; init; }
 }
+
+/// <summary>The tools a ban is recorded as made or lifted with (<see cref="BanRow.MadeVia"/>), as the database writes them.</summary>
+public static class BanTools {
+    public const string CommandLine = "command line";
+    public const string WebPage = "web page";
+    public const string Plugin = "plugin";
+
+    /// <summary>A block the server made by itself (see <see cref="AbuseOptions.AutoBlockMinutes"/>).</summary>
+    public const string Automatic = "automatic";
+}
+
+/// <summary>
+/// An operator character's pinned keys (see "Key-pinned operators" in docs/operator-tools-plan.md): it is an operator only
+/// while its account's current keys hash to <paramref name="KeyHash"/>. Times are Unix seconds.
+/// </summary>
+/// <param name="KeyHash">The full <see cref="Core.Crypto.IdentityKeys.KeyHash"/> of the keys pinned (never just the 25 digits).</param>
+/// <param name="PinnedVia">Which tool pinned them (see <see cref="BanTools"/>).</param>
+/// <param name="PinnedBy">Who, as that tool knows them.</param>
+public sealed record OperatorPinRow(long UserId, byte[] KeyHash, long PinnedAt, string PinnedVia, string PinnedBy) {
+    /// <summary>The other keys last posted to the alerts channel as signing in for this character (so each set is posted once).</summary>
+    public byte[]? MismatchAnnouncedHash { get; init; }
+}
+
+/// <summary>What <see cref="Database.PinOperator"/> did.</summary>
+public enum PinResult {
+    /// <summary>Pinned (or pinned again, to new keys).</summary>
+    Pinned,
+
+    /// <summary>Nothing: these keys were pinned already.</summary>
+    AlreadyPinned,
+
+    /// <summary>Nothing: the account's keys aren't the ones expected (they changed meanwhile, or the fingerprint was another's).</summary>
+    KeysDiffer,
+
+    /// <summary>Nothing: no such character is registered.</summary>
+    NotRegistered,
+}
+
+/// <summary>
+/// One entry in the operators' audit trail: an attempt to ban, lift, pin or let a key sign in again, by any tool, done or
+/// refused. Kept <see cref="Services.OperatorActions.AuditKeptDays"/> days. Times are Unix seconds.
+/// </summary>
+/// <param name="Tool">Which tool (see <see cref="BanTools"/>).</param>
+/// <param name="Who">Who, as the tool knows them.</param>
+/// <param name="From">From where (the web page's tailnet address), or empty.</param>
+/// <param name="ActorUserId">The operator character, for the plugin; null otherwise.</param>
+/// <param name="Action">What was tried (see <see cref="Services.OperatorActions"/>' action names).</param>
+/// <param name="Target">Whom, as shown ("user 31337 (Bob Hatter@Lich)", "address 203.0.113.0/24", or as typed if it named nobody).</param>
+/// <param name="Detail">How long and why, in words, or empty.</param>
+/// <param name="Done">Whether it was done; if not, <paramref name="Why"/> says why.</param>
+public sealed record OperatorLogRow(long LogId, long At, string Tool, string Who, string From, long? ActorUserId, string Action, string Target, string Detail,
+    bool Done, string Why);
 
 /// <summary>
 /// An account or address flagged for being refused by limits again and again (see <see cref="Services.AbuseMonitor"/>). Times are
@@ -143,7 +228,7 @@ public sealed class UnsupportedDatabaseException(string message) : Exception(mes
 /// </summary>
 public sealed class Database {
     /// <summary>The schema this version makes, and upgrades older databases to.</summary>
-    internal const int SchemaVersion = 11;
+    internal const int SchemaVersion = 12;
     private const int KeptEpochs = 4;
 
     /// <summary>
@@ -260,7 +345,8 @@ public sealed class Database {
 
         var current = Convert.ToInt32(Scalar(connection, null, "SELECT COALESCE(MAX(version), 0) FROM schema_version;"));
         if (current >= SchemaVersion) {
-            // An earlier build of schema 11 (a development or test server's) lacked some of its columns: added now.
+            // An earlier build of schema 11 (a development or test server's) lacked some of its columns: added now. (A database at
+            // 11 gets them on its way to 12, below.)
             using var heal = connection.BeginTransaction();
             AddSchema11Columns(connection, heal);
             heal.Commit();
@@ -490,6 +576,13 @@ public sealed class Database {
             Execute(connection, tx, "INSERT INTO schema_version (version) VALUES (11);");
         }
 
+        if (current < 12) {
+            // A database at 11 from an earlier build of it may lack some of 11's columns: added first (nothing, otherwise).
+            AddSchema11Columns(connection, tx);
+            AddSchema12(connection, tx);
+            Execute(connection, tx, "INSERT INTO schema_version (version) VALUES (12);");
+        }
+
         tx.Commit();
         this.ReportSharedKeys(traces);
     }
@@ -548,7 +641,7 @@ public sealed class Database {
     }
 
     /// <summary>
-    /// Schema 11's columns, each added if it isn't there: on upgrading to 11, and on every start at 11 or later, so a database
+    /// Schema 11's columns, each added if it isn't there: on upgrading to 11 or 12, and on every start later, so a database
     /// made by an earlier build of 11 (on a development or test server) that lacks some gains them. Nothing else changes.
     /// </summary>
     private static void AddSchema11Columns(SqliteConnection connection, SqliteTransaction tx) {
@@ -578,6 +671,93 @@ public sealed class Database {
                 UPDATE devices SET device_id = randomblob(8);
                 """);
         }
+    }
+
+    /// <summary>
+    /// Schema 12, the operator tools (see "Operator actions, one layer for every tool" in docs/design.md): who made and lifted
+    /// each ban, and whether the alerts channel was told; the operators' audit trail; the server's own bookkeeping; operator
+    /// characters' pinned keys; and when each account's current keys were registered. Each part is added only if it isn't
+    /// there (tests of older schemas only remove the version rows). An older server opens the result and ignores all of it.
+    /// </summary>
+    private static void AddSchema12(SqliteConnection connection, SqliteTransaction tx) {
+        // Who made and lifted each ban, with which tool; and whether the alerts channel has been told, so a ban is posted
+        // once, whichever process made it. Bans from before were made on the command line or automatically, and count as
+        // posted (and so do the lifts already made); nobody recorded who made them.
+        var marking = !HasColumn(connection, tx, "bans", "made_via");
+        (string Column, string Definition)[] columns = [
+            ("made_via", "TEXT"),
+            ("made_by", "TEXT"),
+            ("lifted_via", "TEXT"),
+            ("lifted_by", "TEXT"),
+            ("made_announced", "INTEGER NOT NULL DEFAULT 0"),
+            ("lifted_announced", "INTEGER NOT NULL DEFAULT 0"),
+            // The ban that replaced it (banning the same subject again), if that is how it was lifted.
+            ("replaced_by", "INTEGER"),
+        ];
+        foreach (var (column, definition) in columns) {
+            if (!HasColumn(connection, tx, "bans", column)) {
+                Execute(connection, tx, $"ALTER TABLE bans ADD COLUMN {column} {definition};");
+            }
+        }
+
+        if (marking) {
+            Execute(connection, tx, $"""
+                UPDATE bans SET made_via = CASE WHEN automatic <> 0 THEN '{BanTools.Automatic}' ELSE '{BanTools.CommandLine}' END,
+                    lifted_via = CASE WHEN lifted_at IS NOT NULL THEN '{BanTools.CommandLine}' END,
+                    made_announced = 1, lifted_announced = CASE WHEN lifted_at IS NOT NULL THEN 1 ELSE 0 END;
+                """);
+        }
+
+        Execute(connection, tx, """
+            CREATE TABLE IF NOT EXISTS operator_log (
+                log_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                at            INTEGER NOT NULL,
+                tool          TEXT    NOT NULL,
+                who           TEXT    NOT NULL,
+                origin        TEXT    NOT NULL DEFAULT '',
+                actor_user_id INTEGER,
+                action        TEXT    NOT NULL,
+                target        TEXT    NOT NULL,
+                detail        TEXT    NOT NULL DEFAULT '',
+                outcome       TEXT    NOT NULL,
+                why           TEXT    NOT NULL DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS operator_log_by_time ON operator_log (at);
+            CREATE INDEX IF NOT EXISTS operator_log_by_tool ON operator_log (tool, at);
+            CREATE TABLE IF NOT EXISTS server_state (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS operator_pins (
+                user_id                 INTEGER PRIMARY KEY,
+                key_hash                BLOB    NOT NULL,
+                pinned_at               INTEGER NOT NULL,
+                pinned_via              TEXT    NOT NULL,
+                pinned_by               TEXT    NOT NULL,
+                mismatch_announced_hash BLOB
+            );
+            """);
+
+        // When the account's current keys were registered: unknown (null) for keys registered before this, since nothing
+        // recorded it. Kept by triggers rather than by RegisterUser, so it stays true when an older server (which doesn't know
+        // the column) registers keys on this database: a new account's keys were registered when it was made, and keys that
+        // change were registered when the account was updated.
+        if (!HasColumn(connection, tx, "users", "keys_registered_at")) {
+            Execute(connection, tx, "ALTER TABLE users ADD COLUMN keys_registered_at INTEGER;");
+        }
+
+        Execute(connection, tx, """
+            CREATE TRIGGER IF NOT EXISTS users_keys_registered_on_insert AFTER INSERT ON users
+            WHEN new.keys_registered_at IS NULL
+            BEGIN
+                UPDATE users SET keys_registered_at = new.created_at WHERE user_id = new.user_id;
+            END;
+            CREATE TRIGGER IF NOT EXISTS users_keys_registered_on_change AFTER UPDATE OF signing_key, agreement_key ON users
+            WHEN old.signing_key IS NOT new.signing_key OR old.agreement_key IS NOT new.agreement_key
+            BEGIN
+                UPDATE users SET keys_registered_at = new.updated_at WHERE user_id = new.user_id;
+            END;
+            """);
     }
 
     private static bool HasColumn(SqliteConnection connection, SqliteTransaction tx, string table, string column) {
@@ -1034,12 +1214,20 @@ public sealed class Database {
     /// The operator's <c>--allow-key-login</c>: turns key login on again for a user whose "Sign out everywhere else" turned it
     /// off, as registering again would (but without revoking any login).
     /// </summary>
+    /// <param name="audit">Its entry in the operators' audit trail, written in the same transaction if it was off.</param>
     /// <returns>Whether it was off.</returns>
-    public bool AllowKeyLogin(long userId) {
+    public bool AllowKeyLogin(long userId, OperatorLogRow? audit = null) {
         using var connection = this.Open();
-        return Execute(connection, null,
+        using var tx = connection.BeginTransaction();
+        var changed = Execute(connection, tx,
             "UPDATE users SET key_login_off = 0, signed_out_by = NULL, signed_out_by_added = 0, signed_out_at = 0 WHERE user_id = $id AND key_login_off <> 0;",
             ("$id", userId)) == 1;
+        if (changed && audit != null) {
+            InsertOperatorLog(connection, tx, audit);
+        }
+
+        tx.Commit();
+        return changed;
     }
 
     // ================================================================ channels
@@ -1752,38 +1940,93 @@ public sealed class Database {
     /// <summary>
     /// Bans a character (by user ID, registered or not) or an address or prefix (as <see cref="Hosting.ClientAddresses.BanPrefix"/>
     /// writes it), from <paramref name="now"/> until <paramref name="expiresAt"/> (null: until lifted). A ban the same subject
-    /// has already is lifted (it becomes history), in the same transaction.
+    /// has already is lifted (it becomes history, marked as replaced by this one: <see cref="BanRow.ReplacedBy"/>), in the same
+    /// transaction. Automatic blocks are made with <see cref="AddAutomaticBlock"/>, which never replaces anything.
     /// </summary>
     /// <param name="replaced">How many bans in force it replaced (0 or 1).</param>
-    public BanRow AddBan(long? userId, string? address, string reason, long? expiresAt, bool automatic, long now, out int replaced) {
+    /// <param name="via">Which tool made it (see <see cref="BanTools"/>); by default "automatic" for an automatic one, and not recorded otherwise.</param>
+    /// <param name="by">Who made it, as that tool knows them; null if not known.</param>
+    /// <param name="audit">Its entry in the operators' audit trail, given how many bans it replaced, written in the same transaction.</param>
+    public BanRow AddBan(long? userId, string? address, string reason, long? expiresAt, bool automatic, long now, out int replaced, string? via = null,
+        string? by = null, Func<int, OperatorLogRow>? audit = null) {
         if ((userId == null) == (address == null)) {
             throw new ArgumentException("A ban is on a character or an address, not both or neither.");
         }
 
+        via ??= automatic ? BanTools.Automatic : null;
         using var connection = this.Open();
         using var tx = connection.BeginTransaction();
-        replaced = LiftBans(connection, tx, userId, address, now);
-        var id = Convert.ToInt64(Scalar(connection, tx, """
-            INSERT INTO bans (user_id, address, reason, created_at, expires_at, lifted_at, automatic)
-            VALUES ($user, $address, $reason, $now, $expires, NULL, $automatic) RETURNING ban_id;
-            """, ("$user", (object?) userId ?? DBNull.Value), ("$address", (object?) address ?? DBNull.Value), ("$reason", reason), ("$now", now),
-            ("$expires", (object?) expiresAt ?? DBNull.Value), ("$automatic", automatic ? 1 : 0)));
+        var id = InsertBan(connection, tx, userId, address, reason, expiresAt, automatic, now, via, by);
+        // The ban it replaces is lifted by the same tool and person, and says it was replaced, and by which ban, so that it is
+        // told as a replacement (once, with the new ban), not as a lift of its own.
+        replaced = Execute(connection, tx, $"""
+            UPDATE bans SET lifted_at = $now, lifted_via = $via, lifted_by = $by, lifted_announced = 0, replaced_by = $id
+            WHERE {(userId != null ? "user_id = $subject" : "address = $subject")} AND ban_id <> $id AND lifted_at IS NULL
+                AND (expires_at IS NULL OR expires_at > $now);
+            """, ("$subject", (object?) userId ?? address!), ("$now", now), ("$via", (object?) via ?? DBNull.Value), ("$by", (object?) by ?? DBNull.Value),
+            ("$id", id));
+        if (audit != null) {
+            InsertOperatorLog(connection, tx, audit(replaced));
+        }
+
         tx.Commit();
-        return new BanRow(id, userId, address, reason, now, expiresAt, null, automatic);
+        return new BanRow(id, userId, address, reason, now, expiresAt, null, automatic) { MadeVia = via, MadeBy = by };
+    }
+
+    /// <summary>
+    /// Blocks an address automatically (see <see cref="AbuseOptions.AutoBlockMinutes"/>) until <paramref name="expiresAt"/>, unless
+    /// a ban in force already covers it: checked in the same transaction (an immediate one, so no ban made meanwhile, by this
+    /// server or another process, slips between the check and the block). It never lifts or replaces any ban.
+    /// </summary>
+    /// <param name="limitKey">The address refused, as <see cref="Hosting.ClientAddresses.LimitKey"/> gives it.</param>
+    /// <param name="prefix">What to block, as <see cref="Hosting.ClientAddresses.BanPrefix"/> writes it.</param>
+    /// <returns>The block, or null if a ban covered the address already.</returns>
+    public BanRow? AddAutomaticBlock(string limitKey, string prefix, long expiresAt, long now) {
+        using var connection = this.Open();
+        using var tx = connection.BeginTransaction();
+        var covering = Query(connection, tx, "SELECT * FROM bans WHERE address IS NOT NULL AND lifted_at IS NULL AND (expires_at IS NULL OR expires_at > $now);",
+            ReadBan, ("$now", now));
+        if (covering.Any(ban => Hosting.ClientAddresses.Covers(ban.Address!, limitKey) || ban.Address == prefix)) {
+            return null;
+        }
+
+        var id = InsertBan(connection, tx, null, prefix, "", expiresAt, automatic: true, now, BanTools.Automatic, null);
+        tx.Commit();
+        return new BanRow(id, null, prefix, "", now, expiresAt, null, true) { MadeVia = BanTools.Automatic };
+    }
+
+    private static long InsertBan(SqliteConnection connection, SqliteTransaction tx, long? userId, string? address, string reason, long? expiresAt, bool automatic,
+        long now, string? via, string? by) {
+        return Convert.ToInt64(Scalar(connection, tx, """
+            INSERT INTO bans (user_id, address, reason, created_at, expires_at, lifted_at, automatic, made_via, made_by, made_announced, lifted_announced)
+            VALUES ($user, $address, $reason, $now, $expires, NULL, $automatic, $via, $by, 0, 0) RETURNING ban_id;
+            """, ("$user", (object?) userId ?? DBNull.Value), ("$address", (object?) address ?? DBNull.Value), ("$reason", reason), ("$now", now),
+            ("$expires", (object?) expiresAt ?? DBNull.Value), ("$automatic", automatic ? 1 : 0), ("$via", (object?) via ?? DBNull.Value),
+            ("$by", (object?) by ?? DBNull.Value)));
     }
 
     /// <summary>Lifts the bans in force on a character or an address (exactly as written), as of <paramref name="now"/>.</summary>
+    /// <param name="via">Which tool lifted them (see <see cref="BanTools"/>); null if not known.</param>
+    /// <param name="by">Who, as that tool knows them; null if not known.</param>
+    /// <param name="audit">Its entry in the operators' audit trail, written in the same transaction if anything was lifted.</param>
     /// <returns>How many were lifted.</returns>
-    public int LiftBans(long? userId, string? address, long now) {
+    public int LiftBans(long? userId, string? address, long now, string? via = null, string? by = null, OperatorLogRow? audit = null) {
         using var connection = this.Open();
-        return LiftBans(connection, null, userId, address, now);
+        using var tx = connection.BeginTransaction();
+        var lifted = LiftBans(connection, tx, userId, address, now, via, by);
+        if (lifted > 0 && audit != null) {
+            InsertOperatorLog(connection, tx, audit);
+        }
+
+        tx.Commit();
+        return lifted;
     }
 
-    private static int LiftBans(SqliteConnection connection, SqliteTransaction? tx, long? userId, string? address, long now) {
+    private static int LiftBans(SqliteConnection connection, SqliteTransaction? tx, long? userId, string? address, long now, string? via, string? by) {
         return Execute(connection, tx, $"""
-            UPDATE bans SET lifted_at = $now
+            UPDATE bans SET lifted_at = $now, lifted_via = $via, lifted_by = $by, lifted_announced = 0
             WHERE {(userId != null ? "user_id = $subject" : "address = $subject")} AND lifted_at IS NULL AND (expires_at IS NULL OR expires_at > $now);
-            """, ("$subject", (object?) userId ?? address!), ("$now", now));
+            """, ("$subject", (object?) userId ?? address!), ("$now", now), ("$via", (object?) via ?? DBNull.Value), ("$by", (object?) by ?? DBNull.Value));
     }
 
     /// <summary>The bans in force at <paramref name="now"/>, oldest first.</summary>
@@ -1843,17 +2086,170 @@ public sealed class Database {
         return Execute(connection, null, "DELETE FROM abuse_flags WHERE last_refused_at < $before;", ("$before", refusedBefore));
     }
 
+    // ================================================================ the operator tools (schema 12; see "Operator actions" in docs/design.md)
+
+    /// <summary>
+    /// Adds an entry to the operators' audit trail (its <see cref="OperatorLogRow.LogId"/> is ignored): for an attempt that changed
+    /// nothing. A change writes its entry in its own transaction (see <see cref="AddBan"/>'s <c>audit</c>).
+    /// </summary>
+    public void AddOperatorLog(OperatorLogRow row) {
+        using var connection = this.Open();
+        InsertOperatorLog(connection, null, row);
+    }
+
+    private static void InsertOperatorLog(SqliteConnection connection, SqliteTransaction? tx, OperatorLogRow row) {
+        Execute(connection, tx, """
+            INSERT INTO operator_log (at, tool, who, origin, actor_user_id, action, target, detail, outcome, why)
+            VALUES ($at, $tool, $who, $origin, $actor, $action, $target, $detail, $outcome, $why);
+            """, ("$at", row.At), ("$tool", row.Tool), ("$who", row.Who), ("$origin", row.From), ("$actor", (object?) row.ActorUserId ?? DBNull.Value),
+            ("$action", row.Action), ("$target", row.Target), ("$detail", row.Detail), ("$outcome", row.Done ? "done" : "refused"), ("$why", row.Why));
+    }
+
+    /// <summary>The audit trail's entries at or after <paramref name="since"/>, newest first, at most <paramref name="limit"/>.</summary>
+    public List<OperatorLogRow> GetOperatorLog(long since, int limit) {
+        using var connection = this.Open();
+        return Query(connection, null, "SELECT * FROM operator_log WHERE at >= $since ORDER BY at DESC, log_id DESC LIMIT $limit;", reader => new OperatorLogRow(
+                reader.GetInt64(reader.GetOrdinal("log_id")),
+                reader.GetInt64(reader.GetOrdinal("at")),
+                reader.GetString(reader.GetOrdinal("tool")),
+                reader.GetString(reader.GetOrdinal("who")),
+                reader.GetString(reader.GetOrdinal("origin")),
+                reader.IsDBNull(reader.GetOrdinal("actor_user_id")) ? null : reader.GetInt64(reader.GetOrdinal("actor_user_id")),
+                reader.GetString(reader.GetOrdinal("action")),
+                reader.GetString(reader.GetOrdinal("target")),
+                reader.GetString(reader.GetOrdinal("detail")),
+                reader.GetString(reader.GetOrdinal("outcome")) == "done",
+                reader.GetString(reader.GetOrdinal("why"))),
+            ("$since", since), ("$limit", limit));
+    }
+
+    /// <summary>
+    /// How many bans one tool made since <paramref name="since"/>, as the audit trail has them (done, not refused), by one
+    /// operator character if <paramref name="actorUserId"/> is given.
+    /// </summary>
+    public int CountOperatorBans(string tool, long since, long? actorUserId) {
+        using var connection = this.Open();
+        return Convert.ToInt32(Scalar(connection, null, $"""
+            SELECT COUNT(*) FROM operator_log WHERE tool = $tool AND at >= $since AND action = 'ban' AND outcome = 'done'
+            {(actorUserId != null ? "AND actor_user_id = $actor" : "")};
+            """, ("$tool", tool), ("$since", since), ("$actor", (object?) actorUserId ?? DBNull.Value)));
+    }
+
+    /// <summary>Deletes the audit trail's entries from before <paramref name="before"/>.</summary>
+    /// <returns>How many went.</returns>
+    public int SweepOperatorLog(long before) {
+        using var connection = this.Open();
+        return Execute(connection, null, "DELETE FROM operator_log WHERE at < $before;", ("$before", before));
+    }
+
+    /// <summary>The operator pins, by user ID.</summary>
+    public List<OperatorPinRow> GetOperatorPins() {
+        using var connection = this.Open();
+        return Query(connection, null, "SELECT * FROM operator_pins ORDER BY user_id;", ReadPin);
+    }
+
+    public OperatorPinRow? GetOperatorPin(long userId) {
+        using var connection = this.Open();
+        return Query(connection, null, "SELECT * FROM operator_pins WHERE user_id = $id;", ReadPin, ("$id", userId)).FirstOrDefault();
+    }
+
+    /// <summary>
+    /// Pins a character's current keys as an operator's: only if its account's keys, read in the same transaction, hash to
+    /// <paramref name="expectedKeyHash"/> (the keys the operator was shown, or whose fingerprint they typed), so keys that
+    /// change meanwhile are never pinned unseen. Replaces a pin it had; never pins anything by itself.
+    /// </summary>
+    /// <param name="previous">The pin it had, if any.</param>
+    /// <param name="audit">Its entry in the operators' audit trail, given the pin it replaced, written in the same transaction if it pinned.</param>
+    public PinResult PinOperator(long userId, byte[] expectedKeyHash, string via, string by, long now, out OperatorPinRow? previous,
+        Func<OperatorPinRow?, OperatorLogRow>? audit = null) {
+        using var connection = this.Open();
+        using var tx = connection.BeginTransaction();
+        previous = Query(connection, tx, "SELECT * FROM operator_pins WHERE user_id = $id;", ReadPin, ("$id", userId)).FirstOrDefault();
+        var user = QueryUsers(connection, tx, "SELECT * FROM users WHERE user_id = $id;", ("$id", userId)).FirstOrDefault();
+        if (user == null) {
+            return PinResult.NotRegistered;
+        }
+
+        var current = Core.Crypto.IdentityKeys.KeyHash(user.SigningKey, user.AgreementKey);
+        if (!CryptographicOperations.FixedTimeEquals(current, expectedKeyHash)) {
+            return PinResult.KeysDiffer;
+        }
+
+        if (previous != null && CryptographicOperations.FixedTimeEquals(previous.KeyHash, current)) {
+            return PinResult.AlreadyPinned;
+        }
+
+        Execute(connection, tx, """
+            INSERT INTO operator_pins (user_id, key_hash, pinned_at, pinned_via, pinned_by, mismatch_announced_hash)
+            VALUES ($id, $hash, $now, $via, $by, NULL)
+            ON CONFLICT (user_id) DO UPDATE SET key_hash = excluded.key_hash, pinned_at = excluded.pinned_at, pinned_via = excluded.pinned_via,
+                pinned_by = excluded.pinned_by, mismatch_announced_hash = NULL;
+            """, ("$id", userId), ("$hash", current), ("$now", now), ("$via", via), ("$by", by));
+        if (audit != null) {
+            InsertOperatorLog(connection, tx, audit(previous));
+        }
+
+        tx.Commit();
+        return PinResult.Pinned;
+    }
+
+    /// <summary>Deletes the pins of every character not in <paramref name="listed"/> (no longer listed as one that may be an operator).</summary>
+    /// <returns>The user IDs whose pins went.</returns>
+    public List<long> DeleteOperatorPinsExcept(IReadOnlyCollection<long> listed) {
+        using var connection = this.Open();
+        using var tx = connection.BeginTransaction();
+        var gone = Query(connection, tx, "SELECT user_id FROM operator_pins ORDER BY user_id;", reader => reader.GetInt64(0)).Where(id => !listed.Contains(id)).ToList();
+        foreach (var id in gone) {
+            Execute(connection, tx, "DELETE FROM operator_pins WHERE user_id = $id;", ("$id", id));
+        }
+
+        tx.Commit();
+        return gone;
+    }
+
+    /// <summary>A value the server keeps for itself across restarts (when the daily summary was last posted, say), or null.</summary>
+    public string? GetServerState(string key) {
+        using var connection = this.Open();
+        return Scalar(connection, null, "SELECT value FROM server_state WHERE key = $key;", ("$key", key)) as string;
+    }
+
+    public void SetServerState(string key, string value) {
+        using var connection = this.Open();
+        Execute(connection, null, "INSERT INTO server_state (key, value) VALUES ($key, $value) ON CONFLICT (key) DO UPDATE SET value = excluded.value;",
+            ("$key", key), ("$value", value));
+    }
+
+    private static OperatorPinRow ReadPin(SqliteDataReader reader) {
+        return new OperatorPinRow(
+            reader.GetInt64(reader.GetOrdinal("user_id")),
+            (byte[]) reader["key_hash"],
+            reader.GetInt64(reader.GetOrdinal("pinned_at")),
+            reader.GetString(reader.GetOrdinal("pinned_via")),
+            reader.GetString(reader.GetOrdinal("pinned_by"))) {
+            MismatchAnnouncedHash = reader.IsDBNull(reader.GetOrdinal("mismatch_announced_hash")) ? null : (byte[]) reader["mismatch_announced_hash"],
+        };
+    }
+
     private static BanRow ReadBan(SqliteDataReader reader) {
         long? Nullable(string column) => reader.IsDBNull(reader.GetOrdinal(column)) ? null : reader.GetInt64(reader.GetOrdinal(column));
+        string? Text(string column) => reader.IsDBNull(reader.GetOrdinal(column)) ? null : reader.GetString(reader.GetOrdinal(column));
         return new BanRow(
             reader.GetInt64(reader.GetOrdinal("ban_id")),
             Nullable("user_id"),
-            reader.IsDBNull(reader.GetOrdinal("address")) ? null : reader.GetString(reader.GetOrdinal("address")),
+            Text("address"),
             reader.GetString(reader.GetOrdinal("reason")),
             reader.GetInt64(reader.GetOrdinal("created_at")),
             Nullable("expires_at"),
             Nullable("lifted_at"),
-            reader.GetInt64(reader.GetOrdinal("automatic")) != 0);
+            reader.GetInt64(reader.GetOrdinal("automatic")) != 0) {
+            MadeVia = Text("made_via"),
+            MadeBy = Text("made_by"),
+            LiftedVia = Text("lifted_via"),
+            LiftedBy = Text("lifted_by"),
+            MadeAnnounced = reader.GetInt64(reader.GetOrdinal("made_announced")) != 0,
+            LiftedAnnounced = reader.GetInt64(reader.GetOrdinal("lifted_announced")) != 0,
+            ReplacedBy = Nullable("replaced_by"),
+        };
     }
 
     private static FlagRow ReadFlag(SqliteDataReader reader) {
@@ -1977,7 +2373,9 @@ public sealed class Database {
             (byte[]) reader["agreement_key"],
             (byte[]) reader["binding_signature"],
             (uint) reader.GetInt64(reader.GetOrdinal("key_version")),
-            reader.GetInt64(reader.GetOrdinal("is_debug")) != 0);
+            reader.GetInt64(reader.GetOrdinal("is_debug")) != 0) {
+            KeysRegisteredAt = reader.IsDBNull(reader.GetOrdinal("keys_registered_at")) ? null : reader.GetInt64(reader.GetOrdinal("keys_registered_at")),
+        };
     }
 
     private static ChannelRow ReadChannel(SqliteDataReader reader) {

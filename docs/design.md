@@ -49,7 +49,8 @@ channels, invites, ranks, automatic rekeys, encrypted messages, the signed
 membership log, online indicators, blocking, channel windows (pop-out chat),
 message catch-up (what was sent while you were away), an opt-in chat log on the
 player's computer, local chat with friends near you (`/lgl`), flags for abuse
-and the operator's bans, and debug tooling. Part of the ChatTwo integration is
+and the operator's bans (with an audit trail, and one layer of rules that the
+planned web page and plugin panel will share), and debug tooling. Part of the ChatTwo integration is
 built: sticky mode through ChatTwo's input (with its typed-text check) and
 **Invite to LookingGlass** in ChatTwo's right-click menu. Channel names and
 colours for ChatTwo's own tabs and filters aren't, as they need a change on
@@ -4274,9 +4275,11 @@ one transaction for every multi-step change.
   gives it the channel's key, unless nobody else holds it.
 - **Storage.** SQLite in WAL mode. Conditional updates (on epoch and rank)
   guard against races. The schema is upgraded in place at startup; the
-  current schema version is 11 (key login turned off by "Sign out everywhere
-  else", and device IDs; 10 brought bans and flags, 9 stored messages for
-  catch-up).
+  current schema version is 12 (the operator tools: who made each ban, the
+  audit trail, operator pins, and when each account's keys were registered;
+  11 brought key login turned off by "Sign out everywhere else", and device
+  IDs; 10 bans and flags; 9 stored messages for catch-up). An older server
+  opens a newer database and ignores what it doesn't know.
 - **Stored messages.** Kept as relayed, numbered per channel, swept at startup
   and every ten minutes (see [Message catch-up](#message-catch-up)).
 - **Memory.** Nothing kept per address, user or name grows without bound.
@@ -4396,12 +4399,13 @@ uses it is in [server.md](server.md#flags-and-bans).
 
 - **No automatic permanent ban.** A ban is made from the server's command
   line (the server runs as a service, and has no admin interface yet; a web
-  page over Tailscale and a panel in the plugin are planned, see
+  page over Tailscale and a panel in the plugin are planned, on the same
+  rules: see
   [Operator actions, one layer for every tool](#operator-actions-one-layer-for-every-tool)), safely
   while the service runs, as `--backup` is: `--ban <name@world | user ID |
   address or prefix> [--days N] [--reason "..."]`, `--unban <the same>`, and
-  `--bans`, which lists the bans in force, the flags, and the bans lifted or
-  ended lately.
+  `--bans`, which lists the bans in force (and who made each), the flags, and
+  the bans lifted or ended lately; `--audit` lists what operators did.
 - **Kept in the database**, so bans survive restarts and backups (restoring
   an older backup brings back its bans, and loses later ones).
 - **Picked up while running.** The server reads the bans every 30 seconds
@@ -4415,7 +4419,9 @@ uses it is in [server.md](server.md#flags-and-bans).
   network (a /16 at the widest), or an IPv6 prefix from a /64 (an address
   alone stands for its /64, as one client usually has a whole /64) to a /32.
   Never the server's own or its proxy's address, nor a prefix holding one,
-  unless the operator adds `--force`: that would shut out every player.
+  unless the operator adds `--force`: that would shut out every player. Nor
+  a character listed as an operator without `--force` (see
+  [Operator actions](#operator-actions-one-layer-for-every-tool)).
 - **An automatic temporary block**, on by default (the owner, 2026-10-08: no
   player is refused that often): an address refused 1,000 times within the
   window is blocked for 15 minutes (0 turns it off), to blunt a flood until
@@ -4450,6 +4456,89 @@ uses it is in [server.md](server.md#flags-and-bans).
   bans are the operator's matter.
 - **History.** A ban lifted or ended is kept 90 days (listed by `--bans`),
   then deleted.
+
+### Operator actions, one layer for every tool
+
+Built on 2026-10-10, as the first step of the operator tools plan
+([operator-tools-plan.md](operator-tools-plan.md), approved by the owner the
+same day). Banning needs SSH and a command. The owner asked (2026-10-10) for a
+web page, a panel in the plugin, and Discord alerts, designed together (still
+planned: see [Planned features](#planned-features)). All three, and the
+command line, go through one server service, `OperatorActions`: list the
+flags and the bans, ban, lift a ban, list the plugin's operator characters
+and pin their keys, and let a key sign in again, with the command line's
+rules (a character by user ID, a positive number, or name@world, or an
+address or prefix within today's widths; never the server's own or its proxy's address without
+`--force`; 1 to 36,500 days or until lifted; a reason of one line, at most
+300 characters). The command line moved onto it first, with its words as they
+were. One policy table (`OperatorPolicy`, tested on its own) says what each
+tool may do:
+
+| | Command line | Web page | Plugin |
+| --- | --- | --- | --- |
+| See flags and bans | Full addresses | Full addresses | Addresses shortened |
+| Ban or lift a character | Yes | Yes | Yes |
+| Ban or lift an address or prefix | Yes | Yes | No |
+| `--force` | Yes | Yes (a tick box) | No |
+| Ban a character listed as an operator | Only with `--force` | No | No |
+| Bans an hour | No limit | 30 | 10 per operator character |
+| Pin or restore an operator's keys | Yes (`--operator-pin`, the fingerprint typed) | Yes (a confirmation page) | No |
+| Let a key sign in again | Yes (`--allow-key-login`) | No (not at first) | No |
+| Who is recorded | The Unix user (`SUDO_USER`) | The Tailscale login | The operator character |
+
+- **Applied at once** when made inside the server (the web page and the
+  plugin, when they come): the service rereads the bans and closes the
+  connections they cover. The command line is another process, so its bans
+  apply within `Abuse:BanCheckSeconds`, as before.
+- **Recorded.** Each ban and lift records which tool made or lifted it, and
+  who; `--bans` says so ("made on the command line by alice"; bans from
+  before say "made on the command line", and nobody, as nobody recorded it).
+  Every attempt to change something (a ban, a lift, a pin, a key login
+  allowed again), refused ones too, goes into an audit trail: when, which
+  tool, who, from where, what, and the outcome, with why if refused. A change
+  and its entry are one transaction. Lists aren't recorded, nor command lines
+  that couldn't be read (exit code 2). The trail is kept 365 days, swept with
+  old bans; `--audit` lists it. The Unix user is what sudo says: a record, not
+  proof (whoever runs the command could set it).
+- **Text from outside is kept and shown visibly.** What an operator types
+  (whom, a fingerprint, a reason) is cleaned once, before anything uses it:
+  control, format and separator characters are shown as escapes (`\u001B`),
+  and it is cut (whom at 200 characters). Everything the command line
+  prints goes through the same, so names and reasons from the database can't
+  carry a terminal's escape sequences or forge a line either.
+- **A replaced ban says so** (`bans.replaced_by`), lifted by the new ban's
+  tool and maker, so it can be told once, with the new ban. An automatic
+  block checks for a covering ban in the transaction that makes it, and never
+  replaces one.
+- **The latest read of the bans wins**: the regular check and a ban applied
+  at once may read the database at the same time; an earlier read that
+  finishes later never replaces the newer list.
+- **Key-pinned operators, the server's half** (owner, 2026-10-10; see
+  [An operator panel in the plugin](#an-operator-panel-in-the-plugin)):
+  `Operators:Characters` lists, by user ID, the characters that may ever be
+  operators (the server won't start with anything else there); the
+  `operator_pins` table holds each one's pinned key hash (the full
+  `IdentityKeys.KeyHash`, shown as the fingerprint), set only by
+  `--operator-pin <whom> --fingerprint "..."` (pinned only if the fingerprint
+  typed is the current keys'), and later by the web page, never
+  automatically. A listed character is an operator only while its account's
+  current keys hash to the pin, compared in full; registering again with new
+  keys drops it, and nothing re-pins by itself. The pins of characters no
+  longer listed are deleted at startup, and how each listed one stands is
+  logged; `--operators` lists them. Nothing uses operator status yet: the
+  plugin's panel is the plan's last step.
+- **Schema 12.** `bans` gains `made_via`, `made_by`, `lifted_via`,
+  `lifted_by`, `replaced_by`, `made_announced` and `lifted_announced` (so the planned
+  alerts post each ban once, whichever process made it; the upgrade marks
+  bans from before as made on the command line or automatically, and as
+  posted, with the lifts already made); new tables `operator_log` (the audit
+  trail), `server_state` (the alerts' bookkeeping) and `operator_pins`; and
+  `users.keys_registered_at`, when the account's current keys were
+  registered, unknown (null) for keys registered before the upgrade. It is
+  kept by triggers in the database rather than by the server's code, so it
+  stays true when an older server registers keys on it. An older server
+  opens a schema 12 database and ignores what it doesn't know (checked with
+  the schema 11 server's own commands).
 
 ### Chosen defaults (confirmed by the owner, 2026-10-08)
 
@@ -4514,7 +4603,10 @@ How to build, configure, deploy, back up and restore a server is in
   its rules, key login, recovery, identity resets, server moves, secrets
   files, limits, message catch-up (storage, sweeps, who may fetch what, paging,
   and a server that repeats, reorders or forges what it sends back), flags and
-  bans (the thresholds, the commands, and what a ban refuses),
+  bans (the thresholds, the commands, and what a ban refuses), operator
+  actions (the policy table for every tool against every kind of target, the
+  audit trail and its sweep, operator pins, a ban applying at once, schema
+  12's upgrade on a copy of a filled database, and an older server's writes),
   end-to-end flows, local chat (who gets it, what the server checks and what
   a receiver shows), keys' maximum age (with a moved clock: a week is too long
   to wait in game), and malicious-server and malicious-member suites that
@@ -4607,49 +4699,12 @@ or GagSpeak is gone, the message is sent as typed (it is cosmetic), with a
 warning in the log that never holds the text. The same words in simple and
 advanced mode.
 
-### Operator actions, one layer for every tool
-
-Status: planned, not started; the plan awaits the owner's approval of its
-wording and appearance (2026-10-10; its open choices were decided the same
-day, with key-pinned operators). Mockups, the security analysis, the
-settings, the build order and the tests are in
-[operator-tools-plan.md](operator-tools-plan.md).
-
-Banning needs SSH and a command today. The owner asked (2026-10-10) for a web
-page, a panel in the plugin, and Discord alerts, designed together. All
-three, and the command line, go through one server service,
-`OperatorActions`: list the flags, list the bans, ban, lift a ban (and, for
-the plugin's operators, pin or restore their keys: see
-[An operator panel in the plugin](#an-operator-panel-in-the-plugin)), with the
-command line's rules (a character by user ID or name@world, or an address or
-prefix within today's widths; never the server's own or its proxy's address
-without `--force`; days; a reason of one line). One policy table says what
-each tool may do:
-
-| | Command line | Web page | Plugin |
-| --- | --- | --- | --- |
-| See flags and bans | Full addresses | Full addresses | Addresses shortened |
-| Ban or lift a character | Yes | Yes | Yes |
-| Ban or lift an address or prefix | Yes | Yes | No |
-| `--force` | Yes | Yes (a tick box) | No |
-| Ban a character listed as an operator | Only with `--force` | No | No |
-| Bans an hour | No limit | 30 | 10 per operator character |
-| Pin or restore an operator's keys | Yes (`--operator-pin`, the fingerprint typed) | Yes (a confirmation page) | No |
-
-- **Applied at once** when made inside the server (web page, plugin); the
-  command line's within `Abuse:BanCheckSeconds`, as now.
-- **Recorded:** each ban says which tool made or lifted it, and who (the Unix
-  user from `SUDO_USER`, the Tailscale login, or the operator character), and
-  every attempt, refused ones too, goes into an audit trail kept 365 days,
-  shown on the web page and by a new `--audit`. Schema 12 (new columns on
-  `bans`, an `operator_log` table, a `server_state` table for the alerts'
-  bookkeeping, an `operator_pins` table, and `users.keys_registered_at`); an
-  older server ignores them.
-
 ### An operator web page, over Tailscale only
 
-Status: planned, not started (owner, 2026-10-10); see
-[operator-tools-plan.md](operator-tools-plan.md#the-web-page).
+Status: planned, approved (owner, 2026-10-10), not started; step 3 of
+[operator-tools-plan.md](operator-tools-plan.md#the-web-page). It will go
+through [Operator actions](#operator-actions-one-layer-for-every-tool), which
+is built.
 
 So a ban can be made without logging in to the game. The owner's decision:
 **Tailscale only**, never on the public internet.
@@ -4686,8 +4741,12 @@ So a ban can be made without logging in to the game. The owner's decision:
 
 ### An operator panel in the plugin
 
-Status: planned, not started (owner, 2026-10-10); see
+Status: planned, approved (owner, 2026-10-10); step 4 of
 [operator-tools-plan.md](operator-tools-plan.md#the-plugins-operator-panel).
+The server's half of key-pinned operators is built (the list, the pins,
+`--operators` and `--operator-pin`: see
+[Operator actions](#operator-actions-one-layer-for-every-tool)); the
+protocol, the server's operator requests and the plugin's panel aren't.
 
 - **Key-pinned operators** (owner, 2026-10-10). Registering a character needs
   only control of its Lodestone profile, so someone who took over the
@@ -4746,7 +4805,9 @@ Status: planned, not started (owner, 2026-10-10); see
 Status: planned, not started (owner, 2026-10-08), for when the server is
 public and the plugin has a Discord with an admin channel; its open questions
 answered by the owner on 2026-10-10 (below), and example messages in
-[operator-tools-plan.md](operator-tools-plan.md#discord-alerts). Flags and automatic
+[operator-tools-plan.md](operator-tools-plan.md#discord-alerts) (step 2). The
+database's side is ready (schema 12: which bans and lifts were posted, and the
+server's bookkeeping). Flags and automatic
 blocks (see [Spotting abuse, and banning](#spotting-abuse-and-banning)) today
 show only in the log and in `--bans`, so the operator has to remember to look.
 
@@ -5201,4 +5262,6 @@ The owner's decisions, and why.
   The four smaller choices are answered (2026-10-10): IPv6 shortened to a
   /40; the plugin may not lift automatic address blocks; the panel is a
   section in Settings; the daily summary at 09:00 UTC by default (see
-  Decisions).
+  Decisions). Answered (2026-10-10): the owner approved the plan; it is built
+  in steps, the first (operator actions, schema 12, `--audit`,
+  `--operators`, `--operator-pin`) on 2026-10-10.

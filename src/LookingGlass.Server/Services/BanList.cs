@@ -13,9 +13,14 @@ namespace LookingGlass.Server.Services;
 public sealed class BanList(Database db, IOptions<ServerOptions> options, TimeProvider? time = null) {
     private readonly TimeProvider _time = time ?? TimeProvider.System;
     private readonly TimeSpan _checkEvery = TimeSpan.FromSeconds(Math.Clamp(options.Value.Abuse.BanCheckSeconds, 1, 60));
-    private volatile Snapshot? _snapshot;
+    private Snapshot? _snapshot;
     // Only one request reads the database when the list is due; the others go on with the list as it was.
     private int _reading;
+    // Numbers each read of the database, taken before it reads: a read that started earlier never replaces a later one's list.
+    private long _reads;
+
+    /// <summary>For tests: called after a refresh has read the bans and before it puts them in place.</summary>
+    internal Action? AfterRead { get; set; }
 
     /// <summary>The ban in force on a character (by user ID), if any.</summary>
     public BanRow? ForUser(long userId) {
@@ -34,23 +39,38 @@ public sealed class BanList(Database db, IOptions<ServerOptions> options, TimePr
         return snapshot.Addresses.FirstOrDefault(ban => ban.InForce(now) && ClientAddresses.Covers(ban.Address!, limitKey));
     }
 
-    /// <summary>Reads the bans from the database now.</summary>
+    /// <summary>
+    /// Reads the bans from the database now. Two at once (the regular check, and a ban made inside the server applying at
+    /// once) may finish in either order: the list read later is the one kept.
+    /// </summary>
     public void Refresh() {
+        var read = Interlocked.Increment(ref this._reads);
         var now = this._time.GetUtcNow();
         var bans = db.GetActiveBans(now.ToUnixTimeSeconds());
-        this._snapshot = new Snapshot(
+        this.AfterRead?.Invoke();
+        var fresh = new Snapshot(
             bans.Where(ban => ban.UserId != null).GroupBy(ban => ban.UserId!.Value).ToDictionary(group => group.Key, group => group.Last()),
             bans.Where(ban => ban.Address != null).ToList(),
-            now);
+            now, read);
+        while (true) {
+            var current = Volatile.Read(ref this._snapshot);
+            if (current != null && current.Read > read) {
+                return;
+            }
+
+            if (Interlocked.CompareExchange(ref this._snapshot, fresh, current) == current) {
+                return;
+            }
+        }
     }
 
     private long Now => this._time.GetUtcNow().ToUnixTimeSeconds();
 
     private Snapshot Current() {
-        var snapshot = this._snapshot;
+        var snapshot = Volatile.Read(ref this._snapshot);
         if (snapshot == null) {
             this.Refresh();
-            return this._snapshot!;
+            return Volatile.Read(ref this._snapshot)!;
         }
 
         if (this._time.GetUtcNow() - snapshot.ReadAt >= this._checkEvery && Interlocked.CompareExchange(ref this._reading, 1, 0) == 0) {
@@ -61,8 +81,9 @@ public sealed class BanList(Database db, IOptions<ServerOptions> options, TimePr
             }
         }
 
-        return this._snapshot!;
+        return Volatile.Read(ref this._snapshot)!;
     }
 
-    private sealed record Snapshot(Dictionary<long, BanRow> Users, List<BanRow> Addresses, DateTimeOffset ReadAt);
+    /// <param name="Read">Which read of the database it came from (see <see cref="_reads"/>).</param>
+    private sealed record Snapshot(Dictionary<long, BanRow> Users, List<BanRow> Addresses, DateTimeOffset ReadAt, long Read);
 }
