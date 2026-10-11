@@ -207,6 +207,11 @@ public static class AlertWords {
         "and check the public server still answers." + (more > 0 ? $" ({Count(more, "more request")} like it since the last of these alerts.)" : ""),
         AlertKind.Urgent, Public: true);
 
+    /// <summary>The operator web page didn't start (urgent; the chat server runs on without it). The reason is the server's own, escaped all the same.</summary>
+    public static Alert PageFailed(string why) => new(
+        $"**Urgent: the operator web page didn't start:** {Escape(why)} The chat server runs on without it. See `journalctl -u lookingglass`, fix " +
+        "it, and restart.", AlertKind.Urgent);
+
     /// <summary>The server started, and whether it last stopped cleanly (unknown the first time it keeps track).</summary>
     /// <param name="previousStart">When the run before this one started, if known.</param>
     /// <param name="previousCleanStop">When it stopped cleanly, if it did (a time at or after <paramref name="previousStart"/>).</param>

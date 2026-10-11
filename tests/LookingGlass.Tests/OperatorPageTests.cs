@@ -38,7 +38,7 @@ public sealed class OperatorPageTests {
         Assert.Equal(OperatorPage.ContentSecurityPolicy, answer.Header("Content-Security-Policy"));
         Assert.Equal("default-src 'none'; style-src 'self'; img-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'", answer.Header("Content-Security-Policy"));
         Assert.Equal("nosniff", answer.Header("X-Content-Type-Options"));
-        Assert.Equal("no-referrer", answer.Header("Referrer-Policy"));
+        Assert.Equal("same-origin", answer.Header("Referrer-Policy"));
         Assert.Equal("no-store", answer.Header("Cache-Control"));
     }
 
@@ -122,6 +122,79 @@ public sealed class OperatorPageTests {
         Assert.Equal(HttpStatusCode.Forbidden, (await page.GetAsync("/", funnel: true)).Status);
         await Task.Delay(500, Ct);
         Assert.Single(discord.Posts, message => message.Content.Contains("Tailscale Funnel"));
+    }
+
+    /// <summary>
+    /// A request from this machine itself is refused, even with a listed login: <c>tailscale serve</c> names such a request by
+    /// the machine's own Tailscale login (the owner's, on an untagged server), which any program on the machine could use. So is
+    /// one without an <c>X-Forwarded-For</c> address, which <c>tailscale serve</c> always sets.
+    /// </summary>
+    [Theory]
+    [InlineData("127.0.0.1", "it came from this machine itself")]
+    [InlineData("127.0.0.2", "it came from this machine itself")]
+    [InlineData("::1", "it came from this machine itself")]
+    [InlineData("::ffff:127.0.0.1", "it came from this machine itself")]
+    [InlineData("0.0.0.0", "it came from this machine itself")]
+    [InlineData(null, "it has no X-Forwarded-For address")]
+    [InlineData("", "it has no X-Forwarded-For address")]
+    [InlineData("not-an-address", "it has no X-Forwarded-For address")]
+    public async Task ARequestFromThisMachineIsRefused(string? forwardedFor, string logged) {
+        var logs = new CapturingLoggerProvider();
+        await using var page = new PageServer(logs: logs);
+        var answer = await page.GetAsync("/", forwardedFor: forwardedFor);
+        Assert.Equal(HttpStatusCode.Forbidden, answer.Status);
+        Assert.Contains(OperatorPage.NotAllowed, answer.Text);
+        AssertSecurityHeaders(answer);
+        Assert.Contains(logs.Entries, entry => entry.Message.StartsWith("Refused a request to the operator web page", StringComparison.Ordinal) && entry.Message.Contains(logged));
+    }
+
+    /// <summary>Every address of every network interface here (as a Tailscale address of this machine would be) is refused too.</summary>
+    [Fact]
+    public async Task ARequestFromAnyOfThisMachinesAddressesIsRefused() {
+        await using var page = new PageServer();
+        var addresses = System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces()
+            .SelectMany(nic => nic.GetIPProperties().UnicastAddresses).Select(unicast => unicast.Address).ToList();
+        Assert.NotEmpty(addresses);
+        foreach (var address in addresses) {
+            Assert.Equal(HttpStatusCode.Forbidden, (await page.GetAsync("/", forwardedFor: address.ToString())).Status);
+        }
+
+        Assert.Equal(HttpStatusCode.OK, (await page.GetAsync("/")).Status);
+    }
+
+    /// <summary>An address that comes after the start (Tailscale's, once it is up) is found: the addresses are read again when one isn't among them.</summary>
+    [Fact]
+    public void AnAddressThatComesLaterIsFound() {
+        var current = new List<IPAddress> { IPAddress.Parse("192.0.2.10") };
+        var local = new LocalAddresses(() => current.ToList());
+        Assert.True(local.IsLocal(IPAddress.Parse("192.0.2.10")));
+        Assert.True(local.IsLocal(IPAddress.Parse("::ffff:192.0.2.10")));
+        Assert.False(local.IsLocal(IPAddress.Parse("100.64.0.7")));
+        current.Add(IPAddress.Parse("100.64.0.7"));
+        current.Add(IPAddress.Parse("fd7a:115c:a1e0::7"));
+        Assert.True(local.IsLocal(IPAddress.Parse("100.64.0.7")));
+        Assert.True(local.IsLocal(IPAddress.Parse("fd7a:115c:a1e0::7")));
+        Assert.True(local.IsLocal(IPAddress.Loopback));
+        Assert.False(local.IsLocal(IPAddress.Parse(PageServer.TailnetAddress)));
+    }
+
+    /// <summary>A request that fails unexpectedly is answered by the page itself, with the security headers and nothing about the error.</summary>
+    [Fact]
+    public async Task AnUnexpectedFailureIsAnsweredWithTheHeaders() {
+        await using var page = new PageServer();
+        page.Server.ExpectedErrors = message => message.StartsWith("The operator web page failed to answer", StringComparison.Ordinal);
+        page.Server.Factory.Services.GetRequiredService<OperatorPage>().BeforeAnswerForTests = _ => throw new InvalidOperationException("Secret detail");
+        var answer = await page.GetAsync("/");
+        Assert.Equal(HttpStatusCode.InternalServerError, answer.Status);
+        AssertSecurityHeaders(answer);
+        Assert.DoesNotContain("Secret detail", answer.Html);
+        Assert.Contains("Something went wrong on the server", answer.Text);
+
+        // A form too long to read: 400, with the headers.
+        page.Server.Factory.Services.GetRequiredService<OperatorPage>().BeforeAnswerForTests = null;
+        var tooLong = await page.PostAsync("/ban", [new("whom", new string('x', 5000)), new("token", "x")]);
+        Assert.Equal(HttpStatusCode.BadRequest, tooLong.Status);
+        AssertSecurityHeaders(tooLong);
     }
 
     /// <summary>Refused requests are logged at most once a minute; the next line counts those in between.</summary>

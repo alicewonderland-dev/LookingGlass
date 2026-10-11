@@ -39,7 +39,8 @@ public sealed partial class PageServer : IAsyncDisposable {
     public ValueTask DisposeAsync() => this.Server.DisposeAsync();
 
     /// <summary>A request as <c>tailscale serve</c> passes it on; null leaves a header out.</summary>
-    public static HttpRequestMessage Request(HttpMethod method, string path, string? login = Login, string? host = Host, bool funnel = false) {
+    public static HttpRequestMessage Request(HttpMethod method, string path, string? login = Login, string? host = Host, bool funnel = false,
+        string? forwardedFor = TailnetAddress) {
         var request = new HttpRequestMessage(method, path);
         if (login != null) {
             request.Headers.TryAddWithoutValidation("Tailscale-User-Login", login);
@@ -50,7 +51,10 @@ public sealed partial class PageServer : IAsyncDisposable {
             request.Headers.TryAddWithoutValidation("X-Forwarded-Host", host);
         }
 
-        request.Headers.TryAddWithoutValidation("X-Forwarded-For", TailnetAddress);
+        if (forwardedFor != null) {
+            request.Headers.TryAddWithoutValidation("X-Forwarded-For", forwardedFor);
+        }
+
         request.Headers.TryAddWithoutValidation("X-Forwarded-Proto", "https");
         if (funnel) {
             request.Headers.TryAddWithoutValidation("Tailscale-Funnel-Request", "?1");
@@ -68,8 +72,8 @@ public sealed partial class PageServer : IAsyncDisposable {
         }
     }
 
-    public Task<Answer> GetAsync(string path, string? login = Login, string? host = Host, bool funnel = false) =>
-        this.SendAsync(Request(HttpMethod.Get, path, login, host, funnel));
+    public Task<Answer> GetAsync(string path, string? login = Login, string? host = Host, bool funnel = false, string? forwardedFor = TailnetAddress) =>
+        this.SendAsync(Request(HttpMethod.Get, path, login, host, funnel, forwardedFor));
 
     /// <summary>Sends a form as a browser on the page would: with the page's Origin (or another, or none, and <c>Sec-Fetch-Site</c> if given).</summary>
     public Task<Answer> PostAsync(string path, IEnumerable<KeyValuePair<string, string>> form, string? login = Login, string? origin = Origin, string? fetchSite = null,

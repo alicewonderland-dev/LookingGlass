@@ -149,6 +149,9 @@ public sealed class Harness : IAsyncDisposable {
     private static string LiveKey(string directory) => Path.TrimEndingDirectorySeparator(Path.GetFullPath(directory));
     public WebApplicationFactory<Program> Factory { get; }
 
+    /// <summary>Errors the test means the server to log (which otherwise fail it when the server is disposed).</summary>
+    public Func<string, bool>? ExpectedErrors { get; set; }
+
     /// <summary>The server's connection registry: lets a test act as a malicious server and push arbitrary events.</summary>
     public ConnectionRegistry Registry => this.Factory.Services.GetRequiredService<ConnectionRegistry>();
 
@@ -452,7 +455,7 @@ public sealed class Harness : IAsyncDisposable {
         await this.Factory.DisposeAsync();
         // What the server logged while it ran. The test server can leave a request it abandoned running after it is disposed,
         // into a folder deleted below: that is no failure of the server's.
-        var errors = this._serverLogs.Entries.Where(entry => entry.Level == Microsoft.Extensions.Logging.LogLevel.Error).ToList();
+        var errors = this._serverLogs.Entries.Where(entry => entry.Level == Microsoft.Extensions.Logging.LogLevel.Error && !(this.ExpectedErrors?.Invoke(entry.Message) ?? false)).ToList();
         Live.TryRemove(new KeyValuePair<string, Harness>(LiveKey(this.DataDirectory), this));
         if (this._ownsDataDirectory || this._deleteOnDispose) {
             // Each run of the suite would otherwise leave hundreds of these behind (TestFolders clears old ones too).

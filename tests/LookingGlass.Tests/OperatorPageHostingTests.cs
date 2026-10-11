@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
 using Microsoft.Extensions.Logging;
+using LookingGlass.Core.Client;
 using LookingGlass.Server;
 using LookingGlass.Server.Admin;
 using static LookingGlass.Tests.Harness;
@@ -69,6 +70,8 @@ public sealed class OperatorPageHostingTests {
             Assert.Equal(HttpStatusCode.NotFound, ws.StatusCode);
         }
 
+        // The page's host has no lifetime of its own: one "Application started" at most (the server's), no second set of signal handlers.
+        Assert.True(logs.Entries.Count(entry => entry.Message.StartsWith("Application started", StringComparison.Ordinal)) <= 1);
         var warning = Assert.Single(logs.Entries, entry => entry.Message.StartsWith("The operator web page listens on a loopback port", StringComparison.Ordinal));
         Assert.Equal(LogLevel.Warning, warning.Level);
         Assert.Contains("any program or user on this machine can connect to it", warning.Message);
@@ -84,8 +87,15 @@ public sealed class OperatorPageHostingTests {
         var folder = NewDirectory();
         Directory.CreateDirectory(folder);
         var socket = Path.Combine(folder, "admin.sock");
-        // Left by a server that didn't stop cleanly.
-        await File.WriteAllTextAsync(socket, "stale", Ct);
+        // Left by a server that didn't stop cleanly: a socket nothing listens on any more.
+        using (var stale = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified)) {
+            stale.Bind(new UnixDomainSocketEndPoint(socket));
+        }
+
+        if (OperatingSystem.IsLinux()) {
+            // (Windows removes it as the socket closes.)
+            Assert.True(File.Exists(socket));
+        }
         var logs = new CapturingLoggerProvider();
         try {
             await using (var server = new Harness(logs: logs, settings: [
@@ -113,6 +123,110 @@ public sealed class OperatorPageHostingTests {
                 if (!OperatingSystem.IsWindows()) {
                     Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(socket));
                 }
+            }
+        } finally {
+            DeleteDirectory(folder);
+        }
+    }
+
+    /// <summary>
+    /// If the page can't start where its settings say (something else listening on its socket, a file that isn't a socket in its
+    /// place, its port taken), the chat server runs on without it: an error in the log, and an urgent alert with the ping.
+    /// </summary>
+    [Theory]
+    [InlineData("listening")]
+    [InlineData("file")]
+    [InlineData("port")]
+    public async Task IfThePageCantStartTheChatServerRunsOn(string what) {
+        var folder = NewDirectory();
+        Directory.CreateDirectory(folder);
+        var socket = Path.Combine(folder, "admin.sock");
+        using var other = new Socket(what == "port" ? AddressFamily.InterNetwork : AddressFamily.Unix, SocketType.Stream, what == "port" ? ProtocolType.Tcp : ProtocolType.Unspecified);
+        var port = 0;
+        switch (what) {
+            case "listening":
+                other.Bind(new UnixDomainSocketEndPoint(socket));
+                other.Listen();
+                break;
+            case "file":
+                await File.WriteAllTextAsync(socket, "not a socket", Ct);
+                break;
+            default:
+                other.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+                other.Listen();
+                port = ((IPEndPoint) other.LocalEndPoint!).Port;
+                break;
+        }
+
+        var discord = new FakeDiscord();
+        var logs = new CapturingLoggerProvider();
+        try {
+            await using (var server = new Harness(logs: logs, discord: discord, settings: [
+                             ("LookingGlass:Admin:Listen", what == "port" ? $"http://127.0.0.1:{port}" : $"unix:{socket}"), ("LookingGlass:Admin:Url", PageServer.Url),
+                             ("LookingGlass:Admin:TailscaleLogins:0", PageServer.Login), FakeDiscord.On, ("LookingGlass:Alerts:PingRoleId", "424242424242424242"),
+                             ("LookingGlass:Alerts:Restarts", "false"),
+                         ])) {
+                // (Kestrel's own host says so too, when its port is taken.)
+                server.ExpectedErrors = message => message.StartsWith("The operator web page didn't start", StringComparison.Ordinal)
+                                                   || message.StartsWith("Hosting failed to start", StringComparison.Ordinal);
+                var error = Assert.Single(logs.Entries, entry => entry.Level == LogLevel.Error && entry.Message.StartsWith("The operator web page", StringComparison.Ordinal));
+                Assert.Contains("the chat server runs on without it", error.Message);
+                Assert.Contains(what switch { "listening" => "Something is listening on", "file" => "isn't a socket", _ => "" }, error.Message);
+                var alert = await discord.WaitForPost(message => message.Content.Contains("**Urgent: the operator web page didn't start:**"));
+                Assert.StartsWith("<@&424242424242424242> ", alert.Content);
+
+                // Chat goes on.
+                var client = await server.RegisterAsync("Bob Chatting");
+                Assert.Equal(ConnectionState.Ready, client.Session.Snapshot.State);
+            }
+
+            if (what == "file") {
+                Assert.Equal("not a socket", await File.ReadAllTextAsync(socket, Ct));
+            }
+        } finally {
+            other.Dispose();
+            DeleteDirectory(folder);
+        }
+    }
+
+    /// <summary>
+    /// On Linux, the page doesn't start with its socket's folder open to others' writing, nor in place of a link (which is never
+    /// followed, nor deleted).
+    /// </summary>
+    [Theory]
+    [InlineData("group-writable")]
+    [InlineData("link")]
+    public async Task OnLinuxTheSocketsFolderMustBePrivate(string what) {
+        Assert.SkipUnless(OperatingSystem.IsLinux(), "Unix permissions and links: Linux only (checked by hand on the server: step 45 of the bans checklist).");
+        var folder = NewDirectory();
+        Directory.CreateDirectory(folder);
+        var socket = Path.Combine(folder, "admin.sock");
+        var target = Path.Combine(folder, "elsewhere.txt");
+        if (!OperatingSystem.IsLinux()) {
+            return;
+        }
+
+        if (what == "link") {
+            File.SetUnixFileMode(folder, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            await File.WriteAllTextAsync(target, "keep me", Ct);
+            File.CreateSymbolicLink(socket, target);
+        } else {
+            File.SetUnixFileMode(folder, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute);
+        }
+
+        var logs = new CapturingLoggerProvider();
+        try {
+            await using (var server = new Harness(logs: logs, settings: [
+                             ("LookingGlass:Admin:Listen", $"unix:{socket}"), ("LookingGlass:Admin:Url", PageServer.Url), ("LookingGlass:Admin:TailscaleLogins:0", PageServer.Login),
+                         ])) {
+                server.ExpectedErrors = message => message.StartsWith("The operator web page didn't start", StringComparison.Ordinal);
+                var error = Assert.Single(logs.Entries, entry => entry.Level == LogLevel.Error);
+                Assert.Contains(what == "link" ? "isn't a socket" : "Others can write in", error.Message);
+            }
+
+            if (what == "link") {
+                Assert.Equal("keep me", await File.ReadAllTextAsync(target, Ct));
+                Assert.NotNull(new FileInfo(socket).LinkTarget);
             }
         } finally {
             DeleteDirectory(folder);

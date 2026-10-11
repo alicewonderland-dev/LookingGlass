@@ -45,6 +45,7 @@ public sealed class OperatorPage {
     private readonly ConnectionRegistry _registry;
     private readonly AdminOptions _admin;
     private readonly ILogger _logger;
+    private readonly LocalAddresses _local;
     private readonly TimeProvider _time;
     private readonly TimeZoneInfo _zone;
     private readonly IReadOnlyList<string> _logins;
@@ -57,7 +58,7 @@ public sealed class OperatorPage {
     private int _refusalsSince;
 
     public OperatorPage(Database db, OperatorActions actions, ServerAlerts alerts, ConnectionRegistry registry, IOptions<ServerOptions> options, ILogger<OperatorPage> logger,
-        TimeProvider? time = null) {
+        TimeProvider? time = null, LocalAddresses? local = null) {
         this._db = db;
         this._actions = actions;
         this._alerts = alerts;
@@ -65,6 +66,7 @@ public sealed class OperatorPage {
         this._admin = options.Value.Admin;
         this._logger = logger;
         this._time = time ?? TimeProvider.System;
+        this._local = local ?? new LocalAddresses();
         this._zone = this._admin.Zone;
         this._logins = this._admin.Logins;
         var page = this._admin.PageUri ?? new Uri("https://unset.invalid:1/");
@@ -98,6 +100,7 @@ public sealed class OperatorPage {
         var posting = HttpMethods.IsPost(request.Method);
         var actor = new OperatorActor(OperatorTool.WebPage, login, From(request));
         try {
+            this.BeforeAnswerForTests?.Invoke(context);
             switch (path) {
                 case "/" when reading:
                     await Write(response, StatusCodes.Status200OK, this.MainPage(login, this.Prefilled(request, login)));
@@ -133,29 +136,56 @@ public sealed class OperatorPage {
             this._logger.LogWarning(ex, "The operator web page couldn't read or write the database");
             await Write(response, StatusCodes.Status503ServiceUnavailable,
                 this.Message(login, "Not now", "The server couldn't read or write its database just now, so nothing was done. Try again in a moment."));
+        } catch (Exception ex) when (!response.HasStarted && ex is not OperationCanceledException) {
+            // Answered here, not by Kestrel (which would drop the security headers): a plain page, nothing about the error.
+            this._logger.LogError(ex, "The operator web page failed to answer {Method} {Path}", Visible(request.Method), Visible(request.Path.Value));
+            response.Clear();
+            SetSecurityHeaders(response.Headers);
+            await Write(response, StatusCodes.Status500InternalServerError,
+                Document("Not done", "<main class=\"confirm\"><h1>Not done</h1><p>Something went wrong on the server, so that may not have been done. " +
+                                     "The server's log says what. <a href=\"/\">Back to the page</a></p></main>", styled: false));
         }
     }
 
-    /// <summary>The headers on every answer, refusals included.</summary>
+    /// <summary>For tests: run before each request let in is answered (to make one fail, say).</summary>
+    internal Action<HttpContext>? BeforeAnswerForTests { get; set; }
+
+    /// <summary>
+    /// The headers on every answer, refusals and errors included: no script, no framing, nothing kept, and the page's address
+    /// told to nobody else (<c>same-origin</c>: a Lodestone link sends no referrer, while the page's own forms still carry their
+    /// real <c>Origin</c>, which <c>no-referrer</c> would make browsers send as <c>null</c>).
+    /// </summary>
     public static void SetSecurityHeaders(IHeaderDictionary headers) {
         headers.ContentSecurityPolicy = ContentSecurityPolicy;
         headers.XContentTypeOptions = "nosniff";
-        headers["Referrer-Policy"] = "no-referrer";
+        headers["Referrer-Policy"] = "same-origin";
         headers.CacheControl = "no-store";
     }
 
     // ================================================================ who
 
     /// <summary>
-    /// The Tailscale login, if the request may come in: through <c>tailscale serve</c> (never Funnel), from a listed login, asked
-    /// for at the page's own address. Otherwise null, logged (at most once a minute) with which check failed; a request through
-    /// Funnel raises an urgent alert too.
+    /// The Tailscale login, if the request may come in: through <c>tailscale serve</c> (never Funnel), from another device than
+    /// this machine, from a listed login, asked for at the page's own address. Otherwise null, logged (at most once a minute) with
+    /// which check failed; a request through Funnel raises an urgent alert too.
     /// </summary>
+    /// <remarks>
+    /// <c>tailscale serve</c> names a request by the Tailscale login of the device it came from, and a request from this machine
+    /// itself comes from the machine's own tailnet address, so on a server signed in to Tailscale as the owner (not tagged) it
+    /// would carry the owner's login: any program on the machine could reach the page as the owner, around the socket's
+    /// permissions. So a request whose <c>X-Forwarded-For</c> (which <c>tailscale serve</c> sets to the device's address) is one
+    /// of this machine's own addresses, or that has none, is refused.
+    /// </remarks>
     private string? Identify(HttpRequest request) {
         string why;
         if (request.Headers.ContainsKey("Tailscale-Funnel-Request")) {
             this._alerts.FunnelRequest();
             why = "it came through Tailscale Funnel (Tailscale-Funnel-Request), from the public internet; Funnel must never lead to the page";
+        } else if (ForwardedFor(request) is not { } source) {
+            why = "it has no X-Forwarded-For address (tailscale serve always sets one): it didn't come through tailscale serve";
+        } else if (this._local.IsLocal(source)) {
+            why = $"it came from this machine itself ({source}): tailscale serve would name such a request by this machine's own Tailscale login, " +
+                  "which any program here could use, so the page is only for other devices";
         } else if (request.Headers["Tailscale-User-Login"] is not { Count: 1 } logins || string.IsNullOrEmpty(logins[0])) {
             why = request.Headers["Tailscale-User-Login"].Count > 1
                 ? "it has more than one Tailscale-User-Login"
@@ -171,6 +201,12 @@ public sealed class OperatorPage {
 
         this.LogRefusal(request, why);
         return null;
+    }
+
+    /// <summary>The first <c>X-Forwarded-For</c> address (the device's, as <c>tailscale serve</c> sets it), or null if there is none.</summary>
+    private static System.Net.IPAddress? ForwardedFor(HttpRequest request) {
+        var first = request.Headers["X-Forwarded-For"].ToString().Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+        return first != null && System.Net.IPAddress.TryParse(first, out var address) ? address : null;
     }
 
     /// <summary>Where the request came from: the device's tailnet address, as <c>tailscale serve</c> passes it on.</summary>
@@ -202,17 +238,22 @@ public sealed class OperatorPage {
     }
 
     /// <summary>
-    /// Whether a form was sent from the page itself: its <c>Origin</c> is the page's (<c>Admin:Url</c>), or, without one, the
-    /// browser says it is same-origin (<c>Sec-Fetch-Site</c>). The page's own <c>Referrer-Policy: no-referrer</c> makes browsers
-    /// send <c>Origin: null</c> with its forms, so that counts as no Origin: only <c>Sec-Fetch-Site</c>, which a page can't set, decides then.
+    /// Whether a form was sent from the page itself: a browser's <c>Sec-Fetch-Site</c>, if there is one, says same-origin; and its
+    /// <c>Origin</c> is exactly the page's (<c>Admin:Url</c>'s scheme, name and port; <c>null</c> is refused), or, only without an
+    /// Origin, <c>Sec-Fetch-Site</c> says same-origin. Neither header can be set by a page.
     /// </summary>
     private bool SameOrigin(HttpRequest request) {
-        var origin = request.Headers.Origin;
-        if (origin.Count > 0 && !(origin.Count == 1 && origin[0] == "null")) {
-            return origin.Count == 1 && string.Equals(origin[0], this._origin, StringComparison.OrdinalIgnoreCase);
+        var site = request.Headers["Sec-Fetch-Site"];
+        if (site.Count > 0 && !(site.Count == 1 && site[0] == "same-origin")) {
+            return false;
         }
 
-        return request.Headers["Sec-Fetch-Site"] is { Count: 1 } site && site[0] == "same-origin";
+        var origin = request.Headers.Origin;
+        if (origin.Count > 0) {
+            return origin.Count == 1 && string.Equals(origin[0], this._origin, StringComparison.Ordinal);
+        }
+
+        return site.Count == 1;
     }
 
     // ================================================================ forms

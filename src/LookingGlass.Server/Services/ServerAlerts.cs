@@ -257,6 +257,9 @@ public sealed class ServerAlerts : BackgroundService {
         this.Poster.Post(AlertWords.FunnelRequest(more));
     }
 
+    /// <summary>The operator web page couldn't start where its settings say (the chat server runs on without it): urgent.</summary>
+    public void PageFailed(string why) => this.Poster?.Post(AlertWords.PageFailed(why));
+
     /// <summary>Posts a test alert, at once (the web page's <b>Send a test alert</b>).</summary>
     /// <returns>False if alerts are off.</returns>
     public bool SendTest() {

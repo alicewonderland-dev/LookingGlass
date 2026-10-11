@@ -152,26 +152,30 @@ public sealed class OperatorPageCsrfTests {
     }
 
     /// <summary>
-    /// A form must come from the page's own origin (<c>Admin:Url</c>); without an Origin (or with <c>null</c>, which browsers send
-    /// with the page's no-referrer policy), the browser's <c>Sec-Fetch-Site</c> must say same-origin. Anything else does nothing,
-    /// even with a good token.
+    /// A form must come from the page's own origin: its <c>Origin</c> exactly <c>Admin:Url</c>'s (never <c>null</c>), and a
+    /// browser's <c>Sec-Fetch-Site</c>, if there is one, same-origin; only without an Origin may <c>Sec-Fetch-Site:
+    /// same-origin</c> alone stand for it. Anything else does nothing, even with a good token.
     /// </summary>
     [Theory]
     [InlineData("https://evil.example", null, false)]
     [InlineData("https://lg-test.tailnet-0000.ts.net:8444.evil.example", null, false)]
     [InlineData("http://lg-test.tailnet-0000.ts.net:8444", null, false)]
     [InlineData("https://lg-test.tailnet-0000.ts.net", null, false)]
+    [InlineData("HTTPS://LG-TEST.tailnet-0000.ts.net:8444", null, false)]
     [InlineData("https://evil.example", "same-origin", false)]
+    [InlineData(PageServer.Origin, "cross-site", false)]
+    [InlineData(PageServer.Origin, "same-site", false)]
+    [InlineData(PageServer.Origin, "none", false)]
     [InlineData(null, null, false)]
     [InlineData(null, "cross-site", false)]
     [InlineData(null, "same-site", false)]
     [InlineData(null, "none", false)]
     [InlineData("null", null, false)]
     [InlineData("null", "cross-site", false)]
+    [InlineData("null", "same-origin", false)]
     [InlineData(PageServer.Origin, null, true)]
-    [InlineData("HTTPS://LG-TEST.tailnet-0000.ts.net:8444", null, true)]
+    [InlineData(PageServer.Origin, "same-origin", true)]
     [InlineData(null, "same-origin", true)]
-    [InlineData("null", "same-origin", true)]
     public async Task AFormMustComeFromThePagesOwnOrigin(string? origin, string? fetchSite, bool allowed) {
         var logs = new CapturingLoggerProvider();
         await using var page = new PageServer(logs: logs);
@@ -243,7 +247,7 @@ public sealed class OperatorPageCsrfTests {
         foreach (var answer in answers) {
             Assert.Equal(OperatorPage.ContentSecurityPolicy, answer.Header("Content-Security-Policy"));
             Assert.Equal("nosniff", answer.Header("X-Content-Type-Options"));
-            Assert.Equal("no-referrer", answer.Header("Referrer-Policy"));
+            Assert.Equal("same-origin", answer.Header("Referrer-Policy"));
             Assert.Equal("no-store", answer.Header("Cache-Control"));
             Assert.Null(answer.Header("Set-Cookie"));
             Assert.Null(answer.Header("Server"));
