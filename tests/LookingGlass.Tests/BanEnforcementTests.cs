@@ -21,10 +21,12 @@ public sealed class BanEnforcementTests {
     private static readonly (string, string) CheckEverySecond = ("LookingGlass:Abuse:BanCheckSeconds", "1");
 
     private static int Ban(Harness server, string target, string? reason = null, int? days = null) =>
-        BanCommand.Run(new BanCommand.Request(BanCommand.BanAction.Ban, target, days, reason), DatabasePath(server), new AbuseOptions(), new StringWriter(), new StringWriter());
+        BanCommand.Run(new BanCommand.Request(BanCommand.BanAction.Ban, target, days, reason), DatabasePath(server), new AbuseOptions(), new StringWriter(), new StringWriter(),
+            debugAccounts: true);
 
     private static int Unban(Harness server, string target) {
-        var code = BanCommand.Run(new BanCommand.Request(BanCommand.BanAction.Unban, target, null, null), DatabasePath(server), new AbuseOptions(), new StringWriter(), new StringWriter());
+        var code = BanCommand.Run(new BanCommand.Request(BanCommand.BanAction.Unban, target, null, null), DatabasePath(server), new AbuseOptions(), new StringWriter(),
+            new StringWriter(), debugAccounts: true);
         // Rather than waiting for the next check.
         server.Factory.Services.GetRequiredService<BanList>().Refresh();
         return code;

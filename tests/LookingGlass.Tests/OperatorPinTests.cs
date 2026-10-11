@@ -212,6 +212,32 @@ public sealed class OperatorPinTests : IDisposable {
         Assert.Contains("user 88888: not registered on this server, so it has no keys to pin yet.", output);
     }
 
+    /// <summary>
+    /// Run without the service's operator list (a setting the <c>LG</c> helper didn't pass on), <c>--ban</c> can't tell an
+    /// operator character from another: when the database holds pins (so the server's settings list someone) it says so, and
+    /// how to pass the list on. Without pins, or with the list, it says nothing.
+    /// </summary>
+    [Fact]
+    public void BanningWithoutTheOperatorListWarnsWhenThereArePins() {
+        string Errors(IReadOnlyList<long> operators, string whom) {
+            var errors = new StringWriter();
+            BanCommand.Run(new BanCommand.Request(BanCommand.BanAction.Ban, whom, 1, null), this._path, new AbuseOptions(), new StringWriter(), errors,
+                operators: operators, who: "alice");
+            return errors.ToString();
+        }
+
+        Assert.DoesNotContain("Operators:Characters", Errors([], "4242"));
+        Assert.True(this.Actions().PinByFingerprint(CommandLine, "31337", this.FingerprintOf(Alice)).Done);
+        var warned = Errors([], "4242");
+        Assert.Contains("LookingGlass:Operators:Characters", warned);
+        Assert.Contains("operator pins", warned);
+        Assert.Contains("--LookingGlass:Operators:Characters:0=", warned);
+        Assert.Contains(this._db.GetActiveBans(DateTimeOffset.UtcNow.ToUnixTimeSeconds()), ban => ban.UserId == 4242);
+        Assert.DoesNotContain("Operators:Characters", Errors([Alice], "4242"));
+        var (_, listed, _) = this.Run(new BanCommand.Request(BanCommand.BanAction.Operators, null, null, null), operators: []);
+        Assert.Contains("operator pins", listed);
+    }
+
     /// <summary>The commands are read from the command line; <c>--operator-pin</c> needs whom and a fingerprint of 25 digits.</summary>
     [Fact]
     public void TheOperatorCommandsAreReadFromTheCommandLine() {

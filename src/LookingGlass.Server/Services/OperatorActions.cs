@@ -16,8 +16,10 @@ public sealed record OperatorActor(OperatorTool Tool, string Who, string From = 
 /// <summary>What <see cref="OperatorActions"/> goes by: the server's settings that bear on bans and operators.</summary>
 /// <param name="TrustedProxies"><c>LookingGlass:TrustedProxies</c>, whose addresses (like this machine's) are banned only when forced.</param>
 /// <param name="Operators"><c>LookingGlass:Operators:Characters</c>: the characters that may be operators, by user ID.</param>
-public sealed record OperatorSettings(AbuseOptions Abuse, IReadOnlyList<string> TrustedProxies, IReadOnlyList<long> Operators) {
-    public static OperatorSettings From(ServerOptions options) => new(options.Abuse, options.TrustedProxies, options.Operators.UserIds);
+/// <param name="DebugAccounts"><c>LookingGlass:Dev:AllowDebugAccounts</c>: debug accounts, whose user IDs are negative, may register here.</param>
+public sealed record OperatorSettings(AbuseOptions Abuse, IReadOnlyList<string> TrustedProxies, IReadOnlyList<long> Operators, bool DebugAccounts = false) {
+    public static OperatorSettings From(ServerOptions options) =>
+        new(options.Abuse, options.TrustedProxies, options.Operators.UserIds, options.Dev.AllowDebugAccounts);
 }
 
 /// <summary>What <see cref="OperatorActions"/> did, or why not.</summary>
@@ -120,6 +122,12 @@ public sealed class OperatorActions(Database db, OperatorSettings settings, Time
     /// <summary>The longest "who" or "from" recorded, in characters.</summary>
     private const int MaxWhoLength = 100;
 
+    /// <summary>The longest "whom" kept as typed (a name@world is under 40; an IPv6 prefix under 50), in characters.</summary>
+    private const int MaxWhomLength = 200;
+
+    /// <summary>The longest fingerprint kept as typed (25 digits and their spaces are 29), in characters.</summary>
+    private const int MaxFingerprintLength = 64;
+
     /// <summary>The action names the audit trail records.</summary>
     public static class Actions {
         public const string Ban = "ban";
@@ -195,12 +203,14 @@ public sealed class OperatorActions(Database db, OperatorSettings settings, Time
     /// <param name="force">The server's own or its proxy's address is meant (and, on the command line, an operator character).</param>
     public OperatorResult Ban(OperatorActor actor, string whom, int? days, string? reason, bool force = false) {
         actor = Clean(actor);
+        whom = CleanWhom(whom);
         reason = string.IsNullOrWhiteSpace(reason) ? null : reason.Trim();
-        var detail = (days is { } d ? $"for {Days(d)}" : "until lifted") + (reason != null ? $". Reason: {reason}" : "");
+        // As kept in the audit trail: a reason refused for what it holds is kept visible, and cut.
+        var detail = (days is { } d ? $"for {Days(d)}" : "until lifted") + (reason != null ? $". Reason: {VisibleText.Of(reason, MaxReasonLength)}" : "");
         lock (this._changing) {
             var now = this.Now;
             if (days is < 1 or > MaxDays || reason is { Length: > MaxReasonLength } || (reason != null && !TextSanitizer.IsPlain(reason))) {
-                return this.Record(actor, Actions.Ban, new OperatorResult(OperatorRefusal.NotValid, whom.Trim(),
+                return this.Record(actor, Actions.Ban, new OperatorResult(OperatorRefusal.NotValid, whom,
                     $"A ban lasts 1 to {MaxDays} days, or until lifted, and its reason is one line of plain text, at most {MaxReasonLength} characters."), detail, now);
             }
 
@@ -231,6 +241,7 @@ public sealed class OperatorActions(Database db, OperatorSettings settings, Time
     /// <summary>Lifts the ban in force on a character or an address (exactly as written), if <paramref name="actor"/>'s tool may.</summary>
     public OperatorResult Lift(OperatorActor actor, string whom) {
         actor = Clean(actor);
+        whom = CleanWhom(whom);
         lock (this._changing) {
             var now = this.Now;
             var subject = this.Resolve(whom);
@@ -261,6 +272,7 @@ public sealed class OperatorActions(Database db, OperatorSettings settings, Time
     /// </summary>
     public OperatorResult AllowKeyLogin(OperatorActor actor, string whom) {
         actor = Clean(actor);
+        whom = CleanWhom(whom);
         lock (this._changing) {
             var now = this.Now;
             var subject = this.Resolve(whom);
@@ -282,6 +294,13 @@ public sealed class OperatorActions(Database db, OperatorSettings settings, Time
     }
 
     // ================================================================ operators
+
+    /// <summary>
+    /// No character is listed here, yet the database holds operator pins: the server's own settings list some (pins of
+    /// unlisted characters go when it starts), so these settings aren't the server's, and an operator character can't be told
+    /// from another (the command line run without the setting, say).
+    /// </summary>
+    public bool OperatorListMissing => settings.Operators.Count == 0 && db.GetOperatorPins().Count > 0;
 
     /// <summary>Whether a character is an operator now: listed, and its account's current keys hash to its pin (the full hash, never the 25 digits).</summary>
     public OperatorStatus StatusOf(long userId) {
@@ -309,7 +328,7 @@ public sealed class OperatorActions(Database db, OperatorSettings settings, Time
     /// </summary>
     public OperatorResult PinByFingerprint(OperatorActor actor, string whom, string fingerprint) =>
         this.Pin(actor, whom, user => NormalFingerprint(fingerprint) is { } typed && typed == NormalFingerprint(user.Keys.Fingerprint) ? user.Keys.Hash : null,
-            $"typed {fingerprint.Trim()}");
+            $"typed {VisibleText.Of(fingerprint.Trim(), MaxFingerprintLength)}");
 
     /// <summary>
     /// Pins a listed character's keys as an operator's if they are still the keys whose full hash is <paramref name="keyHashShown"/>
@@ -341,10 +360,6 @@ public sealed class OperatorActions(Database db, OperatorSettings settings, Time
         return gone;
     }
 
-    /// <summary>Deletes the audit trail's entries older than <see cref="AuditKeptDays"/>.</summary>
-    /// <returns>How many went.</returns>
-    public int SweepAudit() => db.SweepOperatorLog(this.Now - AuditKeptDays * 86400L);
-
     /// <summary>
     /// The Unix user who ran the command: <c>SUDO_USER</c> (the <c>LG</c> helper runs it with sudo), or else the user it runs
     /// as. What sudo says, recorded for the audit trail; not proof (whoever can run it can set it).
@@ -368,6 +383,7 @@ public sealed class OperatorActions(Database db, OperatorSettings settings, Time
 
     private OperatorResult Pin(OperatorActor actor, string whom, Func<UserRow, byte[]?> expected, string detail) {
         actor = Clean(actor);
+        whom = CleanWhom(whom);
         lock (this._changing) {
             var now = this.Now;
             var subject = this.Resolve(whom);
@@ -436,7 +452,14 @@ public sealed class OperatorActions(Database db, OperatorSettings settings, Time
     private OperatorResult Resolve(string target) {
         target = target.Trim();
         if (long.TryParse(target, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var userId)) {
-            var user = db.GetUser(userId);
+            // A Lodestone ID is positive. Debug accounts' are negative: one registered can be named by it, and any where they may register.
+            var user = userId < 0 ? db.GetUser(userId) : null;
+            if (userId == 0 || (userId < 0 && user == null && !settings.DebugAccounts)) {
+                var notAnId = $"\"{target}\" isn't a user ID: user IDs (Lodestone IDs) are positive numbers.";
+                return new OperatorResult(OperatorRefusal.NotATarget, target, notAnId) { Problem = notAnId };
+            }
+
+            user ??= db.GetUser(userId);
             return new OperatorResult(OperatorRefusal.None, user == null ? $"user {userId}" : $"user {userId} ({user.Name}@{user.WorldName})", "") { UserId = userId };
         }
 
@@ -500,11 +523,14 @@ public sealed class OperatorActions(Database db, OperatorSettings settings, Time
         return actor with { Who = string.IsNullOrWhiteSpace(actor.Who) ? "unknown" : CleanText(actor.Who), From = CleanText(actor.From) };
     }
 
-    /// <summary>Text from outside (an environment variable, a header) as one short line.</summary>
-    private static string CleanText(string text) {
-        var line = new string(text.Trim().Select(c => char.IsControl(c) ? '?' : c).ToArray());
-        return line.Length > MaxWhoLength ? line[..MaxWhoLength] : line;
-    }
+    /// <summary>Text from outside (an environment variable, a header) as one short line, anything hidden in it shown as escapes.</summary>
+    private static string CleanText(string text) => VisibleText.Of(text.Trim(), MaxWhoLength);
+
+    /// <summary>
+    /// Whom, as typed, made visible and cut once, before anything else: everything after (the lookup, the refusal's words, the
+    /// audit trail) sees only this. No real target has anything hidden in it, so such a one names nobody.
+    /// </summary>
+    private static string CleanWhom(string whom) => VisibleText.Of(whom.Trim(), MaxWhomLength);
 
     private static string Days(int days) => days == 1 ? "1 day" : $"{days.ToString(CultureInfo.InvariantCulture)} days";
 }

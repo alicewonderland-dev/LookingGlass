@@ -53,7 +53,7 @@ if (backup != null || banning != null) {
     Environment.ExitCode = backup != null
         ? BackupCommand.Run(backup, DatabasePath(configured), Console.Out, Console.Error)
         : BanCommand.Run(banning!, DatabasePath(configured), configured.Abuse, Console.Out, Console.Error, trustedProxies: configured.TrustedProxies,
-            operators: configured.Operators.UserIds);
+            operators: configured.Operators.UserIds, debugAccounts: configured.Dev.AllowDebugAccounts);
     return;
 }
 

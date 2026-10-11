@@ -124,8 +124,8 @@ public sealed class IdentityKeys : IDisposable {
     /// for showing a key hash kept on its own, such as a server's operator pin.
     /// </summary>
     public static string FingerprintOfHash(ReadOnlySpan<byte> keyHash) {
-        if (keyHash.Length < 20) {
-            throw new ArgumentException("A key hash is 32 bytes.", nameof(keyHash));
+        if (keyHash.Length != 32) {
+            throw new ArgumentException("A key hash is 32 bytes (a SHA-256 hash).", nameof(keyHash));
         }
 
         var groups = new string[5];

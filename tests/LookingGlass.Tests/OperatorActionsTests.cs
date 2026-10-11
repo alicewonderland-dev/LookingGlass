@@ -259,6 +259,42 @@ public sealed class OperatorActionsTests : IDisposable {
         Assert.True(actions.Ban(Actor(Plugin), "3999", 1, null).Done);
     }
 
+    /// <summary>A user ID is a positive number (a leading + or zeros are fine); zero or a negative one names nobody, for any action.</summary>
+    [Theory]
+    [InlineData("0")]
+    [InlineData("-5")]
+    [InlineData("-0")]
+    [InlineData("-31337")]
+    public void ZeroAndNegativeUserIdsNameNobody(string whom) {
+        var actions = this.Actions();
+        var actor = Actor(CommandLine);
+        foreach (var result in new[] { actions.Ban(actor, whom, 1, null), actions.Lift(actor, whom), actions.AllowKeyLogin(actor, whom),
+                     actions.PinByFingerprint(actor, whom, "00000 00000 00000 00000 00000") }) {
+            Assert.Equal(NotATarget, result.Refusal);
+            Assert.Contains("positive", result.Why);
+        }
+
+        Assert.Empty(this._db.GetActiveBans(this.Now));
+        Assert.Equal(1, BanCommand.Run(new BanCommand.Request(BanCommand.BanAction.Ban, whom, null, null), this._path, new AbuseOptions(), new StringWriter(),
+            new StringWriter(), who: "alice"));
+        Assert.Equal("user 31337 (Bob Hatter@Lich)", actions.Ban(actor, "+0031337", 1, null).Whom);
+    }
+
+    /// <summary>
+    /// Debug accounts (test servers) have negative user IDs: one registered can be named by it, and where debug accounts may
+    /// register, any (to ban one before it registers). Zero never names anyone.
+    /// </summary>
+    [Fact]
+    public void DebugAccountsNegativeIdsCanBeNamed() {
+        using var keys = IdentityKeys.Generate();
+        this._db.RegisterUser(-77, "Dana Debug", 0, "Debug", keys.ToBundle(), true);
+        Assert.True(this.Actions().Ban(Actor(CommandLine), "-77", 1, null).Done);
+        Assert.Equal(NotATarget, this.Actions().Ban(Actor(CommandLine), "-78", 1, null).Refusal);
+        var debugServer = new OperatorActions(this._db, new OperatorSettings(new AbuseOptions(), [], [], DebugAccounts: true), this._clock);
+        Assert.True(debugServer.Ban(Actor(CommandLine), "-78", 1, null).Done);
+        Assert.Equal(NotATarget, debugServer.Ban(Actor(CommandLine), "0", 1, null).Refusal);
+    }
+
     /// <summary>The days and the reason are checked by the service too (the web page and the plugin send them as typed).</summary>
     [Theory]
     [InlineData(0, "Spam")]
@@ -304,12 +340,13 @@ public sealed class OperatorActionsTests : IDisposable {
         Assert.Contains("in the plugin", trail[1].Why);
         Assert.Contains("isn't turned off", trail[0].Why);
 
-        // Kept 365 days.
+        // Kept 365 days (as the server sweeps it: see TheServerSweepsTheAuditTrail).
+        int Sweep() => this._db.SweepOperatorLog(this.Now - OperatorActions.AuditKeptDays * 86400L);
         this._clock.Advance(TimeSpan.FromDays(364));
-        Assert.Equal(0, actions.SweepAudit());
+        Assert.Equal(0, Sweep());
         actions.Lift(Actor(CommandLine), "203.0.113.0/24");
         this._clock.Advance(TimeSpan.FromDays(1) + TimeSpan.FromMinutes(5.5));
-        Assert.Equal(6, actions.SweepAudit());
+        Assert.Equal(6, Sweep());
         Assert.Equal("lift", Assert.Single(actions.Audit(0, 100)).Action);
     }
 
@@ -429,6 +466,50 @@ public sealed class OperatorActionsTests : IDisposable {
         Assert.Contains(" on the command line by alice, made on the web page by alice@github", lifted);
     }
 
+    /// <summary>
+    /// A ban replaced by banning the same subject again is recorded as replaced, and by which ban (lifted by that ban's tool
+    /// and maker), so it can be told once, with the new ban, rather than as a lift of its own; a ban lifted is not.
+    /// </summary>
+    [Fact]
+    public void AReplacedBanIsRecordedAsReplacedNotLifted() {
+        var actions = this.Actions();
+        actions.Ban(Actor(CommandLine), "Bob Hatter@Lich", null, "First");
+        var second = actions.Ban(Actor(WebPage), "31337", 7, "Second");
+        Assert.Equal(1, second.Replaced);
+        var first = Assert.Single(this._db.GetBanHistory(this.Now));
+        Assert.Equal((second.Ban!.BanId, "web page", "alice@github", false), (first.ReplacedBy, first.LiftedVia, first.LiftedBy, first.LiftedAnnounced));
+        Assert.Null(Assert.Single(this._db.GetActiveBans(this.Now)).ReplacedBy);
+
+        actions.Lift(Actor(CommandLine), "31337");
+        Assert.All(this._db.GetBanHistory(this.Now).Where(ban => ban.BanId == second.Ban.BanId), ban => Assert.Null(ban.ReplacedBy));
+
+        var output = new StringWriter();
+        BanCommand.Run(new BanCommand.Request(BanCommand.BanAction.List, null, null, null), this._path, new AbuseOptions(), output, new StringWriter(), this._clock.GetUtcNow());
+        Assert.Contains(" on the web page by alice@github, made on the command line by alice. Reason: First", output.ToString());
+        Assert.Contains("replaced by a new ban ", output.ToString());
+        Assert.Contains(", lifted ", output.ToString());
+    }
+
+    /// <summary>
+    /// An automatic block is never made over a ban in force on the address (or a prefix holding it), nor replaces one: the
+    /// check and the block are one transaction. Over nothing, it is made, and it covers its address from then on.
+    /// </summary>
+    [Fact]
+    public void AnAutomaticBlockNeverReplacesABan() {
+        var now = this.Now;
+        this._db.AddBan(null, "198.51.100.0/24", "Operator's", null, false, now, out _, BanTools.WebPage, "alice@github");
+        this._db.AddBan(null, "203.0.113.9", "Operator's exact", null, false, now, out _, BanTools.CommandLine, "alice");
+        Assert.Null(this._db.AddAutomaticBlock("198.51.100.7", "198.51.100.7", now + 900, now));
+        Assert.Null(this._db.AddAutomaticBlock("203.0.113.9", "203.0.113.9", now + 900, now));
+        Assert.Equal(["Operator's", "Operator's exact"], this._db.GetActiveBans(now).Select(ban => ban.Reason).Order());
+        Assert.Empty(this._db.GetBanHistory(now));
+
+        var block = this._db.AddAutomaticBlock("192.0.2.5", "192.0.2.5", now + 900, now);
+        Assert.Equal((true, "automatic"), (block!.Automatic, block.MadeVia));
+        Assert.Null(this._db.AddAutomaticBlock("192.0.2.5", "192.0.2.5", now + 900, now + 1));
+        Assert.Equal(3, this._db.GetActiveBans(now + 1).Count);
+    }
+
     /// <summary><c>--audit</c> lists the trail, newest first, with each tool, who, from where, and what was done or refused and why.</summary>
     [Fact]
     public void TheAuditCommandListsTheTrail() {
@@ -493,7 +574,7 @@ public sealed class OperatorActionsTests : IDisposable {
         Assert.Equal("bob", OperatorActions.CommandLineUser(name => name switch { "SUDO_USER" => "bob", "USER" => "lookingglass", _ => null }));
         Assert.Equal("lookingglass", OperatorActions.CommandLineUser(name => name == "USER" ? "lookingglass" : null));
         Assert.Equal("unknown", OperatorActions.CommandLineUser(_ => null));
-        Assert.Equal("a?b", OperatorActions.CommandLineUser(_ => "a\nb"));
+        Assert.Equal("a\\u000Ab", OperatorActions.CommandLineUser(_ => "a\nb"));
     }
 
     // ================================================================ shortened addresses

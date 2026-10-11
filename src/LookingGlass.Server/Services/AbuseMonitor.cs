@@ -198,16 +198,18 @@ public sealed class AbuseMonitor(Database db, BanList bans, IOptions<ServerOptio
             : existing with { LastRefusedAt = at, Limits = Merge(existing.Limits, limits) });
     }
 
-    /// <summary>Blocks an address far past the threshold for a few minutes, unless a ban in force covers it already (one the operator made, say).</summary>
+    /// <summary>
+    /// Blocks an address far past the threshold for a few minutes, unless a ban in force covers it already (one the operator
+    /// made, say): checked in the transaction that blocks it, so a ban made meanwhile is never replaced by a short block.
+    /// </summary>
     private void Block(string address, DateTimeOffset now, int refusals) {
         var at = now.ToUnixTimeSeconds();
-        if (db.GetActiveBans(at).Any(ban => ban.Address != null && ClientAddresses.Covers(ban.Address, address))) {
+        var prefix = ClientAddresses.BanPrefix(address, out _) ?? address;
+        var minutes = this._settings.AutoBlockMinutes;
+        if (db.AddAutomaticBlock(address, prefix, at + minutes * 60L, at) == null) {
             return;
         }
 
-        var prefix = ClientAddresses.BanPrefix(address, out _) ?? address;
-        var minutes = this._settings.AutoBlockMinutes;
-        db.AddBan(null, prefix, "", at + minutes * 60L, automatic: true, at, out _);
         bans.Refresh();
         logger.LogWarning(
             "Blocked address {Address} for {Minutes} minutes automatically: refused {Refusals} times within {Window} minutes " +

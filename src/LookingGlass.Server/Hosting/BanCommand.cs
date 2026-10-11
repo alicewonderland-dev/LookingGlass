@@ -160,8 +160,13 @@ public static class BanCommand {
     /// <param name="trustedProxies">The server's <c>LookingGlass:TrustedProxies</c>, whose addresses are banned only with <see cref="Request.Force"/>.</param>
     /// <param name="operators">The server's <c>LookingGlass:Operators:Characters</c>, by user ID: banned only with <see cref="Request.Force"/>, and the only ones pinned.</param>
     /// <param name="who">Who is running it, for the audit trail; by default <see cref="OperatorActions.CommandLineUser"/>.</param>
+    /// <param name="debugAccounts">The server's <c>LookingGlass:Dev:AllowDebugAccounts</c>: a debug account's (negative) user ID may be banned before it registers.</param>
     public static int Run(Request request, string databasePath, AbuseOptions settings, TextWriter output, TextWriter errors, DateTimeOffset? now = null,
-        IReadOnlyList<string>? trustedProxies = null, IReadOnlyList<long>? operators = null, string? who = null) {
+        IReadOnlyList<string>? trustedProxies = null, IReadOnlyList<long>? operators = null, string? who = null, bool debugAccounts = false) {
+        // Everything printed, whatever it holds (what was typed, names and reasons from the database), is shown with anything a
+        // terminal would act on as an escape, so nothing can move the cursor, retitle the window, or forge a line.
+        output = new VisibleText.Writer(output);
+        errors = new VisibleText.Writer(errors);
         if (!File.Exists(databasePath)) {
             // Never made here: a wrong data folder would otherwise get an empty database of its own.
             errors.WriteLine($"There is no database at {Path.GetFullPath(databasePath)}. Run this as the server's user, with the server's settings " +
@@ -171,7 +176,7 @@ public static class BanCommand {
 
         try {
             var db = new Database(databasePath);
-            var actions = new OperatorActions(db, new OperatorSettings(settings, trustedProxies ?? [], operators ?? []), now is { } fixedTime ? new FixedTime(fixedTime) : null);
+            var actions = new OperatorActions(db, new OperatorSettings(settings, trustedProxies ?? [], operators ?? [], debugAccounts), now is { } fixedTime ? new FixedTime(fixedTime) : null);
             var actor = new OperatorActor(OperatorTool.CommandLine, who ?? OperatorActions.CommandLineUser());
             var at = (now ?? DateTimeOffset.UtcNow).ToUnixTimeSeconds();
             return request.Action switch {
@@ -179,7 +184,7 @@ public static class BanCommand {
                 BanAction.Unban => Unban(actions, actor, request, settings, output, errors),
                 BanAction.AllowKeyLogin => AllowKeyLogin(actions, actor, request, output, errors),
                 BanAction.Audit => Audit(actions, request, at, output),
-                BanAction.Operators => ListOperators(actions, operators ?? [], output),
+                BanAction.Operators => ListOperators(actions, output),
                 BanAction.OperatorPin => Pin(actions, actor, request, output, errors),
                 _ => List(actions, output),
             };
@@ -190,7 +195,18 @@ public static class BanCommand {
         }
     }
 
+    /// <summary>What <see cref="OperatorActions.OperatorListMissing"/> means, for the operator.</summary>
+    private const string OperatorListMissing =
+        "Warning: no characters are listed in LookingGlass:Operators:Characters here, but the database holds operator pins, so the server's own " +
+        "settings list some, and this can't tell an operator character from another. Run it with the service's settings: the LG helper in " +
+        "docs/server.md passes LookingGlass__Operators__... lines on; a setting kept elsewhere (an EnvironmentFile=, an appsettings file for " +
+        "the environment) goes on the command line, as --LookingGlass:Operators:Characters:0=<user ID>.";
+
     private static int Ban(OperatorActions actions, OperatorActor actor, Request request, AbuseOptions settings, TextWriter output, TextWriter errors) {
+        if (actions.OperatorListMissing) {
+            errors.WriteLine(OperatorListMissing);
+        }
+
         var result = actions.Ban(actor, request.Target!, request.Days, request.Reason, request.Force);
         if (!result.Done) {
             errors.WriteLine(result.Refusal switch {
@@ -274,7 +290,7 @@ public static class BanCommand {
             : $"Lifted or ended in the last {view.HistoryDays} days ({view.History.Count}):");
         foreach (var (ban, whom) in view.History) {
             var ended = ban.LiftedAt is { } lifted
-                ? $"lifted {Time(lifted)}{(OperatorActions.LiftedWords(ban) is { } by ? $" {by}" : "")}"
+                ? $"{(ban.ReplacedBy != null ? "replaced by a new ban" : "lifted")} {Time(lifted)}{(OperatorActions.LiftedWords(ban) is { } by ? $" {by}" : "")}"
                 : $"ended {Time(ban.ExpiresAt!.Value)}";
             output.WriteLine($"  {whom}: from {Time(ban.CreatedAt)}, {ended}{Made(ban)}" + (ban.Reason.Length > 0 ? $". Reason: {ban.Reason}" : ""));
         }
@@ -325,11 +341,13 @@ public static class BanCommand {
             : $"{what.Item2} {what.Item3}: {entry.Why}";
     }
 
-    private static int ListOperators(OperatorActions actions, IReadOnlyList<long> operators, TextWriter output) {
+    private static int ListOperators(OperatorActions actions, TextWriter output) {
         var listed = actions.Operators();
         if (listed.Count == 0) {
-            output.WriteLine("No characters are listed as operators: LookingGlass:Operators:Characters is empty (run this with the service's settings, " +
-                             "as the LG helper in docs/server.md does).");
+            output.WriteLine(actions.OperatorListMissing
+                ? OperatorListMissing
+                : "No characters are listed as operators: LookingGlass:Operators:Characters is empty (run this with the service's settings, " +
+                  "as the LG helper in docs/server.md does).");
             return 0;
         }
 

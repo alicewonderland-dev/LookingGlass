@@ -64,6 +64,7 @@ public sealed class Schema12Tests : IDisposable {
             DROP TABLE operator_log; DROP TABLE server_state; DROP TABLE operator_pins;
             ALTER TABLE bans DROP COLUMN made_via; ALTER TABLE bans DROP COLUMN made_by; ALTER TABLE bans DROP COLUMN lifted_via;
             ALTER TABLE bans DROP COLUMN lifted_by; ALTER TABLE bans DROP COLUMN made_announced; ALTER TABLE bans DROP COLUMN lifted_announced;
+            ALTER TABLE bans DROP COLUMN replaced_by;
             ALTER TABLE users DROP COLUMN keys_registered_at;
             DELETE FROM schema_version WHERE version = 12;
             """);
@@ -85,6 +86,7 @@ public sealed class Schema12Tests : IDisposable {
         Assert.Equal(4, bans.Count);
         Assert.All(bans, ban => Assert.True(ban.MadeAnnounced));
         Assert.All(bans, ban => Assert.Null(ban.MadeBy));
+        Assert.All(bans, ban => Assert.Null(ban.ReplacedBy));
         Assert.Equal(["command line", "command line", "automatic", "command line"], bans.Select(ban => ban.MadeVia));
         var lifted = bans.Single(ban => ban.Address == "203.0.113.0/24");
         Assert.Equal(("command line", (string?) null, true), (lifted.LiftedVia, lifted.LiftedBy, lifted.LiftedAnnounced));

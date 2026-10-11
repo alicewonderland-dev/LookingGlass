@@ -144,6 +144,12 @@ public sealed record BanRow(long BanId, long? UserId, string? Address, string Re
 
     /// <summary>Whether its lifting has been posted to the alerts channel.</summary>
     public bool LiftedAnnounced { get; init; }
+
+    /// <summary>
+    /// The ban that replaced it, if it was lifted by banning the same subject again (then <see cref="LiftedVia"/> and
+    /// <see cref="LiftedBy"/> are that ban's tool and maker); null if it was lifted otherwise, or before schema 12.
+    /// </summary>
+    public long? ReplacedBy { get; init; }
 }
 
 /// <summary>The tools a ban is recorded as made or lifted with (<see cref="BanRow.MadeVia"/>), as the database writes them.</summary>
@@ -685,6 +691,8 @@ public sealed class Database {
             ("lifted_by", "TEXT"),
             ("made_announced", "INTEGER NOT NULL DEFAULT 0"),
             ("lifted_announced", "INTEGER NOT NULL DEFAULT 0"),
+            // The ban that replaced it (banning the same subject again), if that is how it was lifted.
+            ("replaced_by", "INTEGER"),
         ];
         foreach (var (column, definition) in columns) {
             if (!HasColumn(connection, tx, "bans", column)) {
@@ -1932,7 +1940,8 @@ public sealed class Database {
     /// <summary>
     /// Bans a character (by user ID, registered or not) or an address or prefix (as <see cref="Hosting.ClientAddresses.BanPrefix"/>
     /// writes it), from <paramref name="now"/> until <paramref name="expiresAt"/> (null: until lifted). A ban the same subject
-    /// has already is lifted (it becomes history), in the same transaction.
+    /// has already is lifted (it becomes history, marked as replaced by this one: <see cref="BanRow.ReplacedBy"/>), in the same
+    /// transaction. Automatic blocks are made with <see cref="AddAutomaticBlock"/>, which never replaces anything.
     /// </summary>
     /// <param name="replaced">How many bans in force it replaced (0 or 1).</param>
     /// <param name="via">Which tool made it (see <see cref="BanTools"/>); by default "automatic" for an automatic one, and not recorded otherwise.</param>
@@ -1947,19 +1956,53 @@ public sealed class Database {
         via ??= automatic ? BanTools.Automatic : null;
         using var connection = this.Open();
         using var tx = connection.BeginTransaction();
-        replaced = LiftBans(connection, tx, userId, address, now, via, by);
+        var id = InsertBan(connection, tx, userId, address, reason, expiresAt, automatic, now, via, by);
+        // The ban it replaces is lifted by the same tool and person, and says it was replaced, and by which ban, so that it is
+        // told as a replacement (once, with the new ban), not as a lift of its own.
+        replaced = Execute(connection, tx, $"""
+            UPDATE bans SET lifted_at = $now, lifted_via = $via, lifted_by = $by, lifted_announced = 0, replaced_by = $id
+            WHERE {(userId != null ? "user_id = $subject" : "address = $subject")} AND ban_id <> $id AND lifted_at IS NULL
+                AND (expires_at IS NULL OR expires_at > $now);
+            """, ("$subject", (object?) userId ?? address!), ("$now", now), ("$via", (object?) via ?? DBNull.Value), ("$by", (object?) by ?? DBNull.Value),
+            ("$id", id));
         if (audit != null) {
             InsertOperatorLog(connection, tx, audit(replaced));
         }
 
-        var id = Convert.ToInt64(Scalar(connection, tx, """
+        tx.Commit();
+        return new BanRow(id, userId, address, reason, now, expiresAt, null, automatic) { MadeVia = via, MadeBy = by };
+    }
+
+    /// <summary>
+    /// Blocks an address automatically (see <see cref="AbuseOptions.AutoBlockMinutes"/>) until <paramref name="expiresAt"/>, unless
+    /// a ban in force already covers it: checked in the same transaction (an immediate one, so no ban made meanwhile, by this
+    /// server or another process, slips between the check and the block). It never lifts or replaces any ban.
+    /// </summary>
+    /// <param name="limitKey">The address refused, as <see cref="Hosting.ClientAddresses.LimitKey"/> gives it.</param>
+    /// <param name="prefix">What to block, as <see cref="Hosting.ClientAddresses.BanPrefix"/> writes it.</param>
+    /// <returns>The block, or null if a ban covered the address already.</returns>
+    public BanRow? AddAutomaticBlock(string limitKey, string prefix, long expiresAt, long now) {
+        using var connection = this.Open();
+        using var tx = connection.BeginTransaction();
+        var covering = Query(connection, tx, "SELECT * FROM bans WHERE address IS NOT NULL AND lifted_at IS NULL AND (expires_at IS NULL OR expires_at > $now);",
+            ReadBan, ("$now", now));
+        if (covering.Any(ban => Hosting.ClientAddresses.Covers(ban.Address!, limitKey) || ban.Address == prefix)) {
+            return null;
+        }
+
+        var id = InsertBan(connection, tx, null, prefix, "", expiresAt, automatic: true, now, BanTools.Automatic, null);
+        tx.Commit();
+        return new BanRow(id, null, prefix, "", now, expiresAt, null, true) { MadeVia = BanTools.Automatic };
+    }
+
+    private static long InsertBan(SqliteConnection connection, SqliteTransaction tx, long? userId, string? address, string reason, long? expiresAt, bool automatic,
+        long now, string? via, string? by) {
+        return Convert.ToInt64(Scalar(connection, tx, """
             INSERT INTO bans (user_id, address, reason, created_at, expires_at, lifted_at, automatic, made_via, made_by, made_announced, lifted_announced)
             VALUES ($user, $address, $reason, $now, $expires, NULL, $automatic, $via, $by, 0, 0) RETURNING ban_id;
             """, ("$user", (object?) userId ?? DBNull.Value), ("$address", (object?) address ?? DBNull.Value), ("$reason", reason), ("$now", now),
             ("$expires", (object?) expiresAt ?? DBNull.Value), ("$automatic", automatic ? 1 : 0), ("$via", (object?) via ?? DBNull.Value),
             ("$by", (object?) by ?? DBNull.Value)));
-        tx.Commit();
-        return new BanRow(id, userId, address, reason, now, expiresAt, null, automatic) { MadeVia = via, MadeBy = by };
     }
 
     /// <summary>Lifts the bans in force on a character or an address (exactly as written), as of <paramref name="now"/>.</summary>
@@ -2205,6 +2248,7 @@ public sealed class Database {
             LiftedBy = Text("lifted_by"),
             MadeAnnounced = reader.GetInt64(reader.GetOrdinal("made_announced")) != 0,
             LiftedAnnounced = reader.GetInt64(reader.GetOrdinal("lifted_announced")) != 0,
+            ReplacedBy = Nullable("replaced_by"),
         };
     }
 
