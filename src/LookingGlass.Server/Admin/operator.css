@@ -1,0 +1,172 @@
+/* The operator web page's only stylesheet (see "The web page" in docs/operator-tools-plan.md): plain, one column on a phone,
+   big buttons, and the device's light or dark setting. Nothing here loads anything from anywhere. */
+:root {
+    color-scheme: light dark;
+    --bg: #ffffff;
+    --fg: #1d1d1f;
+    --muted: #5f6368;
+    --line: #d9dce1;
+    --card: #f6f7f9;
+    --accent: #1f5fbf;
+    --accent-fg: #ffffff;
+    --danger: #b3261e;
+    --danger-fg: #ffffff;
+    --ok-bg: #e5f4e8;
+    --ok-fg: #14532d;
+    --err-bg: #fbe9e7;
+    --err-fg: #7f1d1d;
+    --warn: #8a4b00;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #16181c;
+        --fg: #e8eaed;
+        --muted: #a0a6ae;
+        --line: #33373e;
+        --card: #1f2227;
+        --accent: #7aa7f0;
+        --accent-fg: #0b1220;
+        --danger: #f28b82;
+        --danger-fg: #1f0b09;
+        --ok-bg: #12301d;
+        --ok-fg: #b6e8c4;
+        --err-bg: #3b1513;
+        --err-fg: #f6c4bf;
+        --warn: #f0b35a;
+    }
+}
+
+* { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+header, main, footer {
+    max-width: 72rem;
+    margin: 0 auto;
+    padding: 0.75rem 1rem;
+}
+
+header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 1.5rem;
+    border-bottom: 1px solid var(--line);
+}
+
+header h1 { font-size: 1.25rem; margin: 0; flex: 1 1 auto; }
+header .meta { color: var(--muted); margin: 0; }
+
+h2 { font-size: 1.1rem; margin: 1.5rem 0 0.5rem; }
+
+a { color: var(--accent); }
+
+.counts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem 1.5rem;
+    font-weight: 600;
+    margin: 0.5rem 0;
+}
+
+.note { padding: 0.6rem 0.8rem; border-radius: 6px; margin: 0.75rem 0; }
+.note.done { background: var(--ok-bg); color: var(--ok-fg); }
+.note.error { background: var(--err-bg); color: var(--err-fg); }
+
+form.ban { display: grid; grid-template-columns: max-content 1fr; gap: 0.5rem 0.75rem; align-items: center; max-width: 48rem; }
+form.ban label { font-weight: 600; }
+form.ban .hint { grid-column: 2; color: var(--muted); font-size: 0.9rem; margin-top: -0.35rem; }
+form.ban .tick { grid-column: 1 / -1; font-weight: normal; }
+form.ban .go { grid-column: 1 / -1; justify-self: end; }
+
+input[type=text], input[type=number] {
+    font: inherit;
+    width: 100%;
+    padding: 0.45rem 0.6rem;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--fg);
+}
+
+input[type=number] { max-width: 8rem; }
+input[type=checkbox] { width: 1.2rem; height: 1.2rem; vertical-align: middle; margin-right: 0.4rem; }
+
+button, .button {
+    display: inline-block;
+    font: inherit;
+    font-weight: 600;
+    min-height: 2.5rem;
+    padding: 0.45rem 1rem;
+    border-radius: 6px;
+    border: 1px solid var(--accent);
+    background: var(--accent);
+    color: var(--accent-fg);
+    text-decoration: none;
+    cursor: pointer;
+    text-align: center;
+}
+
+.button.quiet, button.quiet { background: transparent; color: var(--accent); }
+button.danger { background: var(--danger); border-color: var(--danger); color: var(--danger-fg); }
+
+.rows { list-style: none; margin: 0; padding: 0; }
+
+.row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.2rem 1rem;
+    align-items: baseline;
+    padding: 0.55rem 0;
+    border-top: 1px solid var(--line);
+}
+
+.row > * { flex: 1 1 12rem; min-width: 0; overflow-wrap: anywhere; }
+.row > .act { flex: 0 0 auto; margin-left: auto; }
+.row .sub { color: var(--muted); font-size: 0.92rem; }
+.row .refused { color: var(--warn); }
+.fp { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; white-space: nowrap; }
+.empty { color: var(--muted); }
+.warn { color: var(--warn); font-weight: 600; }
+
+details.fold { margin-top: 1.25rem; }
+details.fold > summary { cursor: pointer; font-weight: 600; font-size: 1.1rem; padding: 0.3rem 0; }
+
+/* On a wide screen the folded sections show open (where the browser can do that without script); on a phone they fold. */
+@supports selector(::details-content) {
+    @media (min-width: 700px) {
+        details.fold::details-content { content-visibility: visible; display: block; }
+        details.fold > summary { list-style: none; cursor: default; pointer-events: none; }
+    }
+}
+
+.confirm { max-width: 44rem; }
+.confirm h1 { font-size: 1.4rem; margin: 1rem 0; }
+.confirm dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.35rem 1rem; }
+.confirm dt { font-weight: 600; }
+.confirm dd { margin: 0; overflow-wrap: anywhere; }
+.confirm .buttons { display: flex; flex-wrap: wrap; gap: 0.75rem; justify-content: flex-end; margin-top: 1.25rem; }
+
+footer { display: flex; flex-wrap: wrap; gap: 0.5rem 1.5rem; align-items: center; justify-content: space-between; border-top: 1px solid var(--line); color: var(--muted); }
+footer form { margin: 0; }
+
+@media (max-width: 700px) {
+    header, main, footer { padding: 0.6rem 0.75rem; }
+    form.ban { grid-template-columns: 1fr; }
+    form.ban .hint { grid-column: 1; }
+    form.ban .go, form.ban .go button { width: 100%; }
+    .row { flex-direction: column; gap: 0.15rem; padding: 0.7rem; margin: 0.5rem 0; border: 1px solid var(--line); border-radius: 8px; background: var(--card); }
+    .row > * { flex: 0 0 auto; }
+    .row > .act { margin-left: 0; width: 100%; }
+    .row > .act .button { width: 100%; }
+    .confirm dl { grid-template-columns: 1fr; }
+    .confirm dd { margin-bottom: 0.4rem; }
+    .confirm .buttons > * { flex: 1 1 100%; }
+    button, .button { min-height: 2.9rem; }
+}

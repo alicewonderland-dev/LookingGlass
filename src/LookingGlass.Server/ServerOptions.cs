@@ -36,6 +36,183 @@ public sealed class ServerOptions {
     public AbuseOptions Abuse { get; set; } = new();
     public OperatorOptions Operators { get; set; } = new();
     public AlertOptions Alerts { get; set; } = new();
+    public AdminOptions Admin { get; set; } = new();
+}
+
+/// <summary>
+/// The operator web page (see "The operator web page" in docs/server.md, and "An operator web page, over Tailscale only" in
+/// docs/design.md): a second, small web host in the server process, on a Unix socket (or a loopback port), reached through
+/// <c>tailscale serve</c> only, letting in only the Tailscale logins listed. Off unless <see cref="Listen"/> is set.
+/// </summary>
+public sealed class AdminOptions {
+    /// <summary>The ports Tailscale Funnel can serve: the page is never on one, so it can never share a public port.</summary>
+    public static readonly IReadOnlyList<int> FunnelPorts = [443, 8443, 10000];
+
+    /// <summary>The longest Unix socket path, in bytes (the system's limit is 108 with its ending; a little room is kept).</summary>
+    public const int MaxSocketPathBytes = 100;
+
+    /// <summary>
+    /// Where the page listens: <c>unix:/run/lookingglass/admin.sock</c> (a Unix socket, which only the service's user and root
+    /// can open), or <c>http://127.0.0.1:&lt;port&gt;</c> (loopback, for Windows and Docker; any program on the machine can
+    /// connect to it, so the server warns). Nothing else: the page is reached through <c>tailscale serve</c> alone. Empty: no page.
+    /// </summary>
+    public string Listen { get; set; } = "";
+
+    /// <summary>
+    /// The page's address as <c>tailscale serve</c> gives it, such as <c>https://&lt;machine&gt;.&lt;tailnet&gt;.ts.net:8444/</c>:
+    /// requests must have been asked for at it (<c>X-Forwarded-Host</c>), forms must come from it (<c>Origin</c>), and alerts link it.
+    /// Required with <see cref="Listen"/>; HTTPS, a fully qualified name, a port that isn't one Funnel serves, and no path.
+    /// </summary>
+    public string Url { get; set; } = "";
+
+    /// <summary>The Tailscale accounts let in (<c>alice@github</c>), compared ignoring case. Required with <see cref="Listen"/>.</summary>
+    public string[] TailscaleLogins { get; set; } = [];
+
+    /// <summary>The time zone the page shows times in, as an IANA name (<c>Europe/London</c>); <c>UTC</c> by default.</summary>
+    public string TimeZone { get; set; } = "UTC";
+
+    /// <summary>
+    /// More addresses or prefixes counted as this machine's own, whose requests the page refuses whatever their login (as it does
+    /// its own interfaces' addresses): in Docker, the host's tailnet addresses (its 100.x and fd7a:115c:a1e0:: ones), which are on
+    /// no interface the container sees. Empty by default.
+    /// </summary>
+    public string[] OwnAddresses { get; set; } = [];
+
+    /// <summary>The <see cref="OwnAddresses"/>, as networks (once <see cref="Problem"/> has found nothing wrong).</summary>
+    public IReadOnlyList<System.Net.IPNetwork> OwnNetworks =>
+        this.OwnAddresses.Where(entry => !string.IsNullOrWhiteSpace(entry)).Select(Admin.LocalAddresses.ParseNetwork).OfType<System.Net.IPNetwork>().ToList();
+
+    /// <summary>Whether the page is on: <see cref="Listen"/> is set.</summary>
+    public bool On => !string.IsNullOrWhiteSpace(this.Listen);
+
+    /// <summary>The Unix socket's path, if <see cref="Listen"/> is one (once <see cref="Problem"/> has found nothing wrong).</summary>
+    public string? SocketPath => this.Listen.Trim() is var listen && listen.StartsWith("unix:", StringComparison.OrdinalIgnoreCase) ? listen[5..] : null;
+
+    /// <summary>The loopback address and port, if <see cref="Listen"/> is one (once <see cref="Problem"/> has found nothing wrong).</summary>
+    public System.Net.IPEndPoint? LoopbackEndPoint =>
+        this.SocketPath == null && Uri.TryCreate(this.Listen.Trim(), UriKind.Absolute, out var uri) && System.Net.IPAddress.TryParse(uri.Host.Trim('[', ']'), out var address)
+            ? new System.Net.IPEndPoint(address, uri.Port)
+            : null;
+
+    /// <summary>The page's address, ending in "/" (once <see cref="Problem"/> has found nothing wrong); null without one.</summary>
+    public Uri? PageUri => Uri.TryCreate(this.Url.Trim(), UriKind.Absolute, out var uri) ? new Uri(uri.GetLeftPart(UriPartial.Authority) + "/") : null;
+
+    /// <summary>The page's address as alerts link it (<c>https://machine.tailnet.ts.net:8444/</c>), or null when there is no page.</summary>
+    public string? PageLink => this.On ? this.PageUri?.ToString() : null;
+
+    /// <summary>The logins let in, as listed (blank entries left out).</summary>
+    public IReadOnlyList<string> Logins => this.TailscaleLogins.Where(login => !string.IsNullOrWhiteSpace(login)).Select(login => login.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+    /// <summary>The time zone (once <see cref="Problem"/> has found nothing wrong): <see cref="TimeZoneInfo.Utc"/> for <c>UTC</c> or empty.</summary>
+    public TimeZoneInfo Zone => FindZone(this.TimeZone) ?? TimeZoneInfo.Utc;
+
+    private static TimeZoneInfo? FindZone(string? name) {
+        if (string.IsNullOrWhiteSpace(name) || string.Equals(name.Trim(), "UTC", StringComparison.OrdinalIgnoreCase)) {
+            return TimeZoneInfo.Utc;
+        }
+
+        try {
+            return TimeZoneInfo.FindSystemTimeZoneById(name.Trim());
+        } catch (Exception ex) when (ex is TimeZoneNotFoundException or InvalidTimeZoneException) {
+            return null;
+        }
+    }
+
+    // A fully qualified name: letters, digits and hyphens, in two parts or more (nothing Discord's markdown or HTML acts on).
+    private static readonly System.Text.RegularExpressions.Regex HostShape =
+        new(@"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// Why the settings are wrong (the server doesn't start then), or null if they aren't. The time zone is checked whether the
+    /// page is on or not.
+    /// </summary>
+    /// <param name="publicUrls">Where the public server listens (the top-level <c>Urls</c>, as <c>--urls</c> gives it): never the page's port.</param>
+    public string? Problem(string? publicUrls = null) {
+        if (FindZone(this.TimeZone) == null) {
+            return $"LookingGlass:Admin:TimeZone is \"{Services.VisibleText.Of(this.TimeZone.Trim(), 60)}\", so the server won't start: this machine doesn't know " +
+                   "that time zone. It must be an IANA name, such as Europe/London or America/New_York (on Windows, where the server has no IANA names, " +
+                   "Windows' own, such as GMT Standard Time), or UTC (the default).";
+        }
+
+        if (!this.On) {
+            return string.IsNullOrWhiteSpace(this.Url) ? null
+                : "LookingGlass:Admin:Url is set but LookingGlass:Admin:Listen isn't, so the server won't start: the address is the operator web page's, " +
+                  "which listens only where Listen says (unix:/run/lookingglass/admin.sock). Set both, or neither.";
+        }
+
+        var listen = Services.VisibleText.Of(this.Listen.Trim(), 200);
+        const string where = "unix:/run/lookingglass/admin.sock (a Unix socket, on Linux) or http://127.0.0.1:<port> (loopback only, for Windows and " +
+                             "Docker), never an address other machines can reach: the page is reached through tailscale serve alone, which does the HTTPS.";
+        if (this.SocketPath is { } path) {
+            if (!Path.IsPathFullyQualified(path) || !path.EndsWith(".sock", StringComparison.Ordinal)) {
+                return $"LookingGlass:Admin:Listen is \"{listen}\", so the server won't start: a Unix socket must be a full path to a file ending in .sock " +
+                       "(unix:/run/lookingglass/admin.sock), which the server makes, and replaces when a stale one is left there.";
+            }
+
+            if (System.Text.Encoding.UTF8.GetByteCount(path) > MaxSocketPathBytes) {
+                return $"LookingGlass:Admin:Listen is \"{listen}\", so the server won't start: a Unix socket's path can be at most {MaxSocketPathBytes} bytes long.";
+            }
+
+            if (Path.GetDirectoryName(path) is not { } folder || !Directory.Exists(folder)) {
+                return $"LookingGlass:Admin:Listen is \"{listen}\", so the server won't start: the folder it is in doesn't exist. The unit's " +
+                       "RuntimeDirectory=lookingglass makes /run/lookingglass (update the server with the installer, which brings the new unit).";
+            }
+        } else if (!Uri.TryCreate(this.Listen.Trim(), UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttp
+                   || !System.Net.IPAddress.TryParse(uri.Host.Trim('[', ']'), out var address) || !System.Net.IPAddress.IsLoopback(address)
+                   || uri.AbsolutePath != "/" || uri.Query.Length > 0 || uri.UserInfo.Length > 0) {
+            return $"LookingGlass:Admin:Listen is \"{listen}\", so the server won't start: it must be {where}";
+        } else if (uri.IsDefaultPort || !this.Listen.Contains($":{uri.Port.ToString(System.Globalization.CultureInfo.InvariantCulture)}", StringComparison.Ordinal)) {
+            return $"LookingGlass:Admin:Listen is \"{listen}\", so the server won't start: give the port, as in http://127.0.0.1:5181.";
+        } else if (PublicPorts(publicUrls).Contains(uri.Port)) {
+            return $"LookingGlass:Admin:Listen is \"{listen}\", so the server won't start: port {uri.Port} is the public server's (Urls, or --urls). " +
+                   "The page needs a port of its own (such as 5181), or better, a Unix socket.";
+        }
+
+        if (string.IsNullOrWhiteSpace(this.Url)) {
+            return "LookingGlass:Admin:Listen is set but LookingGlass:Admin:Url isn't, so the server won't start: Url is the page's address as tailscale " +
+                   "serve gives it (https://<machine>.<tailnet>.ts.net:8444/), which every request must have been asked for at.";
+        }
+
+        var url = Services.VisibleText.Of(this.Url.Trim(), 200);
+        if (!Uri.TryCreate(this.Url.Trim(), UriKind.Absolute, out var page) || page.Scheme != Uri.UriSchemeHttps || !HostShape.IsMatch(page.Host)
+            || page.AbsolutePath != "/" || page.Query.Length > 0 || page.Fragment.Length > 0 || page.UserInfo.Length > 0) {
+            return $"LookingGlass:Admin:Url is \"{url}\", so the server won't start: it must be the page's address as tailscale serve gives it, " +
+                   "https://<machine>.<tailnet>.ts.net:8444/: HTTPS, the machine's full name, a port, and nothing after the last /.";
+        }
+
+        if (page.IsDefaultPort || FunnelPorts.Contains(page.Port)) {
+            return $"LookingGlass:Admin:Url is \"{url}\", so the server won't start: it is on port {page.Port}, which Tailscale Funnel can serve (Funnel " +
+                   "serves only ports 443, 8443 and 10000, and the public server is on one of them). The page must be on another, such as 8444, so " +
+                   "it can never share a public port: https://<machine>.<tailnet>.ts.net:8444/.";
+        }
+
+        if (this.Logins.Count == 0) {
+            return "LookingGlass:Admin:Listen is set but LookingGlass:Admin:TailscaleLogins lists nobody, so the server won't start: list the Tailscale " +
+                   "accounts let in (LookingGlass__Admin__TailscaleLogins__0=alice@github), as the Tailscale admin console's Users page shows them.";
+        }
+
+        foreach (var entry in this.OwnAddresses.Where(entry => !string.IsNullOrWhiteSpace(entry))) {
+            if (Admin.LocalAddresses.ParseNetwork(entry) == null) {
+                return $"LookingGlass:Admin:OwnAddresses lists \"{Services.VisibleText.Of(entry.Trim(), 60)}\", so the server won't start: each entry must be " +
+                       "an address (100.101.102.103) or a prefix (fd7a:115c:a1e0::/48), such as the Docker host's tailnet addresses (tailscale ip on the host).";
+            }
+        }
+
+        foreach (var login in this.Logins) {
+            if (login.Length > 200 || !login.Contains('@') || login.Any(c => char.IsWhiteSpace(c) || char.IsControl(c)) || !Services.VisibleText.IsVisible(login)) {
+                return $"LookingGlass:Admin:TailscaleLogins lists \"{Services.VisibleText.Of(login, 60)}\", so the server won't start: each entry must be a " +
+                       "Tailscale login, as the Tailscale admin console's Users page shows it (alice@github, alice@example.com), with no spaces.";
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>The ports in a <c>Urls</c> setting (semicolon-separated addresses).</summary>
+    private static IEnumerable<int> PublicPorts(string? urls) =>
+        (urls ?? "").Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Select(entry => Uri.TryCreate(entry.Replace("://*", "://localhost", StringComparison.Ordinal).Replace("://+", "://localhost", StringComparison.Ordinal), UriKind.Absolute, out var uri) ? uri.Port : -1)
+        .Where(port => port > 0);
 }
 
 /// <summary>

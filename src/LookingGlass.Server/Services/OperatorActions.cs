@@ -99,7 +99,7 @@ public sealed record OperatorView(IReadOnlyList<ShownBan> InForce, IReadOnlyList
 /// <summary>
 /// The operator's actions, written once for every tool (see "Operator actions, one layer for every tool" in docs/design.md):
 /// list the flags and bans, ban, lift a ban, list the operator characters and pin their keys, and let a key sign in again.
-/// Each tool (the command line now; the web page and the plugin later) asks this, and <see cref="OperatorPolicy"/> says what
+/// Each tool (the command line and the web page now; the plugin later) asks this, and <see cref="OperatorPolicy"/> says what
 /// it may do. Every attempt to change something, refused ones too, goes into the audit trail (<c>operator_log</c>), kept
 /// <see cref="AuditKeptDays"/> days, a change's entry in the same transaction as the change; every ban and lift records the
 /// tool and who.
@@ -201,7 +201,15 @@ public sealed class OperatorActions(Database db, OperatorSettings settings, Time
     /// replaced. Recorded in the audit trail either way.
     /// </summary>
     /// <param name="force">The server's own or its proxy's address is meant (and, on the command line, an operator character).</param>
-    public OperatorResult Ban(OperatorActor actor, string whom, int? days, string? reason, bool force = false) {
+    public OperatorResult Ban(OperatorActor actor, string whom, int? days, string? reason, bool force = false) => this.BanOrCheck(actor, whom, days, reason, force, change: true);
+
+    /// <summary>
+    /// What <see cref="Ban"/> would do, without doing it or recording anything: whom it names and whether the rules allow it,
+    /// now (the web page's confirmation page shows this; the ban itself is checked again when confirmed).
+    /// </summary>
+    public OperatorResult CheckBan(OperatorActor actor, string whom, int? days, string? reason, bool force = false) => this.BanOrCheck(actor, whom, days, reason, force, change: false);
+
+    private OperatorResult BanOrCheck(OperatorActor actor, string whom, int? days, string? reason, bool force, bool change) {
         actor = Clean(actor);
         whom = CleanWhom(whom);
         reason = string.IsNullOrWhiteSpace(reason) ? null : reason.Trim();
@@ -209,14 +217,16 @@ public sealed class OperatorActions(Database db, OperatorSettings settings, Time
         var detail = (days is { } d ? $"for {Days(d)}" : "until lifted") + (reason != null ? $". Reason: {VisibleText.Of(reason, MaxReasonLength)}" : "");
         lock (this._changing) {
             var now = this.Now;
+            OperatorResult Refused(OperatorResult result) => change ? this.Record(actor, Actions.Ban, result, detail, now) : result;
+
             if (days is < 1 or > MaxDays || reason is { Length: > MaxReasonLength } || (reason != null && !TextSanitizer.IsPlain(reason))) {
-                return this.Record(actor, Actions.Ban, new OperatorResult(OperatorRefusal.NotValid, whom,
-                    $"A ban lasts 1 to {MaxDays} days, or until lifted, and its reason is one line of plain text, at most {MaxReasonLength} characters."), detail, now);
+                return Refused(new OperatorResult(OperatorRefusal.NotValid, whom,
+                    $"A ban lasts 1 to {MaxDays} days, or until lifted, and its reason is one line of plain text, at most {MaxReasonLength} characters."));
             }
 
             var subject = this.Resolve(whom);
             if (!subject.Done) {
-                return this.Record(actor, Actions.Ban, subject, detail, now);
+                return Refused(subject);
             }
 
             var proxy = subject.Address != null ? ClientAddresses.ProxyProblem(subject.Address, settings.TrustedProxies) : null;
@@ -226,8 +236,11 @@ public sealed class OperatorActions(Database db, OperatorSettings settings, Time
                 : db.CountOperatorBans(OperatorPolicy.Code(actor.Tool), now - 3600, rules.BansPerHourPerOperator ? actor.UserId ?? -1 : null);
             var refusal = OperatorPolicy.Check(actor.Tool, OperatorAction.Ban, target, force, bansThisHour);
             if (refusal != OperatorRefusal.None) {
-                return this.Record(actor, Actions.Ban, subject with { Refusal = refusal, Why = this.WhyNot(refusal, actor.Tool, subject.Whom, proxy), Problem = proxy },
-                    detail, now);
+                return Refused(subject with { Refusal = refusal, Why = this.WhyNot(refusal, actor.Tool, subject.Whom, proxy), Problem = proxy });
+            }
+
+            if (!change) {
+                return subject with { Problem = proxy };
             }
 
             var expires = days is { } count ? now + count * 86400L : (long?) null;
@@ -239,7 +252,11 @@ public sealed class OperatorActions(Database db, OperatorSettings settings, Time
     }
 
     /// <summary>Lifts the ban in force on a character or an address (exactly as written), if <paramref name="actor"/>'s tool may.</summary>
-    public OperatorResult Lift(OperatorActor actor, string whom) {
+    /// <param name="banId">
+    /// The ban a confirmation page showed: lifted only if it is still the one in force on the subject (not one that replaced it
+    /// since, unseen); null for whatever ban is in force.
+    /// </param>
+    public OperatorResult Lift(OperatorActor actor, string whom, long? banId = null) {
         actor = Clean(actor);
         whom = CleanWhom(whom);
         lock (this._changing) {
@@ -250,6 +267,14 @@ public sealed class OperatorActions(Database db, OperatorSettings settings, Time
             }
 
             var refusal = OperatorPolicy.Check(actor.Tool, OperatorAction.Lift, new PolicyTarget(subject.Address != null));
+            if (refusal == OperatorRefusal.None && banId is { } shown
+                && !db.GetActiveBans(now).Any(ban => ban.BanId == shown && ban.UserId == subject.UserId && ban.Address == subject.Address)) {
+                return this.Record(actor, Actions.Lift, subject with {
+                    Refusal = OperatorRefusal.NothingToLift,
+                    Why = $"The ban on {subject.Whom} that was shown isn't in force any more (it ended, or was lifted or replaced since). Nothing was lifted.",
+                }, "", now);
+            }
+
             if (refusal == OperatorRefusal.None &&
                 db.LiftBans(subject.UserId, subject.Address, now, OperatorPolicy.Code(actor.Tool), actor.Who, Row(actor, Actions.Lift, subject, "", now)) == 0) {
                 refusal = OperatorRefusal.NothingToLift;

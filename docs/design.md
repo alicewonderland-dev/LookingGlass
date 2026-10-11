@@ -50,8 +50,8 @@ membership log, online indicators, blocking, channel windows (pop-out chat),
 message catch-up (what was sent while you were away), an opt-in chat log on the
 player's computer, local chat with friends near you (`/lgl`), flags for abuse
 and the operator's bans (with an audit trail, alerts to the operator's Discord
-channel, and one layer of rules that the planned web page and plugin panel
-will share), and debug tooling. Part of the ChatTwo integration is
+channel, an operator web page over Tailscale only, and one layer of rules that
+the page and the planned plugin panel share), and debug tooling. Part of the ChatTwo integration is
 built: sticky mode through ChatTwo's input (with its typed-text check) and
 **Invite to LookingGlass** in ChatTwo's right-click menu. Channel names and
 colours for ChatTwo's own tabs and filters aren't, as they need a change on
@@ -4400,11 +4400,12 @@ uses it is in [server.md](server.md#flags-and-bans).
 
 ### Banning is the operator's decision
 
-- **No automatic permanent ban.** A ban is made from the server's command
-  line (the server runs as a service, and has no admin interface yet; a web
-  page over Tailscale and a panel in the plugin are planned, on the same
-  rules: see
-  [Operator actions, one layer for every tool](#operator-actions-one-layer-for-every-tool)), safely
+- **No automatic permanent ban.** A ban is made by the operator: on the
+  operator web page, over Tailscale only (see
+  [The operator web page](#the-operator-web-page); a panel in the plugin is
+  planned, on the same rules: see
+  [Operator actions, one layer for every tool](#operator-actions-one-layer-for-every-tool)),
+  or from the server's command line, safely
   while the service runs, as `--backup` is: `--ban <name@world | user ID |
   address or prefix> [--days N] [--reason "..."]`, `--unban <the same>`, and
   `--bans`, which lists the bans in force (and who made each), the flags, and
@@ -4466,8 +4467,9 @@ Built on 2026-10-10, as the first step of the operator tools plan
 ([operator-tools-plan.md](operator-tools-plan.md), approved by the owner the
 same day). Banning needs SSH and a command. The owner asked (2026-10-10) for a
 web page, a panel in the plugin, and Discord alerts, designed together (the
-alerts are built: see [Alerts to a Discord channel](#alerts-to-a-discord-channel);
-the other two are still planned: see [Planned features](#planned-features)). All three, and the
+alerts and the page are built: see [Alerts to a Discord channel](#alerts-to-a-discord-channel)
+and [The operator web page](#the-operator-web-page); the panel is still
+planned: see [Planned features](#planned-features)). All three, and the
 command line, go through one server service, `OperatorActions`: list the
 flags and the bans, ban, lift a ban, list the plugin's operator characters
 and pin their keys, and let a key sign in again, with the command line's
@@ -4490,8 +4492,8 @@ tool may do:
 | Let a key sign in again | Yes (`--allow-key-login`) | No (not at first) | No |
 | Who is recorded | The Unix user (`SUDO_USER`) | The Tailscale login | The operator character |
 
-- **Applied at once** when made inside the server (the web page and the
-  plugin, when they come): the service rereads the bans and closes the
+- **Applied at once** when made inside the server (the web page, and the
+  plugin when it comes): the service rereads the bans and closes the
   connections they cover. The command line is another process, so its bans
   apply within `Abuse:BanCheckSeconds`, as before.
 - **Recorded.** Each ban and lift records which tool made or lifted it, and
@@ -4524,8 +4526,8 @@ tool may do:
   `operator_pins` table holds each one's pinned key hash (the full
   `IdentityKeys.KeyHash`, shown as the fingerprint), set only by
   `--operator-pin <whom> --fingerprint "..."` (pinned only if the fingerprint
-  typed is the current keys'), and later by the web page, never
-  automatically. A listed character is an operator only while its account's
+  typed is the current keys') and by the web page's confirmation page (only
+  the keys it showed), never automatically. A listed character is an operator only while its account's
   current keys hash to the pin, compared in full; registering again with new
   keys drops it, and nothing re-pins by itself. The pins of characters no
   longer listed are deleted at startup, and how each listed one stands is
@@ -4565,7 +4567,7 @@ remember to look. How to set it up is in
   the server, which says what is wrong without quoting it. The
   `--alert-test` command first planned is dropped: only the service reads the
   secret, so the `LG` helper can't post. The restart alert shows alerts work;
-  the web page's **Send a test alert** (step 3) will post one at will.
+  the web page's **Send a test alert** posts one at will.
 - **What is posted:** someone flagged (a character or an address, the limits,
   how often); an address blocked automatically; a ban made or lifted with any
   tool, saying which (the command line, the web page, or the plugin with the
@@ -4575,19 +4577,19 @@ remember to look. How to set it up is in
   signing in with keys that aren't its pin, once for each new set of keys (a
   listed character never pinned was never an operator, and isn't posted); the
   proxy warning (every player seeming to come from 127.0.0.1); a request to
-  the web page through Funnel (the page raises it, in step 3; at most one
+  the web page through Funnel (the page raises it; at most one
   alert every ten minutes, counting the rest, so the public can't make it
   ping again and again); the server starting, with its version and whether it
   last stopped cleanly (a marker written when it stops; `Alerts:Restarts`
   turns the alert off); and a daily summary. Bans that run out aren't posted
   one by one: the summary counts them. Each alert says what to do next with a
   command to copy (`LG --bans`, `LG --unban 31337`; never `--force`, and never
-  a full address), and links the character's Lodestone page. The web page's
-  link comes with the page (`Admin:Url` isn't a setting yet).
+  a full address), and links the character's Lodestone page and, with the
+  operator web page on, the page (`Admin:Url`) as well as the command.
 - **Posted once, by the server.** The command line is another process, and
   never sees the webhook, so the running server posts every ban and lift
   when it sees it in the database: at once for those made inside it (the web
-  page and the plugin, when they come), and within `Abuse:BanCheckSeconds`
+  page, and the plugin when it comes), and within `Abuse:BanCheckSeconds`
   for the command line's, when it picks them up. Each is marked as posted
   (`bans.made_announced`, `lifted_announced`) before it is posted, so none is
   posted twice, by any number of looks or across restarts; at worst one is
@@ -4664,6 +4666,110 @@ remember to look. How to set it up is in
   replacements, pins, the other keys once per set, the restart alert and the
   daily summary's hour), and steps in the bans checklist with a private test
   channel.
+
+### The operator web page
+
+Built on 2026-10-10, as step 3 of the operator tools plan
+([operator-tools-plan.md](operator-tools-plan.md#the-web-page), whose mockups
+are the pages), approved by the owner the same day. So a ban can be made
+without SSH or logging in to the game, from a phone say. The owner's
+decision: **Tailscale only**, never on the public internet. How to set it up
+is in [server.md](server.md#the-operator-web-page).
+
+- **Its own listener.** A second, small web host inside the server process,
+  with the page alone (no `/ws`, no `/health`), on a Unix socket
+  (`/run/lookingglass/admin.sock`, made in the unit's `RuntimeDirectory`, mode
+  0700, and set to 0600 by the server itself, so only the service's user and
+  root can open it), or a loopback port (`http://127.0.0.1:5181`, for Windows
+  and Docker, with a warning at startup: any program on the machine could
+  connect and claim to be an allowed login). The public host has no route to
+  the page at all, so nothing in front of it (Funnel, Caddy) can reach it,
+  however it is set up. Any other address is refused at start, and so is the
+  public server's own port. A stale socket is replaced; one something answers
+  on (another server), or a file or link in its place, is left alone. On
+  Linux the socket's folder must be the service user's own, writable by
+  nobody else. If the page can't start where its settings say, the chat
+  server runs on without it (the owner's default, 2026-10-11), with an error
+  in the log and an urgent alert; settings wrong in themselves still stop the
+  server.
+- **Reached through `tailscale serve`** on the tailnet, on an HTTPS port
+  Funnel can't use (`Admin:Url`, such as
+  `https://<machine>.<tailnet>.ts.net:8444/`); the server won't start with it
+  on 443, 8443 or 10000, which Funnel serves, nor with anything but a plain
+  https address with the machine's full name and a port.
+- **Only listed logins.** `tailscale serve` removes the identity headers a
+  request brings and sets `Tailscale-User-Login` from the tailnet's record of
+  the device (none for a tagged device, or Funnel, which it marks
+  `Tailscale-Funnel-Request`). A request from the server itself comes from the
+  server's own tailnet address, so it carries the server's own login, the
+  owner's on an untagged server (found by the review, 2026-10-11): so a
+  request whose `X-Forwarded-For` is one of the machine's own addresses (or
+  that has none) is refused, whatever its login; tagging the server's node
+  is stronger still, and required in Docker or with tailscaled in
+  userspace-networking mode, where the server can't see its tailnet address
+  on an interface (or list those addresses in `Admin:OwnAddresses`, counted
+  as the machine's own). The page lets a request in only when its login is
+  exactly one of `Admin:TailscaleLogins` (ignoring case), no
+  `Tailscale-Funnel-Request` is there, it came from another device, and
+  `X-Forwarded-Host` is exactly `Admin:Url`'s name and port. Everything else gets 403 and the same words
+  ("Not allowed. This page is only for this server's operators, ..."),
+  never which check failed; the log says that, at most once a minute,
+  counting the rest. A request through Funnel also raises the urgent alert.
+- **What it shows and does** (the mockups): counts; **Ban someone**, whose
+  **Continue...** leads to a confirmation page (only its button bans); flags
+  with full addresses, Lodestone links and **Ban...** (filling the form in,
+  with 7 days); bans in force with who made each and with which tool, and
+  **Lift...** through a confirmation page; bans lifted or ended in the last 90
+  days; the listed operator characters with pinned and current fingerprints
+  and **Pin...** or **Restore operator status...** through a confirmation page
+  (old and new fingerprints, when the keys changed, and the advice to compare
+  with the plugin's Settings); the last 50 audit entries; **Send a test
+  alert**. Everything goes through `OperatorActions` as the web page, by the
+  Tailscale login, from the device's tailnet address (`X-Forwarded-For`), so the
+  policy table holds (30 bans an hour, no operator character, no key login
+  allowed again), and every ban, lift and pin is in the audit trail and posted
+  to Discord at once.
+- **Plain and safe.** Server-made HTML and one stylesheet built into the
+  server: no script at all, nothing from another site, no cookies. One column
+  below about 700 pixels, big buttons, the device's light or dark setting;
+  the last sections fold with HTML's own `<details>` (open by themselves on a
+  wide screen where the browser allows it; **Operators** opens while one
+  needs pinning or restoring). Every answer carries a Content Security Policy
+  allowing only the page's own stylesheet and forms (`default-src 'none';
+  style-src 'self'; img-src 'self'; form-action 'self'; frame-ancestors
+  'none'; base-uri 'none'`), `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: same-origin` (no other site learns the page's address)
+  and `Cache-Control: no-store`; an unexpected error is answered by the page
+  with them too. Everything
+  shown from outside (names, worlds, reasons, limits, logins) is shown
+  visibly first (control and format characters as escapes) and HTML-encoded.
+- **Forms and CSRF.** The identity headers come with every request from an
+  allowed device, as a cookie would, so another site the owner opens could
+  send a form. So nothing changes on a GET (the confirmation pages
+  themselves are GETs or answers to the first form, and change nothing);
+  every form carries a token, an HMAC under a key made at each start and never
+  stored, of the login, the time, a nonce, and the action: on a confirmation
+  page the exact ban (whom, days, the reason's hash, the tick box), lift (the
+  ban's ID, so a ban that replaced it meanwhile isn't lifted unseen) or pin
+  (the character and the full hash of the keys shown, so keys that changed
+  again aren't pinned unseen). A token works once, for 30 minutes; after a
+  restart, an old form says the page is out of date. A form's `Origin` must
+  be exactly `Admin:Url`'s (never `null`), and a `Sec-Fetch-Site` that is
+  there must say same-origin; only without an Origin may `Sec-Fetch-Site:
+  same-origin` alone stand for it. (The plan's `no-referrer` became
+  `same-origin` in the review: `no-referrer` makes browsers send `Origin:
+  null` with the page's own forms.)
+- **Times in the owner's time zone** (owner, 2026-10-10): `Admin:TimeZone`, an
+  IANA name, UTC by default, each time with the zone's abbreviation ("14:02
+  BST"; the Linux server names zones by their abbreviations; where the system
+  has none, as on Windows, the offset from UTC: "UTC+1"). The server won't
+  start with a name it doesn't know, page or not. `--bans` stays in UTC.
+- **After an action**, the page goes back to the main page (a redirect, so
+  reloading it does nothing again) with a line saying what was done, kept a
+  few minutes in memory for that login only.
+- **Not on the page:** `--allow-key-login`, settings, anything about channels
+  or messages.
+
 ### Chosen defaults (confirmed by the owner, 2026-10-08)
 
 - Window 60 minutes; flagged if refused by limits in at least 30 different
@@ -4696,6 +4802,9 @@ remember to look. How to set it up is in
   listed address that isn't `wss://` with a fully qualified name. One line at
   startup says how it is set up.
 - `/health` says only that it is up, and its version.
+- The operator web page, when turned on, has a listener of its own (a Unix
+  socket in `/run/lookingglass`), reached through `tailscale serve` on the
+  tailnet only (see [The operator web page](#the-operator-web-page)).
 - The database is one SQLite file in WAL mode. The server only checkpoints
   PASSIVE, so Litestream can replicate it; `LookingGlass.Server --backup`
   makes an online backup for hosts without it.
@@ -4733,6 +4842,10 @@ How to build, configure, deploy, back up and restore a server is in
   audit trail and its sweep, operator pins, a ban applying at once, schema
   12's upgrade on a copy of a filled database, and an older server's writes),
   Discord alerts (against a fake webhook: what is posted, and how, once),
+  the operator web page (fake Tailscale headers: who gets in, Funnel, the
+  two hosts, the startup refusals, real loopback and Unix socket listeners,
+  tokens and Origin against another site, the headers on every answer,
+  encoding, every page and action, times across a daylight-saving change),
   end-to-end flows, local chat (who gets it, what the server checks and what
   a receiver shows), keys' maximum age (with a moved clock: a week is too long
   to wait in game), and malicious-server and malicious-member suites that
@@ -4824,46 +4937,6 @@ already, `TextCommands.Split`), so links keep their places. If the gate fails,
 or GagSpeak is gone, the message is sent as typed (it is cosmetic), with a
 warning in the log that never holds the text. The same words in simple and
 advanced mode.
-
-### An operator web page, over Tailscale only
-
-Status: planned, approved (owner, 2026-10-10), not started; step 3 of
-[operator-tools-plan.md](operator-tools-plan.md#the-web-page). It will go
-through [Operator actions](#operator-actions-one-layer-for-every-tool), which
-is built.
-
-So a ban can be made without logging in to the game. The owner's decision:
-**Tailscale only**, never on the public internet.
-
-- **Its own listener:** a second, small web host in the server process with
-  only the page's routes, on a Unix socket (`/run/lookingglass/admin.sock`,
-  only the service user and root can open it), or loopback TCP with a
-  warning. The public host has no admin routes, so nothing in front of it
-  can reach the page.
-- **Reached through `tailscale serve`**, tailnet only, on an HTTPS port Funnel
-  can't use (not 443, 8443 or 10000; the server won't start otherwise), such
-  as `https://<machine>.<tailnet>.ts.net:8444/`.
-- **Only listed Tailscale accounts** (`Admin:TailscaleLogins`): `tailscale
-  serve` strips identity headers a request brings and sets
-  `Tailscale-User-Login` from the tailnet's record of the device (none for
-  tagged devices, the machine itself, or Funnel, which it marks
-  `Tailscale-Funnel-Request`). Anything without a listed login, marked as
-  Funnel, or asked for under another name gets 403; a Funnel request also
-  raises an urgent alert.
-- **What it shows:** counts; a ban form with a confirmation page; flags with
-  full addresses and Lodestone links; bans in force with who made each and
-  **Lift...**; bans lifted or ended in 90 days; the plugin's operators, each
-  with its pinned and current fingerprints and **Pin...** or **Restore
-  operator status...** where they differ; the last 50 audit entries; a
-  **Send a test alert** button.
-- **Times in the owner's time zone** (owner, 2026-10-10): `Admin:TimeZone`,
-  an IANA name (UTC by default), each time with the zone's abbreviation;
-  `--bans` stays in UTC.
-- **Plain and safe:** server-rendered HTML and one stylesheet, no JavaScript,
-  nothing from other sites, no cookies; works on a phone. Forms carry tokens
-  bound to the login and the exact action, `Origin` must be the page's own,
-  nothing changes on a GET, and a strict Content Security Policy (no script,
-  no framing), `no-store` and `no-referrer` on every answer.
 
 ### An operator panel in the plugin
 
@@ -5291,6 +5364,55 @@ The owner's decisions, and why.
   that posts follows no redirect; a pin is posted with when it was made. The web
   page's link isn't in the alerts until the page exists: `Admin:Url` is
   checked against `Admin:Listen`, which comes with it.
+- **Operator web page built (2026-10-10)**, as the plan says (see
+  [The operator web page](#the-operator-web-page)). Choices made in building
+  it, where the plan was silent: the page's host is a second web host with
+  one request handler and no routing, sharing the server's services; the
+  socket is set to 0600 by the server too (not only by the unit's umask), a
+  stale socket file is replaced, and one something answers on is refused; a
+  loopback `Listen` must be an IP literal (127.0.0.1 or ::1) with its port,
+  never the public server's port, and a socket path must end in `.sock`;
+  `Admin:Url` must be a plain https address with the machine's full name, an
+  explicit port and no path, and is refused without `Admin:Listen`; logins
+  must look like logins (an `@`, no spaces); the time zone is checked even
+  without the page. Every form's token is single-use (the plan said so for
+  confirmation pages; it is so for the main form and the test alert too), and
+  a lift's token names the ban's ID, so a ban that replaced it meanwhile isn't
+  lifted unseen (`OperatorActions.Lift` takes the ID, and refuses then, in the
+  audit trail). **Continue...** checks the rules without recording anything
+  (`OperatorActions.CheckBan`); only a confirmed ban is an attempt in the
+  audit trail. After an action the page redirects to itself, with the line
+  saying what was done kept in memory for 10 minutes, for that login. Times
+  without an abbreviation from the system (Windows) show their offset from
+  UTC. The pin page's "Its plugin sees the Operator section from its next
+  login" is left out until the plugin's panel exists. The wide-screen layout
+  opens the folded sections where the browser supports `::details-content`;
+  elsewhere they open with a click (opening them on a wide screen in any
+  other way would need script).
+- **Operator web page review (2026-10-11).** An independent review found
+  that a request from the server itself, through `tailscale serve`, carries
+  the server's own Tailscale login (the owner's, on an untagged server), so
+  any program there could have reached the page as the owner, around the
+  socket's permissions: the page now refuses any request whose
+  `X-Forwarded-For` is one of the machine's own addresses (read again
+  whenever an address isn't among those known), or that has none; tagging
+  the server's node is the stronger choice, and server.md says so. Also from
+  the review: `Referrer-Policy: same-origin` instead of `no-referrer` (which
+  made browsers send `Origin: null` with the page's own forms), and `Origin`
+  must be exactly the page's, with `Sec-Fetch-Site` same-origin when present;
+  the page's host has no lifetime of its own; unexpected errors are answered
+  with the security headers; on Linux the socket's folder must be the
+  service user's own and private, a link or file in the socket's place is
+  never followed or deleted, and the socket is made 0600. The owner's
+  default for now: if the page can't start where its settings say, the chat
+  server runs on without it, with an error and an urgent alert (wrong
+  settings still stop the server). A second review (2026-10-11) added
+  `Admin:OwnAddresses` for Docker and userspace networking (where tagging the
+  node, or that setting, is required), moved the address check after the
+  login checks (so only a listed login's requests make the server read its
+  interfaces again), made an unreadable interface list refuse every request
+  rather than stop the server or let one in, and has the startup line say the
+  page is starting rather than up.
 
 ## Open questions
 
@@ -5342,4 +5464,4 @@ The owner's decisions, and why.
   Decisions). Answered (2026-10-10): the owner approved the plan; it is built
   in steps, the first (operator actions, schema 12, `--audit`,
   `--operators`, `--operator-pin`) on 2026-10-10, the second (Discord
-  alerts) the same day.
+  alerts) and the third (the web page) the same day.

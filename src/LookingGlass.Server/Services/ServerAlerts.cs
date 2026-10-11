@@ -56,6 +56,9 @@ public sealed class ServerAlerts : BackgroundService {
     private readonly ILogger _logger;
     private readonly TimeProvider _time;
     private readonly DateTimeOffset _started;
+
+    // The operator web page's address, linked in alerts; null without the page.
+    private readonly string? _page;
     private readonly Channel<bool> _nudges = Channel.CreateBounded<bool>(new BoundedChannelOptions(1) { FullMode = BoundedChannelFullMode.DropWrite });
     private readonly Lock _funnel = new();
     private DateTimeOffset _funnelPosted = DateTimeOffset.MinValue;
@@ -79,7 +82,8 @@ public sealed class ServerAlerts : BackgroundService {
         this._logger = logger;
         this._time = time ?? TimeProvider.System;
         this._started = this._time.GetUtcNow();
-        this.Poster = this._settings.On ? new AlertPoster(this._settings.WebhookUrl, this._settings.RoleId, http, logger, time) : null;
+        this._page = options.Admin.PageLink;
+        this.Poster = this._settings.On ? new AlertPoster(this._settings.WebhookUrl, this._settings.RoleId, http, logger, time) { PageUrl = this._page } : null;
     }
 
     /// <summary>Whether alerts are on (a webhook is set).</summary>
@@ -219,7 +223,7 @@ public sealed class ServerAlerts : BackgroundService {
 
         try {
             var user = flag.UserId is { } id ? this._db.GetUser(id) : null;
-            this.Poster.Post(AlertWords.Flagged(flag, user, Math.Clamp(this._abuse.FlagExpiresAfterHours, 1, 8760)));
+            this.Poster.Post(AlertWords.Flagged(flag, user, Math.Clamp(this._abuse.FlagExpiresAfterHours, 1, 8760), this._page));
         } catch (Exception ex) {
             this._logger.LogWarning(ex, "Couldn't make the alert for {Subject}'s flag", flag.Subject);
         }
@@ -229,7 +233,7 @@ public sealed class ServerAlerts : BackgroundService {
     public void ProxyWarning(string address) => this.Poster?.Post(AlertWords.ProxyWarning(address));
 
     /// <summary>
-    /// The web page was asked for through Tailscale Funnel (step 3 calls this): posted at most every <see cref="FunnelAlertEvery"/>,
+    /// The web page was asked for through Tailscale Funnel (the page calls this): posted at most every <see cref="FunnelAlertEvery"/>,
     /// with how many more came meanwhile, so the public can't make it ping again and again.
     /// </summary>
     public void FunnelRequest() {
@@ -253,7 +257,10 @@ public sealed class ServerAlerts : BackgroundService {
         this.Poster.Post(AlertWords.FunnelRequest(more));
     }
 
-    /// <summary>Posts a test alert, at once (the web page's <b>Send a test alert</b>, step 3).</summary>
+    /// <summary>The operator web page couldn't start where its settings say (the chat server runs on without it): urgent.</summary>
+    public void PageFailed(string why) => this.Poster?.Post(AlertWords.PageFailed(why));
+
+    /// <summary>Posts a test alert, at once (the web page's <b>Send a test alert</b>).</summary>
     /// <returns>False if alerts are off.</returns>
     public bool SendTest() {
         if (this.Poster == null) {
@@ -284,7 +291,7 @@ public sealed class ServerAlerts : BackgroundService {
                 return;
             }
 
-            this.Poster.Post(AlertWords.OperatorOtherKeys(user, pin));
+            this.Poster.Post(AlertWords.OperatorOtherKeys(user, pin, this._page));
         } catch (Exception ex) {
             this._logger.LogWarning(ex, "Couldn't check operator character {UserId}'s keys against its pin for an alert", user.UserId);
         }
@@ -335,7 +342,7 @@ public sealed class ServerAlerts : BackgroundService {
                     this._db.ClaimBanLifted(replaced.BanId);
                 }
 
-                this.Poster.Post(ban.Automatic ? AlertWords.Blocked(ban, this._abuse) : AlertWords.BanMade(ban, user, replaced));
+                this.Poster.Post(ban.Automatic ? AlertWords.Blocked(ban, this._abuse, this._page) : AlertWords.BanMade(ban, user, replaced, this._page));
             } else if (this._db.ClaimBanLifted(ban.BanId) && ban.ReplacedBy == null) {
                 if (at < this._alertsOnSince) {
                     quiet++;
@@ -398,7 +405,7 @@ public sealed class ServerAlerts : BackgroundService {
                 continue;
             }
 
-            this.Poster.Post(AlertWords.OperatorPinned(pin.UserId, users.GetValueOrDefault(pin.UserId), pin, before == null ? null : Convert.FromHexString(before)));
+            this.Poster.Post(AlertWords.OperatorPinned(pin.UserId, users.GetValueOrDefault(pin.UserId), pin, before == null ? null : Convert.FromHexString(before), this._page));
         }
 
         // A pin deleted (its character unlisted) is forgotten here too, so pinning it again is posted.
@@ -429,7 +436,7 @@ public sealed class ServerAlerts : BackgroundService {
         var first = this._summaryPostedTo == null;
         this._summaryPostedTo = due;
         if (!first) {
-            this.Poster.Post(AlertWords.Summary(this.Summarise(due, now)));
+            this.Poster.Post(AlertWords.Summary(this.Summarise(due, now), this._page));
         }
     }
 

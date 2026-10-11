@@ -21,4 +21,9 @@
     <InternalsVisibleTo Include="LookingGlass.Tests" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- The operator web page's only stylesheet, served from inside the server. -->
+    <EmbeddedResource Include="Admin\operator.css" LogicalName="operator.css" />
+  </ItemGroup>
+
 </Project>

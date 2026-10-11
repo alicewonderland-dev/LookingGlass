@@ -68,6 +68,9 @@ public sealed class AlertPoster {
         this.RetryDelay = (wait, ct) => Task.Delay(wait, this._time, ct);
     }
 
+    /// <summary>The operator web page's address, named when a message is cut ("and N more"); null without the page.</summary>
+    internal string? PageUrl { get; init; }
+
     /// <summary>How long alerts wait for others to go with them.</summary>
     internal TimeSpan BatchWindow { get; set; } = TimeSpan.FromMinutes(1);
 
@@ -198,7 +201,7 @@ public sealed class AlertPoster {
             this._publicPinged = now;
         }
 
-        var content = AlertWords.Message(batch, this._roleId, ping, out var pinged, out _);
+        var content = AlertWords.Message(batch, this._roleId, ping, out var pinged, out _, this.PageUrl);
         var body = Payload(content, pinged ? this._roleId : null);
         var failures = 0;
         var rateLimited = 0;

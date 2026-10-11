@@ -276,8 +276,134 @@ show in your own time zone.
       started:**" arrives through it. Posting with the old one fails (`curl -X
       POST -H "Content-Type: application/json" -d '{"content":"x"}' <old
       webhook>` answers 404).
+
+## The operator web page (Tailscale only)
+
+Needs the server with the operator web page (on Linux, with the unit that has
+`RuntimeDirectory=lookingglass`: the installer brings it), Tailscale 1.94 or
+later on the server, a phone signed in to the tailnet as your own account, and
+for step 49 a second Tailscale account (a friend's, shared the machine, or a
+second login of yours). Set it up as in
+[The operator web page](../server.md#the-operator-web-page). Keep Discord
+alerts on from the steps above, and A listed in `Operators:Characters`.
+
+- [ ] 45. **Setting up.** `systemctl cat lookingglass | grep Runtime` shows
+      `RuntimeDirectory=lookingglass` and `RuntimeDirectoryMode=0700`. Add the
+      page's lines to the drop-in (`Admin__Listen`, `Admin__Url`,
+      `Admin__TailscaleLogins__0` with your login as the Tailscale admin
+      console's **Users** page shows it, `Admin__TimeZone` with your zone) and
+      restart. The startup line says `operator web page starting, for
+      https://<machine>.<tailnet>.ts.net:8444/ (Unix socket; 1 login let in;
+      times in <your zone>)`, and the journal has `The operator web page
+      listens on unix:/run/lookingglass/admin.sock`. `sudo ls -la
+      /run/lookingglass` shows the folder as `drwx------ lookingglass` and the
+      socket as `srw------- lookingglass lookingglass admin.sock`.
+- [ ] 46. **Serving it on the tailnet.** `tailscale version` is 1.94 or later.
+      Check the syntax on this version with `tailscale serve --help`, then
+      `sudo tailscale serve --bg --https=8444 unix:/run/lookingglass/admin.sock`.
+      `tailscale serve status` shows `:8444` as tailnet only, and `tailscale
+      funnel status` lists only the public server's port (443). Note any
+      difference in the commands for server.md.
+- [ ] 47. **On your phone** (on the tailnet, as the listed account), open
+      `https://<machine>.<tailnet>.ts.net:8444/`: the page, **Signed in:** your
+      login, in one column with big buttons, light or dark as the phone is set.
+      **Lifted or ended** and **What operators did** are folded and open with
+      a tap; **Refresh** reloads. Times end in your zone's abbreviation (`BST`,
+      say) and the last line says `Times are <your zone> (<abbreviation> now)`.
+- [ ] 48. **On a computer** on the tailnet: the same page, wider, the lists in
+      rows; in a recent Chrome, Edge or Safari the folded sections show open.
+- [ ] 49. **Another account.** From a device signed in to the tailnet as the
+      second account: only "**Not allowed.** This page is only for this server's
+      operators, ..." and nothing else. The journal has one `Refused a request
+      to the operator web page (GET "/" from 100.x.y.z): its Tailscale login,
+      "<their login>", isn't listed ...`; reloading within the minute adds no
+      second line.
+- [ ] 50. **Not from the server itself.** On the server, as an ordinary user
+      (not root, not `lookingglass`): `curl -s
+      https://<machine>.<tailnet>.ts.net:8444/` answers "Not allowed.", and the
+      journal says `it came from this machine itself (100.x.y.z)` (Tailscale
+      may name such a request by your own login, the reason it is refused
+      whatever its login). Wait a minute, then `sudo curl -s --unix-socket
+      /run/lookingglass/admin.sock http://x/`: "Not allowed." too (`it has no
+      X-Forwarded-For address`). Optionally tag the server's node (see
+      server.md) and check steps 47 and 50 again.
+- [ ] 50a. **When the page can't start, chat goes on.** Take a port with
+      another program (`nc -l 127.0.0.1 5181 &`, or any listener), change the
+      drop-in's `Admin__Listen` to `http://127.0.0.1:5181` for the moment, and
+      restart: the service runs, A connects and chats, the journal has an
+      Error `The operator web page didn't start (...); the chat server runs on
+      without it`, and Discord gets "@(role) **Urgent: the operator web page
+      didn't start:** ...". Put `Admin__Listen` back, stop the listener
+      (`kill %1`), and restart: the page is back.
+- [ ] 51. **Outside the tailnet.** From a device not on the tailnet (a phone on
+      mobile data with Tailscale off, say): `curl -v --max-time 10
+      https://<machine>.<tailnet>.ts.net:8444/` gets no answer (the name doesn't
+      resolve, or the connection times out). The public server still answers
+      there: `curl -s https://<public address>/health`.
+- [ ] 52. **Not on the public server.** `curl -s -o /dev/null -w "%{http_code}\n"
+      https://<public address>/` and the same for `/ban`, `/lift?ban=1` and
+      `/style.css`, with and without `-H "Tailscale-User-Login: <your login>"
+      -H "X-Forwarded-Host: <machine>.<tailnet>.ts.net:8444"`: always 404.
+- [ ] 53. **A ban.** On the page, **Ban someone**: B's name@world, 1 day,
+      reason "Testing the page", **Continue...**: a confirmation page ("Ban
+      (B)?", the character with its Lodestone ID and link, until (tomorrow, in
+      your zone with its abbreviation), the reason, what a ban does). Nothing
+      is banned yet (`LG --bans`). **Ban (B)**: back on the page with "Banned
+      (B) for 1 day." at the top; B is disconnected at once (not 30 seconds
+      later). `LG --bans` says `made on the web page by <your login>`; Discord
+      gets "**Ban made** on the web page: ..." with "Lift:
+      https://<machine>...:8444/ or `LG --unban ...`", and your Tailscale
+      login nowhere in it.
+- [ ] 54. **Lifting it.** **Lift...** on B's ban: "Lift the ban on (B)? Made
+      (time, your zone) on the web page by (you), ...". **Lift the ban**:
+      "Lifted the ban on (B)."; B gets back in within 5 minutes (or at once
+      with **Try again now**). `LG --audit` lists both as `web page  <your
+      login> from 100.x.y.z: ...`.
+- [ ] 55. **Refused by the rules.** **Ban someone** `127.0.0.1`: back on the
+      form, filled in as typed, saying it is the server's own address, that
+      nothing was banned, and to tick the box if meant (don't). `LG --audit`
+      doesn't list it (only a confirmed ban is an attempt to change
+      something).
+- [ ] 56. **Forms work once, and not after a restart.** Ban B again from the
+      page; after it is done, go **Back** (if the browser asks to send the form
+      again, let it) and press the confirmation's button again, if it is shown:
+      "That form was sent already (each works once)." Nothing more is banned,
+      and `LG --audit` has one ban, not two. Open **Lift...** on that ban, `sudo systemctl
+      restart lookingglass`, then press **Lift the ban**: "This page is out of
+      date (the server restarted). Check and confirm again." The ban is still
+      in force; lift it from a fresh page.
+- [ ] 57. **Flags, in full.** With B's flag from step 34 still in force (or
+      flag B again as step 6 did), **Flagged** lists B and B's address in full
+      (not shortened), with **Ban...**, which fills the form in with 7 days and
+      bans nothing by itself.
+- [ ] 58. **Restoring operator status.** Pin A on the command line (step 29),
+      then on A **Forget account** in `/lgdebug` and register again (step 31).
+      Refresh the page: **Operators** is open by itself, "· 1 to restore", A
+      `NOT an operator now` with the pinned and current fingerprints.
+      **Restore operator status...**: both fingerprints, when the keys
+      changed, and the advice to compare; check `Keys now` against A's
+      Settings (Advanced mode, **Your identity**), then **Restore operator
+      status**: "(A) is an operator again, with keys (the new fingerprint).";
+      `LG --operators` says pinned on the web page by you; Discord "@(role)
+      **Operator status restored** on the web page ..." at once, with the ping.
+- [ ] 59. **Send a test alert**: "Sent a test alert to the Discord channel." at
+      the top, and "**Test alert** from LookingGlass 0.2.x: alerts reach this
+      channel." in Discord, without a ping.
+- [ ] 60. **Funnel never leads to the page** (optional, test server only, and
+      turn it off straight after). `sudo tailscale funnel --bg --https=10000
+      unix:/run/lookingglass/admin.sock`, then from outside the tailnet open
+      `https://<machine>.<tailnet>.ts.net:10000/`: "Not allowed." (even with
+      your own phone off the tailnet), and Discord gets at once "@(role)
+      **Urgent: the web page was asked for through Tailscale Funnel** ...".
+      Reload a few times: no second alert within ten minutes. Then `sudo
+      tailscale funnel --https=10000 off`, and `tailscale funnel status` lists
+      only 443 again. (This checks that Tailscale marks Funnel requests, which
+      the page relies on.)
+
 ## Afterwards
 
-- [ ] 45. Remove the test settings (the drop-in from the start, step 25's, and
+- [ ] 61. Remove the test settings (the drop-in from the start, step 25's, and
       the alerts lines, then the test webhook in Discord) and restart. `LG --bans` shows no bans in force. Flags clear by
-      themselves after 24 hours.
+      themselves after 24 hours. Keep the page's lines and `tailscale serve`
+      if you want the page on the test server; otherwise take them out and
+      `sudo tailscale serve --https=8444 off`.

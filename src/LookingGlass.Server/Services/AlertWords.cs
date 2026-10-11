@@ -48,7 +48,8 @@ public sealed record DailySummary(long PeriodEnd, int FlaggedCharacters, int Fla
 /// to post: names, worlds and reasons are shown visibly (<see cref="VisibleText"/>) and escaped (<see cref="Escape"/>), so they
 /// can't format the message, link anywhere or mention anyone; addresses are shortened (<see cref="ClientAddresses.Shorten"/>),
 /// except the server's own and its proxy's; times are Discord's time stamps, which each reader sees in their own time zone.
-/// The commands given never include <c>--force</c>, and never a full address. The web page's link comes with step 3 of the plan.
+/// The commands given never include <c>--force</c>, and never a full address. With the operator web page on, its address
+/// (<c>Admin:Url</c>) is linked as well as the commands.
 /// </summary>
 public static class AlertWords {
     /// <summary>The longest message Discord takes, in characters.</summary>
@@ -121,36 +122,45 @@ public static class AlertWords {
 
     // ================================================================ flags, blocks and bans
 
+    /// <summary>"https://machine.tailnet.ts.net:8444/ or `LG --bans`": the web page (if there is one) and the command.</summary>
+    /// <param name="page">The operator web page's address (<c>Admin:Url</c>, checked at startup to be a plain https address), or null.</param>
+    private static string PageOr(string? page, string command) => page == null ? $"`{command}`" : $"{page} or `{command}`";
+
     /// <summary>Someone flagged: an account (with its Lodestone page and the commands) or an address (shortened).</summary>
-    public static Alert Flagged(FlagRow flag, UserRow? user, int expiresHours) {
+    /// <param name="page">The operator web page's address, linked as well as the commands; null if there is no page.</param>
+    public static Alert Flagged(FlagRow flag, UserRow? user, int expiresHours, string? page = null) {
         var ends = $"The flag ends by itself {Count(expiresHours, "hour")} after the last refusal. Nothing was banned.";
         if (flag.UserId is { } id) {
             return new Alert(
                 $"**Flagged:** {Character(id, user)}: {Escape(flag.Why)}, by {Escape(flag.Limits)}.\n" +
                 (id > 0 ? $"Lodestone: {Lodestone(id)}\n" : "") +
-                "Look: `LG --bans`\n" +
+                $"Look: {PageOr(page, "LG --bans")}\n" +
                 $"Ban: `LG --ban {Id(id)} --days 7 --reason \"...\"`\n" +
                 ends, AlertKind.Batched);
         }
 
         return new Alert(
             $"**Flagged:** {Address(flag.Address ?? "")}: {Escape(flag.Why)} ({Escape(flag.Limits)}).\n" +
-            "It may be shared (a household, a mobile network). Full address: `LG --bans`\n" +
+            $"It may be shared (a household, a mobile network). Full address{(page != null ? " on the web page" : "")}: {PageOr(page, "LG --bans")}\n" +
             ends, AlertKind.Batched);
     }
 
     /// <summary>An address blocked automatically (urgent).</summary>
-    public static Alert Blocked(BanRow block, AbuseOptions abuse) {
+    /// <param name="page">The operator web page's address, linked as well as the commands; null if there is no page.</param>
+    public static Alert Blocked(BanRow block, AbuseOptions abuse, string? page = null) {
         var minutes = block.ExpiresAt is { } ends ? Duration(ends - block.CreatedAt) : "until lifted";
         var until = block.ExpiresAt is { } at ? $", until {Time(at, 't')}" : "";
         return new Alert(
             $"**Urgent: blocked automatically:** {Address(block.Address ?? "")}, refused {Number(abuse.AutoBlockAfterRefusals)} times within " +
             $"{Count(abuse.WindowMinutes, "minute")}. Blocked for {minutes}{until}.\n" +
-            "Look: `LG --bans` (ban it for longer, or lift the block with `LG --unban` and the full address it shows)", AlertKind.Urgent, Public: true);
+            (page != null
+                ? $"Look: {page} (ban it for longer, or lift the block), or `LG --bans`"
+                : "Look: `LG --bans` (ban it for longer, or lift the block with `LG --unban` and the full address it shows)"), AlertKind.Urgent, Public: true);
     }
 
     /// <summary>A ban made, by any tool; with the ban it replaced, if it replaced one (told here, once, rather than as a lift).</summary>
-    public static Alert BanMade(BanRow ban, UserRow? user, BanRow? replaced) {
+    /// <param name="page">The operator web page's address, linked as well as the commands; null if there is no page.</param>
+    public static Alert BanMade(BanRow ban, UserRow? user, BanRow? replaced, string? page = null) {
         var via = Via(ban.MadeVia, ban.MadeBy);
         var whom = ban.UserId is { } id ? Character(id, user) : Address(ban.Address ?? "");
         var replacing = replaced == null ? ""
@@ -163,10 +173,10 @@ public static class AlertWords {
             }
 
             text.Append(ban.MadeVia == BanTools.Plugin
-                ? $"\nIf you didn't make this, lift it (`LG --unban {Id(character)}`) and check that operator character's computers."
-                : $"\nLift: `LG --unban {Id(character)}`");
+                ? $"\nIf you didn't make this, lift it ({PageOr(page, $"LG --unban {Id(character)}")}) and check that operator character's computers."
+                : $"\nLift: {PageOr(page, $"LG --unban {Id(character)}")}");
         } else {
-            text.Append("\nLift: `LG --bans` shows the full address, for `LG --unban`");
+            text.Append(page != null ? $"\nLift: {page}, or `LG --bans` shows the full address, for `LG --unban`" : "\nLift: `LG --bans` shows the full address, for `LG --unban`");
         }
 
         return new Alert(text.ToString(), AlertKind.Batched);
@@ -197,6 +207,11 @@ public static class AlertWords {
         "and check the public server still answers." + (more > 0 ? $" ({Count(more, "more request")} like it since the last of these alerts.)" : ""),
         AlertKind.Urgent, Public: true);
 
+    /// <summary>The operator web page didn't start (urgent; the chat server runs on without it). The reason is the server's own, escaped all the same.</summary>
+    public static Alert PageFailed(string why) => new(
+        $"**Urgent: the operator web page didn't start:** {Escape(why)} The chat server runs on without it. See `journalctl -u lookingglass`, fix " +
+        "it, and restart.", AlertKind.Urgent);
+
     /// <summary>The server started, and whether it last stopped cleanly (unknown the first time it keeps track).</summary>
     /// <param name="previousStart">When the run before this one started, if known.</param>
     /// <param name="previousCleanStop">When it stopped cleanly, if it did (a time at or after <paramref name="previousStart"/>).</param>
@@ -213,7 +228,8 @@ public static class AlertWords {
     }
 
     /// <summary>The daily summary, or the quiet day's.</summary>
-    public static Alert Summary(DailySummary summary) {
+    /// <param name="page">The operator web page's address, linked at the end of a summary that isn't quiet; null if there is no page.</param>
+    public static Alert Summary(DailySummary summary, string? page = null) {
         var to = $"the 24 hours to {Time(summary.PeriodEnd, 'f')}";
         var peak = (summary.Peak == 0 ? "nobody online" : $"at most {Number(summary.Peak)} online at once") +
                    (summary.Peak > 0 && summary.PeakAt is { } at ? $" (at {Time(at, 't')})" : "") +
@@ -239,7 +255,8 @@ public static class AlertWords {
             $". Blocked automatically: {Number(summary.Blocked)}.\n" +
             $"Bans made: {Number(made)}{byTool}. Lifted: {Number(summary.Lifted)}. Ended: {Number(summary.Ended)}. In force now: {Number(summary.InForce)}.\n" +
             $"Players: {peak}; {registered}.\n" +
-            $"Server: {Escape(summary.Version)}, up {Uptime(summary.Uptime)}; database {Megabytes(summary.DatabaseBytes)}. Alerts not delivered: {undelivered}.",
+            $"Server: {Escape(summary.Version)}, up {Uptime(summary.Uptime)}; database {Megabytes(summary.DatabaseBytes)}. Alerts not delivered: {undelivered}." +
+            (page != null ? $"\nWeb page: {page}" : ""),
             AlertKind.AtOnce);
     }
 
@@ -249,13 +266,14 @@ public static class AlertWords {
     // ================================================================ operators
 
     /// <summary>A listed operator character signed in with keys that aren't its pinned ones (urgent).</summary>
-    public static Alert OperatorOtherKeys(UserRow user, OperatorPinRow pin) {
+    /// <param name="page">The operator web page's address, where it is restored, as well as the command; null if there is no page.</param>
+    public static Alert OperatorOtherKeys(UserRow user, OperatorPinRow pin, string? page = null) {
         var when = user.KeysRegisteredAt is { } at ? $" at {Time(at, 't')}" : "";
         return new Alert(
             $"**Urgent: an operator character signed in with other keys:** {Character(user.UserId, user)}, keys {user.Keys.Fingerprint}, not the pinned " +
             $"{IdentityKeys.FingerprintOfHash(pin.KeyHash)}. It registered again through the Lodestone{when}, and this server no longer treats it as an operator.\n" +
             "If it was you (a new computer, \"Reset my identity\"), compare the fingerprint in the plugin's Settings, then restore it: " +
-            $"`LG --operator-pin {Id(user.UserId)} --fingerprint \"<the fingerprint you checked>\"`\n" +
+            $"{PageOr(page, $"LG --operator-pin {Id(user.UserId)} --fingerprint \"<the fingerprint you checked>\"")}\n" +
             "If not, someone has that character's Lodestone page, so its Square Enix account: secure the account first. Nothing they do gives them " +
             "operator powers.", AlertKind.Urgent);
     }
@@ -266,7 +284,8 @@ public static class AlertWords {
     /// Says when it was pinned: one made while alerts were off (or the server was stopped) is posted when the server next looks,
     /// still urgent, as it is what someone with a stolen tailnet device would do.
     /// </remarks>
-    public static Alert OperatorPinned(long userId, UserRow? user, OperatorPinRow pin, byte[]? previous) {
+    /// <param name="page">The operator web page's address, whose audit trail to check, as well as the command; null if there is no page.</param>
+    public static Alert OperatorPinned(long userId, UserRow? user, OperatorPinRow pin, byte[]? previous, string? page = null) {
         var via = Via(pin.PinnedVia, pin.PinnedVia == BanTools.Plugin ? pin.PinnedBy : null);
         var how = $"{(via != null ? " " + via : "")} at {Time(pin.PinnedAt, 'f')}";
         var keys = IdentityKeys.FingerprintOfHash(pin.KeyHash);
@@ -275,7 +294,8 @@ public static class AlertWords {
             : $"**Operator status restored**{how}: {Character(userId, user)}, now pinned to keys {keys} " +
               $"(was {IdentityKeys.FingerprintOfHash(previous)}).";
         return new Alert(
-            what + "\nIf you didn't do this, unlist the character in the server's settings and restart, then check `LG --audit`.", AlertKind.Urgent);
+            what + "\nIf you didn't do this, unlist the character in the server's settings and restart, then check " +
+            (page != null ? $"the web page's audit trail ({page}) or `LG --audit`." : "`LG --audit`."), AlertKind.Urgent);
     }
 
     // ================================================================ one message
@@ -288,7 +308,8 @@ public static class AlertWords {
     /// <param name="ping">Whether the message may ping (the poster's budget for alerts the public can set off allows it).</param>
     /// <param name="pinged">The message mentions the role (so <c>allowed_mentions</c> must list it).</param>
     /// <param name="included">How many alerts it holds in full.</param>
-    public static string Message(IReadOnlyList<Alert> alerts, string? roleId, bool ping, out bool pinged, out int included) {
+    /// <param name="page">The operator web page's address, named in the "and N more"; null if there is no page.</param>
+    public static string Message(IReadOnlyList<Alert> alerts, string? roleId, bool ping, out bool pinged, out int included, string? page = null) {
         var ordered = alerts.Where(alert => alert.Urgent).Concat(alerts.Where(alert => !alert.Urgent)).ToList();
         pinged = ping && roleId != null && ordered.Count > 0 && ordered[0].Urgent;
         var message = new StringBuilder(pinged ? $"<@&{roleId}> " : "");
@@ -318,7 +339,9 @@ public static class AlertWords {
         }
 
         if (included < ordered.Count) {
-            message.Append($"\n\nand {Number(ordered.Count - included)} more: see `LG --bans`, `LG --audit` and `journalctl -u lookingglass`.");
+            message.Append(page != null
+                ? $"\n\nand {Number(ordered.Count - included)} more: see the web page, {page}, or `LG --bans`, `LG --audit` and `journalctl -u lookingglass`."
+                : $"\n\nand {Number(ordered.Count - included)} more: see `LG --bans`, `LG --audit` and `journalctl -u lookingglass`.");
         }
 
         return message.ToString();
