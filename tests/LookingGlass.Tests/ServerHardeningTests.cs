@@ -12,6 +12,7 @@ using LookingGlass.Server.Data;
 using LookingGlass.Server.Hosting;
 using LookingGlass.Server.Realtime;
 using LookingGlass.Server.Services;
+using Microsoft.Data.Sqlite;
 using static LookingGlass.Tests.Harness;
 
 namespace LookingGlass.Tests;
@@ -775,12 +776,81 @@ public sealed class ServerHardeningTests {
                 }
             })).ToList();
             await Task.WhenAll(readers.Append(releasing));
-            Assert.Null(failure);
+            Assert.True(failure is null, failure?.ToString());
         } finally {
             ReleaseConnections(directory);
             ReleaseConnections(other);
             DeleteDirectory(directory);
             DeleteDirectory(other);
+        }
+    }
+
+    /// <summary>
+    /// Connections opened at the same moment each get a SQLite connection of their own. Microsoft.Data.Sqlite's pool (10.0.12)
+    /// could lend one to two of them at once (dotnet/efcore#39008): their statements and transactions then ran on one
+    /// connection, and failed with "SQL logic error" (as in BeginTransaction) or found it closed under them.
+    /// </summary>
+    [Fact]
+    public async Task ConnectionsOpenedAtOnceEachGetTheirOwn() {
+        var (db, directory) = NewDatabase();
+        try {
+            const int workers = 16;
+            var connections = new SqliteConnection?[workers];
+            var failures = new System.Collections.Concurrent.ConcurrentQueue<Exception>();
+            var stop = false;
+            using var barrier = new Barrier(workers + 1);
+            // On threads of their own: they block at the barrier, which would starve the thread pool of tests running alongside.
+            var opening = Enumerable.Range(0, workers).Select(index => Task.Factory.StartNew(() => {
+                while (true) {
+                    barrier.SignalAndWait(Ct);
+                    if (Volatile.Read(ref stop)) {
+                        return;
+                    }
+
+                    try {
+                        connections[index] = db.Open();
+                    } catch (Exception ex) {
+                        failures.Enqueue(ex);
+                    }
+
+                    barrier.SignalAndWait(Ct);
+                    // Each holds its connection, open, until all of them have been looked at.
+                    barrier.SignalAndWait(Ct);
+                    try {
+                        connections[index]?.Dispose();
+                    } catch (Exception ex) {
+                        failures.Enqueue(ex);
+                    }
+
+                    connections[index] = null;
+                    barrier.SignalAndWait(Ct);
+                }
+            }, Ct, TaskCreationOptions.LongRunning, TaskScheduler.Default)).ToList();
+
+            var shared = 0;
+            var waves = System.Diagnostics.Stopwatch.StartNew();
+            try {
+                while (waves.Elapsed < TimeSpan.FromSeconds(3) && shared == 0 && failures.IsEmpty) {
+                    // Each wave starts from an empty pool, so that every open makes a connection, or takes one back.
+                    Database.ReleasePooledConnections(db.FilePath);
+                    barrier.SignalAndWait(Ct);
+                    barrier.SignalAndWait(Ct);
+                    var handles = connections.Where(c => c != null).Select(c => c!.Handle).ToList();
+                    shared = handles.Count - handles.Distinct().Count();
+                    barrier.SignalAndWait(Ct);
+                    barrier.SignalAndWait(Ct);
+                }
+            } finally {
+                Volatile.Write(ref stop, true);
+                barrier.SignalAndWait(Ct);
+                await Task.WhenAll(opening);
+            }
+
+            Assert.True(failures.IsEmpty, string.Join(Environment.NewLine, failures));
+            Assert.Equal(0, shared);
+        } finally {
+            ReleaseConnections(directory);
+            DeleteDirectory(directory);
         }
     }
 
