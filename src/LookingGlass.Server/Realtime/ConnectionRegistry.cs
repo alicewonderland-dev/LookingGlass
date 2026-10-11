@@ -21,8 +21,12 @@ namespace LookingGlass.Server.Realtime;
 /// other way (someone left meanwhile) only tells them once more, as could happen before.
 /// </para>
 /// </summary>
-public sealed class ConnectionRegistry(Database db, ILogger<ConnectionRegistry> logger) {
+public sealed class ConnectionRegistry(Database db, ILogger<ConnectionRegistry> logger, TimeProvider? time = null) {
     private readonly ConcurrentDictionary<long, ClientConnection> _online = new();
+    private readonly TimeProvider _time = time ?? TimeProvider.System;
+    // The most users online at once since it was last taken (see TakePeak), and when (Unix seconds); changed under _presence.
+    private int _peak;
+    private long _peakAt;
     // Held while a user's coming online or going offline is decided and their co-members are told, while a
     // response's online flags are filled in and queued (see Respond), and while a join is counted.
     private readonly Lock _presence = new();
@@ -66,6 +70,7 @@ public sealed class ConnectionRegistry(Database db, ILogger<ConnectionRegistry> 
                     }
 
                     this._online[userId] = connection;
+                    this.CountPeak();
                     this.SendToAll(coMembers, PresenceEvent(userId, true), except: userId);
                     break;
                 }
@@ -106,6 +111,28 @@ public sealed class ConnectionRegistry(Database db, ILogger<ConnectionRegistry> 
     public bool IsOnline(long userId) => this._online.ContainsKey(userId);
 
     public int OnlineCount => this._online.Count;
+
+    /// <summary>
+    /// The most users online at once since this was last taken (or since the server started), and when (Unix seconds; 0 if
+    /// nobody was); then starts again from those online now. One number, kept as users come online: for the daily summary.
+    /// </summary>
+    public (int Peak, long At) TakePeak() {
+        lock (this._presence) {
+            var peak = (this._peak, this._peakAt);
+            this._peak = this._online.Count;
+            this._peakAt = this._peak > 0 ? this._time.GetUtcNow().ToUnixTimeSeconds() : 0;
+            return peak;
+        }
+    }
+
+    /// <summary>Notes a new most online at once. Under the presence lock.</summary>
+    private void CountPeak() {
+        var online = this._online.Count;
+        if (online > this._peak) {
+            this._peak = online;
+            this._peakAt = this._time.GetUtcNow().ToUnixTimeSeconds();
+        }
+    }
 
     public void Send(long userId, Event ev) {
         if (this._online.TryGetValue(userId, out var connection)) {

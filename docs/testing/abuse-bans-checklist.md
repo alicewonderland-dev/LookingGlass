@@ -188,8 +188,96 @@ Take them out again at the end.
       says no characters are listed. `LG --audit` shows each pin of steps 29
       and 31, refused ones too.
 
+## Discord alerts (a private test channel)
+
+Needs the server with Discord alerts, a Discord server of your own, and a
+private channel in it that only you can see. Set it up as in
+[Alerts to Discord](../server.md#alerts-to-discord). Times in the messages
+show in your own time zone.
+
+- [ ] 33. **Setting up.** Make a webhook for the test channel (**Copy Webhook
+      URL**) and a role given only to you (copy its ID). Put the webhook in
+      `/etc/lookingglass/alerts.env` (root-only, mode 600) and add
+      `EnvironmentFile=/etc/lookingglass/alerts.env` and
+      `Environment=LookingGlass__Alerts__PingRoleId=<the role's ID>` to the
+      drop-in; restart. The startup line (`journalctl -u lookingglass -n 20`)
+      says `Discord alerts on`, and `journalctl -u lookingglass | grep -c
+      api/webhooks` prints 0. The channel gets "**Server started:**
+      LookingGlass 0.2.x, in Production. It stopped cleanly at (the time of the
+      restart)", with no ping. `ls -l /etc/lookingglass/alerts.env` shows
+      `-rw------- root root`.
+- [ ] 34. **A flag.** As B, do what step 6 did (A's flag from step 7 lasts
+      24 hours, and one still in force isn't posted again): within about a
+      minute and a half, "**Flagged:** (B's name@world) (user (B's ID)): refused
+      by limits in 2 of the last 60 minutes, by LookupBurst.", with B's
+      Lodestone link (and no preview card under it), `LG --bans`, the `LG --ban (ID) --days 7 --reason
+      "..."` command, and "Nothing was banned". No ping. B's public address
+      flag, if posted, shows it shortened (`203.0.113.x`, or an IPv6 /40).
+- [ ] 35. **Bans posted by the server, once.** `LG --ban "<B's name@world>"
+      --days 1 --reason "Testing alerts @everyone **bold** https://example.com"`.
+      Within about a minute and a half (the server picks it up within 30
+      seconds; alerts within a minute go as one message): "**Ban made** on the
+      command line: (B) (user (ID)), for 1 day, until (tomorrow). Reason, which
+      the player is shown:" and the reason shown exactly as typed: not bold,
+      `@everyone` not highlighted and nobody pinged, the address not a link.
+      Your Unix user isn't in it, and nothing else pings.
+- [ ] 36. `LG --ban "<B's name@world>" --days 2`: one message, "**Ban made**
+      ... for 2 days ..., replacing the ban made (today) on the command line
+      (for 1 day)", and no "Ban lifted" for the old one. Then `LG --unban
+      "<B's name@world>"`: "**Ban lifted** on the command line: (B). It had been
+      made on the command line, (today), for 2 days."
+- [ ] 37. `sudo systemctl restart lookingglass`: "**Server started:** ... It
+      stopped cleanly at ...", and none of the ban messages again (wait a
+      couple of minutes).
+- [ ] 38. **An address.** `LG --ban <B's public address> --days 1`, then
+      `LG --unban` it: both messages show the address shortened (`203.0.113.x
+      (shortened)`, or an IPv6 /40); B's full address appears nowhere in the
+      channel.
+- [ ] 39. **Urgent: an automatic block.** With step 25's settings, do step 25
+      again: at once (not a minute later), "@(your role) **Urgent: blocked
+      automatically:** address (the spare machine's, shortened), refused 100
+      times within 60 minutes. Blocked for 5 minutes, until (time)." You get a
+      ping notification (without **Allow anyone to @mention this role** on the
+      role: webhooks shouldn't need it). Once the block ends, do it again
+      within ten minutes of the first: it is posted with the minute's message
+      (about a minute later), without the ping. Put the settings back.
+- [ ] 40. **Urgent: operator keys.** With A listed in `Operators:Characters`
+      (step 27): `LG --operator-pin` A (step 29) → within 30 seconds "@(role)
+      **Operator keys pinned** on the command line at (the time): (A) (user (ID)), pinned to
+      keys (A's fingerprint)", with a ping. On A, **Forget account** in
+      `/lgdebug` and register again (as step 31): when A signs in, "@(role)
+      **Urgent: an operator character signed in with other keys:** (A) ...,
+      keys (the new fingerprint, as in A's Settings), not the pinned (the old
+      one)". Reconnect A (`/lgdebug`, or turn the plugin off and on): no second
+      message. Pin the new keys (step 31): "@(role) **Operator status
+      restored** ... (was (the old fingerprint))".
+- [ ] 41. **A crash.** `sudo systemctl kill -s KILL lookingglass` (systemd
+      starts it again): "**Server started:** ... It didn't stop cleanly: it had
+      been running since (the last start) ...".
+- [ ] 42. **The daily summary.** Add
+      `Environment=LookingGlass__Alerts__DailySummaryHourUtc=<the next hour,
+      in UTC>` to the drop-in and restart. Nothing until that hour; then, within
+      a minute, "**Daily summary**, the 24 hours to (that hour)" with the
+      flags, blocks and bans of the steps above, bans in force, the most
+      players online at once (counted since the restart), characters
+      registered for the first time, uptime, the database's size, and "Alerts
+      not delivered: none". Restart before the next hour: no second summary.
+      Take the line out again.
+- [ ] 43. **When posting fails.** In `alerts.env`, change one letter of the
+      webhook's token and restart: the server runs, no message arrives, and the
+      journal has one `Couldn't post an alert to Discord: Discord answered 401
+      ...` (or 404) line saying the webhook may have been deleted, without the
+      webhook in it; a flag or ban within the next ten minutes adds no second
+      line. Then change `https://` to `http://` and restart: the service doesn't
+      start, and the journal says `LookingGlass:Alerts:DiscordWebhookUrl isn't a
+      Discord webhook ... it doesn't start with https://`, without the value.
+- [ ] 44. **Replacing a leaked webhook.** In Discord, delete the webhook and
+      make a new one; put the new one in `alerts.env` and restart: "**Server
+      started:**" arrives through it. Posting with the old one fails (`curl -X
+      POST -H "Content-Type: application/json" -d '{"content":"x"}' <old
+      webhook>` answers 404).
 ## Afterwards
 
-- [ ] 33. Remove the test settings (the drop-in from the start, and step 25's)
-      and restart. `LG --bans` shows no bans in force. Flags clear by
+- [ ] 45. Remove the test settings (the drop-in from the start, step 25's, and
+      the alerts lines, then the test webhook in Discord) and restart. `LG --bans` shows no bans in force. Flags clear by
       themselves after 24 hours.

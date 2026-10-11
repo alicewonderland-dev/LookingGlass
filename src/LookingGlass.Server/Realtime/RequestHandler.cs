@@ -54,7 +54,8 @@ public sealed class RequestHandler(
     IHostEnvironment? environment = null,
     TimeProvider? time = null,
     AbuseMonitor? abuse = null,
-    BanList? bans = null) {
+    BanList? bans = null,
+    ServerAlerts? alerts = null) {
     /// <summary>This server's version, as Welcome and /health give it.</summary>
     public static readonly string ServerVersion = typeof(RequestHandler).Assembly.GetName().Version?.ToString(3) ?? "0.1.0";
 
@@ -847,6 +848,8 @@ public sealed class RequestHandler(
             throw new RequestException(ErrorCode.NotAuthenticated, "Unknown or revoked device token.");
         }
 
+        // A character listed as an operator signing in with keys that aren't its pinned ones is posted to Discord (once per set of keys).
+        alerts?.OperatorSignedIn(current);
         return new Response {
             AuthenticateOk = new AuthenticateOk {
                 User = user.ToProto(), KeyVersion = user.KeyVersion, PreviousUsedUnix = previousUse, UsedUnix = thisUse,
