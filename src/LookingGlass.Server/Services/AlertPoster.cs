@@ -137,7 +137,7 @@ public sealed class AlertPoster {
         }
     }
 
-    /// <summary>Posts everything queued now, as one message, at once: for tests, and the last moments before stopping.</summary>
+    /// <summary>Posts everything queued now, as one message, at once, when <see cref="RunAsync"/> isn't running: for tests.</summary>
     internal async Task FlushAsync(CancellationToken ct) {
         var batch = new List<Alert>();
         while (this._queue.Reader.TryRead(out var alert)) {
