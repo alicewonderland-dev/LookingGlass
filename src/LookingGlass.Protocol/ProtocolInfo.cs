@@ -56,6 +56,14 @@ public static class ProtocolInfo {
         /// sides offer it, so an older plugin never sees DeviceAdded and an older server is never asked.
         /// </summary>
         public const string Devices = "devices.v1";
+
+        /// <summary>
+        /// The plugin's operator panel: the server tells a character's own login whether it is one of its key-pinned operators
+        /// (AuthenticateOk.operator_status), and serves an operator the flags and bans (GetOperatorView) and its signed bans and
+        /// lifts on characters (OperatorBan, OperatorUnban). Agreed only if both sides offer it, so an older plugin is never told,
+        /// and an older server never asked.
+        /// </summary>
+        public const string Operator = "operator.v1";
     }
 
     public static Limits DefaultLimits() => new() {

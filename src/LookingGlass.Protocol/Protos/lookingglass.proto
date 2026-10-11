@@ -55,6 +55,9 @@ message ClientFrame {
     SendLocalMessage send_local_message = 35;
     ListDevices list_devices = 36;
     SignOutOtherDevices sign_out_other_devices = 37;
+    GetOperatorView get_operator_view = 38;
+    OperatorBan operator_ban = 39;
+    OperatorUnban operator_unban = 40;
   }
 }
 
@@ -85,6 +88,7 @@ message Response {
     KeyLoginComplete key_login_complete = 22;
     StoredMessages stored_messages = 23;
     Devices devices = 24;
+    OperatorView operator_view = 25;
   }
 }
 
@@ -330,6 +334,13 @@ message AuthenticateOk {
   // The SHA-256 of the login_nonce that last use was made with (empty if it had none): only the hash, so whoever holds a
   // copy of the login can't learn the client's nonces from it and send one back.
   bytes previous_login_nonce_hash = 5;
+  // Capability "operator.v1" only: whether this character is one of the server's operators (see "operators" below). Only a
+  // character listed as one (LookingGlass:Operators:Characters) is told anything else than "not listed", and only in the answer
+  // to its own login: nobody else learns who the operators are. Added without a version change: an older plugin skips it.
+  OperatorLoginStatus operator_status = 6;
+  // With OPERATOR_LOGIN_STATUS_KEYS_CHANGED: the full hash (IdentityKeys.KeyHash) of the keys pinned for the character, so the
+  // plugin can show the pinned fingerprint beside its own. Empty otherwise.
+  bytes operator_pinned_key_hash = 7;
 }
 
 // Key login: a user the server knows gets a new device token by signing a challenge with
@@ -448,6 +459,146 @@ message DeviceAdded {
   // As Device.added_unix and Device.id.
   int64 added_unix = 1;
   bytes id = 2;
+}
+
+// ---------------------------------------------------------------- operators
+//
+// Capability "operator.v1" (ProtocolInfo.Capabilities.Operator): the plugin's operator panel (see the design doc, "The plugin's
+// operator panel", and docs/operator-tools-plan.md). An operator is a character the server's settings list
+// (LookingGlass:Operators:Characters) whose account's current keys are the ones pinned for it on the server (on its operator web
+// page, or with --operator-pin). Its own login is told so (AuthenticateOk.operator_status); nobody else is told anything. An
+// operator may read the flags and bans (addresses shortened, never in full) and ban or lift bans on characters, never on
+// addresses, never on another operator character, at most 10 bans an hour. Each ban and lift is signed by the character's
+// current identity key (see LookingGlass.Core.Crypto.OperatorActionProof), so a copy of its login alone can't ban. A client only
+// sends these to a server that agreed to the capability; the server refuses them (FORBIDDEN, "Only this server's operators can
+// do that.", counted towards flagging) from anyone who isn't an operator at the moment it answers.
+
+enum OperatorLoginStatus {
+  // Not listed as an operator: what every character but a listed one is told (and the default an older server sends).
+  OPERATOR_LOGIN_STATUS_NOT_LISTED = 0;
+  // Listed, and its account's current keys are the ones pinned: an operator.
+  OPERATOR_LOGIN_STATUS_OPERATOR = 1;
+  // Listed and pinned, but the account registered other keys since (a new computer, "Reset my identity"): not an operator until
+  // the operator restores it on the web page (with the new fingerprint).
+  OPERATOR_LOGIN_STATUS_KEYS_CHANGED = 2;
+  // Listed, but no keys pinned yet: not an operator until they are pinned on the web page.
+  OPERATOR_LOGIN_STATUS_NOT_PINNED = 3;
+}
+
+// The flags and bans, as an operator's plugin sees them; answered with OperatorView. Its own per-user limit (20 at once, then 1
+// every 3 seconds), which bans and lifts (each answered with a fresh view) take from too.
+message GetOperatorView {
+  // A character to say how it stands too (OperatorView.about), for the "Ban from server" dialog; 0 for none.
+  int64 about_user_id = 1;
+}
+
+// A character's ban (or an address's, shortened), as the panel shows it.
+message OperatorBanLine {
+  // The character, or 0 for an address.
+  int64 user_id = 1;
+  // Its name, if it is registered here.
+  User user = 2;
+  // For an address or prefix: shortened as in Discord (an IPv4 address to its /24, "203.0.113.x"; an IPv6 one to its /40), never
+  // in full.
+  string address = 3;
+  // As the operator wrote it (the player is shown it); empty if none.
+  string reason = 4;
+  int64 created_unix = 5;
+  // When it ends; 0 until lifted.
+  int64 until_unix = 6;
+  // Made by the server itself (an address refused too often).
+  bool automatic = 7;
+  // The tool that made it ("command line", "web page", "plugin", "automatic"; empty if not recorded), and, for one made in the
+  // plugin only, the operator character as recorded ("Alice Wonderland@Lich"): never a Unix user or a Tailscale login.
+  string made_via = 8;
+  string made_by = 9;
+  // When it was lifted (0: not lifted; then it ended by itself if until_unix has passed), and with which tool and by whom, as above.
+  int64 lifted_unix = 10;
+  string lifted_via = 11;
+  string lifted_by = 12;
+  // It was lifted by banning the same character again.
+  bool replaced = 13;
+}
+
+// Someone flagged (see the design doc, "Noticing"), as the panel shows it.
+message OperatorFlag {
+  // The character, or 0 for an address.
+  int64 user_id = 1;
+  User user = 2;
+  // Shortened, as OperatorBanLine.address.
+  string address = 3;
+  // "refused by limits in 30 of the last 60 minutes", and the limits ("InviteBurstPerPair, LookupBurst").
+  string why = 4;
+  string limits = 5;
+  int64 first_unix = 6;
+  int64 last_unix = 7;
+  // A ban in force is on the same subject.
+  bool banned = 8;
+}
+
+// How one character stands (GetOperatorView.about_user_id).
+message OperatorSubject {
+  int64 user_id = 1;
+  // If it is registered here.
+  User user = 2;
+  // Listed as an operator (LookingGlass:Operators:Characters), whose characters the plugin can't ban.
+  bool listed_operator = 3;
+  // The ban in force on it, if any.
+  OperatorBanLine ban = 4;
+  // Its flag, if it is flagged.
+  OperatorFlag flag = 5;
+}
+
+message OperatorView {
+  // Newest first, at most a few each (the web page has them all): the totals say how many there are.
+  repeated OperatorFlag flags = 1;
+  repeated OperatorBanLine in_force = 2;
+  // Lifted or ended in the last history_days days.
+  repeated OperatorBanLine history = 3;
+  uint32 flags_total = 4;
+  uint32 in_force_total = 5;
+  uint32 history_total = 6;
+  // How many of the bans in force are automatic blocks.
+  uint32 blocked_automatically = 7;
+  // The operator web page's address (LookingGlass:Admin:Url), if it has one.
+  string page_url = 8;
+  // Bans this operator character may still make in this hour.
+  uint32 bans_left_this_hour = 9;
+  // 32 random bytes for one OperatorBan or OperatorUnban on this connection to sign and name, within a few minutes, once (the
+  // last few given are good).
+  bytes nonce = 10;
+  // The characters listed as operators that are registered here (their names), which the plugin greys out in its menu.
+  repeated User operators = 11;
+  // With GetOperatorView.about_user_id.
+  OperatorSubject about = 12;
+  // How far back flags and the history go.
+  uint32 flag_hours = 13;
+  uint32 history_days = 14;
+}
+
+// Bans a character (never an address); a ban it has already is replaced. Answered with a fresh OperatorView.
+message OperatorBan {
+  int64 user_id = 1;
+  // 1 to 36,500; 0 until lifted.
+  uint32 days = 2;
+  // One line of plain text, at most 300 characters; the player is shown it. May be empty.
+  string reason = 3;
+  // The server's address exactly as the client connected to it, checked as for RetireIdentity.
+  string server_url = 4;
+  // The nonce of an OperatorView recently sent on this connection, once.
+  bytes nonce = 5;
+  // Ed25519 signature by the character's current identity key over "ban", the operator's user ID, user_id, days, the SHA-256 of
+  // reason, the SHA-256 of the login this connection logged in with, server_url and nonce (see OperatorActionProof).
+  bytes signature = 6;
+}
+
+// Lifts the ban in force on a character. Answered with a fresh OperatorView.
+message OperatorUnban {
+  int64 user_id = 1;
+  string server_url = 2;
+  bytes nonce = 3;
+  // As OperatorBan.signature, over "lift", with 0 days and an empty reason.
+  bytes signature = 4;
 }
 
 message GetIdentities {

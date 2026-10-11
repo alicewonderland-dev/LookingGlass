@@ -1398,6 +1398,10 @@ public sealed partial class ClientSession : IAsyncDisposable {
             hello.Capabilities.Add(ProtocolInfo.Capabilities.Devices);
         }
 
+        if (this._options.OfferOperator) {
+            hello.Capabilities.Add(ProtocolInfo.Capabilities.Operator);
+        }
+
         Response response;
         try {
             response = await this.RequestAsync(connection, new ClientFrame { Hello = hello }, ct);
@@ -1425,6 +1429,10 @@ public sealed partial class ClientSession : IAsyncDisposable {
             this._localAgreed = this._options.OfferLocalChat && welcome.Capabilities.Contains(ProtocolInfo.Capabilities.Local);
             // And the account's devices: an older server is never asked for them.
             this._devicesAgreed = this._options.OfferDevices && welcome.Capabilities.Contains(ProtocolInfo.Capabilities.Devices);
+            // And the operator panel: only a server that agreed is believed about it, and asked for its lists. Decided afresh at
+            // each login.
+            this._operatorAgreed = this._options.OfferOperator && welcome.Capabilities.Contains(ProtocolInfo.Capabilities.Operator);
+            this._operatorStanding = OperatorStanding.None;
         }
 
         if (!string.IsNullOrWhiteSpace(welcome.Announcement)) {
@@ -1662,6 +1670,8 @@ public sealed partial class ClientSession : IAsyncDisposable {
 
         // Whether this computer's login was used elsewhere since it last logged in (see ClientSession.Devices).
         this.NoteLogin(ok);
+        // Whether this character is one of the server's operators (see ClientSession.Operator).
+        this.NoteOperatorStatus(ok);
         this.Publish();
         try {
             // Identities cached before a disconnect may be stale: someone may have registered again meanwhile.
@@ -3718,6 +3728,9 @@ public sealed partial class ClientSession : IAsyncDisposable {
                 Devices = this._devices,
                 DevicesAvailable = this._devicesAgreed && this._state == ConnectionState.Ready,
                 SignedOutBy = this._loginRejected && this._state is ConnectionState.LoginNotRecognized or ConnectionState.Registering ? this._signedOutBy : SignedOutBy.None,
+                Operator = this.OperatorStandingNow(),
+                OperatorPinnedFingerprint = this.OperatorStandingNow() == OperatorStanding.KeysChanged ? this._operatorPinnedFingerprint : null,
+                OperatorLists = this.OperatorStandingNow() == OperatorStanding.Operator ? this._operatorLists : null,
             };
             this._snapshot = snapshot;
         }

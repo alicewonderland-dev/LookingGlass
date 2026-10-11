@@ -95,6 +95,19 @@ public sealed record SessionSnapshot(
     /// <summary>Whether <see cref="SignedOutBy"/> says the account signed out everywhere else.</summary>
     public bool SignedOutElsewhere => this.SignedOutBy != SignedOutBy.None;
 
+    /// <summary>
+    /// Whether this character is one of the server's operators, as the server said in the answer to this login (capability
+    /// "operator.v1"); <see cref="OperatorStanding.None"/> while not logged in, with an older server, and for every character
+    /// it doesn't list.
+    /// </summary>
+    public OperatorStanding Operator { get; init; }
+
+    /// <summary>With <see cref="OperatorStanding.KeysChanged"/>: the fingerprint of the keys pinned for this character on the server.</summary>
+    public string? OperatorPinnedFingerprint { get; init; }
+
+    /// <summary>The operator's lists as last fetched (<see cref="ClientSession.RefreshOperatorListsAsync"/>), while an operator; null otherwise or before.</summary>
+    public OperatorLists? OperatorLists { get; init; }
+
     /// <summary>The status in a mode's words. Never null where <see cref="StatusText"/> isn't: a missing plain text falls back to it.</summary>
     public string? StatusFor(bool advanced) => advanced ? this.StatusText : this.PlainStatusText ?? this.StatusText;
 
@@ -457,6 +470,12 @@ public sealed class ClientSessionOptions {
     /// it, which the server never tells of a new device.
     /// </summary>
     internal bool OfferDevices { get; init; } = true;
+
+    /// <summary>
+    /// Offer the operator panel (the "operator.v1" capability) in Hello. Only tests turn it off, to play a plugin from before it,
+    /// which the server never tells it is an operator.
+    /// </summary>
+    internal bool OfferOperator { get; init; } = true;
 
     /// <summary>
     /// After telling the player about new computers, how long to hold back the next such notice (those in between are told

@@ -87,6 +87,8 @@ public enum NoticeKind {
     SignedOutElsewhere,
     /// <summary>This computer's own login was used elsewhere since it last logged in (a copy of it may be in use).</summary>
     LoginUsedElsewhere,
+    /// <summary>The server lists this character as an operator, but its keys aren't the ones pinned for it (or none are yet).</summary>
+    NotOperatorNow,
 
     // ---- Servers
     /// <summary>The server lists its addresses, without the one this client uses.</summary>

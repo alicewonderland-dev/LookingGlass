@@ -191,12 +191,13 @@ public sealed class Harness : IAsyncDisposable {
     /// <param name="keyAgeCheckInterval">How often keys' ages are looked at (by default as in the plugin: every 10 minutes).</param>
     /// <param name="keyAgeJitter">The most a client waits at random before replacing an old key (by default as in the plugin).</param>
     /// <param name="traceCapacity">How many requests, answers and events the client keeps in its trace (for tests that count them over many).</param>
+    /// <param name="offerOperator">Offer "operator.v1" in Hello; off plays a plugin from before the operator panel.</param>
     public ClientSessionOptions Options(bool autoRekey = true, Action<NoticeLevel, string>? log = null, TimeProvider? time = null, Func<CancellationToken, Task>? beforeConnect = null,
         uint protocolVersion = ProtocolInfo.CurrentVersion, Func<WebSocket, WebSocket>? wrap = null, TimeSpan? forkCheckInterval = null, TimeSpan? loginRetryDelay = null,
         Uri? serverUri = null, bool offerCatchUp = true, TimeSpan? catchUpWithoutPosition = null, int maxHeldLive = 2000, TimeSpan? replaySaveDelay = null,
         bool offerLocalChat = true, string? remoteAddress = null, bool offerDevices = true, TimeSpan? deviceNoticeInterval = null,
         TimeSpan? deviceListInterval = null, bool replaceOldKeys = true, TimeSpan? keyAgeCheckInterval = null, TimeSpan? keyAgeJitter = null,
-        int traceCapacity = 200) => new() {
+        int traceCapacity = 200, bool offerOperator = true) => new() {
         ServerUri = serverUri ?? new Uri(this.Factory.Server.BaseAddress, ProtocolInfo.WebSocketPath),
         Connect = async (uri, ct) => {
             if (beforeConnect != null) {
@@ -228,6 +229,7 @@ public sealed class Harness : IAsyncDisposable {
         KeyAgeCheckInterval = keyAgeCheckInterval ?? TimeSpan.FromMinutes(10),
         KeyAgeJitter = keyAgeJitter ?? TimeSpan.FromMinutes(10),
         TraceCapacity = traceCapacity,
+        OfferOperator = offerOperator,
     };
 
     /// <summary>Opens a WebSocket to this server, whatever address <paramref name="uri"/> names (as a client's Connect).</summary>

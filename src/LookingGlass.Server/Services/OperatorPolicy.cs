@@ -10,7 +10,7 @@ public enum OperatorTool {
     /// <summary>The operator web page, over Tailscale only (see <see cref="Admin.OperatorPage"/>).</summary>
     WebPage,
 
-    /// <summary>The plugin's operator panel, for key-pinned operator characters (planned).</summary>
+    /// <summary>The plugin's operator panel, for key-pinned operator characters (see <see cref="Realtime.RequestHandler"/>, capability "operator.v1").</summary>
     Plugin,
 }
 

@@ -84,12 +84,20 @@ public sealed record ListedOperator(long UserId, UserRow? User, OperatorPinRow? 
 }
 
 /// <summary>A ban as one tool is shown it.</summary>
+/// <param name="Ban">The ban as the database has it, its address in full: never sent to a tool that doesn't see full addresses (use <see cref="ShownAddress"/>).</param>
 /// <param name="Whom">"user 31337 (Bob Hatter@Lich)", or "address 203.0.113.0/24" (shortened for a tool that doesn't see full addresses).</param>
-public sealed record ShownBan(BanRow Ban, string Whom);
+public sealed record ShownBan(BanRow Ban, string Whom) {
+    /// <summary>For an address or prefix, as this tool may see it (shortened for the plugin); null for a character.</summary>
+    public string? ShownAddress { get; init; }
+}
 
 /// <summary>A flag as one tool is shown it.</summary>
+/// <param name="Flag">The flag as the database has it, its address in full: never sent to a tool that doesn't see full addresses (use <see cref="ShownAddress"/>).</param>
 /// <param name="Banned">A ban in force is on the same subject.</param>
-public sealed record ShownFlag(FlagRow Flag, string Whom, bool Banned);
+public sealed record ShownFlag(FlagRow Flag, string Whom, bool Banned) {
+    /// <summary>For an address or prefix, as this tool may see it (shortened for the plugin); null for a character.</summary>
+    public string? ShownAddress { get; init; }
+}
 
 /// <summary>The flags and bans as one tool is shown them.</summary>
 /// <param name="FlagHours">How far back flags are listed (a flag expires this long after its last refusal).</param>
@@ -99,7 +107,7 @@ public sealed record OperatorView(IReadOnlyList<ShownBan> InForce, IReadOnlyList
 /// <summary>
 /// The operator's actions, written once for every tool (see "Operator actions, one layer for every tool" in docs/design.md):
 /// list the flags and bans, ban, lift a ban, list the operator characters and pin their keys, and let a key sign in again.
-/// Each tool (the command line and the web page now; the plugin later) asks this, and <see cref="OperatorPolicy"/> says what
+/// Each tool (the command line, the web page and the plugin) asks this, and <see cref="OperatorPolicy"/> says what
 /// it may do. Every attempt to change something, refused ones too, goes into the audit trail (<c>operator_log</c>), kept
 /// <see cref="AuditKeptDays"/> days, a change's entry in the same transaction as the change; every ban and lift records the
 /// tool and who.
@@ -158,17 +166,40 @@ public sealed class OperatorActions(Database db, OperatorSettings settings, Time
         var names = db.GetUsers(bans.Concat(history).Select(ban => ban.UserId).Concat(flags.Select(flag => flag.UserId)).OfType<long>())
             .ToDictionary(user => user.UserId, user => $"{user.Name}@{user.WorldName}");
 
+        string? Shown(long? userId, string? address) => userId == null && address != null ? (full ? address : ClientAddresses.Shorten(address)) : null;
+
         string Whom(long? userId, string? address, string subject) =>
             userId is { } id ? (names.TryGetValue(id, out var name) ? $"user {id} ({name})" : $"user {id}")
-            : address != null ? $"address {(full ? address : ClientAddresses.Shorten(address))}"
+            : Shown(userId, address) is { } shown ? $"address {shown}"
             : subject;
 
+        ShownBan ShownBanOf(BanRow ban) => new(ban, Whom(ban.UserId, ban.Address, ban.Subject)) { ShownAddress = Shown(ban.UserId, ban.Address) };
+
         return new OperatorView(
-            bans.Select(ban => new ShownBan(ban, Whom(ban.UserId, ban.Address, ban.Subject))).ToList(),
-            flags.Select(flag => new ShownFlag(flag, Whom(flag.UserId, flag.Address, flag.Subject), bans.Any(ban => ban.Subject == flag.Subject))).ToList(),
-            history.Select(ban => new ShownBan(ban, Whom(ban.UserId, ban.Address, ban.Subject))).ToList(),
+            bans.Select(ShownBanOf).ToList(),
+            flags.Select(flag => new ShownFlag(flag, Whom(flag.UserId, flag.Address, flag.Subject), bans.Any(ban => ban.Subject == flag.Subject)) {
+                ShownAddress = Shown(flag.UserId, flag.Address),
+            }).ToList(),
+            history.Select(ShownBanOf).ToList(),
             hours, days);
     }
+
+    /// <summary>
+    /// The bans <paramref name="actor"/>'s tool may still make in this hour (for the plugin, this operator character's); null if
+    /// it has no limit.
+    /// </summary>
+    public int? BansLeftThisHour(OperatorActor actor) {
+        var rules = OperatorPolicy.For(actor.Tool);
+        if (rules.BansPerHour is not { } limit) {
+            return null;
+        }
+
+        var made = db.CountOperatorBans(OperatorPolicy.Code(actor.Tool), this.Now - 3600, rules.BansPerHourPerOperator ? actor.UserId ?? -1 : null);
+        return Math.Max(0, limit - made);
+    }
+
+    /// <summary>Whether <c>LookingGlass:Operators:Characters</c> lists this character (whether or not it is an operator now).</summary>
+    public bool IsListed(long userId) => this._operators.Contains(userId);
 
     /// <summary>The audit trail's entries at or after <paramref name="since"/> (Unix seconds), newest first, at most <paramref name="limit"/>.</summary>
     public IReadOnlyList<OperatorLogRow> Audit(long since, int limit) => db.GetOperatorLog(since, limit);

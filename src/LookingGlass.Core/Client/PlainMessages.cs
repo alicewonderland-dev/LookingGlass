@@ -758,5 +758,9 @@ public static class PlainMessages {
         foreach (var wording in DeviceWords.Examples()) {
             yield return wording;
         }
+
+        foreach (var wording in OperatorWords.Examples()) {
+            yield return wording;
+        }
     }
 }
