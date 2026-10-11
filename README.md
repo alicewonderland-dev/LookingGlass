@@ -233,7 +233,11 @@ register again. If you didn't recognise one, use both.
 
 - [How it works](docs/design.md): the design, encryption and security model.
 - [Running a server](docs/server.md): setting up, configuring and deploying a
-  server, and building the plugin.
+  server, and building the plugin. A server's operator can ban from the game
+  too, on characters they set up as operators (an Operator section in
+  Settings, and **Ban from server...** in right-click menus): see
+  [Operator characters](docs/server.md#operator-characters). Players never see
+  any of it.
 - License: [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0-only).
   If you run a modified version of the server for other people, you must offer
   them its source code (section 13).

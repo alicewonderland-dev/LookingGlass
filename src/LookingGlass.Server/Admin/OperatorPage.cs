@@ -471,8 +471,8 @@ public sealed class OperatorPage {
         await this.Done(response, login, result.Unchanged
             ? $"The keys of {name} ({result.Fingerprint}) were pinned already: nothing changed."
             : result.PreviousPin != null
-                ? $"{name} is an operator again, with keys {result.Fingerprint}."
-                : $"{name} is an operator now, with keys {result.Fingerprint}.");
+                ? $"{name} is an operator again, with keys {result.Fingerprint}. Its plugin sees the Operator section from its next login."
+                : $"{name} is an operator now, with keys {result.Fingerprint}. Its plugin sees the Operator section from its next login.");
     }
 
     /// <summary>After something was done: back to the page (a GET, so reloading it does nothing again), saying what was done.</summary>

@@ -219,7 +219,7 @@ All of these are under `LookingGlass`.
 | `Limits:LocalMessagesBetweenBurst` | 30 | Local chat messages one user may send one other at once; past it those copies are dropped. 1 to 10,000, and less than `LocalMessagesReceivedBurst` |
 | `Limits:LocalMessagesBetweenIntervalSeconds` | 2 | Seconds between them once those are spent. 1 to 86,400, and more than `LocalMessagesReceivedIntervalSeconds` |
 | `Abuse:...` | | When an account or address refused by limits again and again is flagged, how bans are picked up, and automatic blocks (on): see [Flags and bans](#flags-and-bans) |
-| `Operators:Characters` | empty | User IDs (Lodestone IDs) of the characters that may be operators in the plugin's operator panel (coming in a later update). Each is one only once its keys are pinned (on the web page, or `--operator-pin`), and only while its keys match the pin; `--ban` bans one only with `--force`, the web page never. User IDs only: the server won't start with anything else. See [Operator characters](#operator-characters) |
+| `Operators:Characters` | empty | User IDs (Lodestone IDs) of the characters that may be operators in the plugin's operator panel. Each is one only once its keys are pinned (on the web page, or `--operator-pin`), and only while its keys match the pin; `--ban` bans one only with `--force`, the web page never. User IDs only: the server won't start with anything else. See [Operator characters](#operator-characters) |
 | `Alerts:...` | | Alerts to a Discord channel, off until a webhook is set (a secret, kept out of this file): see [Alerts to Discord](#alerts-to-discord) |
 | `Admin:...` | | The operator web page, over Tailscale only, off until `Admin:Listen` is set: see [The operator web page](#the-operator-web-page) |
 
@@ -708,12 +708,11 @@ afterwards.
 
 **One set of rules for every tool.** The commands below go through one layer
 in the server (`OperatorActions`), which the operator web page (see
-[The operator web page](#the-operator-web-page)) uses too, and the plugin's
-operator panel will when it comes (see
-[operator-tools-plan.md](operator-tools-plan.md)), so the rules are written
-once. What each tool may do:
+[The operator web page](#the-operator-web-page)) and the plugin's operator
+panel (see [Operator characters](#operator-characters)) use too, so the rules
+are written once. What each tool may do:
 
-| | Command line | Web page | Plugin (coming) |
+| | Command line | Web page | Plugin |
 | --- | --- | --- | --- |
 | See flags and bans | Yes, full addresses | Yes, full addresses | Yes, addresses shortened |
 | Ban or lift a character | Yes | Yes | Yes |
@@ -725,7 +724,7 @@ once. What each tool may do:
 | Let a key sign in again (`--allow-key-login`) | Yes | No | No |
 | Recorded as made by | The Unix user (`SUDO_USER`) | The Tailscale login | The operator character |
 
-A ban made on the web page (or, when it comes, in the plugin) applies at once
+A ban made on the web page or in the plugin applies at once
 (the server makes it itself); one from the command line, another process,
 within 30 seconds, as below.
 
@@ -805,7 +804,7 @@ No bans lifted or ended in the last 90 days.
 
 Each ban says which tool made it, and who: "made on the command line by
 alice" (the user who ran sudo), "on the web page by alice@github" (the
-Tailscale login), and later "in the plugin by Alice Wonderland@Lich"; "(made automatically)" for an
+Tailscale login), "in the plugin by Alice Wonderland@Lich" (the operator character); "(made automatically)" for an
 automatic block. A lifted one says who lifted it the same way ("lifted
 2026-10-08 09:00 UTC on the command line by alice"), and one replaced by
 banning the same subject again says so ("replaced by a new ban ... on the
@@ -864,7 +863,8 @@ flagged (behind a large shared NAT, say); lower them to hear sooner.
 
 Every ban, lift, operator pin and key login allowed again, tried with any
 tool, done or refused, is recorded: when, which tool, who, from where (for
-the web page, the device's tailnet address), what, and the outcome, with why
+the web page, the device's tailnet address; for the plugin, the address its
+connection came from), what, and the outcome, with why
 if it was refused. The web page shows the last 50 too. A change and its entry are written in one transaction, so
 nothing is ever banned without its entry. Lists aren't recorded, only
 attempts to change something; nor is a command line that couldn't be read
@@ -889,11 +889,12 @@ set it.
 
 #### Operator characters
 
-The plugin's operator panel (an Operator section in Settings, and **Ban from
-server...** in right-click menus) comes in a later update, for the owner's
-own characters; the characters and their keys can be set up now. An operator
-is a character **and its keys**: registering a character needs only control
-of its Lodestone page, so someone who took over its Square Enix account could
+The plugin's operator panel (an Operator section at the end of Settings, and
+**Ban from server...** in right-click menus) is for your own characters, so
+you can ban from the game without the web page or SSH (see
+[design.md](design.md#the-plugins-operator-panel)). An operator is a
+character **and its keys**: registering a character needs only control of its
+Lodestone page, so someone who took over its Square Enix account could
 register it again with keys of their own, and must get nothing from it.
 
 - **Listed in the settings.** `LookingGlass:Operators:Characters` lists, by
@@ -938,6 +939,44 @@ Exit codes for `--operator-pin`: 0 pinned (or pinned already), 1 not done
 (not listed, not registered, or the fingerprint isn't the current keys'), 2
 the command line was wrong. Every pin, refused ones too, is in the audit
 trail.
+
+**The panel.** Once the character's keys are pinned, its plugin shows the
+Operator section from its next login (Settings, at the end): the flags, the
+bans in force and those lifted or ended lately, 10 lines each (the web page
+has them all), addresses shortened as in Discord; **Ban...** on a flagged
+character, **Lift...** on a character's ban, **Ban someone** (name@world or
+Lodestone ID), and **Copy the web page's address** when the page is set up.
+**Ban from server...** in the game's right-click menus (and ChatTwo's
+**Integrations** submenu) opens the same dialog: how long (1, 7 or 30 days,
+until lifted, or a number), and the reason, which the player is shown. The
+lists are asked for when Settings opens, after each ban or lift, and on
+**Refresh**, never in the background.
+
+- **Narrower than the web page:** characters only (no address bans, and no
+  lifting automatic blocks, which end by themselves), no `--force`, never a
+  character listed as an operator (its own included), no pinning or
+  restoring, and at most 10 bans an hour per operator character (past them
+  it is told to use the web page). Addresses are never sent to it in full.
+- **Signed with the character's identity key.** Each ban and lift is signed
+  by the character's current key, for its login, this server's address and a
+  single-use nonce, so a copy of its login alone can't ban, and a signature
+  can't be replayed or relayed to another server. Reading the lists needs the
+  login, and is limited (20 at once, then 1 every 3 seconds).
+- **Everyone else is refused**, in the same words ("Only this server's
+  operators can do that."), and the refusal counts towards flagging them. Only
+  a listed character's own login is told whether it is an operator; a listed
+  character whose keys aren't the pinned ones (or none are yet) is told so,
+  once a session, with its fingerprint to compare on the web page.
+- **Every ban and lift from the plugin is posted to Discord**, naming the
+  operator character ("**Ban made** in the plugin by Alice Wonderland@Lich").
+  If you didn't make one: lift it on the web page (or `LG --unban`), then
+  either **Reset my identity** on that character in the plugin (its new keys
+  drop the pin, so copied keys are worth nothing; then restore operator status
+  on the web page for the new keys) or take it out of `Operators:Characters`
+  and restart. The audit trail says where each plugin action came from (its
+  connection's address).
+- **Older plugins** are never told they are operators; a plugin with the panel
+  on an older server shows nothing.
 
 #### Letting a key sign in again
 
@@ -1560,6 +1599,14 @@ default). Add `Operators__` to the `LG` helper's list, as in
 has what they need, and they are off until a webhook is set (see
 [Alerts to Discord](#alerts-to-discord)). The first start with them on
 doesn't post the bans and lifts made before.
+
+**The plugin's operator panel.** No database change, and no new setting:
+the characters listed in `Operators:Characters` whose keys you pinned get
+the panel once both the server and their plugin are updated (see
+[Operator characters](#operator-characters)). Plugins from before are never
+told they are operators; a plugin with the panel connecting to an older
+server shows nothing. Going back to a version without it: nothing to undo
+(the plugin then just shows no Operator section).
 
 **The operator web page.** No database change, and off until `Admin:Listen`
 is set (see [The operator web page](#the-operator-web-page)). The new unit

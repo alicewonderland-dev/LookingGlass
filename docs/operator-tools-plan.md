@@ -10,9 +10,12 @@ Discord alerts, folded into
 [server.md](server.md#alerts-to-discord). **Step 3 is built** (2026-10-10):
 the operator web page, folded into
 [design.md](design.md#the-operator-web-page) and
-[server.md](server.md#the-operator-web-page). Step 4 (the plugin's panel)
-isn't started (see
-[Build order, size and tests](#build-order-size-and-tests)). The decisions themselves are kept
+[server.md](server.md#the-operator-web-page). **Step 4 is built**
+(2026-10-11): the plugin's panel, folded into
+[design.md](design.md#the-plugins-operator-panel) and
+[server.md](server.md#operator-characters) (see
+[Build order, size and tests](#build-order-size-and-tests)). Every step is
+built; the owner decides when this file goes. The decisions themselves are kept
 in [design.md](design.md) (under
 [Planned features](design.md#planned-features) and
 [Decisions](design.md#decisions)), which stays the source of truth; this
@@ -1049,7 +1052,7 @@ and the plugin's section joins [The Settings window](design.md#the-settings-wind
 | 1 | `OperatorActions` and `OperatorPolicy`, schema 12 (with `operator_pins` and `users.keys_registered_at`), the command line moved onto them (same words), `--audit`, `--operators`, `--operator-pin`. **Built 2026-10-10** (see below) | Server only | Medium: about 750 lines and 600 of tests (as built: about 1,300, with its comments, and 1,100) |
 | 2 | Discord alerts: queue, posting, batching, every alert kind (the operator-keys ones included), restart and daily summary. **Built 2026-10-10** (see below) | Server only | Medium: about 750 lines and 650 of tests (as built: about 1,300, with its comments, and 1,050) |
 | 3 | The web page: second host, Unix socket, identity checks, the time zone, pages (Operators, pin and restore included), CSRF, stylesheet; unit and docs. **Built 2026-10-10** (see below) | Server only | Large: about 1,050 lines and 800 of tests (as built: about 1,650, with its comments and the stylesheet, and 1,300) |
-| 4 | The plugin's panel: `operator.v1` in the protocol, server handling (the pin checked at login and on every operator request, the "other keys" alert), `OperatorActionProof`, `OperatorWords`, the Settings section, the keys-changed notice, the dialog, the menu items | Server and plugin | Large: about 450 server, 400 core, 750 plugin, 650 of tests |
+| 4 | The plugin's panel: `operator.v1` in the protocol, server handling (the pin checked at login and on every operator request, the "other keys" alert), `OperatorActionProof`, `OperatorWords`, the Settings section, the keys-changed notice, the dialog, the menu items. **Built 2026-10-11** (see below) | Server and plugin | Large: about 450 server, 400 core, 750 plugin, 650 of tests (as built: about 370 server, 850 core and protocol with the words, 650 plugin, 850 of tests, with their comments) |
 
 Steps 1 to 3 need no plugin release, and older plugins are unaffected. Step
 2 can come before 3 (its alerts then give only commands, and gain the page's
@@ -1317,6 +1320,71 @@ link in 3). Step 4 needs both updated; either alone does nothing new.
 - **The `tailscale serve` command** in server.md is from Tailscale's
   documentation and hasn't been run on the server's version; the bans
   checklist's step 46 checks it.
+
+**Step 4 as built** (2026-10-11), where it adds to or settles what is above:
+
+- **The protocol, as built.** `AuthenticateOk.operator_status` is field 6, an
+  enum `OperatorLoginStatus` (not listed, the default; operator; keys
+  changed; not pinned), and the pinned keys' hash a field of its own,
+  `operator_pinned_key_hash` (7), with keys changed only. `GetOperatorView`
+  (`ClientFrame` 38) takes an optional `about_user_id`; `OperatorView`
+  (`Response` 25) carries at most 10 lines of each list, newest first, with
+  each list's total, the count of automatic blocks, the page's address, the
+  bans left this hour, a nonce, the listed operator characters' names (for
+  greying the menu item), how far back flags and history go, and, when asked,
+  how one character stands (`OperatorSubject`: registered, listed as an
+  operator, its ban in force, its flag) for the dialog. `OperatorBan` (39) and
+  `OperatorUnban` (40) carry the user ID, days (ban only; 0 until lifted), the
+  reason (ban only), the server URL, the nonce and the signature.
+- **The capability is agreed whatever the settings**, so agreeing says
+  nothing about who, or whether anyone, is an operator; a request without it
+  is "Unknown request." (not counted), as from an older server.
+- **Checks, in the order the plan gives:** logged in, the capability, an
+  operator now (the pin against the account's current keys, at every
+  request; else `FORBIDDEN`, "Only this server's operators can do that.",
+  counted towards flagging as `OperatorRequests`), then for a ban or lift the
+  address signed for (before the signature, as for every signed request), the
+  signature by the current key for this connection's login (a bad one is
+  logged as a warning, and doesn't use the nonce up), the nonce (this
+  connection's last four, five minutes, once), then `OperatorActions` with the
+  plugin's policy. "Not itself" needs no rule of its own: an operator is
+  listed, and banning a listed character is refused. The reading limit (20,
+  then 1 every 3 seconds) covers bans and lifts too (each is answered with
+  fresh lists), so a copy of the keys can't fill the audit trail faster than
+  that.
+- **Never a full address**: `ShownBan` and `ShownFlag` gained `ShownAddress`
+  (shortened for the plugin), and the plugin's view is built from it alone;
+  a test checks the serialized view holds no full address, no Tailscale login.
+  Who made a ban is its tool, and the operator character only for one made in
+  the plugin, as in Discord.
+- **The audit trail** records a plugin action by the operator character's
+  name@world as the server has it now, its user ID, and "from" the
+  connection's address (an IPv4 address, or an IPv6 /64), which tells a copied
+  key's use from the owner's.
+- **Discord**: step 2 already posted every ban and lift from the bans table
+  with the plugin's maker named; checked by a test end to end.
+- **The client**: the "not an operator now" line is said once a session (again
+  only if what it would say changes), not at every login, so a reconnect
+  doesn't repeat it. A ban or lift signs the nonce of the lists last fetched on
+  the connection (the dialog's, or the last action's answer), or asks for
+  fresh lists first, and once more if the server says the nonce is too old.
+  `LookupUser` finds a name@world without the client trusting the keys it
+  returns.
+- **The menu item** greys out a listed operator character as far as the
+  lists last fetched say; before the first lists of a session it shows
+  enabled, and the dialog says the character is an operator (the server
+  refuses it anyway). Nothing is fetched in the background for it.
+- **The dialog** says "isn't registered on this server" for a character the
+  server doesn't know (the server would ban its Lodestone ID by the rules, as
+  the other tools do; the dialog sends that to the web page, as the mockup
+  says), "is listed as one of this server's operators" for a listed one,
+  registered or not, and "That's your own character" for itself.
+- **Wording settled**: simple mode never says "keys": the "?" in the
+  section's place says "LookingGlass setup", the fingerprint is "Your code
+  now", and a character not pinned yet is told to "confirm" it on the web
+  page; "Pinned keys" is shown in advanced mode only. The web page's pin and
+  restore now say "Its plugin sees the Operator section from its next login."
+- **By hand**: [docs/testing/operator-panel-checklist.md](testing/operator-panel-checklist.md).
 
 **Tests** (automated, in `tests/LookingGlass.Tests`):
 

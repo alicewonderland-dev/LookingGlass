@@ -338,6 +338,20 @@ internet connection**.
 - [ ] **Operator web page: banning, forms, operators** ([abuse-bans](abuse-bans-checklist.md): steps 53–60). Ban B from the page through its confirmation page → B is disconnected at once, `--bans` says made on the web page by your login, Discord links the page and never names the login. Lift it the same way. `127.0.0.1` comes back to the form; a form sent twice, or after a restart, does nothing and says why. Flags show full addresses. Restore A's operator status after a re-registration (compare the fingerprint with A's Settings) → Discord pings. Send a test alert. Optionally, funnel the socket on :10000 for a moment → "Not allowed." and an urgent alert; turn it off at once. Needs: SSH, the phone, A and B.
 - [ ] **Clean up** ([abuse-bans](abuse-bans-checklist.md): step 61). Remove all test settings (the alerts lines too, and delete the test webhook) and restart. `LG --bans` shows no bans in force. Keep the page and `tailscale serve`, or turn them off. Needs: SSH.
 
+### The plugin's operator panel, needs the first build after 0.2.15 and the server with it
+
+On a **test server**: A is one of your own characters, listed as an operator;
+B a character A can ban for a day (an alt on a second client, or a helper); C
+another listed character (an alt, or a listed ID that never registers). The
+web page and Discord alerts on, as set up above.
+
+- [ ] **Before the keys are pinned** ([operator-panel](operator-panel-checklist.md): steps 1–2). A listed, not pinned → at login one light red line saying the server hasn't confirmed A's setup yet, once a session (not again after a reconnect); Settings ends with **Operator**, A's code to compare and what to do; no menu item. Needs: SSH (the setting and a restart).
+- [ ] **The section** ([operator-panel](operator-panel-checklist.md): steps 3–6). Pin A on the web page (it says the plugin sees the section from its next login), relog → the section: counts, Refresh, Flagged, Bans in force, Lifted or ended lately, Ban someone, the shortened-addresses line, Copy the web page's address. Flag B → listed with **Ban...**; an address only shortened. Lists are asked for only when Settings opens and on Refresh. Narrow window and big font. Needs: B to flag.
+- [ ] **The menu item** ([operator-panel](operator-panel-checklist.md): steps 7–10). **Ban from server...** on B in the game's menus and ChatTwo's Integrations, even with no channel to invite to; not on A, NPCs, minions or retainers; greyed out "(an operator)" on C once Settings was opened; a stranger → "isn't registered on this server". Needs: B, C, ChatTwo.
+- [ ] **Banning and lifting** ([operator-panel](operator-panel-checklist.md): steps 11–21). The dialog per the mockup; wrong days or a long reason grey the button out; ban B for a day → blue line, B blocked at once, listed "made in the plugin by you", posted to Discord naming A, in `--bans` and `--audit`; replace and lift from the dialog; Ban someone by name and by ID; C and A refused; the 11th ban in an hour refused, told to use the web page; web page and automatic bans shown shortened without Lift. Needs: B, C, SSH, Discord.
+- [ ] **When the keys change** ([operator-panel](operator-panel-checklist.md): steps 22–23). Reset A's identity and register again → one light red line, Discord pings, the section gives way to the notice with the new code; restore on the web page → the section is back at the next login. Needs: the Lodestone, the web page.
+- [ ] **Older plugins and servers, logs, clean up** ([operator-panel](operator-panel-checklist.md): steps 24–26). Optional older builds show nothing; `/xllog` and the journal name nobody; lift every test ban. Needs: SSH.
+
 ### Local chat: server side, needs 0.2.11
 
 - [ ] **Local chat turned off on the server** ([local-chat](local-chat-checklist.md): step 24). Set `LookingGlass:Limits:MaxLocalRecipients` to 0 and restart → `/lgl hi` says local chat isn't available on this server, and (in 0.2.12) so does `/lgl` alone, which doesn't start talking in local chat. Put it back. Needs: a server settings change and restart.
