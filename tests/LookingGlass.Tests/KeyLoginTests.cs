@@ -161,7 +161,8 @@ public sealed class KeyLoginTests : IAsyncLifetime {
 
     [Fact]
     public async Task KeyLoginGivesANewDeviceAndKeepsTheOthers() {
-        var alice = await this._server.RegisterAsync("Alice Two Devices");
+        var online = Task.CompletedTask;
+        var alice = await this._server.RegisterAsync("Alice Two Devices", options: this._server.Options(beforeConnect: ct => online.WaitAsync(ct)));
         var first = alice.Store.Load().DeviceToken!;
 
         await using var raw = await this._server.ConnectRawAsync();
@@ -177,12 +178,19 @@ public sealed class KeyLoginTests : IAsyncLifetime {
         Assert.Single(alice.Session.GetTrace(), entry => entry.Outgoing && entry.Summary.EndsWith(" Hello"));
 
         // The new token logs in; the old one still does. (Each login replaces the user's previous connection, one per
-        // user, so Alice's session is dropped here and reconnects with its own token, which still works.)
+        // user, so Alice's session is dropped here, and kept offline until both have been answered: a login is online
+        // before it is answered, and her session coming back in between would replace it unanswered.)
+        var reconnect = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        online = reconnect.Task;
         var ok = await raw.SendAsync(new ClientFrame { Authenticate = new Authenticate { DeviceToken = complete.DeviceToken } });
         Assert.Equal(alice.UserId, ok.AuthenticateOk?.User.UserId);
         await using var other = await this._server.ConnectRawAsync();
         Assert.NotNull((await other.SendAsync(new ClientFrame { Authenticate = new Authenticate { DeviceToken = first } })).AuthenticateOk);
-        await WaitFor(() => alice.Session.Snapshot.State == ConnectionState.Ready ? new object() : null);
+
+        // Then her session reconnects with its own token, which still works.
+        reconnect.SetResult();
+        await WaitFor(() => alice.Session.Snapshot.State == ConnectionState.Ready
+            && alice.Session.GetTrace().Count(entry => entry.Outgoing && entry.Summary.EndsWith(" Hello")) == 2 ? new object() : null);
     }
 
     /// <summary>
