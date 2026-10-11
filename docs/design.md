@@ -4467,8 +4467,8 @@ planned: see [Planned features](#planned-features)). All three, and the
 command line, go through one server service, `OperatorActions`: list the
 flags and the bans, ban, lift a ban, list the plugin's operator characters
 and pin their keys, and let a key sign in again, with the command line's
-rules (a character by user ID or name@world, or an address or prefix within
-today's widths; never the server's own or its proxy's address without
+rules (a character by user ID, a positive number, or name@world, or an
+address or prefix within today's widths; never the server's own or its proxy's address without
 `--force`; 1 to 36,500 days or until lifted; a reason of one line, at most
 300 characters). The command line moved onto it first, with its words as they
 were. One policy table (`OperatorPolicy`, tested on its own) says what each
@@ -4496,9 +4496,23 @@ tool may do:
   Every attempt to change something (a ban, a lift, a pin, a key login
   allowed again), refused ones too, goes into an audit trail: when, which
   tool, who, from where, what, and the outcome, with why if refused. A change
-  and its entry are one transaction. Lists aren't recorded. The trail is
-  kept 365 days, swept with old bans; `--audit` lists it. The Unix user is
-  what sudo says: a record, not proof (whoever runs the command could set it).
+  and its entry are one transaction. Lists aren't recorded, nor command lines
+  that couldn't be read (exit code 2). The trail is kept 365 days, swept with
+  old bans; `--audit` lists it. The Unix user is what sudo says: a record, not
+  proof (whoever runs the command could set it).
+- **Text from outside is kept and shown visibly.** What an operator types
+  (whom, a fingerprint, a reason) is cleaned once, before anything uses it:
+  control, format and separator characters are shown as escapes (`\u001B`),
+  and it is cut (whom at 200 characters). Everything the command line
+  prints goes through the same, so names and reasons from the database can't
+  carry a terminal's escape sequences or forge a line either.
+- **A replaced ban says so** (`bans.replaced_by`), lifted by the new ban's
+  tool and maker, so it can be told once, with the new ban. An automatic
+  block checks for a covering ban in the transaction that makes it, and never
+  replaces one.
+- **The latest read of the bans wins**: the regular check and a ban applied
+  at once may read the database at the same time; an earlier read that
+  finishes later never replaces the newer list.
 - **Key-pinned operators, the server's half** (owner, 2026-10-10; see
   [An operator panel in the plugin](#an-operator-panel-in-the-plugin)):
   `Operators:Characters` lists, by user ID, the characters that may ever be
@@ -4514,7 +4528,7 @@ tool may do:
   logged; `--operators` lists them. Nothing uses operator status yet: the
   plugin's panel is the plan's last step.
 - **Schema 12.** `bans` gains `made_via`, `made_by`, `lifted_via`,
-  `lifted_by`, `made_announced` and `lifted_announced` (so the planned
+  `lifted_by`, `replaced_by`, `made_announced` and `lifted_announced` (so the planned
   alerts post each ban once, whichever process made it; the upgrade marks
   bans from before as made on the command line or automatically, and as
   posted, with the lifts already made); new tables `operator_log` (the audit

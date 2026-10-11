@@ -719,7 +719,12 @@ announcement, does no harm). It doesn't pick up settings from an
 `EnvironmentFile=` (the installed unit has none) or from an
 environment-specific `appsettings.<Environment>.json` (the commands run in
 Production): pass those on the command line, as `--LookingGlass:Abuse:...=`,
-if you use them.
+if you use them. That matters most for `Operators:Characters`: without it,
+`--ban` can't tell an operator character from another, and bans one without
+`--force`. Keep it in an `Environment=` line, or pass it on
+(`--LookingGlass:Operators:Characters:0=31337`); `--ban` and `--operators`
+warn when they see no list while the database holds operator pins (which
+means the server's own settings list someone).
 
 ```sh
 LG() {
@@ -744,8 +749,11 @@ Run them as `lookingglass`, not as root: SQLite may create the database's
 `-wal` and `-shm` files, which the service must be able to open. A user ID is
 the number in the character's Lodestone address
 (`https://na.finalfantasyxiv.com/lodestone/character/31337/`); `--bans` and
-the flag lines give it too. `--ban` on someone banned already replaces their
-ban. The reason is shown to the player, so write it for them: one line, at
+the flag lines give it too. It is a positive number (debug accounts, on a
+test server that allows them, have negative ones). `--ban` on someone banned
+already replaces their ban. Whatever the commands print, anything a terminal
+would act on (control characters, invisible formatting) is shown as an
+escape such as `\u001B`, whether it was typed or came from the database. The reason is shown to the player, so write it for them: one line, at
 most 300 characters. `--ban` refuses this machine's own address, the
 unspecified address, a trusted proxy's, or a prefix holding one: when the
 forwarded address is missing that is every player, so it says so and bans
@@ -772,7 +780,9 @@ Each ban says which tool made it, and who: "made on the command line by
 alice" (the user who ran sudo), and later "on the web page by alice@github"
 or "in the plugin by Alice Wonderland@Lich"; "(made automatically)" for an
 automatic block. A lifted one says who lifted it the same way ("lifted
-2026-10-08 09:00 UTC on the command line by alice"). Bans from before the
+2026-10-08 09:00 UTC on the command line by alice"), and one replaced by
+banning the same subject again says so ("replaced by a new ban ... on the
+web page by alice@github"). An automatic block never replaces a ban. Bans from before the
 upgrade to schema 12 say "made on the command line" without a name (nobody
 recorded it then); one an older server made, after going back to it for a
 while, says nothing about it.
@@ -829,8 +839,12 @@ tool, done or refused, is recorded: when, which tool, who, from where (the
 web page's device, once there is one), what, and the outcome, with why if it
 was refused. A change and its entry are written in one transaction, so
 nothing is ever banned without its entry. Lists aren't recorded, only
-attempts to change something. Entries are kept 365 days, then deleted (the
-running server sweeps them with old bans, at startup and every ten minutes).
+attempts to change something; nor is a command line that couldn't be read
+(a missing target, a bad `--days`, `--reason` or `--fingerprint`: exit code
+2), which never reaches the database. What was typed is kept with anything
+hidden in it shown as escapes, and cut (whom at 200 characters). Entries are
+kept 365 days, then deleted (the running server sweeps them with old bans,
+at startup and every ten minutes).
 
 ```text
 $ LG --audit
@@ -1108,7 +1122,9 @@ recognised".
 
 **From a server without operator tools (schema 11).** The `bans` table gains
 `made_via`, `made_by`, `lifted_via` and `lifted_by` (which tool made and
-lifted each ban, and who) and `made_announced` and `lifted_announced`
+lifted each ban, and who), `replaced_by` (the ban that replaced it, when it
+was replaced by banning the same subject again) and `made_announced` and
+`lifted_announced`
 (whether the alerts channel was told, for the Discord alerts to come). Bans
 from before are marked as made on the command line, or automatically, with
 nobody named, and as posted, and so are the lifts already made. New tables:
