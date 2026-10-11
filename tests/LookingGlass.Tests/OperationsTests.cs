@@ -236,6 +236,55 @@ public sealed class OperationsTests {
         }
     }
 
+    /// <summary>
+    /// A backup waits while the database is locked for a moment (as when a server's last connection to it closes, folding the
+    /// write-ahead log in, or another opens it and recovers the log), as everything else here does, rather than failing at once
+    /// with "database is locked"; and it has what was written meanwhile.
+    /// </summary>
+    [Fact]
+    public async Task ABackupWaitsForTheDatabaseLockedForAMoment() {
+        var directory = Path.Combine(Path.GetTempPath(), "lgt-backup-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, "lookingglass.db");
+        var target = Path.Combine(directory, "copy.db");
+        try {
+            var db = new Database(path);
+            db.SetServerState("written", "before");
+            Database.ReleasePooledConnections(path);
+
+            // Another connection takes the database for itself (no one else may even read it) and writes, until it lets go.
+            var locked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var holding = Task.Run(async () => {
+                using var holder = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path, Pooling = false }.ToString());
+                holder.Open();
+                Execute(holder, "PRAGMA locking_mode = EXCLUSIVE;");
+                Execute(holder, "UPDATE server_state SET value = 'meanwhile' WHERE key = 'written';");
+                locked.SetResult();
+                await Task.Delay(700, Ct);
+            }, Ct);
+            await locked.Task;
+
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            Assert.Equal(target, Database.BackupFile(path, target));
+            Assert.True(clock.Elapsed >= TimeSpan.FromMilliseconds(400), "The database wasn't locked: the backup didn't have to wait");
+            await holding;
+
+            using var copy = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = target, Pooling = false, Mode = SqliteOpenMode.ReadOnly }.ToString());
+            copy.Open();
+            Assert.Equal("ok", Scalar(copy, "PRAGMA integrity_check;"));
+            Assert.Equal("meanwhile", Scalar(copy, "SELECT value FROM server_state WHERE key = 'written';"));
+            Assert.Empty(Directory.GetFiles(directory, "copy.db.partial-*"));
+        } finally {
+            DeleteDirectory(directory);
+        }
+
+        static void Execute(SqliteConnection connection, string sql) {
+            using var command = connection.CreateCommand();
+            command.CommandText = sql;
+            command.ExecuteNonQuery();
+        }
+    }
+
     /// <summary>A backup is checked before it is put in place: a damaged database makes no backup, and replaces none.</summary>
     [Fact]
     public void ADamagedDatabaseMakesNoBackup() {

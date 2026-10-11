@@ -767,6 +767,28 @@ public sealed class DiscordAlertTests : IDisposable {
         Assert.NotEqual(started, secondStarted);
     }
 
+    /// <summary>
+    /// Stopped twice (a test's server is: by the test host, and by the program's own run when that sees the stop), the clean
+    /// stop is noted once, by the first; the second, however late, writes nothing more to the database. Two at once note it
+    /// once, and neither returns before it is noted.
+    /// </summary>
+    [Fact]
+    public async Task AStopIsNotedOnceHoweverOftenItIsStopped() {
+        var alerts = this.Alerts();
+        await alerts.StopAsync(Ct);
+        var stopped = this.Now;
+        Assert.Equal(stopped.ToString(System.Globalization.CultureInfo.InvariantCulture), this._db.GetServerState("server_stopped_cleanly_at"));
+
+        this._clock.Advance(TimeSpan.FromMinutes(1));
+        this._db.DeleteServerState("server_stopped_cleanly_at");
+        await alerts.StopAsync(Ct);
+        Assert.Null(this._db.GetServerState("server_stopped_cleanly_at"));
+
+        var together = this.Alerts();
+        await Task.WhenAll(Enumerable.Range(0, 2).Select(_ => Task.Run(() => together.StopAsync(Ct), Ct)));
+        Assert.Equal(this.Now.ToString(System.Globalization.CultureInfo.InvariantCulture), this._db.GetServerState("server_stopped_cleanly_at"));
+    }
+
     /// <summary>When the summary was last due, in UTC hours: the same whatever any place's clocks do (here across Europe's change on 2026-10-25).</summary>
     [Theory]
     [InlineData("2026-10-25T08:59:59Z", 9, "2026-10-24T09:00:00Z")]

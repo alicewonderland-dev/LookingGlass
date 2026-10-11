@@ -67,6 +67,7 @@ public sealed class ServerAlerts : BackgroundService {
     private long? _summaryPostedTo;
     private long? _previousStart;
     private long? _previousCleanStop;
+    private readonly Lazy<bool> _stopNoted;
 
     /// <param name="http">Gives the client to post with (<see cref="HttpClientName"/>, from the factory).</param>
     /// <param name="registry">Who is online, for the daily summary's most online at once.</param>
@@ -84,6 +85,10 @@ public sealed class ServerAlerts : BackgroundService {
         this._started = this._time.GetUtcNow();
         this._page = options.Admin.PageLink;
         this.Poster = this._settings.On ? new AlertPoster(this._settings.WebhookUrl, this._settings.RoleId, http, logger, time) { PageUrl = this._page } : null;
+        this._stopNoted = new Lazy<bool>(() => {
+            this.MarkStoppedCleanly();
+            return true;
+        });
     }
 
     /// <summary>Whether alerts are on (a webhook is set).</summary>
@@ -102,7 +107,10 @@ public sealed class ServerAlerts : BackgroundService {
     }
 
     public override async Task StopAsync(CancellationToken cancellationToken) {
-        this.MarkStoppedCleanly();
+        // Noted once. A host may be stopped twice at once (a test's server is: by the test host, and by the program's own run
+        // when that sees the stop): the second waits for the first's note rather than writing it again, perhaps after whoever
+        // stopped the server has gone on to use its database.
+        _ = this._stopNoted.Value;
         await base.StopAsync(cancellationToken);
     }
 
