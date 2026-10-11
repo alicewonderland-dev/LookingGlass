@@ -237,10 +237,13 @@ show in your own time zone.
       again: at once (not a minute later), "@(your role) **Urgent: blocked
       automatically:** address (the spare machine's, shortened), refused 100
       times within 60 minutes. Blocked for 5 minutes, until (time)." You get a
-      ping notification. Put the settings back.
+      ping notification (without **Allow anyone to @mention this role** on the
+      role: webhooks shouldn't need it). Once the block ends, do it again
+      within ten minutes of the first: it is posted with the minute's message
+      (about a minute later), without the ping. Put the settings back.
 - [ ] 40. **Urgent: operator keys.** With A listed in `Operators:Characters`
       (step 27): `LG --operator-pin` A (step 29) → within 30 seconds "@(role)
-      **Operator keys pinned** on the command line: (A) (user (ID)), pinned to
+      **Operator keys pinned** on the command line at (the time): (A) (user (ID)), pinned to
       keys (A's fingerprint)", with a ping. On A, **Forget account** in
       `/lgdebug` and register again (as step 31): when A signs in, "@(role)
       **Urgent: an operator character signed in with other keys:** (A) ...,

@@ -1095,7 +1095,9 @@ link in 3). Step 4 needs both updated; either alone does nothing new.
   operator character are kept in `server_state` (`alerts_pin_posted:<id>`);
   a pin whose keys differ is posted (as restored, with the keys before, when
   there were some), and one from before "alerts on since" is noted without
-  being posted. A pin deleted at startup forgets its entry, so pinning the
+  being posted. Each says when it was pinned: a restore made while alerts
+  were off (the entry kept from before) is posted when they are on again,
+  still urgent, as it is what someone with a stolen tailnet device would do. A pin deleted at startup forgets its entry, so pinning the
   character again is posted.
 - **The other keys** are checked when a login is answered (`Authenticate`:
   every sign-in, by saved login, key login or a new registration, ends in
@@ -1105,7 +1107,9 @@ link in 3). Step 4 needs both updated; either alone does nothing new.
   tells the character itself in the same place.
 - **Automatic blocks** are posted from the bans table like every ban (the
   monitor asks for a look at once), urgent; "refused 1,000 times" is the
-  threshold, `Abuse:AutoBlockAfterRefusals`.
+  threshold, `Abuse:AutoBlockAfterRefusals`. One found already ended (an
+  older server made it, before going back to this one) is marked without being
+  posted; the daily summary counts it.
 - **Ready for step 3:** `ServerAlerts.FunnelRequest()` (urgent; at most one
   alert every ten minutes, counting the rest, so the public can't make it
   ping again and again), `ServerAlerts.SendTest()` (false when alerts are off)
@@ -1113,9 +1117,15 @@ link in 3). Step 4 needs both updated; either alone does nothing new.
   calls it; the page's pins should too, or they are found at the next look,
   within `Abuse:BanCheckSeconds`).
 - **Timing:** a queue of 1,000; alerts within a minute as one message; an
-  urgent one at once with what is waiting, but at most one message every 2
-  seconds (a burst is one message and one ping); the restart alert, the
-  summary and the test at once, without the ping. A `Retry-After` up to 15
+  urgent one at once with what is waiting, at most one message every 2
+  seconds; the restart alert, the summary and the test at once, without the
+  ping. **Urgent alerts the public can set off** (automatic blocks, requests
+  through Funnel) go at once and ping only once every ten minutes; between,
+  they wait for the minute's message, without the ping (the review found
+  that someone with many addresses could otherwise make the role ping every
+  2 seconds, and use up the channel's messages). The operator keys' alerts
+  and the proxy warning always go at once and ping. Alerts waiting for the
+  minute are kept to 1,000 too. The client that posts follows no redirect. A `Retry-After` up to 15
   minutes is honoured, five times for one message; a 5xx, a timeout or no
   connection is tried twice more, 5 and 30 seconds later; any other 4xx (a
   deleted webhook) isn't tried again. Then the message's alerts are counted
@@ -1126,8 +1136,9 @@ link in 3). Step 4 needs both updated; either alone does nothing new.
   on or not, so turning them on later tells the truth about the last stop.
 - **The daily summary:** the end of the day it covered is kept
   (`daily_summary_posted_to`). The first start with alerts on sets it to the
-  hour last passed, so the first summary covers a whole day of alerts being
-  on. "Ended" counts automatic blocks that ran out as well as bans; "Lifted"
+  hour last passed, so the first summary comes when the hour next comes round
+  (perhaps minutes later); like every one, it covers the 24 hours before it,
+  from the database, whether alerts were on for all of them or not. "Ended" counts automatic blocks that ran out as well as bans; "Lifted"
   doesn't count bans replaced by a new one (those are bans made).
 - **Escaping:** names, worlds, reasons, limits and the plugin's operator
   character go through `VisibleText` (control and format characters as
@@ -1136,8 +1147,9 @@ link in 3). Step 4 needs both updated; either alone does nothing new.
   every `@`. Addresses as the server wrote them are
   shown as they are. A debug account has no Lodestone line.
 - **The test alert**: "**Test alert** from LookingGlass 0.2.x: alerts reach
-  this channel." Without the ping (the owner may want it to ping, to check
-  the role: a one-line change).
+  this channel." Without the ping (the owner's decision, 2026-10-10): step 39
+  of the bans checklist checks the ping with a real urgent alert.
+
 **Tests** (automated, in `tests/LookingGlass.Tests`):
 
 - **Policy**: a table of every tool against every action and kind of target

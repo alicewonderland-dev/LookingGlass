@@ -946,8 +946,10 @@ wording in [operator-tools-plan.md](operator-tools-plan.md#discord-alerts).
 **Make the webhook.** In Discord, in a channel only the operators can see:
 **Edit Channel**, **Integrations**, **Webhooks**, **New Webhook**; name it
 (say "LookingGlass"), and **Copy Webhook URL**. It looks like
-`https://discord.com/api/webhooks/123456789012345678/abc...`. Treat it as a
-password: anyone who has it can post in that channel.
+`https://discord.com/api/webhooks/123456789012345678/abc...`. Copy it from
+the ordinary Discord app or website: the test builds (Canary, PTB) give
+addresses on `canary.discord.com` or `ptb.discord.com`, which the server
+refuses. Treat it as a password: anyone who has it can post in that channel.
 
 **The ping role (optional).** To be pinged for urgent alerts (an address
 blocked automatically, the proxy warning, a request to the web page through
@@ -955,9 +957,14 @@ Funnel once there is one, an operator character signing in with other keys,
 an operator's keys pinned or restored), make a role (**Server Settings**,
 **Roles**), give it to whoever should hear, and copy its ID (turn on
 **Developer Mode** under **User Settings**, **Advanced**; then right-click the
-role, **Copy Role ID**). If urgent alerts show the role without pinging
-anyone, turn on **Allow anyone to @mention this role** in its settings.
-Nothing else ever pings: every other message allows no mention at all.
+role, **Copy Role ID**). A webhook can normally ping a role without anything
+more (step 39 of the bans checklist confirms it). Only if urgent alerts show
+the role without pinging anyone, turn on **Allow anyone to @mention this
+role** in its settings, knowing that every member of the Discord server can
+then ping it. Nothing else ever pings: every other message allows no mention
+at all. An automatic block (which anyone on the internet can bring about,
+with enough addresses) pings at most once every ten minutes; later ones in
+those ten minutes come with the minute's message, without the ping.
 
 **The secrets file.** The webhook goes in a file only root can read, named
 by the unit's `EnvironmentFile=`: systemd reads it as root before starting
@@ -1013,6 +1020,9 @@ of range):
 - **Flagged**: a character (name@world, user ID, Lodestone link, and the
   `LG --ban` command to copy) or an address (shortened), why, and the limits.
 - **Blocked automatically** (urgent): the address, shortened, and until when.
+  At once, with the ping, at most once every ten minutes; the rest with the
+  minute's message. One found already over (made by an older version while
+  you had gone back to it) isn't posted.
 - **Ban made** and **Ban lifted**, saying with which tool: "on the command
   line", "on the web page", "in the plugin by Alice Wonderland@Lich" (only the
   plugin's operator character is named; never a Unix user or a Tailscale
@@ -1022,7 +1032,8 @@ of range):
   posted once, as the new ban "replacing the ban made ...". Bans that run out
   aren't posted one by one: the summary counts them.
 - **Operator keys pinned** and **Operator status restored** (urgent), with
-  the fingerprints, whichever tool did it: if you didn't, unlist the
+  the fingerprints and when, whichever tool did it (one made while alerts
+  were off is posted when they are on again): if you didn't, unlist the
   character in the settings and restart, then check `LG --audit`.
 - **An operator character signed in with other keys** (urgent), once for each
   new set of keys: it registered again through the Lodestone (your new
@@ -1039,7 +1050,8 @@ of range):
   Alerts are working". A restart neither skips nor repeats one (one missed
   while the server was down comes when it is back).
 
-Alerts within a minute come as one message, urgent ones at once. A long
+Alerts within a minute come as one message, urgent ones at once (at most one
+message every 2 seconds). A long
 burst is cut at Discord's 2,000 characters with "and N more": the rest are
 in `LG --bans`, `LG --audit` and the journal. The commands an alert gives
 never include `--force` or a full address (look it up with `LG --bans`).

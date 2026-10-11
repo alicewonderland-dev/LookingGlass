@@ -4596,7 +4596,11 @@ remember to look. How to set it up is in
   without posting: it keeps an "alerts on since" time (`server_state`), set
   when it starts with alerts on and finds none, and forgotten when it starts
   with them off. Pins are found the same way: the keys last posted for each
-  operator character are kept in `server_state`, and newer pins are posted;
+  operator character are kept in `server_state`, and newer pins are posted,
+  with when they were made (one made while alerts were off is posted when they
+  are on again, still urgent: it is what someone with a stolen tailnet device
+  would do); an automatic block found already ended (made by an older server
+  before going back to this one) is marked without being posted;
   an operator character's other keys are marked in
   `operator_pins.mismatch_announced_hash` (cleared by a new pin).
 - **How much (owner, 2026-10-10):** characters as name@world with the user
@@ -4615,8 +4619,9 @@ remember to look. How to set it up is in
   pinged for urgent alerts only: an address blocked automatically, the proxy
   warning, a request through Funnel, an operator character signing in with
   other keys, and an operator's keys pinned or restored. Flags, bans and the
-  rest never ping. `allowed_mentions` lists that role alone on a message
-  holding an urgent alert, and nothing at all on any other.
+  rest never ping. An automatic block or a request through Funnel pings at
+  most once every ten minutes (see below). `allowed_mentions` lists that role
+  alone on a message that pings, and nothing at all on any other.
 - **The daily summary (owner, 2026-10-10)**, at `Alerts:DailySummaryHourUtc`
   (09:00 UTC by default; -1 for none), for the 24 hours to that hour:
   flagged (characters and addresses), blocked automatically, bans made (by
@@ -4633,9 +4638,15 @@ remember to look. How to set it up is in
 - **Never in the way of the server.** Alerts go into a bounded queue (1,000;
   past it they are counted as not delivered) posted from a task of its own: a
   slow or failing Discord never delays a request. Alerts within a minute go as
-  one message; an urgent one goes at once with whatever is waiting, but at most
-  one message every 2 seconds, so a burst of them is one message and one
-  ping. A message past Discord's 2,000 characters holds the urgent ones first
+  one message; an urgent one goes at once with whatever is waiting (at most one
+  message every 2 seconds). Urgent alerts the public can set off (an automatic
+  block, a request through Funnel) go at once, and ping, only once every ten
+  minutes; between, they go with the minute's message, without the ping, so
+  nobody outside can make the role ping again and again, or fill the channel
+  (Discord limits the messages a channel takes, which the restart and summary
+  alerts need too). The others (an operator character's keys, pins and
+  restores, the proxy warning) always go at once and ping. Alerts waiting for
+  the minute are kept to 1,000 as well. A message past Discord's 2,000 characters holds the urgent ones first
   and ends "and 12 more: see `LG --bans` ...". A `429`'s `Retry-After` is
   honoured; any other failure is tried twice more (5 and 30 seconds later),
   then counted, and logged at most once every ten minutes, without the URL.
@@ -5262,8 +5273,12 @@ The owner's decisions, and why.
   [Alerts to a Discord channel](#alerts-to-a-discord-channel)). Choices made
   in building them, where the plan was silent: a ban or lift is marked as
   posted before it is posted, so it is posted at most once (never twice, at
-  worst lost if the server dies in between); urgent alerts go at once but at
-  most one message every 2 seconds, so a burst is one message and one ping;
+  worst lost if the server dies in between); urgent alerts go at once, at
+  most one message every 2 seconds, and those the public can set off
+  (automatic blocks, requests through Funnel) go at once and ping only once
+  every ten minutes, waiting for the minute's message between (from the
+  review: someone with many addresses could otherwise make the role ping
+  every 2 seconds); the operator keys' alerts always ping;
   automatic blocks are posted from the bans table like every ban, not from
   the monitor; an operator character never pinned isn't posted when it signs
   in (it was never an operator, and there is no pin to keep "posted" in);
@@ -5272,7 +5287,8 @@ The owner's decisions, and why.
   are posted at most every ten minutes, counting the rest; the restart alert,
   the daily summary and the test go at once, without the ping; a failure is
   tried twice more before it is counted; the count of alerts not delivered is
-  kept in memory (since the restart, when there was one that day). The web
+  kept in memory (since the restart, when there was one that day); the client
+  that posts follows no redirect; a pin is posted with when it was made. The web
   page's link isn't in the alerts until the page exists: `Admin:Url` is
   checked against `Admin:Listen`, which comes with it.
 
