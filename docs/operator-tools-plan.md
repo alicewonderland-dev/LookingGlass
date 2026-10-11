@@ -4,8 +4,11 @@ Status: approved by the owner (2026-10-10). **Step 1 is built** (2026-10-10):
 `OperatorActions` and `OperatorPolicy`, schema 12, the command line moved onto
 them, `--audit`, `--operators` and `--operator-pin`; it is folded into
 [design.md](design.md#operator-actions-one-layer-for-every-tool) and
-[server.md](server.md#flags-and-bans). Steps 2 to 4 (Discord alerts, the web
-page, the plugin's panel) aren't started (see
+[server.md](server.md#flags-and-bans). **Step 2 is built** (2026-10-10):
+Discord alerts, folded into
+[design.md](design.md#alerts-to-a-discord-channel) and
+[server.md](server.md#alerts-to-discord). Steps 3 and 4 (the web page, the
+plugin's panel) aren't started (see
 [Build order, size and tests](#build-order-size-and-tests)). The decisions themselves are kept
 in [design.md](design.md) (under
 [Planned features](design.md#planned-features) and
@@ -1016,7 +1019,7 @@ and the plugin's section joins [The Settings window](design.md#the-settings-wind
 | Step | What | Update needed | Rough size |
 | --- | --- | --- | --- |
 | 1 | `OperatorActions` and `OperatorPolicy`, schema 12 (with `operator_pins` and `users.keys_registered_at`), the command line moved onto them (same words), `--audit`, `--operators`, `--operator-pin`. **Built 2026-10-10** (see below) | Server only | Medium: about 750 lines and 600 of tests (as built: about 1,300, with its comments, and 1,100) |
-| 2 | Discord alerts: queue, posting, batching, every alert kind (the operator-keys ones included), restart and daily summary | Server only | Medium: about 750 lines and 650 of tests |
+| 2 | Discord alerts: queue, posting, batching, every alert kind (the operator-keys ones included), restart and daily summary. **Built 2026-10-10** (see below) | Server only | Medium: about 750 lines and 650 of tests (as built: about 1,300, with its comments, and 1,050) |
 | 3 | The web page: second host, Unix socket, identity checks, the time zone, pages (Operators, pin and restore included), CSRF, stylesheet; unit and docs | Server only | Large: about 1,050 lines and 800 of tests |
 | 4 | The plugin's panel: `operator.v1` in the protocol, server handling (the pin checked at login and on every operator request, the "other keys" alert), `OperatorActionProof`, `OperatorWords`, the Settings section, the keys-changed notice, the dialog, the menu items | Server and plugin | Large: about 450 server, 400 core, 750 plugin, 650 of tests |
 
@@ -1075,6 +1078,66 @@ link in 3). Step 4 needs both updated; either alone does nothing new.
   from another; it and `--operators` warn when they see no list while the
   database holds pins.
 
+**Step 2 as built** (2026-10-10), where it adds to or settles what is above:
+
+- **No link to the web page yet.** `Admin:Url` is checked against
+  `Admin:Listen` (required with it), which comes with the page, so it isn't
+  a setting yet; alerts give the commands only, as the build order allows.
+  Step 3 adds the page's link to the words (`AlertWords`).
+- **Posted at most once.** A ban or lift is marked as posted before it is
+  posted (a conditional update, so whichever look marks it posts it): never
+  twice, and lost only if the server dies between marking and posting (what
+  is waiting is posted as it stops, within 5 seconds).
+- **"Alerts on since"**, as decided for step 2: set when the server starts
+  with alerts on and finds none; forgotten when it starts with them off. If
+  it can't be read (the database failing), nothing is marked until it can.
+- **Pins without a schema change.** The keys last posted as pinned for each
+  operator character are kept in `server_state` (`alerts_pin_posted:<id>`);
+  a pin whose keys differ is posted (as restored, with the keys before, when
+  there were some), and one from before "alerts on since" is noted without
+  being posted. A pin deleted at startup forgets its entry, so pinning the
+  character again is posted.
+- **The other keys** are checked when a login is answered (`Authenticate`:
+  every sign-in, by saved login, key login or a new registration, ends in
+  one), only for a listed character with a pin: one never pinned was never an
+  operator, and has no pin to mark "posted" in. Each new set of keys is posted
+  once (`operator_pins.mismatch_announced_hash`, cleared by a new pin). Step 4
+  tells the character itself in the same place.
+- **Automatic blocks** are posted from the bans table like every ban (the
+  monitor asks for a look at once), urgent; "refused 1,000 times" is the
+  threshold, `Abuse:AutoBlockAfterRefusals`.
+- **Ready for step 3:** `ServerAlerts.FunnelRequest()` (urgent; at most one
+  alert every ten minutes, counting the rest, so the public can't make it
+  ping again and again), `ServerAlerts.SendTest()` (false when alerts are off)
+  and `ServerAlerts.Nudge()` (a ban or lift made inside the server already
+  calls it; the page's pins should too, or they are found at the next look,
+  within `Abuse:BanCheckSeconds`).
+- **Timing:** a queue of 1,000; alerts within a minute as one message; an
+  urgent one at once with what is waiting, but at most one message every 2
+  seconds (a burst is one message and one ping); the restart alert, the
+  summary and the test at once, without the ping. A `Retry-After` up to 15
+  minutes is honoured, five times for one message; a 5xx, a timeout or no
+  connection is tried twice more, 5 and 30 seconds later; any other 4xx (a
+  deleted webhook) isn't tried again. Then the message's alerts are counted
+  as not delivered (in memory: "since the restart" in the summary when there
+  was one that day).
+- **The restart alert's marker:** `server_started_at` and
+  `server_stopped_cleanly_at` in `server_state`, written whether alerts are
+  on or not, so turning them on later tells the truth about the last stop.
+- **The daily summary:** the end of the day it covered is kept
+  (`daily_summary_posted_to`). The first start with alerts on sets it to the
+  hour last passed, so the first summary covers a whole day of alerts being
+  on. "Ended" counts automatic blocks that ran out as well as bans; "Lifted"
+  doesn't count bans replaced by a new one (those are bans made).
+- **Escaping:** names, worlds, reasons, limits and the plugin's operator
+  character go through `VisibleText` (control and format characters as
+  escapes), then the backslash, `*`, `_`, `~`, the backtick, `|`, `[`, `]`, `<`,
+  `>`, `:` and `#` are escaped with a backslash, and a zero-width space follows
+  every `@`. Addresses as the server wrote them are
+  shown as they are. A debug account has no Lodestone line.
+- **The test alert**: "**Test alert** from LookingGlass 0.2.x: alerts reach
+  this channel." Without the ping (the owner may want it to ping, to check
+  the role: a one-line change).
 **Tests** (automated, in `tests/LookingGlass.Tests`):
 
 - **Policy**: a table of every tool against every action and kind of target

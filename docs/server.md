@@ -220,6 +220,7 @@ All of these are under `LookingGlass`.
 | `Limits:LocalMessagesBetweenIntervalSeconds` | 2 | Seconds between them once those are spent. 1 to 86,400, and more than `LocalMessagesReceivedIntervalSeconds` |
 | `Abuse:...` | | When an account or address refused by limits again and again is flagged, how bans are picked up, and automatic blocks (on): see [Flags and bans](#flags-and-bans) |
 | `Operators:Characters` | empty | User IDs (Lodestone IDs) of the characters that may be operators in the plugin's operator panel (coming in a later update). Each is one only once its keys are pinned (`--operator-pin`), and only while its keys match the pin; `--ban` bans one only with `--force`. User IDs only: the server won't start with anything else. See [Operator characters](#operator-characters) |
+| `Alerts:...` | | Alerts to a Discord channel, off until a webhook is set (a secret, kept out of this file): see [Alerts to Discord](#alerts-to-discord) |
 
 The server won't start with an invite, lookup, registration lookup or local chat setting outside its range: see
 [Limits worth knowing](#limits-worth-knowing).
@@ -626,7 +627,11 @@ account refused, a banned connection closed, an address blocked
 automatically) and opened and closed connections (at Debug level only), for
 dealing with abuse. At startup, the characters listed as operators are logged
 by name and user ID, with whether their keys are pinned (see
-[Operator characters](#operator-characters)).
+[Operator characters](#operator-characters)). The startup line says whether
+Discord alerts are on, never the webhook; a failure to post one is a Warning,
+at most once every ten minutes, without the webhook; and bans and lifts made
+before alerts were on, marked as posted without being posted, are counted in an
+Information line (see [Alerts to Discord](#alerts-to-discord)).
 
 ### Flags and bans
 
@@ -647,7 +652,8 @@ like these are unlikely to be by accident; see it with --bans, and ban it with -
 after the last refusal.
 ```
 
-To find them in the journal: `journalctl -u lookingglass | grep Flagged`. A
+With Discord alerts on, each flag is posted to the channel too, with the address shortened (see
+[Alerts to Discord](#alerts-to-discord)). To find them in the journal: `journalctl -u lookingglass | grep Flagged`. A
 flag lasts until 24 hours have passed without a refusal; nothing is banned
 for it. The limits are named as their settings are (or as the request, for
 limits that have no setting; the requests that read a lot share one budget,
@@ -811,7 +817,8 @@ Its connections are refused (HTTP 429) before anything else, rather than let
 in to be told why as with your bans. It never blocks an account or the
 proxy's address, never lasts longer than those minutes, and never replaces a
 ban you made; `--bans` lists it as made automatically, and
-`--unban` lifts it early.
+`--unban` lifts it early. With Discord alerts on, each is posted at once, and pings
+the role, if one is set.
 
 **Settings** (under `LookingGlass:Abuse`; the server won't start with one out
 of range):
@@ -926,6 +933,151 @@ this at each key login), and revokes no login. It is in the audit trail too.
 Exit codes: 0 done, 1 not done (no such character, or key login wasn't
 turned off), 2 the command line was wrong.
 
+### Alerts to Discord
+
+The server can post to a Discord channel when someone is flagged, an address
+is blocked automatically, a ban is made or lifted (with any tool), an
+operator character's keys are pinned or restored or it signs in with other
+keys, the proxy stops passing the client's address on, and when it starts;
+and a summary once a day. Off unless a webhook is set. The design is in
+[design.md](design.md#alerts-to-a-discord-channel), and each message's
+wording in [operator-tools-plan.md](operator-tools-plan.md#discord-alerts).
+
+**Make the webhook.** In Discord, in a channel only the operators can see:
+**Edit Channel**, **Integrations**, **Webhooks**, **New Webhook**; name it
+(say "LookingGlass"), and **Copy Webhook URL**. It looks like
+`https://discord.com/api/webhooks/123456789012345678/abc...`. Treat it as a
+password: anyone who has it can post in that channel.
+
+**The ping role (optional).** To be pinged for urgent alerts (an address
+blocked automatically, the proxy warning, a request to the web page through
+Funnel once there is one, an operator character signing in with other keys,
+an operator's keys pinned or restored), make a role (**Server Settings**,
+**Roles**), give it to whoever should hear, and copy its ID (turn on
+**Developer Mode** under **User Settings**, **Advanced**; then right-click the
+role, **Copy Role ID**). If urgent alerts show the role without pinging
+anyone, turn on **Allow anyone to @mention this role** in its settings.
+Nothing else ever pings: every other message allows no mention at all.
+
+**The secrets file.** The webhook goes in a file only root can read, named
+by the unit's `EnvironmentFile=`: systemd reads it as root before starting
+the service, so the service user can't read the file, only its own
+environment.
+
+```sh
+sudo install -d -m 755 /etc/lookingglass
+sudo install -m 600 -o root -g root /dev/null /etc/lookingglass/alerts.env
+sudoedit /etc/lookingglass/alerts.env
+```
+
+with the one line
+
+```sh
+LookingGlass__Alerts__DiscordWebhookUrl=https://discord.com/api/webhooks/...
+```
+
+then `sudo systemctl edit lookingglass` and add
+
+```ini
+[Service]
+EnvironmentFile=/etc/lookingglass/alerts.env
+Environment=LookingGlass__Alerts__PingRoleId=123456789012345678
+```
+
+and `sudo systemctl restart lookingglass`. Never put the webhook in
+`appsettings.json`, in an `Environment=` line (`systemctl show` prints those
+to any user), or in a repository. The `LG` helper doesn't pass it on, and
+doesn't need to: the commands never post; the running server posts what they
+did when it picks it up. (With Docker, pass it with `--env-file` from a file
+only you can read.)
+
+**Check it works.** The startup line (`journalctl -u lookingglass -n 20`)
+says `Discord alerts on`, never the webhook, and the channel gets
+"**Server started:** LookingGlass 0.2.x, in Production." That message is the
+test that alerts work (the web page, when it comes, has **Send a test
+alert**). A webhook of the wrong shape stops the server, with a line saying
+what is wrong, not what it is.
+
+**Settings** (under `LookingGlass:Alerts`; the server won't start with one out
+of range):
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `DiscordWebhookUrl` | empty (no alerts) | The webhook. A secret: in the secrets file above. Exactly `https://discord.com/api/webhooks/<number>/<token>`, as Discord's **Copy Webhook URL** gives it |
+| `PingRoleId` | empty (never ping) | The role urgent alerts ping, by its ID (a number) |
+| `Restarts` | true | Post when the server starts, and whether it last stopped cleanly |
+| `DailySummaryHourUtc` | 9 | The hour, 0 to 23 UTC, of the daily summary; -1 for none |
+
+**What is posted.**
+
+- **Flagged**: a character (name@world, user ID, Lodestone link, and the
+  `LG --ban` command to copy) or an address (shortened), why, and the limits.
+- **Blocked automatically** (urgent): the address, shortened, and until when.
+- **Ban made** and **Ban lifted**, saying with which tool: "on the command
+  line", "on the web page", "in the plugin by Alice Wonderland@Lich" (only the
+  plugin's operator character is named; never a Unix user or a Tailscale
+  login). The running server posts a command line ban or lift when it picks
+  it up (within `Abuse:BanCheckSeconds`), and one made inside it at once.
+  Each is posted once, across restarts too. A ban that replaces another is
+  posted once, as the new ban "replacing the ban made ...". Bans that run out
+  aren't posted one by one: the summary counts them.
+- **Operator keys pinned** and **Operator status restored** (urgent), with
+  the fingerprints, whichever tool did it: if you didn't, unlist the
+  character in the settings and restart, then check `LG --audit`.
+- **An operator character signed in with other keys** (urgent), once for each
+  new set of keys: it registered again through the Lodestone (your new
+  computer, **Reset my identity**, or someone with its Square Enix account).
+  See [Operator characters](#operator-characters).
+- **Every player seems to come from 127.0.0.1** (urgent): see
+  [Behind a reverse proxy](#behind-a-reverse-proxy).
+- **Server started**, with whether it stopped cleanly, or had been running
+  since when (a crash, the machine losing power, the process killed).
+- **Daily summary** at `DailySummaryHourUtc`: flags, blocks, bans made (by
+  tool), lifted, ended and in force, the most players online at once,
+  characters registered for the first time, uptime, the database's size, and
+  alerts not delivered. A day with none of the first is "a quiet day ...
+  Alerts are working". A restart neither skips nor repeats one (one missed
+  while the server was down comes when it is back).
+
+Alerts within a minute come as one message, urgent ones at once. A long
+burst is cut at Discord's 2,000 characters with "and N more": the rest are
+in `LG --bans`, `LG --audit` and the journal. The commands an alert gives
+never include `--force` or a full address (look it up with `LG --bans`).
+
+The first time the server starts with alerts on (or on again after they were
+off), the bans and lifts already made aren't posted: it marks them as posted,
+and logs how many. Everything after is posted, including what the command
+line does while the server is stopped (posted when it starts).
+
+**What Discord learns**, and keeps: character names, worlds and user IDs (all
+public on the Lodestone), shortened addresses (`203.0.113.x`, an IPv6
+address's /40), ban reasons, which tool made a ban (and the operator character
+for the plugin's), which characters are operators and their fingerprints
+(when one is pinned, restored, or signs in with other keys), counts, the
+server's version, uptime, database size and the most players online at once,
+the ping role, and, in the proxy warning, the server's own or its proxy's
+address. Never: players' full addresses, Tailscale logins, Unix users,
+tokens, keys, channels, or anything said (the server never has it).
+
+**If posting fails.** Discord being slow or down never slows the server.
+Rate limits are waited out as Discord asks; other failures are tried twice
+more, then counted ("Alerts not delivered" in the summary) and logged at most
+once every ten minutes, without the webhook:
+`journalctl -u lookingglass | grep "post an alert"`. "The webhook may have
+been deleted" means Discord doesn't know it any more: make a new one, as
+below.
+
+**Replacing a leaked webhook.** Whoever has it can post in the channel (fake
+alerts, spam), and nothing more: it can't read the channel, and the server
+never acts on what is posted there. A fake alert could suggest a harmful
+command or link: real ones never include `--force`, so read a command before
+pasting it. To replace it: in Discord, delete the webhook (**Integrations**,
+**Webhooks**, the webhook, **Delete Webhook**), make a new one, put it in
+`/etc/lookingglass/alerts.env`, and restart. The "Server started" message
+shows the new one works.
+
+**Turning alerts off:** take the `EnvironmentFile=` line out of the drop-in
+(or empty the file), and restart.
 ### Stopping and restarting
 
 `systemctl stop` (or `restart`, or the installer) sends SIGTERM. The server
@@ -1125,17 +1277,22 @@ recognised".
 lifted each ban, and who), `replaced_by` (the ban that replaced it, when it
 was replaced by banning the same subject again) and `made_announced` and
 `lifted_announced`
-(whether the alerts channel was told, for the Discord alerts to come). Bans
+(whether the alerts channel was told: see [Alerts to Discord](#alerts-to-discord)). Bans
 from before are marked as made on the command line, or automatically, with
 nobody named, and as posted, and so are the lifts already made. New tables:
 `operator_log` (the audit trail, empty to begin with), `server_state` (the
-server's own bookkeeping, for the alerts) and `operator_pins` (operator
+server's own bookkeeping: when it started and stopped, and what the alerts posted) and `operator_pins` (operator
 characters' pinned keys). `users` gains `keys_registered_at`, when the
 account's current keys were registered: unknown (empty) for keys registered
 before the upgrade, and kept from then on by triggers in the database. Nothing
 else changes, and nothing needs setting (`Operators:Characters` is empty by
 default). Add `Operators__` to the `LG` helper's list, as in
 [Flags and bans](#flags-and-bans). Plugins are unaffected.
+
+**Discord alerts.** Nothing to do, and no database change: schema 12 already
+has what they need, and they are off until a webhook is set (see
+[Alerts to Discord](#alerts-to-discord)). The first start with them on
+doesn't post the bans and lifts made before.
 
 **Going back to an older version** works with a schema 12 database: an older
 server opens it and ignores what it doesn't know (checked with the schema 11

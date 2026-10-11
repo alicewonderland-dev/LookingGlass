@@ -49,8 +49,9 @@ channels, invites, ranks, automatic rekeys, encrypted messages, the signed
 membership log, online indicators, blocking, channel windows (pop-out chat),
 message catch-up (what was sent while you were away), an opt-in chat log on the
 player's computer, local chat with friends near you (`/lgl`), flags for abuse
-and the operator's bans (with an audit trail, and one layer of rules that the
-planned web page and plugin panel will share), and debug tooling. Part of the ChatTwo integration is
+and the operator's bans (with an audit trail, alerts to the operator's Discord
+channel, and one layer of rules that the planned web page and plugin panel
+will share), and debug tooling. Part of the ChatTwo integration is
 built: sticky mode through ChatTwo's input (with its typed-text check) and
 **Invite to LookingGlass** in ChatTwo's right-click menu. Channel names and
 colours for ChatTwo's own tabs and filters aren't, as they need a change on
@@ -4381,8 +4382,10 @@ uses it is in [server.md](server.md#flags-and-bans).
 - **Flagged.** Over a sliding window of 60 minutes, an account or address
   refused in at least 30 different minutes, or by at least 4 different limits
   within 10 minutes, is flagged: one warning in the server's log (the limits'
-  names and the user ID or address, never a name or anything said), and an
-  entry in the database that `--bans` lists. Being refused in most minutes of
+  names and the user ID or address, never a name or anything said), an
+  entry in the database that `--bans` lists, and, with alerts on, a message in
+  the operator's Discord channel (see
+  [Alerts to a Discord channel](#alerts-to-a-discord-channel)). Being refused in most minutes of
   an hour is what a script or a determined person does. A household behind
   one address, or a plugin with a bug, is refused now and then: a plugin
   retrying a login the server lost is refused every third minute at most.
@@ -4462,8 +4465,9 @@ uses it is in [server.md](server.md#flags-and-bans).
 Built on 2026-10-10, as the first step of the operator tools plan
 ([operator-tools-plan.md](operator-tools-plan.md), approved by the owner the
 same day). Banning needs SSH and a command. The owner asked (2026-10-10) for a
-web page, a panel in the plugin, and Discord alerts, designed together (still
-planned: see [Planned features](#planned-features)). All three, and the
+web page, a panel in the plugin, and Discord alerts, designed together (the
+alerts are built: see [Alerts to a Discord channel](#alerts-to-a-discord-channel);
+the other two are still planned: see [Planned features](#planned-features)). All three, and the
 command line, go through one server service, `OperatorActions`: list the
 flags and the bans, ban, lift a ban, list the plugin's operator characters
 and pin their keys, and let a key sign in again, with the command line's
@@ -4528,8 +4532,8 @@ tool may do:
   logged; `--operators` lists them. Nothing uses operator status yet: the
   plugin's panel is the plan's last step.
 - **Schema 12.** `bans` gains `made_via`, `made_by`, `lifted_via`,
-  `lifted_by`, `replaced_by`, `made_announced` and `lifted_announced` (so the planned
-  alerts post each ban once, whichever process made it; the upgrade marks
+  `lifted_by`, `replaced_by`, `made_announced` and `lifted_announced` (so the alerts
+  post each ban once, whichever process made it; the upgrade marks
   bans from before as made on the command line or automatically, and as
   posted, with the lifts already made); new tables `operator_log` (the audit
   trail), `server_state` (the alerts' bookkeeping) and `operator_pins`; and
@@ -4540,6 +4544,115 @@ tool may do:
   opens a schema 12 database and ignores what it doesn't know (checked with
   the schema 11 server's own commands).
 
+### Alerts to a Discord channel
+
+Built on 2026-10-10, as step 2 of the operator tools plan
+([operator-tools-plan.md](operator-tools-plan.md#discord-alerts), whose
+mockups are the messages), with the owner's answers of 2026-10-10. Asked for
+by the owner (2026-10-08) for when the server is public: flags and automatic
+blocks otherwise show only in the log and in `--bans`, so the operator has to
+remember to look. How to set it up is in
+[server.md](server.md#alerts-to-discord).
+
+- **A webhook, set by the operator.** One setting,
+  `LookingGlass:Alerts:DiscordWebhookUrl` (empty: no alerts, the default). The
+  URL is a secret (anyone holding it can post in the channel), so it goes in a
+  root-only `EnvironmentFile=`, never in `appsettings.json` or the
+  repository. It is never logged: the HTTP client that posts it logs nothing,
+  failures are logged without it, and the startup line says only "Discord
+  alerts on". It must be exactly what Discord's **Copy Webhook URL** gives
+  (`https://discord.com/api/webhooks/<number>/<token>`); anything else stops
+  the server, which says what is wrong without quoting it. The
+  `--alert-test` command first planned is dropped: only the service reads the
+  secret, so the `LG` helper can't post. The restart alert shows alerts work;
+  the web page's **Send a test alert** (step 3) will post one at will.
+- **What is posted:** someone flagged (a character or an address, the limits,
+  how often); an address blocked automatically; a ban made or lifted with any
+  tool, saying which (the command line, the web page, or the plugin with the
+  operator character's name); a ban replaced by banning the same subject
+  again, once, as the new ban "replacing the ban made ..."; an operator
+  character's keys pinned or restored, by any tool, and an operator character
+  signing in with keys that aren't its pin, once for each new set of keys (a
+  listed character never pinned was never an operator, and isn't posted); the
+  proxy warning (every player seeming to come from 127.0.0.1); a request to
+  the web page through Funnel (the page raises it, in step 3; at most one
+  alert every ten minutes, counting the rest, so the public can't make it
+  ping again and again); the server starting, with its version and whether it
+  last stopped cleanly (a marker written when it stops; `Alerts:Restarts`
+  turns the alert off); and a daily summary. Bans that run out aren't posted
+  one by one: the summary counts them. Each alert says what to do next with a
+  command to copy (`LG --bans`, `LG --unban 31337`; never `--force`, and never
+  a full address), and links the character's Lodestone page. The web page's
+  link comes with the page (`Admin:Url` isn't a setting yet).
+- **Posted once, by the server.** The command line is another process, and
+  never sees the webhook, so the running server posts every ban and lift
+  when it sees it in the database: at once for those made inside it (the web
+  page and the plugin, when they come), and within `Abuse:BanCheckSeconds`
+  for the command line's, when it picks them up. Each is marked as posted
+  (`bans.made_announced`, `lifted_announced`) before it is posted, so none is
+  posted twice, by any number of looks or across restarts; at worst one is
+  lost if the server dies between marking and posting (what is waiting is
+  posted as it stops). What it finds from before alerts were on, it marks
+  without posting: it keeps an "alerts on since" time (`server_state`), set
+  when it starts with alerts on and finds none, and forgotten when it starts
+  with them off. Pins are found the same way: the keys last posted for each
+  operator character are kept in `server_state`, and newer pins are posted;
+  an operator character's other keys are marked in
+  `operator_pins.mismatch_announced_hash` (cleared by a new pin).
+- **How much (owner, 2026-10-10):** characters as name@world with the user
+  ID and the Lodestone link (none for a debug account); **addresses
+  shortened**: an IPv4 address to its first three parts (`203.0.113.x`), an
+  IPv6 one to its /40 (`2001:db8:ab00::/40`; the owner chose it on
+  2026-10-10 over the /48 in the AI's planning brief, since a /48 is often
+  one customer's whole allocation), and a prefix wider than those as it is.
+  The server's own or its proxy's address, in the proxy warning, is shown in
+  full: it is the server's. Full addresses stay on the server, in `--bans`
+  (and on the web page). Tailscale logins and Unix users aren't posted. Times
+  are Discord time stamps (`<t:1760702400:f>`), shown in each reader's time
+  zone, and link previews are off (the message's suppress-embeds flag), so
+  Discord fetches neither the Lodestone nor anything else.
+- **Pings (owner, 2026-10-10):** an optional role (`Alerts:PingRoleId`) is
+  pinged for urgent alerts only: an address blocked automatically, the proxy
+  warning, a request through Funnel, an operator character signing in with
+  other keys, and an operator's keys pinned or restored. Flags, bans and the
+  rest never ping. `allowed_mentions` lists that role alone on a message
+  holding an urgent alert, and nothing at all on any other.
+- **The daily summary (owner, 2026-10-10)**, at `Alerts:DailySummaryHourUtc`
+  (09:00 UTC by default; -1 for none), for the 24 hours to that hour:
+  flagged (characters and addresses), blocked automatically, bans made (by
+  tool), lifted (not counting replacements) and ended, bans in force, and
+  what the server knows for next to nothing: the most players online at once
+  (one number the connection registry keeps as players log in; "counted
+  since the restart" when it restarted that day), characters registered for
+  the first time, uptime, the database's size, and alerts that couldn't be
+  posted. The end of the day each covered is kept (`server_state`), so a
+  restart neither skips one (one missed while the server was down is posted
+  when it is back, for the latest day only) nor repeats one. A day with
+  nothing to report says so ("a quiet day ... Alerts are working"), so
+  silence never means broken alerts.
+- **Never in the way of the server.** Alerts go into a bounded queue (1,000;
+  past it they are counted as not delivered) posted from a task of its own: a
+  slow or failing Discord never delays a request. Alerts within a minute go as
+  one message; an urgent one goes at once with whatever is waiting, but at most
+  one message every 2 seconds, so a burst of them is one message and one
+  ping. A message past Discord's 2,000 characters holds the urgent ones first
+  and ends "and 12 more: see `LG --bans` ...". A `429`'s `Retry-After` is
+  honoured; any other failure is tried twice more (5 and 30 seconds later),
+  then counted, and logged at most once every ten minutes, without the URL.
+- **Safe to post.** Names, worlds, reasons and limits are shown visibly first
+  (control and format characters as escapes, so nothing starts a line or
+  hides), then every character Discord's markdown acts on is escaped with a
+  backslash, `:` too (so `https://` in a reason isn't made a link), and every
+  `@` is followed by a zero-width space; with `allowed_mentions` as above, no
+  character name or ban reason can ping `@everyone` or anyone. Nothing anyone
+  said is ever posted (the server never has it).
+- **Built and tested like the rest:** a fake webhook in the tests (batching,
+  urgent ones at once, `Retry-After`, failures counted and logged once,
+  the cut, escaping, `allowed_mentions`, shortening, nothing posted when
+  unset, each ban once across restarts and processes, "alerts on since",
+  replacements, pins, the other keys once per set, the restart alert and the
+  daily summary's hour), and steps in the bans checklist with a private test
+  channel.
 ### Chosen defaults (confirmed by the owner, 2026-10-08)
 
 - Window 60 minutes; flagged if refused by limits in at least 30 different
@@ -4578,7 +4691,8 @@ tool may do:
 - On SIGTERM it closes every connection (clients reconnect later), lets
   requests finish and checkpoints the database. Every change is one
   transaction, so a crash leaves the database whole.
-- It never logs messages, channel names, tokens, keys or registration codes;
+- It never logs messages, channel names, tokens, keys, registration codes or
+  the Discord webhook;
   client addresses only where abuse handling needs them. It keeps relayed
   messages, encrypted, for catch-up (7 days by default), and so do its backups.
 - The first tester server runs as a systemd service on a Linux machine behind
@@ -4607,6 +4721,7 @@ How to build, configure, deploy, back up and restore a server is in
   actions (the policy table for every tool against every kind of target, the
   audit trail and its sweep, operator pins, a ban applying at once, schema
   12's upgrade on a copy of a filled database, and an older server's writes),
+  Discord alerts (against a fake webhook: what is posted, and how, once),
   end-to-end flows, local chat (who gets it, what the server checks and what
   a receiver shows), keys' maximum age (with a moved clock: a week is too long
   to wait in game), and malicious-server and malicious-member suites that
@@ -4799,77 +4914,6 @@ protocol, the server's operator requests and the plugin's panel aren't.
 - **Protocol:** additive behind `operator.v1` (`GetOperatorView`,
   `OperatorView`, `OperatorBan`, `OperatorUnban`), no version change. Older
   plugins never see it; with an older server the plugin shows nothing.
-
-### Alerts to a Discord channel
-
-Status: planned, not started (owner, 2026-10-08), for when the server is
-public and the plugin has a Discord with an admin channel; its open questions
-answered by the owner on 2026-10-10 (below), and example messages in
-[operator-tools-plan.md](operator-tools-plan.md#discord-alerts) (step 2). The
-database's side is ready (schema 12: which bans and lifts were posted, and the
-server's bookkeeping). Flags and automatic
-blocks (see [Spotting abuse, and banning](#spotting-abuse-and-banning)) today
-show only in the log and in `--bans`, so the operator has to remember to look.
-
-- **A webhook, set by the operator.** One setting,
-  `LookingGlass:Alerts:DiscordWebhookUrl` (empty: no alerts, the default).
-  The URL is a secret (anyone holding it can post in the channel), so it goes
-  in a root-only drop-in or `EnvironmentFile=`, never in `appsettings.json` or
-  the repository, and is never logged; the startup line says only "Discord
-  alerts on". The restart alert shows alerts work, and the web page's **Send
-  a test alert** posts one at will (the `--alert-test` command first planned
-  is dropped: only the service reads the secret, so the `LG` helper can't
-  post).
-- **What is posted:** someone flagged (account or address, the limits, how
-  often), an address blocked automatically, a ban made or lifted with any
-  tool (saying which: the command line, the web page, or the plugin with the
-  operator character's name; the server posts a command line's when it picks
-  the change up, so the command needs no network, and each ban once, across
-  restarts), the proxy warning (every player seeming to come from 127.0.0.1:
-  worth knowing at once), a request to the web page through Funnel, the
-  server starting (with its version, and whether it last stopped cleanly),
-  and a daily summary. Each says what to do next: the web page's link
-  (`Admin:Url`, if set) and a command to copy (`LG --ban 4242 --days 7
-  --reason "..."`, `LG --bans`; never `--force`), and links the character's
-  Lodestone page.
-- **How much (owner, 2026-10-10):** characters as name@world with the user
-  ID and the Lodestone link; **addresses shortened**: an IPv4 address to its
-  first three parts (`203.0.113.x`), an IPv6 one to its /40
-  (`2001:db8:ab00::/40`; the owner chose it on 2026-10-10 over the /48 in
-  the AI's planning brief, since a /48 is often one customer's whole
-  allocation), and a prefix wider than those as it is. Full addresses stay on the server,
-  in `--bans` and on the web page. Tailscale logins and Unix users aren't
-  posted. Times are Discord time stamps, shown in each reader's time zone,
-  and link previews are off.
-- **Pings (owner, 2026-10-10):** an optional role (`Alerts:PingRoleId`) is
-  pinged for urgent alerts only: an address blocked automatically, the proxy
-  warning, a request through Funnel, an operator character logging in with
-  keys that don't match its pin, and an operator's keys pinned or restored.
-  Flags, bans and the rest never ping.
-- **The daily summary (owner, 2026-10-10)**, at `Alerts:DailySummaryHourUtc`
-  (09:00 UTC by default): flagged (characters and addresses), blocked
-  automatically, bans made (by tool), lifted and ended, bans in force, and
-  what the server knows for next to nothing: the most players online at once,
-  characters registered for the first time, uptime, the database's size, and
-  alerts that couldn't be posted. A day with nothing to report says so ("a
-  quiet day ... Alerts are working"), so silence never means broken alerts.
-- **Never in the way of the server.** Alerts go through a bounded queue on
-  their own task: a slow or failing Discord never delays a request. Discord
-  limits a webhook to a few messages a second, so alerts within a minute are
-  batched into one message, a flood is summed up ("and 37 more"), a `429`'s
-  `Retry-After` is honoured, and a failure is logged at most once every ten
-  minutes, without the URL.
-- **Safe to post.** `allowed_mentions` is empty, or on an urgent alert lists
-  only the ping role, so no character name or ban reason can ping
-  `@everyone` or anyone; names and reasons are escaped so they can't format
-  the message. Nothing anyone said is ever posted (the server never has it).
-- **Built and tested like the rest:** a fake webhook in the tests (batching,
-  limits, retries, escaping, shortening, pings only on urgent alerts, each
-  ban once, nothing posted when unset), and steps in the bans checklist with
-  a private test channel.
-
-The questions this plan left open (how much to post, whether to ping, what
-else to post) were answered by the owner on 2026-10-10, as above.
 
 ### Strict mode for keys not compared
 
@@ -5214,6 +5258,23 @@ The owner's decisions, and why.
   its panel is a section at the end of Settings; the daily summary is at
   09:00 UTC by default (a setting). Also accepted: the web page shows times
   in the owner's time zone (`Admin:TimeZone`, an IANA name, UTC by default).
+- **Discord alerts built (2026-10-10)**, as the plan says (see
+  [Alerts to a Discord channel](#alerts-to-a-discord-channel)). Choices made
+  in building them, where the plan was silent: a ban or lift is marked as
+  posted before it is posted, so it is posted at most once (never twice, at
+  worst lost if the server dies in between); urgent alerts go at once but at
+  most one message every 2 seconds, so a burst is one message and one ping;
+  automatic blocks are posted from the bans table like every ban, not from
+  the monitor; an operator character never pinned isn't posted when it signs
+  in (it was never an operator, and there is no pin to keep "posted" in);
+  pins are found by the keys last posted for each character, in
+  `server_state`, so no schema change was needed; requests through Funnel
+  are posted at most every ten minutes, counting the rest; the restart alert,
+  the daily summary and the test go at once, without the ping; a failure is
+  tried twice more before it is counted; the count of alerts not delivered is
+  kept in memory (since the restart, when there was one that day). The web
+  page's link isn't in the alerts until the page exists: `Admin:Url` is
+  checked against `Admin:Listen`, which comes with it.
 
 ## Open questions
 
@@ -5264,4 +5325,5 @@ The owner's decisions, and why.
   section in Settings; the daily summary at 09:00 UTC by default (see
   Decisions). Answered (2026-10-10): the owner approved the plan; it is built
   in steps, the first (operator actions, schema 12, `--audit`,
-  `--operators`, `--operator-pin`) on 2026-10-10.
+  `--operators`, `--operator-pin`) on 2026-10-10, the second (Discord
+  alerts) the same day.
