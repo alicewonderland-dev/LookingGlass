@@ -1375,16 +1375,32 @@ link in 3). Step 4 needs both updated; either alone does nothing new.
   enabled, and the dialog says the character is an operator (the server
   refuses it anyway). Nothing is fetched in the background for it.
 - **The dialog** says "isn't registered on this server" for a character the
-  server doesn't know (the server would ban its Lodestone ID by the rules, as
-  the other tools do; the dialog sends that to the web page, as the mockup
-  says), "is listed as one of this server's operators" for a listed one,
-  registered or not, and "That's your own character" for itself.
+  server doesn't know (the server refuses to ban one from the plugin since the
+  review; the web page bans its Lodestone ID, as the mockup says), but offers
+  **Lift the ban** for one whose Lodestone ID is banned; "is listed as one of
+  this server's operators" for a listed one, registered or not; and "That's
+  your own character" for itself.
 - **Wording settled**: simple mode never says "keys": the "?" in the
   section's place says "LookingGlass setup", the fingerprint is "Your code
   now", and a character not pinned yet is told to "confirm" it on the web
   page; "Pinned keys" is shown in advanced mode only. The web page's pin and
   restore now say "Its plugin sees the Operator section from its next login."
 - **By hand**: [docs/testing/operator-panel-checklist.md](testing/operator-panel-checklist.md).
+- **After the review (2026-10-11):** `Error.operator_refusal` (field 8, an
+  enum `OperatorRefusalReason`) says why an operator request was refused; the
+  plugin retries a stale nonce by it (once) and says every refusal in its own
+  words. The plugin's row of `OperatorPolicy` gained two rules, the owner's
+  defaults until decided: it bans no character not registered here
+  (`UnregisteredCharacters`; it still lifts any character's ban, and the
+  dialog offers **Lift the ban** alone for one), and it neither bans nor lifts
+  an operator character (`OperatorCharacterLifts`). A ban or lift is checked
+  once more under `OperatorActions`' lock with the keys its signature was
+  checked with (`OperatorActor.KeyHash`), so one on its way when keys changed
+  does nothing. An unsigned ban or lift from an operator's own login is posted
+  to Discord as urgent, at most once in ten minutes per character. The counts
+  put automatic blocks among the bans in force, as the mockup does; "not
+  pinned yet" says "approve"; Settings asks for the lists again after a
+  reconnect; Escape closes the dialog only while it has the keyboard.
 
 **Tests** (automated, in `tests/LookingGlass.Tests`):
 

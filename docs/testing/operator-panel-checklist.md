@@ -29,13 +29,14 @@ step. Information lines are LookingGlass blue, warnings light red.
 
 - [ ] 1. With A listed but not pinned (`LG --operators` says "not an operator
       yet"), log in as A. One light red line: "This server lists this
-      character as an operator, but hasn't confirmed your LookingGlass setup
-      yet. Confirm it on the server's operator web page." Settings ends with
-      **Operator** and a **?**: "This server's operator hasn't confirmed your
+      character as an operator, but hasn't approved your LookingGlass setup
+      yet. Approve it on the server's operator web page." Settings ends with
+      **Operator** and a **?**: "This server's operator hasn't approved your
       LookingGlass setup yet.", **Your code now** with A's fingerprint (the
       same as under **Your identity** in advanced mode) and a copy button,
-      and "To confirm it, open the web page and check it shows these same
-      numbers." The **?** says operators are tied to their LookingGlass setup.
+      and "To approve it, open the web page and check it shows these same
+      numbers." The **?** says operators are tied to their LookingGlass setup
+      and to approve it on the web page (never "restore").
       No **Ban from server...** in any menu.
 - [ ] 2. Reconnect (Settings, **Disconnect**, then **Connect now**): the line
       of step 1 isn't said again. In advanced mode the section says the keys
@@ -79,11 +80,18 @@ step. Information lines are LookingGlass blue, warnings light red.
       right-click C: **Ban from server... (an operator)**, greyed out, in the
       game's menu and in ChatTwo's. Before Settings was opened in a session,
       it may show enabled: then the dialog says C "is listed as one of this
-      server's operators, so it can't be banned here", with no ban button.
+      server's operators, so it can't be banned here, nor its bans lifted",
+      with no ban button.
 - [ ] 10. B on a character not registered on this server (any stranger):
       the dialog says "... isn't registered on this server, so there's
       nothing to ban here. To stop the character registering, ban its
-      Lodestone ID on the web page."
+      Lodestone ID on the web page." Ban that stranger's Lodestone ID on the
+      web page, then open the dialog for it again (**Ban someone**, its ID):
+      it shows the ban with **Lift the ban** only (no Replace), and lifting it
+      works ("Lifted the ban on user ..."). If C is a listed ID that never
+      registered, ban it on the web page (with the tick box) or with `LG --ban
+      <C's ID> --force`: C's line in Settings has no **Lift...**, and its
+      dialog offers nothing. Lift it on the web page.
 
 ## The dialog, and banning
 
@@ -122,19 +130,22 @@ step. Information lines are LookingGlass blue, warnings light red.
 - [ ] 18. Ban C by typing its ID in **Ban someone**: the dialog says it is an
       operator. Ban A itself by its ID: "That's your own character: it can't
       be banned here."
-- [ ] 19. The hour's limit: ban and lift B (or any spare IDs) until 10 bans
-      were made within an hour: the section says "Bans left this hour: N of
-      10" once fewer than 10 are left; the 11th ban says "Couldn't ban ...:
-      This operator character has made 10 bans in the last hour, the most the
-      plugin allows; use the web page for more." in blue, and in the dialog.
-      Lifts still work.
+- [ ] 19. The hour's limit: ban B again and again (each **Replace the ban**
+      counts as a ban; spare IDs nobody registered can't be banned from the
+      plugin) until 10 bans were made within an hour: the section says "Bans
+      left this hour: N of 10" once fewer than 10 are left; the 11th says
+      "Couldn't ban B@World: You've made 10 bans in the last hour, the most
+      the plugin allows. Use the web page for more." in blue, and in the
+      dialog. Lifts still work.
 - [ ] 20. An address ban made on the web page shows in the section as
       "address ...x" (shortened), "made on the web page" (no login), with no
       **Lift...**; an automatic block, as "blocked automatically, N minutes
       left".
-- [ ] 21. In advanced mode, step 19's line ends with "(LimitReached)"; in
-      simple mode it doesn't. Every line above is in everyday words in simple
-      mode.
+- [ ] 21. In advanced mode, step 19's line adds what the server said, ending
+      with "(LimitReached)"; in simple mode it has only the plugin's words.
+      Every line above is in everyday words in simple mode. With the dialog
+      open, press Escape while typing in another window: the dialog stays
+      open; with the dialog focused, Escape closes it.
 
 ## When the keys change
 

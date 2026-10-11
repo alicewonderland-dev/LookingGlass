@@ -954,9 +954,12 @@ lists are asked for when Settings opens, after each ban or lift, and on
 
 - **Narrower than the web page:** characters only (no address bans, and no
   lifting automatic blocks, which end by themselves), no `--force`, never a
-  character listed as an operator (its own included), no pinning or
-  restoring, and at most 10 bans an hour per operator character (past them
-  it is told to use the web page). Addresses are never sent to it in full.
+  character listed as an operator (its own included: neither banned nor its
+  ban lifted), never a character that isn't registered here (ban its
+  Lodestone ID on the web page or with `LG --ban`; the plugin can lift such a
+  ban), no pinning or restoring, and at most 10 bans an hour per operator
+  character (past them it is told to use the web page). Addresses are never
+  sent to it in full.
 - **Signed with the character's identity key.** Each ban and lift is signed
   by the character's current key, for its login, this server's address and a
   single-use nonce, so a copy of its login alone can't ban, and a signature
@@ -975,6 +978,12 @@ lists are asked for when Settings opens, after each ban or lift, and on
   on the web page for the new keys) or take it out of `Operators:Characters`
   and restart. The audit trail says where each plugin action came from (its
   connection's address).
+- **An unsigned ban or lift from an operator's login** (its login used without
+  its identity key: a copied secrets file, say) does nothing, and is posted to
+  Discord as urgent, with the ping, at most once in ten minutes per character.
+  Use **Sign out everywhere else** on that character in the plugin, check
+  `LG --audit`, and if it happens again, **Reset my identity** and restore
+  operator status for the new keys.
 - **Older plugins** are never told they are operators; a plugin with the panel
   on an older server shows nothing.
 
@@ -1020,7 +1029,8 @@ refuses. Treat it as a password: anyone who has it can post in that channel.
 **The ping role (optional).** To be pinged for urgent alerts (an address
 blocked automatically, the proxy warning, a request to the web page through
 Funnel, an operator character signing in with other keys,
-an operator's keys pinned or restored), make a role (**Server Settings**,
+an operator's keys pinned or restored, a ban or lift from an operator
+character's login without its key's signature), make a role (**Server Settings**,
 **Roles**), give it to whoever should hear, and copy its ID (turn on
 **Developer Mode** under **User Settings**, **Advanced**; then right-click the
 role, **Copy Role ID**). A webhook can normally ping a role without anything
