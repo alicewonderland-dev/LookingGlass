@@ -37,6 +37,7 @@ public sealed class SettingsWindow : Window {
     private long _knownLogSize;
     private DateTime _logSizeAt;
     private Task<long>? _offerDelete;
+    private Task<bool>? _offerText;
     private int? _logMegabytes;
 
     // Local chat's colour menu: showing the custom colour part, and its wheel.
@@ -494,8 +495,9 @@ public sealed class SettingsWindow : Window {
         if (ImGui.Checkbox(ChatLogWords.KeepIt.For(advanced) + "###keep-chat-log", ref keep)) {
             this._sessions.SetKeepChatLog(keep);
             if (!keep) {
-                // Once closed, how much there is to offer deleting.
+                // Once closed, how much there is to offer deleting, and whether text files are among it.
                 this._offerDelete = this._sessions.ChatLogSize();
+                this._offerText = this._sessions.ChatLogHasTextFiles();
             }
 
             this.MeasureLog();
@@ -543,10 +545,12 @@ public sealed class SettingsWindow : Window {
         }
 
         // Just turned off: offer to delete what was kept, if anything was.
-        if (this._offerDelete is { IsCompleted: true } offer) {
+        if (this._offerDelete is { IsCompleted: true } offer && this._offerText is not { IsCompleted: false }) {
+            var text = this._offerText is { IsCompletedSuccessfully: true, Result: true };
             this._offerDelete = null;
+            this._offerText = null;
             if (offer.IsCompletedSuccessfully && offer.Result > 0 && !this._config.KeepChatLog) {
-                this.ConfirmDelete(ChatLogWords.TurnedOff(offer.Result).For(advanced), advanced);
+                this.ConfirmDelete(ChatLogWords.TurnedOff(offer.Result, text).For(advanced), advanced);
             }
         }
     }

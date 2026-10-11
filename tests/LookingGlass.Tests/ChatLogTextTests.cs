@@ -443,10 +443,12 @@ public sealed class ChatLogTextTests : IDisposable {
         Assert.True(Directory.Exists(ChatLogFiles.TextFolder(this.Folder(Alice, OtherUrl))));
         Assert.True(Directory.Exists(this.TextRoot()));
         Assert.Equal(this.TextRoot(), log.TextFolder);
+        Assert.True(ChatLogFiles.HasTextFiles(this._directory));
 
         await keeper.DeleteAllAsync();
         Assert.Empty(ChatLogFiles.Folders(this._directory));
         Assert.Equal(0, await keeper.SizeAsync());
+        Assert.False(ChatLogFiles.HasTextFiles(this._directory));
 
         // Still on: what comes next is written, and nothing from before.
         log.Record(Message("aaa", Bob, "after deleting", DateTimeOffset.Now));
@@ -578,7 +580,9 @@ public sealed class ChatLogTextTests : IDisposable {
             Assert.Contains("text files", warning);
             Assert.Contains("text files", SettingsWords.Help(SettingHelp.UnencryptedHistory, "Windows DPAPI").For(advanced));
             Assert.Contains("text files", ChatLogWords.DeleteConfirm(1_000_000).For(advanced));
-            Assert.Contains("text files", ChatLogWords.TurnedOff(1_000_000).For(advanced));
+            // Only when there are some to delete.
+            Assert.Contains("text files", ChatLogWords.TurnedOff(1_000_000, textFiles: true).For(advanced));
+            Assert.DoesNotContain("text files", ChatLogWords.TurnedOff(1_000_000, textFiles: false).For(advanced));
             Assert.Contains("text files", ChatLogWords.Unreadable(null).For(advanced));
             Assert.DoesNotContain("scrambl", warning, StringComparison.OrdinalIgnoreCase);
         }
@@ -640,6 +644,36 @@ public sealed class ChatLogTextTests : IDisposable {
         }
     }
 
+    [Theory]
+    [InlineData("")]
+    [InlineData("[2026-07-3")]
+    [InlineData("not a line from LookingGlass\r\n")]
+    public async Task AnOldFileWithoutAWholeLineCostsTheEncryptedHistoryNothing(string content) {
+        // An older month's file that is empty, or holds only a line cut short or someone else's words: it goes first (it is
+        // the oldest), and never leaves the text side unable to make room, so the encrypted history is never deleted instead.
+        const long limit = 64 * 1024;
+        var july = Path.Combine(this.ChannelFolder("aaa"), "2026-07.txt");
+        Directory.CreateDirectory(this.ChannelFolder("aaa"));
+        File.WriteAllText(july, content, new UTF8Encoding(false));
+        var log = this.Open(maxBytes: limit);
+        var start = new DateTimeOffset(2026, 8, 1, 0, 0, 0, TimeSpan.Zero);
+        for (var i = 1; i <= 2000; i++) {
+            log.Record(Message("aaa", Bob, $"message number {i} with some words to take up room", start.AddMinutes(20 * i)));
+            if (i % 100 == 0) {
+                await log.FlushAsync();
+                Assert.InRange(log.Size, 1, limit);
+            }
+        }
+
+        await this.Close(log);
+        Assert.False(File.Exists(july));
+        var encrypted = await All(this.Open(maxBytes: limit, plainText: false), "aaa");
+        Assert.True(encrypted.Count > 100, $"only {encrypted.Count} encrypted lines left");
+        Assert.Equal("message number 2000 with some words to take up room", encrypted[^1].Message!.Text);
+        Assert.InRange(this.OldestTextLine(), encrypted[0].Time.AddMinutes(-1), encrypted[0].Time.AddMinutes(40 * 20));
+        Assert.Empty(this._diagnostics);
+    }
+
     [Fact]
     public async Task TrimmingATextFileLeavesNothingHalfDone() {
         var log = this.Open(maxBytes: 64 * 1024);
@@ -661,11 +695,14 @@ public sealed class ChatLogTextTests : IDisposable {
 
         // One a crash left behind (written, never put in place) is cleared away, and the file it was for is whole.
         File.WriteAllText(Path.Combine(this.ChannelFolder("aaa"), "2026-10.txt.trim"), "half");
+        // Only a trim's own: anything else ending so is the player's.
+        File.WriteAllText(Path.Combine(this.ChannelFolder("aaa"), "notes.trim"), "mine");
         var again = this.Open(maxBytes: 64 * 1024);
         await again.FlushAsync();
-        Assert.Empty(Directory.GetFiles(this.ChannelFolder("aaa"), "*.trim"));
+        Assert.Equal(["notes.trim"], Directory.GetFiles(this.ChannelFolder("aaa"), "*.trim").Select(Path.GetFileName));
         Assert.Equal(lines, this.LinesOf("aaa", "2026-10"));
-        Assert.Equal(ChatLogFiles.FolderSize(this.Folder()), again.Size);
+        // The player's own file isn't one of the log's: Settings shows the folder's size, the log counts its own files.
+        Assert.Equal(ChatLogFiles.FolderSize(this.Folder()) - "mine".Length, again.Size);
     }
 
     [Fact]

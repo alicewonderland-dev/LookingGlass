@@ -235,6 +235,8 @@ internal sealed class ChatLogTextFiles {
     // Files that couldn't be trimmed (open in a program that locks them): counted, never picked again this session.
     private readonly HashSet<string> _stuck = new(StringComparer.Ordinal);
     private Exception? _problem;
+    // The text folder couldn't be looked at while making room: left alone this session.
+    private bool _unlisted;
     private bool _scanned;
 
     public ChatLogTextFiles(string logFolder, TimeZoneInfo zone) {
@@ -281,14 +283,15 @@ internal sealed class ChatLogTextFiles {
 
     /// <summary>
     /// Counts each file on disk afresh (someone may have deleted or edited some). A file a trim left behind (a crash between
-    /// writing it and putting it in place) is deleted: the file it was for is still whole.
+    /// writing it and putting it in place, "2026-10.txt.trim") is deleted: the file it was for is still whole. Nothing else
+    /// is touched.
     /// </summary>
     public void Scan() {
         var found = new Dictionary<string, long>(StringComparer.Ordinal);
         foreach (var folder in this.ChannelFolders()) {
             var hash = ChatLogText.HashOf(folder.Name)!;
             foreach (var file in folder.EnumerateFiles()) {
-                if (file.Name.EndsWith(TrimExtension, StringComparison.Ordinal)) {
+                if (file.Name.EndsWith(TrimExtension, StringComparison.Ordinal) && ChatLogText.IsMonthFile(file.Name[..^TrimExtension.Length])) {
                     TryDelete(file.FullName);
                 } else if (ChatLogText.IsMonthFile(file.Name)) {
                     var key = Key(hash, file.Name[..7]);
@@ -305,23 +308,49 @@ internal sealed class ChatLogTextFiles {
     /// When the oldest line of the text files arrived (the first line of the oldest month's files, read back), or null if
     /// there is nothing on disk to trim. A first line that can't be read back (edited, or cut short) counts as the oldest.
     /// </summary>
-    public DateTimeOffset? OldestLine() {
-        foreach (var month in this.Months()) {
-            DateTimeOffset? oldest = null;
-            foreach (var (_, path) in this.FilesOf(month)) {
-                try {
-                    using var stream = OpenToRead(path);
-                    if (this.ReadLine(stream) is { } line && (oldest == null || line.Arrived < oldest)) {
-                        oldest = line.Arrived;
+    public DateTimeOffset? OldestLine() => this.OldestMonth()?.Oldest;
+
+    /// <summary>
+    /// The oldest month with a line on disk, its files that have one, and when its oldest line arrived; null if none. What
+    /// <see cref="OldestLine"/> answers and <see cref="Trim"/> trims, so the two never disagree. An empty file met on the
+    /// way holds nothing to keep: it is deleted. A file that can't be read is left, and not picked again this session; a
+    /// text folder that can't be looked at, the same for all of them (said once, never in the way of the encrypted log).
+    /// </summary>
+    private (string Month, List<(string Key, string Path)> Files, DateTimeOffset Oldest)? OldestMonth() {
+        if (this._unlisted) {
+            return null;
+        }
+
+        try {
+            foreach (var month in this.Months()) {
+                DateTimeOffset? oldest = null;
+                var files = new List<(string Key, string Path)>();
+                foreach (var (key, path) in this.FilesOf(month)) {
+                    try {
+                        if (new FileInfo(path).Length == 0) {
+                            this.DeleteEmpty(key, path);
+                            continue;
+                        }
+
+                        using var stream = OpenToRead(path);
+                        if (this.ReadLine(stream) is { } line) {
+                            files.Add((key, path));
+                            if (oldest == null || line.Arrived < oldest) {
+                                oldest = line.Arrived;
+                            }
+                        }
+                    } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) {
+                        this.Stuck(key, ex);
                     }
-                } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) {
-                    // Looked at again next time.
+                }
+
+                if (oldest is { } found) {
+                    return (month, files, found);
                 }
             }
-
-            if (oldest != null) {
-                return oldest;
-            }
+        } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) {
+            this._unlisted = true;
+            this._problem ??= ex;
         }
 
         return null;
@@ -335,14 +364,12 @@ internal sealed class ChatLogTextFiles {
     /// </summary>
     /// <returns>How many bytes were freed.</returns>
     public long Trim(DateTimeOffset? upTo, long want) {
-        var month = this.Months().FirstOrDefault(key => this.FilesOf(key).Count > 0);
-        if (month == null) {
+        if (this.OldestMonth() is not { } oldestMonth) {
             return 0;
         }
-
         var cursors = new List<Cursor>();
         try {
-            foreach (var (key, path) in this.FilesOf(month)) {
+            foreach (var (key, path) in oldestMonth.Files) {
                 try {
                     var stream = OpenToRead(path);
                     var cursor = new Cursor(key, path, stream, stream.Length);
@@ -427,6 +454,7 @@ internal sealed class ChatLogTextFiles {
         this._pendingBytes = 0;
         this._folders.Clear();
         this._stuck.Clear();
+        this._unlisted = false;
         this._scanned = false;
     }
 
@@ -455,18 +483,29 @@ internal sealed class ChatLogTextFiles {
         return files;
     }
 
+    /// <summary>Deletes an empty month file (nothing in it to keep), and its folder if that leaves it empty.</summary>
+    private void DeleteEmpty(string key, string path) {
+        File.Delete(path);
+        this._files.Remove(key);
+        DeleteIfEmpty(Path.GetDirectoryName(path)!);
+    }
+
+    private static void DeleteIfEmpty(string folder) {
+        try {
+            if (!Directory.EnumerateFileSystemEntries(folder).Any()) {
+                Directory.Delete(folder);
+            }
+        } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) {
+            // Empty, and harmless.
+        }
+    }
+
     /// <summary>Takes a cursor's lines off the front of its file (crash-safe: a new file, then put in its place).</summary>
     private void Cut(Cursor cursor) {
         if (cursor.Cut >= cursor.Length) {
             File.Delete(cursor.Path);
-            var folder = Path.GetDirectoryName(cursor.Path)!;
-            if (!Directory.EnumerateFileSystemEntries(folder).Any()) {
-                try {
-                    Directory.Delete(folder);
-                } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) {
-                    // Empty, and harmless.
-                }
-            }
+            DeleteIfEmpty(Path.GetDirectoryName(cursor.Path)!);
+
         } else {
             var temporary = cursor.Path + TrimExtension;
             try {

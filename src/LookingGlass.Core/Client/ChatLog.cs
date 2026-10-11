@@ -634,6 +634,9 @@ public sealed class ChatLogKeeper : IAsyncDisposable {
     /// <summary>How much room every chat log on this computer takes. Reads the disk: not on the game thread.</summary>
     public Task<long> SizeAsync() => Task.Run(() => ChatLogFiles.TotalSize(this._configDirectory));
 
+    /// <summary>Whether any chat log on this computer has text files. Reads the disk: not on the game thread.</summary>
+    public Task<bool> HasTextFilesAsync() => Task.Run(() => ChatLogFiles.HasTextFiles(this._configDirectory));
+
     /// <summary>Closes the log open, and waits for every closing and deletion.</summary>
     public async ValueTask DisposeAsync() {
         this.Close();

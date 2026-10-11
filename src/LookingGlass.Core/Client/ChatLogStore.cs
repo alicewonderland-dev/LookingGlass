@@ -85,6 +85,16 @@ public static partial class ChatLogFiles {
     /// </summary>
     public static string TextFolder(string logFolder) => Path.Combine(logFolder, ChatLogTextFiles.FolderName);
 
+    /// <summary>Whether any chat log on this computer has text files (for whether to mention them). Reads the disk.</summary>
+    public static bool HasTextFiles(string configDirectory) => Folders(configDirectory).Any(folder => {
+        try {
+            var text = TextFolder(folder);
+            return Directory.Exists(text) && Directory.EnumerateFiles(text, "*.txt", SearchOption.AllDirectories).Any();
+        } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) {
+            return false;
+        }
+    });
+
     /// <summary>Every chat log folder in the config folder (every character, every server).</summary>
     public static IReadOnlyList<string> Folders(string configDirectory) {
         try {

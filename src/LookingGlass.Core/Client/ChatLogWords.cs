@@ -67,10 +67,11 @@ public static class ChatLogWords {
         "channel windows until you leave the game or change character.");
 
     /// <summary>Asked when the setting is turned off.</summary>
-    public static Wording TurnedOff(long bytes) => new(NoticeKind.General,
-        $"LookingGlass no longer adds to your chat log. Delete what it kept so far ({ChatLogLimits.Describe(bytes)}), its text files too? " +
+    /// <param name="textFiles">There are text files too (see <see cref="ChatLogFiles.HasTextFiles"/>): they are said to go as well.</param>
+    public static Wording TurnedOff(long bytes, bool textFiles = false) => new(NoticeKind.General,
+        $"LookingGlass no longer adds to your chat log. Delete what it kept so far ({ChatLogLimits.Describe(bytes)}){(textFiles ? ", its text files too" : "")}? " +
         "Cancel keeps it: you can delete it in Settings at any time.",
-        $"LookingGlass no longer adds to your chat history. Delete what it kept so far ({ChatLogLimits.Describe(bytes)}), its text files too? " +
+        $"LookingGlass no longer adds to your chat history. Delete what it kept so far ({ChatLogLimits.Describe(bytes)}){(textFiles ? ", its text files too" : "")}? " +
         "Cancel keeps it: you can delete it in Settings at any time.");
 
     /// <summary>The log on disk can't be unlocked on this computer (see <see cref="ChatLogState.Unreadable"/>).</summary>
@@ -105,7 +106,7 @@ public static class ChatLogWords {
     public static IEnumerable<Wording> Examples() => [
         KeepIt, Explanation("Windows DPAPI"), SizeLimit, KeepUnencrypted, UnencryptedExplanation, UnencryptedWarning, TurnOn, OpenFolder,
         Uses(12_900_000), Delete, DeleteConfirm(52_428_800),
-        TurnedOff(800_000), Unreadable("the file that unlocks it is missing"), Unreadable(null), ShowOlder, Loading, NothingOlder,
+        TurnedOff(800_000), TurnedOff(800_000, textFiles: true),Unreadable("the file that unlocks it is missing"), Unreadable(null), ShowOlder, Loading, NothingOlder,
         Earlier(new DateTimeOffset(2026, 10, 6, 12, 0, 0, TimeSpan.Zero)), SinceLogin,
     ];
 }

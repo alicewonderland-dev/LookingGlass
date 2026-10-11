@@ -405,6 +405,9 @@ public sealed class SessionManager : IDisposable {
     /// <summary>How much room every chat log on this computer takes. Reads the disk in the background.</summary>
     public Task<long> ChatLogSize() => this._chatLogs.SizeAsync();
 
+    /// <summary>Whether any chat log on this computer has text files. Reads the disk in the background.</summary>
+    public Task<bool> ChatLogHasTextFiles() => this._chatLogs.HasTextFilesAsync();
+
     /// <summary>The command slot of a channel for the current character. Safe from any thread.</summary>
     public int? SlotOf(string channelId) {
         return this._slots.TryGetValue(channelId, out var slot) ? slot : null;
