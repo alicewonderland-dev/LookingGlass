@@ -643,7 +643,7 @@ Discord alerts are on, never the webhook; a failure to post one is a Warning,
 at most once every ten minutes, without the webhook; and bans and lifts made
 before alerts were on, marked as posted without being posted, are counted in an
 Information line (see [Alerts to Discord](#alerts-to-discord)). With the
-operator web page on, the startup line says where it is (`operator web page at
+operator web page on, the startup line says where it is (`operator web page starting, for
 https://...:8444/ (Unix socket; 1 login let in; times in Europe/London)`), a
 loopback port instead of a socket is a Warning, and a request the page refuses
 is a Warning at most once a minute, saying which check failed and the device's
@@ -1181,13 +1181,21 @@ ts.net address made on the server (a `curl` by any user there) goes through
 it by the server's own login: if the server is signed in to Tailscale as you
 and not tagged, as you. So the page refuses every request whose address (the
 `X-Forwarded-For` that `tailscale serve` sets) is one of the server's own,
-whatever its login, and the log says "it came from this machine itself".
-Stronger still, and worth doing: **tag the server's node** in the Tailscale
-admin console (say `tag:server`, with an owner set in the access rules'
-`tagOwners`). A tagged node's requests carry no login at all; you reach the
-page from your own devices, which stay signed in as you. Tagging changes
-how the machine is owned in the tailnet: check your access rules still let
-your devices reach it (the public server is unaffected).
+whatever its login, and the log says "it came from this machine itself". The
+server's own addresses are those on its network interfaces (read again
+whenever a listed login's request comes from one it doesn't know), plus any
+in `Admin:OwnAddresses`. If they can't be read at all, every request is
+refused, saying so. Stronger still, and worth doing: **tag the server's
+node** in the Tailscale admin console (say `tag:server`, with an owner set in
+the access rules' `tagOwners`). A tagged node's requests carry no login at
+all; you reach the page from your own devices, which stay signed in as you.
+Tagging changes how the machine is owned in the tailnet: check your access
+rules still let your devices reach it (the public server is unaffected).
+**Tagging is required** where the server can't see its own tailnet address
+on an interface: in Docker (see below), and with tailscaled in
+userspace-networking mode (`--tun=userspace-networking`), where the 100.x
+address is on no interface at all. There, either tag the node, or list its
+tailnet addresses (`tailscale ip` shows them) in `Admin:OwnAddresses`.
 
 **Setting it up** (Linux, systemd):
 
@@ -1208,7 +1216,7 @@ your devices reach it (the public server is unaffected).
    ```
 
    and `sudo systemctl restart lookingglass`. The startup line says
-   `operator web page at https://<machine>.<tailnet>.ts.net:8444/ (Unix socket;
+   `operator web page starting, for https://<machine>.<tailnet>.ts.net:8444/ (Unix socket;
    1 login let in; times in Europe/London)`, and the next lines `The operator
    web page listens on unix:/run/lookingglass/admin.sock`. A setting it can't
    use stops the server, with a line saying which and why (`journalctl -u
@@ -1218,7 +1226,12 @@ your devices reach it (the public server is unaffected).
    taken), **the chat server runs on without the page**: an Error line "The
    operator web page didn't start (...)", and an urgent alert if alerts are
    on. Fix what it says and restart. The server never deletes anything in the
-   socket's place but an old socket, and never follows a link there.
+   socket's place but an old socket, and never follows a link there (on a
+   system whose C library lacks `statx`, it can't tell an old socket from a
+   file, so it deletes nothing and asks you to, and checks only the folder's
+   permissions, not who owns it). It makes the socket with a umask of 0177 for
+   the moment it starts listening; the umask is the whole process's, so
+   anything else made in that moment is private too, which does no harm.
 4. Serve the socket on the tailnet only (Unix socket targets need Tailscale
    1.94 or later; `tailscale version`). **Check the syntax on your server's
    version first** (`tailscale serve --help`); it was written from Tailscale's
@@ -1251,6 +1264,7 @@ can't use):
 | `Listen` | empty (no page) | Where the page listens: `unix:/run/lookingglass/admin.sock` (a full path ending in `.sock`, in a folder that exists), or `http://127.0.0.1:<port>` (loopback only, with a warning; never the public server's port). Nothing else |
 | `Url` | empty | The page's address through `tailscale serve`, `https://<machine>.<tailnet>.ts.net:8444/`: HTTPS, the full name, a port Funnel can't serve (not 443, 8443 or 10000), nothing after the last `/`. Required with `Listen`. Every request must have been asked for at it, every form must come from it, and alerts link it |
 | `TailscaleLogins` | empty | The Tailscale logins let in, as the admin console's **Users** page shows them, compared ignoring case (`TailscaleLogins__0`, `__1`, ...). Required with `Listen`. Keep it to your own account. A login with letters outside plain ASCII never matches (Tailscale sends those encoded), so it is never let in |
+| `OwnAddresses` | empty | More addresses or prefixes counted as the server's own, whose requests are refused whatever their login (`OwnAddresses__0=100.101.102.103`, `__1=fd7a:115c:a1e0::1234`). Needed in Docker (the host's tailnet addresses) or with tailscaled in userspace-networking mode, unless the node is tagged. Each must be an address or a prefix: the server won't start otherwise |
 | `TimeZone` | `UTC` | The time zone the page shows times in, as an IANA name (`Europe/London`, `America/New_York`); each time carries the zone's abbreviation (`14:02 BST`), so a time copied from the page is never ambiguous. The server won't start with a name it doesn't know, page or not. `--bans` and `--audit` stay in UTC |
 
 **Forms.** Nothing changes when a page is only opened: banning, lifting,
@@ -1314,6 +1328,19 @@ host `tailscale serve --bg --https=8444 unix:/run/lookingglass-docker/admin.sock
 A loopback port inside the container is the container's own loopback, which
 the host's `tailscale serve` can't reach (only with `--network host`, where
 any program on the host could reach it too).
+
+**In Docker, tag the host's node, or set `Admin:OwnAddresses`: one is
+required.** Inside the container the server sees only the container's own
+interfaces, not the host's tailnet address. A request made on the Docker host
+(a `curl` to the page's address there, by any user) comes through `tailscale
+serve` from the host's tailnet address, carrying the host's own Tailscale
+login, which on an untagged host signed in as you is yours, and the server
+couldn't tell it came from the host. So either tag the host's node (its
+requests then carry no login), or list the host's tailnet addresses
+(`tailscale ip` on the host) in `Admin:OwnAddresses`
+(`-e LookingGlass__Admin__OwnAddresses__0=100.x.y.z -e
+LookingGlass__Admin__OwnAddresses__1=fd7a:115c:a1e0::...`), which the server
+refuses as its own.
 
 **Turning it off:** take the `Admin__` lines out of the drop-in, restart, and
 `sudo tailscale serve --https=8444 off`.

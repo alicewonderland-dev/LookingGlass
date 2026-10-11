@@ -1244,7 +1244,16 @@ link in 3). Step 4 needs both updated; either alone does nothing new.
   interface, read at start and again whenever an address isn't among those
   known, since Tailscale's can come after the start), or that has none, with
   its own reason in the log. Tagging the server's node is stronger: tagged
-  nodes' requests carry no login.
+  nodes' requests carry no login. After the second review (2026-10-11):
+  `Admin:OwnAddresses` adds addresses or prefixes counted as the machine's own
+  (checked at start), for where the server can't see its tailnet address on
+  an interface: in Docker (the host's addresses) and with tailscaled in
+  userspace-networking mode; there, tagging the node or setting it is
+  required (server.md). The address check comes after the login checks, so
+  only a listed login's requests make the interfaces be read again; if they
+  can't be read, every request is refused (fail closed), and a failed read at
+  start doesn't stop the server. Any exception while answering, the identity
+  checks included, gets the page's own 500 with the headers.
 - **If the page can't start** where its settings say (something listening
   on the socket, a file or a link in its place, its folder not the service
   user's own or writable by others, the port taken), the chat server runs on
@@ -1254,8 +1263,13 @@ link in 3). Step 4 needs both updated; either alone does nothing new.
   checked with `statx` (not following links): a folder, owned by the
   service's user, writable by nobody else. Only a socket is ever deleted in
   the socket's place, never a file or a link (which isn't followed). The
-  socket is made with the umask 0177 for the moment of listening, then set
-  to 0600 again.
+  socket is made with the umask 0177 for the moment of listening (the umask
+  is the whole process's: anything else made in that moment at startup is
+  private too, which does no harm), then set to 0600 again. Without `statx`
+  (an old or unusual C library), nothing in the socket's place is deleted
+  (.NET can't tell a socket from a file) and only the folder's permissions
+  are checked, not its owner. The startup line says the page is "starting";
+  its own "listens on" line follows once it does.
 - **Errors** the page doesn't expect are answered by the page itself (500,
   with the security headers and no detail); a form it can't read is a 400
   with the headers. Kestrel's own answers to requests it can't parse at all

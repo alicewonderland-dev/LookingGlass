@@ -292,7 +292,7 @@ alerts on from the steps above, and A listed in `Operators:Characters`.
       page's lines to the drop-in (`Admin__Listen`, `Admin__Url`,
       `Admin__TailscaleLogins__0` with your login as the Tailscale admin
       console's **Users** page shows it, `Admin__TimeZone` with your zone) and
-      restart. The startup line says `operator web page at
+      restart. The startup line says `operator web page starting, for
       https://<machine>.<tailnet>.ts.net:8444/ (Unix socket; 1 login let in;
       times in <your zone>)`, and the journal has `The operator web page
       listens on unix:/run/lookingglass/admin.sock`. `sudo ls -la

@@ -4705,7 +4705,10 @@ is in [server.md](server.md#the-operator-web-page).
   owner's on an untagged server (found by the review, 2026-10-11): so a
   request whose `X-Forwarded-For` is one of the machine's own addresses (or
   that has none) is refused, whatever its login; tagging the server's node
-  is stronger still. The page lets a request in only when its login is
+  is stronger still, and required in Docker or with tailscaled in
+  userspace-networking mode, where the server can't see its tailnet address
+  on an interface (or list those addresses in `Admin:OwnAddresses`, counted
+  as the machine's own). The page lets a request in only when its login is
   exactly one of `Admin:TailscaleLogins` (ignoring case), no
   `Tailscale-Funnel-Request` is there, it came from another device, and
   `X-Forwarded-Host` is exactly `Admin:Url`'s name and port. Everything else gets 403 and the same words
@@ -5403,7 +5406,13 @@ The owner's decisions, and why.
   never followed or deleted, and the socket is made 0600. The owner's
   default for now: if the page can't start where its settings say, the chat
   server runs on without it, with an error and an urgent alert (wrong
-  settings still stop the server).
+  settings still stop the server). A second review (2026-10-11) added
+  `Admin:OwnAddresses` for Docker and userspace networking (where tagging the
+  node, or that setting, is required), moved the address check after the
+  login checks (so only a listed login's requests make the server read its
+  interfaces again), made an unreadable interface list refuse every request
+  rather than stop the server or let one in, and has the startup line say the
+  page is starting rather than up.
 
 ## Open questions
 
