@@ -849,11 +849,14 @@ public sealed class KeyLoginTests : IAsyncLifetime {
         }
 
         // Key login itself is open before logging in.
-        var alice = await this._server.RegisterAsync("Alice Gate");
+        var online = Task.CompletedTask;
+        var alice = await this._server.RegisterAsync("Alice Gate", options: this._server.Options(beforeConnect: ct => online.WaitAsync(ct)));
         await using var gate = await this._server.ConnectRawAsync();
         Assert.NotNull((await gate.SendAsync(new ClientFrame { StartKeyLogin = new StartKeyLogin { UserId = alice.UserId } })).KeyLoginChallenge);
 
-        // And closed after: a logged-in connection has nothing to sign in to.
+        // And closed after: a logged-in connection has nothing to sign in to. (The login drops Alice's session, which is
+        // kept offline from here: coming back, it would replace the raw login before its next request is answered.)
+        online = new TaskCompletionSource().Task;
         var loggedIn = await gate.SendAsync(new ClientFrame { Authenticate = new Authenticate { DeviceToken = alice.Store.Load().DeviceToken } });
         Assert.NotNull(loggedIn.AuthenticateOk);
         var after = await gate.SendAsync(new ClientFrame { StartKeyLogin = new StartKeyLogin { UserId = alice.UserId } });
