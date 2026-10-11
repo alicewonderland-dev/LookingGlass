@@ -15,7 +15,7 @@ the service's own settings (adjust the paths to the install):
 LG() {
     local settings
     mapfile -t settings < <(systemctl show lookingglass -p Environment --value | tr ' ' '\n' |
-        grep -E '^LookingGlass__(DataDirectory|Abuse__|TrustedProxies__)')
+        grep -E '^LookingGlass__(DataDirectory|Abuse__|TrustedProxies__|Operators__)')
     sudo -u lookingglass env "${settings[@]}" /opt/lookingglass/LookingGlass.Server "$@"
 }
 ```
@@ -95,12 +95,14 @@ Take them out again at the end.
 
 ## Lifting it
 
-- [ ] 16. `LG --bans` lists the ban under `Bans in force (1)` with its reason.
+- [ ] 16. `LG --bans` lists the ban under `Bans in force (1)` with its reason,
+      and `made on the command line by <you>` (the login you ran sudo from).
 - [ ] 17. `LG --unban "A's name@A's world"`: `Lifted the ban on ...`.
 - [ ] 18. On A, press **Try again now** (or wait up to 5 minutes): A connects,
       shows **Connected**, sees `sky`, and B sees A online. A and B chat both
       ways in `sky`.
-- [ ] 19. `LG --bans` shows it under `Lifted or ended in the last 90 days`.
+- [ ] 19. `LG --bans` shows it under `Lifted or ended in the last 90 days`,
+      `lifted ... on the command line by <you>`.
 
 ## Registering again
 
@@ -147,8 +149,47 @@ Take them out again at the end.
       `LG --bans` listing.) After 5 minutes it is gone from the bans in
       force. Put the settings back.
 
+## The audit trail
+
+- [ ] 26. `LG --audit` lists, newest first, every ban and lift above, each as
+      `command line  <you>: banned ...` or `lifted the ban on ...`, and the
+      refused attempts with why: `LG --ban 10.0.0.0/8` (step 4) and
+      `LG --ban 127.0.0.1` and `::1` (step 5) as `refused to ban ...`. (`LG
+      --ban` alone, a wrong command line, isn't there.) `LG --audit --days 1`
+      lists the same; `LG --audit --days 0` says what it needs and exits with 2.
+
+## Operator characters (the plugin's panel comes in a later update)
+
+- [ ] 27. `LG --operators` says no characters are listed. Add
+      `Environment=LookingGlass__Operators__Characters__0=<A's user ID>` to the
+      drop-in and restart: the startup log (`journalctl -u lookingglass -n
+      30`) has `Operators: user <A's ID> (A's name@world), keys not pinned yet`,
+      and `LG --operators` lists A as `not an operator yet`, with a `Now:`
+      fingerprint.
+- [ ] 28. On A, open LookingGlass's Settings with Advanced mode on: the
+      fingerprint under **Your identity** is the `Now:` one.
+- [ ] 29. `LG --operator-pin <A's ID> --fingerprint "00000 00000 00000 00000
+      00000"` says the fingerprint isn't A's keys' now, pins nothing, and exits
+      with 1. `LG --operator-pin <B's ID> --fingerprint "<anything of 25
+      digits>"` says B isn't listed. Then `LG --operator-pin "<A's
+      name@world>" --fingerprint "<A's fingerprint from step 28>"`: `Pinned the
+      keys of ...`, exit 0; `LG --operators` says A is `an operator`, pinned on
+      the command line by you.
+- [ ] 30. `LG --ban "<A's name@world>"` says A is listed as an operator, bans
+      nothing, and exits with 1 (don't add `--force`).
+- [ ] 31. On A (this test server only), **Forget account** in `/lgdebug`, and
+      register A again through the Lodestone (it gets new keys). `LG
+      --operators` says A is `NOT an operator now: its keys changed at <time>`,
+      with `Pinned:` and `Now:` differing, and `Now:` is the new fingerprint in
+      A's Settings. Pin it again with the new fingerprint: `Restored operator
+      status ...`.
+- [ ] 32. Take the `Operators` line out of the drop-in and restart: the log
+      warns `Deleted the operator pin of user <A's ID>`, and `LG --operators`
+      says no characters are listed. `LG --audit` shows each pin of steps 29
+      and 31, refused ones too.
+
 ## Afterwards
 
-- [ ] 26. Remove the test settings (the drop-in from the start, and step 25's)
+- [ ] 33. Remove the test settings (the drop-in from the start, and step 25's)
       and restart. `LG --bans` shows no bans in force. Flags clear by
       themselves after 24 hours.

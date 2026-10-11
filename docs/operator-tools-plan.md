@@ -1,7 +1,12 @@
 # Operator tools: a plan for approval
 
-Status: a plan, nothing built (2026-10-10). The owner approves the wording and
-appearance below before anything is built. The decisions themselves are kept
+Status: approved by the owner (2026-10-10). **Step 1 is built** (2026-10-10):
+`OperatorActions` and `OperatorPolicy`, schema 12, the command line moved onto
+them, `--audit`, `--operators` and `--operator-pin`; it is folded into
+[design.md](design.md#operator-actions-one-layer-for-every-tool) and
+[server.md](server.md#flags-and-bans). Steps 2 to 4 (Discord alerts, the web
+page, the plugin's panel) aren't started (see
+[Build order, size and tests](#build-order-size-and-tests)). The decisions themselves are kept
 in [design.md](design.md) (under
 [Planned features](design.md#planned-features) and
 [Decisions](design.md#decisions)), which stays the source of truth; this
@@ -1010,7 +1015,7 @@ and the plugin's section joins [The Settings window](design.md#the-settings-wind
 
 | Step | What | Update needed | Rough size |
 | --- | --- | --- | --- |
-| 1 | `OperatorActions` and `OperatorPolicy`, schema 12 (with `operator_pins` and `users.keys_registered_at`), the command line moved onto them (same words), `--audit`, `--operators`, `--operator-pin` | Server only | Medium: about 750 lines and 600 of tests |
+| 1 | `OperatorActions` and `OperatorPolicy`, schema 12 (with `operator_pins` and `users.keys_registered_at`), the command line moved onto them (same words), `--audit`, `--operators`, `--operator-pin`. **Built 2026-10-10** (see below) | Server only | Medium: about 750 lines and 600 of tests (as built: about 1,300, with its comments, and 1,100) |
 | 2 | Discord alerts: queue, posting, batching, every alert kind (the operator-keys ones included), restart and daily summary | Server only | Medium: about 750 lines and 650 of tests |
 | 3 | The web page: second host, Unix socket, identity checks, the time zone, pages (Operators, pin and restore included), CSRF, stylesheet; unit and docs | Server only | Large: about 1,050 lines and 800 of tests |
 | 4 | The plugin's panel: `operator.v1` in the protocol, server handling (the pin checked at login and on every operator request, the "other keys" alert), `OperatorActionProof`, `OperatorWords`, the Settings section, the keys-changed notice, the dialog, the menu items | Server and plugin | Large: about 450 server, 400 core, 750 plugin, 650 of tests |
@@ -1018,6 +1023,36 @@ and the plugin's section joins [The Settings window](design.md#the-settings-wind
 Steps 1 to 3 need no plugin release, and older plugins are unaffected. Step
 2 can come before 3 (its alerts then give only commands, and gain the page's
 link in 3). Step 4 needs both updated; either alone does nothing new.
+
+**Step 1 as built** (2026-10-10), where it adds to or settles what is above:
+
+- The policy table has one more row, **let a key sign in again**
+  (`--allow-key-login`): the command line only, as the web page doesn't offer
+  it at first. It is audited like the rest.
+- **What the audit trail records**: every attempt to change something (ban,
+  lift, pin, key login allowed again) by any tool, done or refused, including
+  a target that names nobody or an address too wide; not lists. A change and
+  its entry are written in one transaction. The hour's limits are counted
+  from it (bans done, not refused).
+- **`--audit`** lists the last 50 entries; `--audit --days N` (1 to 365) all
+  of the last N days.
+- **`keys_registered_at`** is null (unknown) for keys registered before the
+  upgrade, and kept by two triggers in the database (a new account's keys
+  are dated when it is made, changed keys when the account is updated), so it
+  stays true when an older server registers keys on a schema 12 database.
+- **`made_announced`** is 0 for every ban made from now on, by any server,
+  and **`lifted_announced`** 0 for every lift; the upgrade sets both to 1 for
+  what was made or lifted before. So step 2 must decide what to do with bans
+  made while alerts were off (or before step 2 was installed): post them
+  late, or mark them posted when alerts are off. Recommended: mark them
+  posted, and post only what is made while alerts are on.
+- **`operator_pins.mismatch_announced_hash`** is there for step 4's "other
+  keys" alert (cleared whenever the character is pinned again).
+- **`server_state`** is a key and value table; nothing uses it yet.
+- **The plugin's hour** is counted per operator character by user ID, not
+  by name (a rename doesn't reset it).
+- **The command line's user**: `SUDO_USER`, or the user it runs as without
+  sudo (`USER`, `USERNAME`), or "unknown".
 
 **Tests** (automated, in `tests/LookingGlass.Tests`):
 
