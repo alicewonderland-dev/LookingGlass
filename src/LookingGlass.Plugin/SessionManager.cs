@@ -341,12 +341,44 @@ public sealed class SessionManager : IDisposable {
         this._config.KeepChatLog = keep;
         this._config.Save();
         if (keep && this.Session != null && this._sessionPlayer is { } player) {
-            this.History.SetRecorder(this._chatLogs.Open(player.ContentId, this._config.ServerUrl, this._config.ChatLogMaxBytes()));
+            this.History.SetRecorder(this.OpenChatLog(player));
         } else if (!keep) {
             this.History.SetRecorder(null);
             this._chatLogs.Close();
         }
     }
+
+    /// <summary>
+    /// "Keep my chat log unencrypted" on or off: the open log's lines from now on also go to its text files, or no longer do.
+    /// Nothing already kept is written to them; turning it off leaves them until deleted. Call on the framework (or draw) thread.
+    /// </summary>
+    public void SetKeepChatLogUnencrypted(bool keep) {
+        if (this._config.KeepChatLogUnencrypted == keep) {
+            return;
+        }
+
+        this._config.KeepChatLogUnencrypted = keep;
+        this._config.Save();
+        this._chatLogs.SetPlainText(keep);
+        // Never a name or a path: only that it changed.
+        Services.Log.Information(keep ? "Keeping the chat log unencrypted too, from now on" : "No longer keeping the chat log unencrypted");
+    }
+
+    /// <summary>
+    /// The folder with the open chat log's text files (this character's, for this server), or null if no log is open. It
+    /// may not exist yet.
+    /// </summary>
+    public string? ChatLogTextFolder => this.ChatLog?.TextFolder;
+
+    /// <summary>This character's chat log for this server, kept unencrypted too if the player chose so.</summary>
+    private ChatLog OpenChatLog(PlayerInfo player) =>
+        this._chatLogs.Open(player.ContentId, this._config.ServerUrl, this._config.ChatLogMaxBytes(), this._config.KeepChatLogUnencrypted, this.LabelOf);
+
+    /// <summary>
+    /// What the chat log's text files call a channel now: its tag (as in game chat), name and number. Called inside the
+    /// channel history's lock, from any thread: it only reads what is safe from any thread.
+    /// </summary>
+    private ChannelLabel LabelOf(string channelId) => new(this.TagOf(channelId), this.Snapshot.FindChannel(channelId)?.Name, this.SlotOf(channelId));
 
     /// <summary>The chat log's size limit, in megabytes (kept in range). The oldest lines go at once if it is over. Framework thread.</summary>
     public void SetChatLogMegabytes(int megabytes) {
@@ -372,6 +404,9 @@ public sealed class SessionManager : IDisposable {
 
     /// <summary>How much room every chat log on this computer takes. Reads the disk in the background.</summary>
     public Task<long> ChatLogSize() => this._chatLogs.SizeAsync();
+
+    /// <summary>Whether any chat log on this computer has text files. Reads the disk in the background.</summary>
+    public Task<bool> ChatLogHasTextFiles() => this._chatLogs.HasTextFilesAsync();
 
     /// <summary>The command slot of a channel for the current character. Safe from any thread.</summary>
     public int? SlotOf(string channelId) {
@@ -709,7 +744,7 @@ public sealed class SessionManager : IDisposable {
 
         // A new session's history starts empty, and what an older one still delivers is dropped. Its lines go to its chat
         // log too, if the player keeps one: this character's for this server.
-        var log = this._config.KeepChatLog ? this._chatLogs.Open(player.ContentId, this._config.ServerUrl, this._config.ChatLogMaxBytes()) : null;
+        var log = this._config.KeepChatLog ? this.OpenChatLog(player) : null;
         var history = this.History.Clear(log);
 
         // Events from a session that has since been replaced are ignored.

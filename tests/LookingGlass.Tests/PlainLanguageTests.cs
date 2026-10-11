@@ -38,8 +38,10 @@ public sealed class PlainLanguageTests {
     public void TheJargonCheckCatchesTechnicalWordsButNotEverydayOnes() {
         Assert.Equal(["key"], PlainLanguage.Jargon("Their identity key changed."));
         Assert.Equal(["keys"], PlainLanguage.Jargon("Their keys are unchanged."));
-        Assert.Equal(["fingerprints", "epoch", "rekeying", "log", "forked", "signature", "encrypted", "pinned"],
+        Assert.Equal(["fingerprints", "epoch", "rekeying", "log", "forked", "signature", "pinned"],
             PlainLanguage.Jargon("Compare fingerprints. epoch 3, rekeying, the membership log forked, a bad signature, encrypted, pinned"));
+        // The owner, 2026-10-10: "encrypt" is a common enough word even for people who aren't technical.
+        Assert.Empty(PlainLanguage.Jargon("Your chat history is stored encrypted; keep it unencrypted too, or encrypt it again."));
         Assert.Empty(PlainLanguage.Jargon("Your login is tried again by itself, through the Lodestone, once you've logged in. Check with them over /tell."));
         // Signing in and out is everyday; something signed is not.
         Assert.Empty(PlainLanguage.Jargon("Your character signed in from another computer. You were signed out."));

@@ -55,7 +55,7 @@ public sealed class SettingsWordsTests {
             SettingsWords.Help(SettingHelp.LocalChat, "x").Plain);
         Assert.Equal("To find friends near you, the server learns their names when you use /lgl. It never sees what you say.",
             SettingsWords.Help(SettingHelp.LocalPrivacy, "x").Plain);
-        Assert.Equal("Lets channel windows show older messages next time you play. Stored scrambled, never uploaded. The oldest messages go first when it's full.",
+        Assert.Equal("Lets channel windows show older messages next time you play. Stored encrypted, never uploaded. The oldest messages go first when it's full.",
             SettingsWords.Help(SettingHelp.ChatHistory, "x").Plain);
         Assert.Equal("Shows encryption details, like fingerprints to compare with friends, and technical wording in warnings.",
             SettingsWords.Help(SettingHelp.AdvancedMode, "x").Plain);

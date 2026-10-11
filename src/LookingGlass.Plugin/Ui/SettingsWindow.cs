@@ -37,6 +37,7 @@ public sealed class SettingsWindow : Window {
     private long _knownLogSize;
     private DateTime _logSizeAt;
     private Task<long>? _offerDelete;
+    private Task<bool>? _offerText;
     private int? _logMegabytes;
 
     // Local chat's colour menu: showing the custom colour part, and its wheel.
@@ -494,8 +495,9 @@ public sealed class SettingsWindow : Window {
         if (ImGui.Checkbox(ChatLogWords.KeepIt.For(advanced) + "###keep-chat-log", ref keep)) {
             this._sessions.SetKeepChatLog(keep);
             if (!keep) {
-                // Once closed, how much there is to offer deleting.
+                // Once closed, how much there is to offer deleting, and whether text files are among it.
                 this._offerDelete = this._sessions.ChatLogSize();
+                this._offerText = this._sessions.ChatLogHasTextFiles();
             }
 
             this.MeasureLog();
@@ -516,6 +518,8 @@ public sealed class SettingsWindow : Window {
                 this._sessions.SetChatLogMegabytes(megabytes);
                 this.MeasureLog();
             }
+
+            this.DrawUnencrypted(advanced);
         }
 
         if (this._sessions.ChatLog is { State: ChatLogState.Unreadable } unreadable) {
@@ -541,13 +545,54 @@ public sealed class SettingsWindow : Window {
         }
 
         // Just turned off: offer to delete what was kept, if anything was.
-        if (this._offerDelete is { IsCompleted: true } offer) {
+        if (this._offerDelete is { IsCompleted: true } offer && this._offerText is not { IsCompleted: false }) {
+            var text = this._offerText is { IsCompletedSuccessfully: true, Result: true };
             this._offerDelete = null;
+            this._offerText = null;
             if (offer.IsCompletedSuccessfully && offer.Result > 0 && !this._config.KeepChatLog) {
-                this.ConfirmDelete(ChatLogWords.TurnedOff(offer.Result).For(advanced), advanced);
+                this.ConfirmDelete(ChatLogWords.TurnedOff(offer.Result, text).For(advanced), advanced);
             }
         }
     }
+
+    /// <summary>
+    /// "Keep my chat log unencrypted" (off by default, only while the log is on): turning it on asks first, with the plain
+    /// warning that anything able to read the player's files can read the text files; turning it off doesn't. While on,
+    /// **Open folder** opens this character's text files for this server.
+    /// </summary>
+    private void DrawUnencrypted(bool advanced) {
+        var unencrypted = this._config.KeepChatLogUnencrypted;
+        if (ImGui.Checkbox(ChatLogWords.KeepUnencrypted.For(advanced) + "###chat-log-unencrypted", ref unencrypted)) {
+            if (unencrypted) {
+                var title = ChatLogWords.KeepUnencrypted.For(advanced);
+                this._modals.Confirm(title, ChatLogWords.UnencryptedWarning.For(advanced), ChatLogWords.TurnOn.For(advanced),
+                    () => this._sessions.SetKeepChatLogUnencrypted(true));
+            } else {
+                this._sessions.SetKeepChatLogUnencrypted(false);
+            }
+        }
+
+        this.Help(SettingHelp.UnencryptedHistory);
+        if (this._config.KeepChatLogUnencrypted && this._sessions.ChatLogTextFolder is { } folder) {
+            ImGui.Indent();
+            if (ImGui.Button(ChatLogWords.OpenFolder.For(advanced) + "###open-chat-log-folder")) {
+                OpenFolder(folder);
+            }
+
+            ImGui.Unindent();
+        }
+    }
+
+    /// <summary>Opens a folder in the file manager (made first if nothing was written yet), off the draw thread.</summary>
+    private static void OpenFolder(string folder) => Task.Run(() => {
+        try {
+            Directory.CreateDirectory(folder);
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo { FileName = folder, UseShellExecute = true })?.Dispose();
+        } catch (Exception ex) {
+            // Never the path: it names the character's log.
+            Services.Log.Warning($"Couldn't open the chat log's text folder: {ex.GetType().Name}");
+        }
+    });
 
     private void ConfirmDelete(string text, bool advanced) {
         var title = ChatLogWords.Delete.For(advanced);

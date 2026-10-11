@@ -38,6 +38,22 @@ public sealed class ChatLogOptions {
 
     /// <summary>It opens the files only once this has finished: an earlier log closing, or a deletion.</summary>
     public Task? StartAfter { get; init; }
+
+    /// <summary>
+    /// Keep it unencrypted too (opt-in, off by default): each new line also goes to a text file (see <see cref="ChatLogText"/>).
+    /// Changed later with <see cref="ChatLog.SetPlainText"/>.
+    /// </summary>
+    public bool PlainText { get; init; }
+
+    /// <summary>
+    /// What the text files call a channel (its tag, name and number) as it is when a line is recorded. Called inside the
+    /// channel history's lock, on whichever thread recorded the line: it must be quick, never block, and be safe from any
+    /// thread. Without it, every line is tagged <see cref="ChannelTag.Fallback"/>.
+    /// </summary>
+    public Func<string, ChannelLabel>? Channels { get; init; }
+
+    /// <summary>The computer's time zone, for the text files' times and months; tests give their own.</summary>
+    public TimeZoneInfo? TimeZone { get; init; }
 }
 
 /// <summary>
@@ -49,8 +65,13 @@ public sealed class ChatLogOptions {
 /// game never waits on the disk, and nothing that goes wrong with the log ever reaches whoever recorded the line, or keeps it
 /// from being shown. A failure is written to the diagnostic log (once, until it works again), without what was said.
 /// </para>
+/// <para>
+/// If the player keeps it unencrypted too (<see cref="SetPlainText"/>), each line recorded from then on is also written to
+/// the text files, in the same batches, under the same size limit (see <see cref="ChatLogStore"/>). Their failures are
+/// their own: neither ever stops the other.
+/// </para>
 /// </summary>
-public sealed class ChatLog : IChannelHistoryRecorder, IAsyncDisposable {
+public sealed partial class ChatLog : IChannelHistoryRecorder, IAsyncDisposable {
     /// <summary>How many older lines a window asks for at a time.</summary>
     public const int PageSize = 200;
 
@@ -63,17 +84,25 @@ public sealed class ChatLog : IChannelHistoryRecorder, IAsyncDisposable {
     private readonly HashSet<string> _failing = [];
     private volatile ChatLogState _state = ChatLogState.Starting;
     private volatile string? _problem;
+    private volatile bool _plainText;
     private long _size;
     private int _version;
     private int _disposed;
 
     public ChatLog(ChatLogOptions options) {
         this._options = options;
-        this._store = new ChatLogStore(options.Folder, options.Protection, options.MaxBytes);
+        this._plainText = options.PlainText;
+        this._store = new ChatLogStore(options.Folder, options.Protection, options.MaxBytes, options.TimeZone);
         this._worker = Task.Run(this.RunAsync);
     }
 
     public string Folder => this._options.Folder;
+
+    /// <summary>Where its text files go, if it is kept unencrypted too (see <see cref="ChatLogFiles.TextFolder"/>).</summary>
+    public string TextFolder => this._store.TextFolder;
+
+    /// <summary>Whether lines recorded now also go to the text files.</summary>
+    public bool PlainText => this._plainText;
 
     public ChatLogState State => this._state;
 
@@ -92,12 +121,20 @@ public sealed class ChatLog : IChannelHistoryRecorder, IAsyncDisposable {
     public void Record(HistoryLine line) {
         try {
             if (Volatile.Read(ref this._disposed) == 0 && ChatLogFormat.Keeps(line)) {
-                this._ops.Writer.TryWrite(new Op.Append(line));
+                // What the channel is called now, for the text files: by the time the line is written it may have changed.
+                this._ops.Writer.TryWrite(new Op.Append(line, this._plainText ? this.LabelOf(line.ChannelId) : null));
             }
         } catch {
             // Never into the history: see the class summary.
         }
     }
+
+    /// <summary>
+    /// Keep it unencrypted too, or no longer: lines recorded from now on also go to the text files, or no longer do. Nothing
+    /// already kept is written to them, and turning it off leaves them as they are (until deleted, or the size limit pushes
+    /// them out).
+    /// </summary>
+    public void SetPlainText(bool on) => this._plainText = on;
 
     /// <summary>A new size limit; the oldest lines go at once if the log is over it.</summary>
     public void SetLimit(long maxBytes) => this._ops.Writer.TryWrite(new Op.Limit(maxBytes));
@@ -166,7 +203,7 @@ public sealed class ChatLog : IChannelHistoryRecorder, IAsyncDisposable {
                     this.Handle(op);
                 }
 
-                this.Try("write the chat log", this._store.Flush);
+                this.Write();
                 Interlocked.Exchange(ref this._size, this._store.Size);
             }
         } catch (Exception ex) {
@@ -214,6 +251,12 @@ public sealed class ChatLog : IChannelHistoryRecorder, IAsyncDisposable {
                     this.Try("add to the chat log", () => { this._store.Append(append.Line); });
                 }
 
+                // The text files need no key: written whether the encrypted log is ready, failing for now, or can't be read
+                // here (see "Chat log on this computer" in docs/design.md).
+                if (append.Label is { } label) {
+                    this.Try(TextFailure.Add, () => { this._store.AppendText(append.Line, label); });
+                }
+
                 break;
             case Op.Limit limit:
                 this.Try("trim the chat log", () => this._store.SetLimit(limit.MaxBytes));
@@ -252,13 +295,42 @@ public sealed class ChatLog : IChannelHistoryRecorder, IAsyncDisposable {
 
                 break;
             case Op.Flush flush:
-                this.Try("write the chat log", this._store.Flush);
+                this.Write();
                 Interlocked.Exchange(ref this._size, this._store.Size);
                 flush.Done.TrySetResult();
                 break;
         }
 
+        // A text file that couldn't be trimmed while making room: said once, and never in the way of either log.
+        if (this._store.TakeTextProblem() is { } problem) {
+            this.Warn(TextFailure.Trim, problem);
+        }
+
         Interlocked.Exchange(ref this._size, this._store.Size);
+    }
+
+    /// <summary>Hands what was added to the operating system: the encrypted log's records and the text files' lines.</summary>
+    private void Write() {
+        this.Try("write the chat log", this._store.Flush);
+        // Only with lines to write: nothing written isn't a success, which would have the next failure written about again.
+        if (this._store.TextPending) {
+            this.Try(TextFailure.Write, this._store.FlushText);
+        }
+    }
+
+    private ChannelLabel LabelOf(string channelId) {
+        try {
+            return this._options.Channels?.Invoke(channelId) ?? new ChannelLabel(ChannelTag.Fallback);
+        } catch {
+            return new ChannelLabel(ChannelTag.Fallback);
+        }
+    }
+
+    /// <summary>What a text file failure is written to the diagnostic log as (never with a path: it holds a channel's name).</summary>
+    private static class TextFailure {
+        public const string Add = "add to the chat log's text files";
+        public const string Write = "write the chat log's text files";
+        public const string Trim = "make room in the chat log's text files";
     }
 
     /// <summary>Runs something on the files; a failure is written to the diagnostic log, once until it works again.</summary>
@@ -279,13 +351,31 @@ public sealed class ChatLog : IChannelHistoryRecorder, IAsyncDisposable {
         }
 
         // The kind of failure and the file system's words (a path, "access denied"): never a record's bytes or text, which
-        // no exception here holds (ChatLogFormat's say only that a record couldn't be read).
+        // no exception here holds (ChatLogFormat's say only that a record couldn't be read). The text files' paths name
+        // channels, so a text file failure's words go without any path.
         try {
-            this._options.Log?.Invoke($"Couldn't {what}: {ex.GetType().Name}: {ex.Message}");
+            var words = what is TextFailure.Add or TextFailure.Write or TextFailure.Trim ? this.WithoutPaths(ex.Message) : ex.Message;
+            this._options.Log?.Invoke($"Couldn't {what}: {ex.GetType().Name}: {words}");
         } catch {
             // Diagnostics only.
         }
     }
+
+    /// <summary>A file system message without the paths in it ("Could not find a part of the path '...'").</summary>
+    private string WithoutPaths(string message) {
+        // Everything from the log's folder on goes first (a channel's name may hold a quote mark), then anything quoted.
+        // The folder spelled some other way (a long-path prefix): from its text folder's name on.
+        var folder = message.IndexOf(this.Folder, StringComparison.OrdinalIgnoreCase);
+        if (folder < 0) {
+            folder = message.IndexOf(Path.DirectorySeparatorChar + ChatLogTextFiles.FolderName + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+        }
+
+        var words = folder < 0 ? message : message[..folder] + "(a text file)";
+        return QuotedPath().Replace(words, "(a text file)");
+    }
+
+    [System.Text.RegularExpressions.GeneratedRegex("'[^']*'|\"[^\"]*\"")]
+    private static partial System.Text.RegularExpressions.Regex QuotedPath();
 
     private static void Answer(Op op) {
         switch (op) {
@@ -302,7 +392,8 @@ public sealed class ChatLog : IChannelHistoryRecorder, IAsyncDisposable {
     }
 
     private abstract record Op {
-        public sealed record Append(HistoryLine Line) : Op;
+        /// <param name="Label">What the channel was called when it was recorded, if it goes to the text files too.</param>
+        public sealed record Append(HistoryLine Line, ChannelLabel? Label) : Op;
 
         public sealed record Limit(long MaxBytes) : Op;
 
@@ -474,7 +565,9 @@ public sealed class ChatLogKeeper : IAsyncDisposable {
     }
 
     /// <summary>Opens a character's log for a server address, closing the one open, if any.</summary>
-    public ChatLog Open(ulong contentId, string serverUrl, long maxBytes) {
+    /// <param name="plainText">Keep it unencrypted too (see <see cref="ChatLogOptions.PlainText"/>).</param>
+    /// <param name="channels">What the text files call each channel (see <see cref="ChatLogOptions.Channels"/>).</param>
+    public ChatLog Open(ulong contentId, string serverUrl, long maxBytes, bool plainText = false, Func<string, ChannelLabel>? channels = null) {
         lock (this._lock) {
             this.CloseLocked();
             var log = new ChatLog(new ChatLogOptions {
@@ -483,6 +576,8 @@ public sealed class ChatLogKeeper : IAsyncDisposable {
                 MaxBytes = maxBytes,
                 Log = this._log,
                 StartAfter = this._settled,
+                PlainText = plainText,
+                Channels = channels,
             });
             this._current = log;
             return log;
@@ -497,6 +592,9 @@ public sealed class ChatLogKeeper : IAsyncDisposable {
     }
 
     public void SetLimit(long maxBytes) => this.Current?.SetLimit(maxBytes);
+
+    /// <summary>Keep the open log unencrypted too, or no longer (see <see cref="ChatLog.SetPlainText"/>).</summary>
+    public void SetPlainText(bool on) => this.Current?.SetPlainText(on);
 
     /// <summary>
     /// "Delete my chat log": every character's, on every server, on this computer. The open one (if any) deletes its own
@@ -535,6 +633,9 @@ public sealed class ChatLogKeeper : IAsyncDisposable {
 
     /// <summary>How much room every chat log on this computer takes. Reads the disk: not on the game thread.</summary>
     public Task<long> SizeAsync() => Task.Run(() => ChatLogFiles.TotalSize(this._configDirectory));
+
+    /// <summary>Whether any chat log on this computer has text files. Reads the disk: not on the game thread.</summary>
+    public Task<bool> HasTextFilesAsync() => Task.Run(() => ChatLogFiles.HasTextFiles(this._configDirectory));
 
     /// <summary>Closes the log open, and waits for every closing and deletion.</summary>
     public async ValueTask DisposeAsync() {
