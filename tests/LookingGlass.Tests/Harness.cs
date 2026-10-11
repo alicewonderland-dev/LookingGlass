@@ -426,6 +426,18 @@ public sealed class Harness : IAsyncDisposable {
         await WaitFor(() => admin.Session.Snapshot.FindChannel(channelId) is { RekeyPending: false } c ? c : null);
     }
 
+    /// <summary>
+    /// Waits until <paramref name="client"/> has verified the channel's log up to the server's head and holds (and has
+    /// saved) the server's current key. <see cref="AddMemberAsync"/> waits only for the admin and the new member; the
+    /// other members take the join's entry and key in their own time, so until then they are on the old ones.
+    /// </summary>
+    public async Task<ChannelView> WaitUntilCurrentAsync(TestClient client, string channelId) {
+        var server = this.Database.GetChannel(channelId)!;
+        return await WaitFor(() => client.Session.Snapshot.FindChannel(channelId) is { HasKey: true } c && c.Epoch == server.Epoch
+                                   && MembershipEntries.SamePosition(c.LogHead, server.LogHead)
+                                   && client.Store.Load().EpochKeys.GetValueOrDefault(channelId)?.ContainsKey(server.Epoch) == true ? c : null);
+    }
+
     public static async Task<T> WaitFor<T>(Func<T?> probe, TimeSpan? timeout = null) where T : class {
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(Ct);
         cts.CancelAfter(timeout ?? Timeout);
