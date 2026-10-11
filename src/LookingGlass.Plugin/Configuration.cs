@@ -88,6 +88,13 @@ public sealed class Configuration : IPluginConfiguration {
     public long ChatLogMaxBytes() => ChatLogLimits.Bytes(this.ChatLogMegabytes);
 
     /// <summary>
+    /// Keep the chat log unencrypted too (off by default; used only while <see cref="KeepChatLog"/> is on): each new line also
+    /// goes to a plain text file, one per channel per month, beside the encrypted log and under its size limit. See
+    /// <see cref="ChatLogText"/>.
+    /// </summary>
+    public bool KeepChatLogUnencrypted { get; set; }
+
+    /// <summary>
     /// Person → name colour (0xRRGGBB), for their name in every channel's lines and in member lists, keyed as
     /// <see cref="Core.Client.NameColours.KeyOf"/> says (their user ID, which is their Lodestone ID). One for every
     /// character played on this computer, not per character. Settings saved before name colours have none. Kept when the

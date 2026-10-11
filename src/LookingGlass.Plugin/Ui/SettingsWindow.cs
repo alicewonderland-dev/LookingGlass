@@ -516,6 +516,8 @@ public sealed class SettingsWindow : Window {
                 this._sessions.SetChatLogMegabytes(megabytes);
                 this.MeasureLog();
             }
+
+            this.DrawUnencrypted(advanced);
         }
 
         if (this._sessions.ChatLog is { State: ChatLogState.Unreadable } unreadable) {
@@ -548,6 +550,45 @@ public sealed class SettingsWindow : Window {
             }
         }
     }
+
+    /// <summary>
+    /// "Keep my chat log unencrypted" (off by default, only while the log is on): turning it on asks first, with the plain
+    /// warning that anything able to read the player's files can read the text files; turning it off doesn't. While on,
+    /// **Open folder** opens this character's text files for this server.
+    /// </summary>
+    private void DrawUnencrypted(bool advanced) {
+        var unencrypted = this._config.KeepChatLogUnencrypted;
+        if (ImGui.Checkbox(ChatLogWords.KeepUnencrypted.For(advanced) + "###chat-log-unencrypted", ref unencrypted)) {
+            if (unencrypted) {
+                var title = ChatLogWords.KeepUnencrypted.For(advanced);
+                this._modals.Confirm(title, ChatLogWords.UnencryptedWarning.For(advanced), ChatLogWords.TurnOn.For(advanced),
+                    () => this._sessions.SetKeepChatLogUnencrypted(true));
+            } else {
+                this._sessions.SetKeepChatLogUnencrypted(false);
+            }
+        }
+
+        this.Help(SettingHelp.UnencryptedHistory);
+        if (this._config.KeepChatLogUnencrypted && this._sessions.ChatLogTextFolder is { } folder) {
+            ImGui.Indent();
+            if (ImGui.Button(ChatLogWords.OpenFolder.For(advanced) + "###open-chat-log-folder")) {
+                OpenFolder(folder);
+            }
+
+            ImGui.Unindent();
+        }
+    }
+
+    /// <summary>Opens a folder in the file manager (made first if nothing was written yet), off the draw thread.</summary>
+    private static void OpenFolder(string folder) => Task.Run(() => {
+        try {
+            Directory.CreateDirectory(folder);
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo { FileName = folder, UseShellExecute = true })?.Dispose();
+        } catch (Exception ex) {
+            // Never the path: it names the character's log.
+            Services.Log.Warning($"Couldn't open the chat log's text folder: {ex.GetType().Name}");
+        }
+    });
 
     private void ConfirmDelete(string text, bool advanced) {
         var title = ChatLogWords.Delete.For(advanced);
