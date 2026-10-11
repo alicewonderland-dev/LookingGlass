@@ -115,14 +115,17 @@ public sealed class OperatorBanWindow : Window {
             return;
         }
 
-        if (finding.Result is not { User: { } user } subject) {
+        // A character listed as an operator says so, registered or not; any other must be registered to be banned here.
+        if (finding.Result is not { } subject || (subject.User == null && !subject.ListedOperator)) {
             this._notRegistered = true;
             return;
         }
 
         this._subject = subject;
         this._userId = subject.UserId;
-        this._who = $"{user.Name}@{user.WorldName}";
+        if (subject.User is { } user) {
+            this._who = $"{user.Name}@{user.WorldName}";
+        }
     }
 
     private void DrawBody(bool advanced) {
