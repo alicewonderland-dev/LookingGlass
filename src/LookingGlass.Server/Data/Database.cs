@@ -262,13 +262,26 @@ public sealed class Database {
 
     /// <summary>
     /// Closes the idle pooled connections to the database at <paramref name="path"/>, so the file can be moved, replaced or
-    /// deleted. Only that file's: <see cref="SqliteConnection.ClearAllPools"/> would also dispose connections other databases
-    /// in the process are using at that moment, failing whatever they were doing.
+    /// deleted. Only that file's: <see cref="SqliteConnection.ClearAllPools"/> would clear every other database's pool too, and
+    /// (without <see cref="PoolLock"/>) close connections being opened to them at that moment, failing whatever they were for.
     /// </summary>
     internal static void ReleasePooledConnections(string path) {
         using var connection = new SqliteConnection(ConnectionStringFor(path));
-        SqliteConnection.ClearPool(connection);
+        lock (PoolLock) {
+            SqliteConnection.ClearPool(connection);
+        }
     }
+
+    /// <summary>
+    /// Held while a connection is taken from Microsoft.Data.Sqlite's pool, and while a pool is cleared. Its pool (10.0.12) marks
+    /// a connection it hands out as in use a moment before it records who holds it: a connection taken, or a pool cleared, in
+    /// that moment sees it as leaked (in use, nobody holding it) and takes it back, and then lends it to a second holder, or
+    /// closes it under the first. Two requests then share one SQLite connection, and one fails: "cannot start a transaction
+    /// within a transaction" (or "SQL logic error") in BeginTransaction, or its connection closed under it. That is
+    /// dotnet/efcore#39008, fixed after 10.0.12: this lock can go once a package with the fix is out. Taking a pooled
+    /// connection is quick (a new one only opens the file), so taking turns at it costs little.
+    /// </summary>
+    private static readonly Lock PoolLock = new();
 
     /// <summary>The database file.</summary>
     public string FilePath => this._path;
@@ -352,9 +365,12 @@ public sealed class Database {
         }
     }
 
-    private SqliteConnection Open() {
+    internal SqliteConnection Open() {
         var connection = new SqliteConnection(this._connectionString);
-        connection.Open();
+        lock (PoolLock) {
+            connection.Open();
+        }
+
         Execute(connection, null, "PRAGMA foreign_keys = ON;");
         return connection;
     }
