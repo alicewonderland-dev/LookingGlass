@@ -6,6 +6,7 @@ using LookingGlass.Core.Crypto;
 using LookingGlass.Core.Membership;
 using LookingGlass.Protocol;
 using LookingGlass.Server;
+using LookingGlass.Server.Admin;
 using LookingGlass.Server.Data;
 using LookingGlass.Server.Hosting;
 using LookingGlass.Server.Realtime;
@@ -102,6 +103,13 @@ builder.Services.AddSingleton(services => {
             alerts.Nudge();
         }, services.GetRequiredService<ILogger<OperatorActions>>());
 });
+// The operator web page: its own small host in this process, on a Unix socket (or a loopback port), only when
+// LookingGlass:Admin:Listen is set. This host, the public one, has no route to it.
+builder.Services.AddSingleton(services => new OperatorPage(services.GetRequiredService<Database>(), services.GetRequiredService<OperatorActions>(),
+    services.GetRequiredService<ServerAlerts>(), services.GetRequiredService<ConnectionRegistry>(), services.GetRequiredService<IOptions<ServerOptions>>(),
+    services.GetRequiredService<ILogger<OperatorPage>>(), services.GetService<TimeProvider>()));
+builder.Services.AddSingleton<OperatorPageHost>();
+builder.Services.AddHostedService(services => services.GetRequiredService<OperatorPageHost>());
 builder.Services.AddSingleton<RequestHandler>();
 builder.Services.AddHttpClient<LodestoneClient>(client => {
     client.DefaultRequestHeaders.UserAgent.ParseAdd("LookingGlass/0.1 (+character verification)");
@@ -177,6 +185,21 @@ if (options.Alerts.Problem() is { } alertSettings) {
     return;
 }
 
+// The operator web page: where it listens (a Unix socket, or loopback only), its address through tailscale serve (on a port
+// Funnel can't serve), who may come in, and its time zone (checked whether the page is on or not).
+if (options.Admin.Problem(app.Configuration["urls"]) is { } adminSettings) {
+    app.Logger.LogCritical("{Problem}", adminSettings);
+    Environment.ExitCode = 1;
+    return;
+}
+
+if (options.Admin.On && options.Admin.LoopbackEndPoint is { } adminPort) {
+    app.Logger.LogWarning(
+        "The operator web page listens on a loopback port, {Address}: any program or user on this machine can connect to it and claim to be an " +
+        "allowed Tailscale login (only tailscale serve, in front of it, makes those headers true). On Linux, use a Unix socket instead " +
+        "(LookingGlass__Admin__Listen=unix:/run/lookingglass/admin.sock), which only this service's user and root can open.", adminPort);
+}
+
 app.Services.GetRequiredService<OperatorActions>().StartUp();
 
 // Debug accounts let anyone who can reach the server register, or take over, any debug account (the echo bot needs them).
@@ -250,7 +273,7 @@ if (options.Dev.AllowDebugAccounts && app.Environment.IsDevelopment()) {
 
 // One line saying how this server is set up, for the operator to check after every start or update.
 app.Logger.LogInformation(
-    "LookingGlass server {Version} in {Environment}: debug accounts {DebugAccounts}, echo bot {EchoBot}; {Messages}; {Abuse}; {Addresses}; {Alerts}; database {Database}",
+    "LookingGlass server {Version} in {Environment}: debug accounts {DebugAccounts}, echo bot {EchoBot}; {Messages}; {Abuse}; {Addresses}; {Page}; {Alerts}; database {Database}",
     RequestHandler.ServerVersion, app.Environment.EnvironmentName, options.Dev.AllowDebugAccounts ? "ON" : "off",
     options.Dev.HostEchoBot && options.Dev.AllowDebugAccounts ? "ON" : "off",
     options.Messages.Enabled
@@ -264,6 +287,10 @@ app.Logger.LogInformation(
     publicOrigins.Count == 0 ? "no PublicUrls (going by each connection's Host header)"
     : sharedAddresses == 0 ? $"every address is wss:// with a fully qualified name ({publicOrigins.Count})"
     : $"{sharedAddresses} of {publicOrigins.Count} addresses may not be this server's alone (see the warnings above)",
+    options.Admin.On
+        ? $"operator web page at {options.Admin.PageLink} ({(options.Admin.SocketPath != null ? "Unix socket" : "loopback port")}; " +
+          $"{options.Admin.Logins.Count} {(options.Admin.Logins.Count == 1 ? "login" : "logins")} let in; times in {options.Admin.Zone.Id})"
+        : "no operator web page",
     // Only whether they are on: never the webhook.
     options.Alerts.On ? "Discord alerts on" : "Discord alerts off",
     app.Services.GetRequiredService<Database>().FilePath);

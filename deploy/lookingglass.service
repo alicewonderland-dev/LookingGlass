@@ -12,7 +12,9 @@
 # say) can still read it.
 #
 # The server listens on localhost only. Put a TLS reverse proxy (for example Caddy)
-# in front and give clients a wss:// URL. For a private Tailscale test server instead,
+# in front and give clients a wss:// URL. The operator web page, if turned on, listens on
+# its own Unix socket in /run/lookingglass (RuntimeDirectory), reached through tailscale
+# serve only: never funnel or proxy it. For a private Tailscale test server instead,
 # change --urls to http://0.0.0.0:5180 and enable Development mode below.
 #
 # LookingGlass__PublicUrls__0 below must be the address clients connect to (add
@@ -33,6 +35,11 @@ Environment=LookingGlass__DataDirectory=/var/lib/lookingglass
 Environment=LookingGlass__PublicUrls__0=wss://chat.example.com/ws
 StateDirectory=lookingglass
 StateDirectoryMode=0700
+# /run/lookingglass, for the operator web page's Unix socket (LookingGlass__Admin__Listen=unix:/run/lookingglass/admin.sock;
+# see "The operator web page" in docs/server.md): made at each start, owned by the service user, open to it and root only
+# (tailscale serve runs as root), and emptied when the service stops.
+RuntimeDirectory=lookingglass
+RuntimeDirectoryMode=0700
 UMask=0077
 Restart=on-failure
 RestartSec=5

@@ -35,9 +35,11 @@ public sealed class Harness : IAsyncDisposable {
     /// <param name="logs">Also gets everything the server logs.</param>
     /// <param name="lodestone">Answers the server's Lodestone requests instead of the real Lodestone, for registering real characters.</param>
     /// <param name="discord">Takes the server's Discord alerts instead of Discord (they are on only with <see cref="FakeDiscord.On"/> in <paramref name="settings"/>).</param>
+    /// <param name="testServices">Changes to the server's services (as <c>ConfigureTestServices</c>), for example the operator web page's test listener.</param>
     /// <param name="settings">Extra server configuration, for example <c>("LookingGlass:Limits:MaxIdentitiesPerRequest", "2")</c>.</param>
     public Harness(string? dataDirectory = null, bool allowDebugAccounts = true, TimeProvider? serverTime = null, string environment = "Development",
-        CapturingLoggerProvider? logs = null, FakeLodestone? lodestone = null, FakeDiscord? discord = null, params (string Key, string Value)[] settings) {
+        CapturingLoggerProvider? logs = null, FakeLodestone? lodestone = null, FakeDiscord? discord = null, Action<IServiceCollection>? testServices = null,
+        params (string Key, string Value)[] settings) {
         this._ownsDataDirectory = dataDirectory == null;
         this.DataDirectory = dataDirectory ?? Path.Combine(Path.GetTempPath(), "lgt-" + Guid.NewGuid().ToString("N"));
         Live[LiveKey(this.DataDirectory)] = this;
@@ -77,6 +79,10 @@ public sealed class Harness : IAsyncDisposable {
             if (discord != null) {
                 builder.ConfigureTestServices(services => services.AddHttpClient(LookingGlass.Server.Services.ServerAlerts.HttpClientName)
                     .ConfigurePrimaryHttpMessageHandler(() => discord));
+            }
+
+            if (testServices != null) {
+                builder.ConfigureTestServices(testServices);
             }
         });
         try {

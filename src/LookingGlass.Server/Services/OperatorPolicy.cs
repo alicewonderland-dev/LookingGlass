@@ -7,7 +7,7 @@ public enum OperatorTool {
     /// <summary><c>LookingGlass.Server --ban</c> and the rest, run on the server (another process).</summary>
     CommandLine,
 
-    /// <summary>The operator web page, over Tailscale only (planned).</summary>
+    /// <summary>The operator web page, over Tailscale only (see <see cref="Admin.OperatorPage"/>).</summary>
     WebPage,
 
     /// <summary>The plugin's operator panel, for key-pinned operator characters (planned).</summary>
