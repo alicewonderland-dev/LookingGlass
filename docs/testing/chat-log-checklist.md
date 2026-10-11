@@ -7,7 +7,7 @@ client), in a channel together, here `sky` (`/lgc1`), and A in a second, `fc`
 (`/lgc2`). The plugin's config folder is
 `%APPDATA%\XIVLauncher\pluginConfigs\LookingGlass`; its chat logs are the
 `chatlog-…` folders there. Check each step in simple mode, then the wording
-steps (3, 13, 16) again in advanced mode.
+steps (3, 13, 16, 24, 25) again in advanced mode.
 
 Throughout, check that nothing changes in game chat: the same lines as with
 the log off, nothing extra printed when it is turned on or off, deleted, or
@@ -132,3 +132,75 @@ key, made by hand the same way, changes nothing you can see.
       older messages** shows the lines from before and after the new key.
       `/xllog`, with Dalamud's log level at Debug (the rekey's lines show only
       then): they show no names and no channel names.
+
+## Kept as text files too
+
+The chat history can also be kept unencrypted, as plain text files (see
+[Kept unencrypted too](../design.md#kept-unencrypted-too-opt-in)). Start with
+**Keep chat history on this computer** on, and give `sky` and `fc` names you
+can recognise. Steps 24 to 28 and 30 to 35 need only A: for "B sends", use
+`/lgdebug` > Channel tools > pick the channel > **Simulate incoming** (it
+arrives as a message from "Simulated Sender"). Step 29 needs B.
+
+- [ ] 24. Under **Size limit**, **Keep my chat history unscrambled** is
+      unticked, with a **?**: its bubble says it also writes new messages to
+      text files any program can open, one per channel per month, and that
+      anything that can read your files can read them. No "log", "encrypted"
+      or "key" in simple mode; in advanced mode the setting reads **Keep my
+      chat log unencrypted**. Untick **Keep chat history on this computer**:
+      the setting disappears with the size slider (Cancel the delete offer),
+      then tick it again.
+- [ ] 25. Tick **Keep my chat history unscrambled**: a dialog asks first. It
+      says the files aren't scrambled, that anyone or anything that can read
+      your files can read them, including backup and cloud-sync tools, that
+      nothing kept before is copied to them, that they count towards the size
+      limit, and that **Delete my chat history** deletes them too. **Cancel**:
+      it stays unticked, and there is no `text` folder in the `chatlog-…`
+      folder. Tick it again and press **Turn on**: it is ticked, and **Open
+      folder** shows under it.
+- [ ] 26. Press **Open folder**: the file manager opens a `text` folder inside
+      this character's `chatlog-…` folder, and it is empty: nothing kept
+      before was converted. The game doesn't stutter.
+- [ ] 27. Send a few lines in `sky` (one with an item link), have B send one,
+      and send one in `fc`. A folder appears for each channel, named like
+      `<sky's name> (LGC1) 1a2b3c4d`, each with a file for this month
+      (`2026-10.txt`). Open one in Notepad: one line per message, like
+      `[2026-10-10 21:03] [sky] Alice Liddell@Twintania: pulling at 9`, with
+      the same times as the window, your local time; the item shows as
+      `[Item name]`; accents and symbols (é, ☆) show correctly. Nothing else
+      changed: the window and game chat show the same as before.
+- [ ] 28. Leave Notepad open on the file, and send two more lines: no error,
+      nothing in game chat; close and reopen the file in Notepad: the new
+      lines are at the end, each on its own line. Delete the file in the file
+      manager while playing, then send a line: a new file starts with it.
+- [ ] 29. **(needs B)** B leaves and rejoins `sky`: the leave and rejoin show
+      as lines in everyday words (no "key"). Then A presses **Disconnect**, B
+      sends two lines, A presses **Connect now**: the file gets a line saying
+      2 messages were sent while you were away, then B's two lines, each
+      starting with the time it was sent and when it arrived, like
+      `[2026-10-10 20:15, arrived 21:03]`. No warning lines and no "Not
+      sent" lines ever show in the files.
+- [ ] 30. Rename `sky` (or move it to another number in the channel list) and
+      send a line: the folder is renamed to the new name or number, with the
+      same 8 characters at the end, and the older lines are still in its
+      file. Create a second channel with the same name as `sky`, send in it:
+      it gets a folder of its own, with other characters at the end.
+- [ ] 31. Settings' "Your chat history uses ..." grows as the text files do
+      (compare with the files' sizes in the file manager: the `chatlog-…`
+      folder's size, text folder included, matches). Optional, with a large
+      history: set the size limit to 5 MB: the size drops to at most 5 MB, and
+      the text files that went (if any) are a whole oldest month's, in every
+      channel's folder. Set it back to 50.
+- [ ] 32. Untick **Keep my chat history unscrambled**: no dialog, **Open
+      folder** disappears. Send more lines: the text files don't change, but
+      after a relog **Show older messages** still shows them (the scrambled
+      history goes on). The text files stay.
+- [ ] 33. Tick it again (**Turn on**), send a line, then **Delete my chat
+      history...**: the confirmation says the text files go too. Confirm:
+      the `chatlog-…` folders are gone, text files and all. Send a line: a
+      new `text` folder starts, with only that line.
+- [ ] 34. Log in a second character (or another server): **Open folder**
+      opens that character's own `text` folder; the first character's files
+      aren't in it.
+- [ ] 35. `/xllog`: the lines about turning it on or off name no channel,
+      folder, file or person, and say nothing that was said.

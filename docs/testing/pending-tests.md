@@ -179,6 +179,18 @@ task.
 - [ ] **With ChatTwo** ([chat-links](chat-links-checklist.md): step 26). Click the chat button with ChatTwo's input focused → write down what appears there. Send it as above → the same link, and clicking it in ChatTwo's window opens the listing. Needs: ChatTwo installed and on.
 - [ ] **No names in the log** ([chat-links](chat-links-checklist.md): step 30). After the tasks above, `/xllog`'s `[sticky]` lines give counts only: no listing number, no name. Needs: nothing extra.
 
+### Chat history as text files, needs the build after 0.2.15
+
+Setup for all of these: **Keep chat history on this computer** on, two
+channels of your own with names you can recognise (`sky` on `/lgc1`, `fc` on
+`/lgc2`). For a message from someone else, use `/lgdebug` > Channel tools >
+pick the channel > **Simulate incoming**. Simple mode, then advanced mode for
+the wording tasks. Game chat and the windows shouldn't change at all.
+
+- [ ] **The setting, and the warning first** ([chat-log](chat-log-checklist.md): steps 24–25). Under **Size limit**, **Keep my chat history unscrambled** is off, with a **?** saying it writes new messages to text files any program can open, and that anything that can read your files can read them (advanced mode: **Keep my chat log unencrypted**). It disappears while the history is off. Ticking it opens a warning first: not scrambled, anyone or anything that can read your files can read them, backup and cloud-sync tools included, nothing old copied, same size limit, deleted with the history. **Cancel** leaves it off; **Turn on** turns it on and shows **Open folder**. Needs: nothing extra.
+- [ ] **Only new lines, one file per channel per month** ([chat-log](chat-log-checklist.md): steps 26–28). **Open folder** opens an empty `text` folder (nothing old converted). Send in `sky` (one with an item link), simulate one from someone else, send in `fc` → a folder per channel (`<name> (LGC1) 1a2b3c4d`), each with `2026-10.txt`; in Notepad one line per message, `[date time] [sky] Name@World: text`, times as in the window, the item as `[Item name]`, accents correct. With Notepad open on it, send more → appended, no error. Delete the file while playing and send → a new file starts. Needs: Simulate incoming.
+- [ ] **Renames, turning it off, deleting** ([chat-log](chat-log-checklist.md): steps 30–35). Rename `sky` (or change its number) and send → its folder is renamed, same 8 characters at the end, old lines kept; a second channel with the same name gets its own folder. The size shown grows with the text files. Untick it → no dialog, the files stop changing, the scrambled history goes on. Tick it again, then **Delete my chat history...** → the confirmation mentions the text files; afterwards no `chatlog-…` folders, and the next line starts a new file. Another character's **Open folder** opens its own folder. `/xllog` names no channel, file or person. Needs: a second character for the last part (optional).
+
 ---
 
 # Group 2: two players (or more)
@@ -285,6 +297,7 @@ advanced mode for wording. (The solo steps were already done.)
 - [ ] **Lots of history, and new messages while reading** ([chat-log](chat-log-checklist.md): steps 8–9). With over 200 lines in `sky` (B sends many), scroll up at the top → the next 200 load, and the line you were reading stays in place. At the very start: "That's everything in your chat history for this channel.". While reading old lines, B sends → the window doesn't jump. **New messages** appears, and clicking it goes to the bottom. Needs: B willing to send a lot of lines.
 - [ ] **Missed messages, and channels kept apart** ([chat-log](chat-log-checklist.md): steps 10–11). A presses **Disconnect**, B sends two lines, A presses **Connect now** → they show once in the window, and not again among older lines after a relog. `fc`'s window shows only `fc`'s older lines and `sky`'s only `sky`'s. Unread counts don't count older lines. Needs: B sending in `sky`.
 - [ ] **Blocking hides old lines** ([chat-log](chat-log-checklist.md): step 19). With B's older lines showing in `sky`, A blocks B → B's older messages disappear from the window. Unblock → they come back. Needs: B's lines in the history.
+- [ ] **Text files: B's joins and missed messages** ([chat-log](chat-log-checklist.md): step 29; needs the build after 0.2.15 on A). With **Keep my chat history unscrambled** on, B leaves and rejoins `sky` → the text file gets the leave and rejoin in everyday words. A presses **Disconnect**, B sends two lines, A presses **Connect now** → the file gets "2 messages were sent while you were away", then B's two lines, each starting with when it was sent and when it arrived (`[2026-10-10 20:15, arrived 21:03]`). No warnings or "Not sent" lines in the files. Needs: B in `sky`.
 
 ### Talking in a channel (sticky mode), with ChatTwo
 

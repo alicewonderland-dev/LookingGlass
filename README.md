@@ -45,7 +45,13 @@ early testing (version 0.2).
   computer** in Settings (in advanced mode, **Keep a chat log on this
   computer**), and channel windows show older messages when you scroll up,
   even after you log out. It stays on your computer, scrambled so only you
-  can read it there, is never uploaded, and you can delete it any time.
+  can read it there, is never uploaded, and you can delete it any time. If
+  you'd like to read it in Notepad or search it, also turn on **Keep my chat
+  history unscrambled** (**Keep my chat log unencrypted** in advanced mode):
+  new messages are also written to plain text files, one per channel per
+  month (**Open folder** shows them). Anyone or anything that can read your
+  files can read those, including backup and cloud-sync tools. They share
+  the history's size limit, and deleting the history deletes them too.
 - **Local chat with friends.** `/lgl <message>` talks to the friends standing
   near you (about `/say` range) who use LookingGlass, tagged `[Local]` in its
   own colour. Only players on your friends list get it, and only they can
@@ -59,6 +65,8 @@ early testing (version 0.2).
 - **Who's online.** Each member's icon is green while they're connected.
 - **Blocking.** Hide someone's messages and silently decline their invites.
 - **Privacy.** Only the members of a channel can read its name and messages.
+  (If you keep your chat history as text files too, anything that can read
+  your files can read those.)
   The server still sees who is in which channel and when messages are sent,
   and keeps the encrypted messages for a week so members who were away get
   them. To deal with abuse, it also keeps the internet address of anyone its
