@@ -301,6 +301,11 @@ public sealed partial class ChatLog : IChannelHistoryRecorder, IAsyncDisposable 
                 break;
         }
 
+        // A text file that couldn't be trimmed while making room: said once, and never in the way of either log.
+        if (this._store.TakeTextProblem() is { } problem) {
+            this.Warn(TextFailure.Trim, problem);
+        }
+
         Interlocked.Exchange(ref this._size, this._store.Size);
     }
 
@@ -325,6 +330,7 @@ public sealed partial class ChatLog : IChannelHistoryRecorder, IAsyncDisposable 
     private static class TextFailure {
         public const string Add = "add to the chat log's text files";
         public const string Write = "write the chat log's text files";
+        public const string Trim = "make room in the chat log's text files";
     }
 
     /// <summary>Runs something on the files; a failure is written to the diagnostic log, once until it works again.</summary>
@@ -348,7 +354,7 @@ public sealed partial class ChatLog : IChannelHistoryRecorder, IAsyncDisposable 
         // no exception here holds (ChatLogFormat's say only that a record couldn't be read). The text files' paths name
         // channels, so a text file failure's words go without any path.
         try {
-            var words = what is TextFailure.Add or TextFailure.Write ? this.WithoutPaths(ex.Message) : ex.Message;
+            var words = what is TextFailure.Add or TextFailure.Write or TextFailure.Trim ? this.WithoutPaths(ex.Message) : ex.Message;
             this._options.Log?.Invoke($"Couldn't {what}: {ex.GetType().Name}: {words}");
         } catch {
             // Diagnostics only.
@@ -357,9 +363,15 @@ public sealed partial class ChatLog : IChannelHistoryRecorder, IAsyncDisposable 
 
     /// <summary>A file system message without the paths in it ("Could not find a part of the path '...'").</summary>
     private string WithoutPaths(string message) {
-        var words = QuotedPath().Replace(message, "(a text file)");
-        var root = words.IndexOf(this._store.TextFolder, StringComparison.OrdinalIgnoreCase);
-        return root < 0 ? words : words[..root] + "(a text file)";
+        // Everything from the log's folder on goes first (a channel's name may hold a quote mark), then anything quoted.
+        // The folder spelled some other way (a long-path prefix): from its text folder's name on.
+        var folder = message.IndexOf(this.Folder, StringComparison.OrdinalIgnoreCase);
+        if (folder < 0) {
+            folder = message.IndexOf(Path.DirectorySeparatorChar + ChatLogTextFiles.FolderName + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+        }
+
+        var words = folder < 0 ? message : message[..folder] + "(a text file)";
+        return QuotedPath().Replace(words, "(a text file)");
     }
 
     [System.Text.RegularExpressions.GeneratedRegex("'[^']*'|\"[^\"]*\"")]

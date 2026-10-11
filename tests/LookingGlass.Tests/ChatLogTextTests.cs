@@ -150,9 +150,9 @@ public sealed class ChatLogTextTests : IDisposable {
     [Fact]
     public void ChannelFoldersAreReadableAndStableAndNeverMix() {
         var hash = ChatLogText.ChannelHash("aaa");
-        Assert.Matches("^[0-9a-f]{8}$", hash);
+        Assert.Matches("^[0-9a-f]{16}$", hash);
         Assert.Equal(hash, ChatLogText.ChannelHash("aaa"));
-        Assert.Equal(Convert.ToHexString(SHA256.HashData("aaa"u8))[..8].ToLowerInvariant(), hash);
+        Assert.Equal(Convert.ToHexString(SHA256.HashData("aaa"u8))[..16].ToLowerInvariant(), hash);
         Assert.Equal($"Sky Pirates (LGC3) {hash}", ChatLogText.ChannelFolderName("aaa", "Sky Pirates", 3));
         Assert.Equal($"Sky Pirates {hash}", ChatLogText.ChannelFolderName("aaa", "Sky Pirates", null));
         // Its name not known yet.
@@ -194,7 +194,7 @@ public sealed class ChatLogTextTests : IDisposable {
     public void ALongNameIsCutAndTheFolderStaysShort() {
         var name = string.Concat(Enumerable.Repeat("Sky😀", 40));
         var folder = ChatLogText.ChannelFolderName("aaa", name, 50);
-        var label = folder[..^" (LGC50) 12345678".Length];
+        var label = folder[..^" (LGC50) 1234567890abcdef".Length];
         Assert.InRange(label.Length, 1, ChatLogText.MaxLabelLength);
         // Never half a character.
         Assert.False(char.IsHighSurrogate(label[^1]));
@@ -371,22 +371,20 @@ public sealed class ChatLogTextTests : IDisposable {
 
         await log.FlushAsync();
         var months = Directory.GetFiles(this.TextRoot(), "*.txt", SearchOption.AllDirectories).Select(file => Path.GetFileNameWithoutExtension(file)).Distinct().Order().ToList();
-        // The oldest months went, whole; the newest is there, up to the last line.
+        // The oldest lines went; the newest month is there, up to the last line.
         Assert.DoesNotContain("2026-08", months);
         Assert.Equal(ChatLogText.MonthOf(at, TimeZoneInfo.Utc), months[^1]);
         Assert.EndsWith("message number 700 with some words to take up room", this.LinesOf("aaa", months[^1]).Last());
         Assert.EndsWith("message number 699 with some words to take up room", this.LinesOf("bbb", months[^1]).Last());
 
-        // The encrypted history wasn't pushed out by the text: both reach back about as far. The text keeps whole months, so
-        // it may reach back a little further, by up to a month.
+        // Neither pushed the other out: both reach back about as far, within a segment (about 26 lines, 4 days here).
         await this.Close(log);
-        var encrypted = await All(this.Open(maxBytes: limit, plainText: false), "aaa");
+        var reopened = this.Open(maxBytes: limit, plainText: false);
+        var encrypted = await All(reopened, "aaa");
         Assert.True(encrypted.Count > 50, $"only {encrypted.Count} lines left in the encrypted history");
         Assert.Equal("message number 700 with some words to take up room", encrypted[^1].Message!.Text);
-        var oldestText = DateTimeOffset.ParseExact(months[0] + "-01", "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture,
-            System.Globalization.DateTimeStyles.AssumeUniversal);
-        var oldestEncrypted = encrypted[0].Time;
-        Assert.InRange(oldestEncrypted, oldestText.AddDays(-5), oldestText.AddDays(36));
+        var oldestEncrypted = new[] { encrypted[0].Time, (await All(reopened, "bbb"))[0].Time }.Min();
+        Assert.InRange(this.OldestTextLine(), oldestEncrypted.AddHours(-1), oldestEncrypted.AddDays(6));
     }
 
     [Fact]
@@ -471,7 +469,7 @@ public sealed class ChatLogTextTests : IDisposable {
         var outside = Path.Combine(this._directory, "outside");
         Directory.CreateDirectory(outside);
         File.WriteAllText(Path.Combine(outside, "keep.txt"), "not a chat log");
-        var link = Path.Combine(this.TextRoot(), "link 12345678");
+        var link = Path.Combine(this.TextRoot(), "link 1234567890abcdef");
         try {
             Directory.CreateSymbolicLink(link, outside);
         } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) {
@@ -569,7 +567,9 @@ public sealed class ChatLogTextTests : IDisposable {
 
         Assert.Contains(ChatLogWords.KeepUnencrypted.Plain, SettingsWords.Labels());
         Assert.Contains(ChatLogWords.OpenFolder.Plain, SettingsWords.Labels());
-        Assert.Contains("unencrypted", ChatLogWords.KeepUnencrypted.Technical);
+        Assert.Equal("Keep my chat log unencrypted", ChatLogWords.KeepUnencrypted.Technical);
+        // The owner, 2026-10-10: "encrypt" is a common enough word for simple mode too.
+        Assert.Equal("Keep my chat history unencrypted", ChatLogWords.KeepUnencrypted.Plain);
         foreach (var advanced in new[] { false, true }) {
             var warning = ChatLogWords.UnencryptedWarning.For(advanced);
             Assert.Contains("anyone or anything that can read your files", warning);
@@ -578,10 +578,226 @@ public sealed class ChatLogTextTests : IDisposable {
             Assert.Contains("text files", warning);
             Assert.Contains("text files", SettingsWords.Help(SettingHelp.UnencryptedHistory, "Windows DPAPI").For(advanced));
             Assert.Contains("text files", ChatLogWords.DeleteConfirm(1_000_000).For(advanced));
+            Assert.Contains("text files", ChatLogWords.TurnedOff(1_000_000).For(advanced));
+            Assert.Contains("text files", ChatLogWords.Unreadable(null).For(advanced));
+            Assert.DoesNotContain("scrambl", warning, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    // ================================================================ after review
+
+    [Theory]
+    [InlineData(20, true)]
+    [InlineData(120, true)]
+    [InlineData(600, true)]
+    [InlineData(20, false)]
+    [InlineData(120, false)]
+    public async Task AMonthBiggerThanTheLimitWipesNeither(int minutes, bool textThroughout) {
+        // A line every 20 minutes is about 2,200 a month: some 8 times the limit, as a busy month is at 5 MB. Every 600
+        // minutes, a month is a third of it. Without text throughout, it is turned off halfway: what it wrote goes as it is
+        // the oldest, and never takes the encrypted history with it.
+        const long limit = 64 * 1024;
+        var log = this.Open(maxBytes: limit);
+        var start = new DateTimeOffset(2026, 8, 1, 0, 0, 0, TimeSpan.Zero);
+        long leastEncrypted = long.MaxValue, leastText = long.MaxValue;
+        var full = false;
+        for (var i = 1; i <= 3000; i++) {
+            if (!textThroughout && i == 1500) {
+                log.SetPlainText(false);
+            }
+
+            log.Record(Message("aaa", Bob, $"message number {i} with some words to take up room", start.AddMinutes(minutes * i)));
+            if (i % 10 == 0) {
+                await log.FlushAsync();
+                Assert.InRange(log.Size, 1, limit);
+                Assert.Equal(ChatLogFiles.FolderSize(this.Folder()), log.Size);
+                var encrypted = Directory.GetFiles(this.Folder(), "*.lgl").Sum(file => new FileInfo(file).Length);
+                full |= log.Size > limit * 9 / 10;
+                if (full && (textThroughout || i < 1500)) {
+                    leastEncrypted = Math.Min(leastEncrypted, encrypted);
+                    leastText = Math.Min(leastText, log.Size - encrypted);
+                }
+            }
+        }
+
+        // Each keeps a good share at every moment once full: neither is ever wiped by the other.
+        Assert.True(full);
+        Assert.True(leastEncrypted > limit / 4, $"the encrypted history went down to {leastEncrypted} bytes");
+        Assert.True(leastText > limit / 8, $"the text files went down to {leastText} bytes");
+
+        await this.Close(log);
+        var encryptedLines = await All(this.Open(maxBytes: limit, plainText: false), "aaa");
+        Assert.Equal("message number 3000 with some words to take up room", encryptedLines[^1].Message!.Text);
+        if (textThroughout) {
+            // Both reach back about as far: within a segment's worth of lines (about 26).
+            Assert.InRange(this.OldestTextLine(), encryptedLines[0].Time.AddMinutes(-1), encryptedLines[0].Time.AddMinutes(40 * minutes));
+            Assert.EndsWith("message number 3000 with some words to take up room", File.ReadLines(this.NewestTextFile()).Last());
+        } else {
+            // Its text, all older than anything the encrypted history still holds, went first; the encrypted history kept
+            // about all the room.
+            Assert.Empty(Directory.Exists(this.TextRoot()) ? Directory.GetFiles(this.TextRoot(), "*.txt", SearchOption.AllDirectories) : []);
+            Assert.True(encryptedLines.Count * 150 > limit / 2, $"only {encryptedLines.Count} encrypted lines");
+        }
+    }
+
+    [Fact]
+    public async Task TrimmingATextFileLeavesNothingHalfDone() {
+        var log = this.Open(maxBytes: 64 * 1024);
+        var start = new DateTimeOffset(2026, 10, 1, 0, 0, 0, TimeSpan.Zero);
+        for (var i = 1; i <= 1500; i++) {
+            log.Record(Message("aaa", Bob, $"message number {i} with some words to take up room", start.AddMinutes(10 * i)));
+        }
+
+        await this.Close(log);
+        Assert.True(this._diagnostics.IsEmpty, string.Join(" | ", this._diagnostics));
+        // Only whole lines, from the front, in order, ending with the last; no trimming file left behind.
+        var lines = this.LinesOf("aaa", "2026-10");
+        var numbers = lines.Select(line => int.Parse(line.Split(' ')[7], System.Globalization.CultureInfo.InvariantCulture)).ToList();
+        var gap = Enumerable.Range(1, numbers.Count - 1).FirstOrDefault(i => numbers[i] != numbers[i - 1] + 1);
+        Assert.True(gap == 0, $"first {numbers[0]}, gap at {gap}: {(gap > 0 ? numbers[gap - 1] + " then " + numbers[gap] : "")}, count {numbers.Count}");
+        Assert.Equal(Enumerable.Range(numbers[0], 1501 - numbers[0]), numbers);
+        Assert.True(numbers[0] > 1);
+        Assert.Empty(Directory.GetFiles(this.ChannelFolder("aaa"), "*.trim"));
+
+        // One a crash left behind (written, never put in place) is cleared away, and the file it was for is whole.
+        File.WriteAllText(Path.Combine(this.ChannelFolder("aaa"), "2026-10.txt.trim"), "half");
+        var again = this.Open(maxBytes: 64 * 1024);
+        await again.FlushAsync();
+        Assert.Empty(Directory.GetFiles(this.ChannelFolder("aaa"), "*.trim"));
+        Assert.Equal(lines, this.LinesOf("aaa", "2026-10"));
+        Assert.Equal(ChatLogFiles.FolderSize(this.Folder()), again.Size);
+    }
+
+    [Fact]
+    public async Task AChannelNameWithAQuoteMarkNeverReachesTheDiagnostics() {
+        this._labels["bbb"] = new ChannelLabel("[LGC4]", "Bob's Den", 4);
+        // Something where the month's file should be: it can't be written, and the file system's words name its path.
+        Directory.CreateDirectory(Path.Combine(this.ChannelFolder("bbb"), "2026-10.txt"));
+        var log = this.Open();
+        log.Record(Message("bbb", Bob, "secret", Evening));
+        await this.Close(log);
+        Assert.NotEmpty(this._diagnostics);
+        Assert.DoesNotContain(this._diagnostics, said => said.Contains("Den", StringComparison.Ordinal) || said.Contains("Bob", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ATextFileThatCantBeTrimmedCostsTheEncryptedHistoryNothing() {
+        if (!OperatingSystem.IsWindows()) {
+            // Only Windows refuses to delete or replace a file someone has open.
+            return;
+        }
+
+        const long limit = 64 * 1024;
+        var log = this.Open(maxBytes: limit);
+        var august = new DateTimeOffset(2026, 8, 1, 0, 0, 0, TimeSpan.Zero);
+        for (var i = 0; i < 200; i++) {
+            log.Record(Message("aaa", Bob, $"aug {i} with some words to take up room", august.AddHours(i)));
+        }
+
+        await log.FlushAsync();
+        var locked = Path.Combine(this.ChannelFolder("aaa"), "2026-08.txt");
+        var lockedBytes = new FileInfo(locked).Length;
+        using (new FileStream(locked, FileMode.Open, FileAccess.Read, FileShare.Read)) {
+            var september = new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero);
+            for (var j = 0; j < 600; j++) {
+                log.Record(Message("aaa", Bob, $"sep {j} with some words to take up room", september.AddMinutes(30 * j)));
+            }
+
+            await log.FlushAsync();
+            Assert.InRange(log.Size, 1, limit);
+            Assert.Equal(lockedBytes, new FileInfo(locked).Length);
+
+            // A lower limit moves on past it too.
+            log.SetLimit(48 * 1024);
+            await log.FlushAsync();
+            Assert.InRange(log.Size, 1, 48 * 1024);
+        }
+
+        await this.Close(log);
+        // No encrypted line was lost to it: what is left runs without a gap up to the last.
+        var september2 = (await All(this.Open(maxBytes: limit, plainText: false), "aaa")).Select(line => line.Message!.Text).ToList();
+        var numbers = september2.Where(text => text!.StartsWith("sep ", StringComparison.Ordinal)).Select(text => int.Parse(text!.Split(' ')[1], System.Globalization.CultureInfo.InvariantCulture)).ToList();
+        Assert.Equal(Enumerable.Range(numbers[0], 600 - numbers[0]), numbers);
+        // Said once, naming no channel.
+        var said = Assert.Single(this._diagnostics);
+        Assert.Contains("text files", said);
+        Assert.DoesNotContain("Sky", said);
+    }
+
+    [Fact]
+    public async Task DeletingNeverFollowsAChatLogFolderThatIsALink() {
+        if (!OperatingSystem.IsWindows()) {
+            return;
+        }
+
+        var outside = Path.Combine(this._directory, "outside");
+        Directory.CreateDirectory(outside);
+        File.WriteAllText(Path.Combine(outside, "keep.txt"), "not a chat log");
+        var link = ChatLogFiles.Folder(this._directory, 0x0040_0000_0000_0009, Url);
+        if (!MakeLink(link, outside)) {
+            return;
+        }
+
+        await using var keeper = new ChatLogKeeper(this._directory, new TestProtection());
+        Assert.Equal(0, await keeper.SizeAsync());
+        await keeper.DeleteAllAsync();
+        Assert.False(Directory.Exists(link));
+        Assert.True(File.Exists(Path.Combine(outside, "keep.txt")));
+    }
+
+    [Fact]
+    public async Task ALogThatCantBeOpenedJustNowStillKeepsTheTextFilesToTheLimit() {
+        var log = this.Open(maxBytes: 1024 * 1024);
+        for (var i = 0; i < 100; i++) {
+            log.Record(Message("aaa", Bob, $"before {i} with some words to take up room", Evening.AddMinutes(i)));
+        }
+
+        await this.Close(log);
+        var encrypted = Directory.GetFiles(this.Folder()).Sum(file => new FileInfo(file).Length);
+        var keyPath = Path.Combine(this.Folder(), ChatLogStore.KeyFileName);
+        var again = this.Open(maxBytes: 1024 * 1024);
+        using (new FileStream(keyPath, FileMode.Open, FileAccess.Read, FileShare.None)) {
+            await again.FlushAsync();
+            Assert.Equal(ChatLogState.Failed, again.State);
+            for (var i = 0; i < 300; i++) {
+                again.Record(Message("aaa", Bob, $"while failing {i} with some words to take up room", Evening.AddHours(3).AddMinutes(i)));
+            }
+
+            // Its segments are counted (never deleted while it can't be opened); the text files keep to what is left.
+            var limit = encrypted + 8 * 1024;
+            again.SetLimit(limit);
+            await again.FlushAsync();
+            Assert.Equal(ChatLogState.Failed, again.State);
+            Assert.InRange(ChatLogFiles.FolderSize(this.Folder()), encrypted + 1, limit);
         }
     }
 
     // ================================================================ helpers
+
+    /// <summary>When the oldest line in the text files arrived, read back from the first line of each file.</summary>
+    private DateTimeOffset OldestTextLine() =>
+        Directory.GetFiles(this.TextRoot(), "*.txt", SearchOption.AllDirectories)
+            .Select(file => ChatLogText.ArrivalOf(File.ReadLines(file).First(), TimeZoneInfo.Utc)!.Value)
+            .Min();
+
+    private string NewestTextFile() =>
+        Directory.GetFiles(this.TextRoot(), "*.txt", SearchOption.AllDirectories).OrderBy(Path.GetFileName, StringComparer.Ordinal).Last();
+
+    /// <summary>A link to a folder: a symbolic link if allowed, otherwise a junction (which needs no rights).</summary>
+    private static bool MakeLink(string link, string target) {
+        try {
+            Directory.CreateSymbolicLink(link, target);
+        } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) {
+            using var mklink = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("cmd.exe", $"/c mklink /J \"{link}\" \"{target}\"") {
+                CreateNoWindow = true,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+            });
+            mklink?.WaitForExit(10_000);
+        }
+
+        return Directory.Exists(link) && new DirectoryInfo(link).Attributes.HasFlag(FileAttributes.ReparsePoint);
+    }
 
     private static async Task<List<HistoryLine>> All(ChatLog log, string channelId) {
         var lines = new List<HistoryLine>();

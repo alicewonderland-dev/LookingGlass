@@ -2,7 +2,7 @@ namespace LookingGlass.Core.Client;
 
 /// <summary>
 /// What Settings and channel windows say about the chat log on this computer, in both modes' words (see
-/// <see cref="Wording"/>). Simple mode calls it the player's "chat history": "log" and "encrypted" are words it doesn't use.
+/// <see cref="Wording"/>). Simple mode calls it the player's "chat history": "log" is a word it doesn't use. "Encrypted" it does (the owner, 2026-10-10: a common enough word).
 /// </summary>
 public static class ChatLogWords {
     public static readonly Wording KeepIt = new(NoticeKind.General,
@@ -14,18 +14,17 @@ public static class ChatLogWords {
     public static Wording Explanation(string protection) => new(NoticeKind.General,
         $"Lets channel windows show older messages next time you play. Stored encrypted ({protection}), never uploaded. The " +
         "oldest messages go first when it's full.",
-        "Lets channel windows show older messages next time you play. Stored scrambled, never uploaded. The oldest messages " +
+        "Lets channel windows show older messages next time you play. Stored encrypted, never uploaded. The oldest messages " +
         "go first when it's full.");
 
     public static readonly Wording SizeLimit = Wording.Same("Size limit");
 
     /// <summary>
-    /// Keeping the chat log unencrypted too, in text files (off by default, shown only while the log is on). Simple mode
-    /// doesn't say "encrypted": the history is "scrambled" there, so this is keeping it "unscrambled".
+    /// Keeping the chat log unencrypted too, in text files (off by default, shown only while the log is on).
     /// </summary>
     public static readonly Wording KeepUnencrypted = new(NoticeKind.General,
         "Keep my chat log unencrypted",
-        "Keep my chat history unscrambled");
+        "Keep my chat history unencrypted");
 
     /// <summary>What <see cref="KeepUnencrypted"/> does, in the bubble of its "?" in Settings (see <see cref="SettingsWords"/>).</summary>
     public static readonly Wording UnencryptedExplanation = new(NoticeKind.General,
@@ -41,7 +40,7 @@ public static class ChatLogWords {
         "read them, including backup and cloud-sync tools. Nothing kept before is copied to them. They count towards the size " +
         "limit, and Delete my chat log deletes them too.",
         "From now on, LookingGlass also writes your chat history to text files on this computer, one per channel per month, " +
-        "that Notepad and other programs can open. They aren't scrambled: anyone or anything that can read your files can " +
+        "that Notepad and other programs can open. They aren't encrypted: anyone or anything that can read your files can " +
         "read them, including backup and cloud-sync tools. Nothing kept before is copied to them. They count towards the size " +
         "limit, and Delete my chat history deletes them too.");
 
@@ -69,17 +68,19 @@ public static class ChatLogWords {
 
     /// <summary>Asked when the setting is turned off.</summary>
     public static Wording TurnedOff(long bytes) => new(NoticeKind.General,
-        $"LookingGlass no longer adds to your chat log. Delete what it kept so far ({ChatLogLimits.Describe(bytes)}) too? " +
+        $"LookingGlass no longer adds to your chat log. Delete what it kept so far ({ChatLogLimits.Describe(bytes)}), its text files too? " +
         "Cancel keeps it: you can delete it in Settings at any time.",
-        $"LookingGlass no longer adds to your chat history. Delete what it kept so far ({ChatLogLimits.Describe(bytes)}) too? " +
+        $"LookingGlass no longer adds to your chat history. Delete what it kept so far ({ChatLogLimits.Describe(bytes)}), its text files too? " +
         "Cancel keeps it: you can delete it in Settings at any time.");
 
     /// <summary>The log on disk can't be unlocked on this computer (see <see cref="ChatLogState.Unreadable"/>).</summary>
     public static Wording Unreadable(string? problem) => new(NoticeKind.General,
         $"Your chat log on this computer can't be read here ({problem ?? "its key can't be unlocked"}), so nothing is added to it. " +
-        "It may have been copied from another computer or Windows account. Delete it to start a new one.",
+        "It may have been copied from another computer or Windows account. Until it is deleted it still counts towards the size limit, " +
+        "so text files only get the room left. Delete it (with its text files) to start a new one.",
         "Your chat history on this computer can't be opened here, so nothing is added to it. It may have been copied from " +
-        "another computer or Windows account. Delete it to start a new one.");
+        "another computer or Windows account. Until it is deleted it still counts towards the size limit, so text files only get " +
+        "the room left. Delete it (with its text files) to start a new one.");
 
     /// <summary>A channel window's button for the next older page.</summary>
     public static readonly Wording ShowOlder = Wording.Same("Show older messages");

@@ -101,16 +101,37 @@ public static partial class ChatLogFiles {
 
     /// <summary>How much room one chat log folder takes: the encrypted log's files and its text files (never through a link).</summary>
     public static long FolderSize(string folder) {
-        try {
-            return Directory.Exists(folder) ? SizeOf(new DirectoryInfo(folder)) : 0;
-        } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) {
-            return 0;
-        }
+        var info = new DirectoryInfo(folder);
+        return info.Exists && !IsLink(info) ? SizeOf(info) : 0;
     }
 
-    private static long SizeOf(DirectoryInfo folder) =>
-        folder.EnumerateFiles().Sum(SafeLength)
-        + folder.EnumerateDirectories().Where(inner => !inner.Attributes.HasFlag(FileAttributes.ReparsePoint)).Sum(SizeOf);
+    /// <summary>A folder's files and folders inside it; one that can't be looked at counts as nothing, the rest still count.</summary>
+    private static long SizeOf(DirectoryInfo folder) {
+        long size = 0;
+        try {
+            foreach (var file in folder.EnumerateFiles()) {
+                size += SafeLength(file);
+            }
+
+            foreach (var inner in folder.EnumerateDirectories()) {
+                if (!IsLink(inner)) {
+                    size += SizeOf(inner);
+                }
+            }
+        } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) {
+            // What was counted before it stopped still counts.
+        }
+
+        return size;
+    }
+
+    private static bool IsLink(FileSystemInfo info) {
+        try {
+            return info.Attributes.HasFlag(FileAttributes.ReparsePoint);
+        } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) {
+            return false;
+        }
+    }
 
     /// <summary>
     /// Deletes every chat log folder but <paramref name="except"/> (one a log has open, which deletes its own), with every
@@ -176,7 +197,18 @@ public static partial class ChatLogFiles {
             return true;
         }
 
-        var ok = DeleteInside(new DirectoryInfo(folder));
+        // A chat log folder that is itself a link (made by hand): the link goes, what it points at stays.
+        var info = new DirectoryInfo(folder);
+        if (IsLink(info)) {
+            try {
+                info.Delete(recursive: false);
+                return true;
+            } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) {
+                return false;
+            }
+        }
+
+        var ok = DeleteInside(info);
         try {
             if (ok) {
                 Directory.Delete(folder, recursive: false);
@@ -202,7 +234,7 @@ public static partial class ChatLogFiles {
             foreach (var inner in folder.EnumerateDirectories()) {
                 try {
                     // A link goes as a link: what it points at stays.
-                    if (inner.Attributes.HasFlag(FileAttributes.ReparsePoint) || DeleteInside(inner)) {
+                    if (IsLink(inner) || DeleteInside(inner)) {
                         inner.Delete(recursive: false);
                     } else {
                         ok = false;
@@ -366,9 +398,10 @@ internal static class ChatLogFormat {
 /// </para>
 /// <para>
 /// <b>Text files.</b> If the player keeps the chat log unencrypted too, its text files (<see cref="ChatLogTextFiles"/>, in
-/// a folder inside this one) count towards the same limit. When the two together would pass it, whichever holds the oldest
-/// lines goes first: the oldest segment, or the oldest month of text files, each as old as its newest line (a tie: the
-/// segment, the smaller step). So both reach back about as far, the text files by whole months.
+/// a folder inside this one) count towards the same limit. When the two together would pass it, the oldest lines go
+/// first, from either: the text files' oldest lines, a line at a time, while they arrived no later than the oldest
+/// segment's newest record, otherwise the oldest segment (see <see cref="FreeOldest"/>). So both reach back about as far,
+/// within a segment, at any size: a month of text bigger than the whole limit is trimmed from its front, never wiped.
 /// </para>
 /// </summary>
 internal sealed class ChatLogStore : IDisposable {
@@ -387,6 +420,7 @@ internal sealed class ChatLogStore : IDisposable {
     private readonly string _folder;
     private readonly IAtRestProtection _protection;
     private readonly ChatLogTextFiles _text;
+    private Exception? _textProblem;
     private readonly List<Segment> _segments = [];
     private readonly Dictionary<long, HashSet<string>> _channelsIn = new();
     private (long Number, List<(long Offset, HistoryLine Line)> Records)? _cached;
@@ -513,15 +547,13 @@ internal sealed class ChatLogStore : IDisposable {
                 continue;
             }
 
-            if (this.Oldest() is not { } oldest) {
+            if (!this.FreeOldest(this.Size + frame + (newSegment ? HeaderSize : 0) - this._maxBytes, out var deleted)) {
                 break;
             }
 
-            if (oldest.Segment == active) {
+            if (deleted != null && deleted == active) {
                 newSegment = true;
             }
-
-            this.DeleteOldestOf(oldest);
         }
 
         if (this.Size + frame + (newSegment ? HeaderSize : 0) > this._maxBytes) {
@@ -566,7 +598,7 @@ internal sealed class ChatLogStore : IDisposable {
     /// counted, never deleted). Written by <see cref="FlushText"/>.
     /// </summary>
     /// <returns>False if it wasn't kept: too big for the limit, or no room could be made.</returns>
-    /// <exception cref="IOException">The text folder couldn't be looked at, or a month's files couldn't be deleted.</exception>
+    /// <exception cref="IOException">The text folder couldn't be looked at.</exception>
     public bool AppendText(HistoryLine line, ChannelLabel label) {
         this._text.EnsureScanned();
         var bytes = Encoding.UTF8.GetBytes(ChatLogText.Format(line, label.Tag, this._text.Zone) + "\r\n");
@@ -582,11 +614,9 @@ internal sealed class ChatLogStore : IDisposable {
                 continue;
             }
 
-            if (this.Oldest() is not { } oldest) {
+            if (!this.FreeOldest(this.Size + bytes.Length - this._maxBytes, out _)) {
                 break;
             }
-
-            this.DeleteOldestOf(oldest);
         }
 
         if (this.Size + bytes.Length > this._maxBytes) {
@@ -605,24 +635,57 @@ internal sealed class ChatLogStore : IDisposable {
     public bool TextPending => this._text.HasPending;
 
     /// <summary>
-    /// What goes next when full: the oldest segment or the oldest month of text files, whichever's newest line is older (a
-    /// tie: the segment). Segments only if this log may change them (<see cref="CanTrim"/>). Null if there is nothing to delete.
+    /// Frees some room, the oldest lines first across both (see "Chat log on this computer" in docs/design.md): the text
+    /// files' oldest lines while they arrived no later than the oldest segment's newest record (trimmed a line at a time, at
+    /// least <paramref name="over"/> bytes, at most about a segment's worth, so files aren't rewritten for every line), and
+    /// otherwise the oldest segment, whole. So the text files reach back about as far as the encrypted log, within a segment,
+    /// at any size. Segments only if this log may change them (<see cref="CanTrim"/>); a text file that can't be trimmed is
+    /// left (and the next oldest tried), never in the way of the encrypted log.
     /// </summary>
-    private (Segment? Segment, string? Month)? Oldest() {
-        var segment = this.CanTrim && this._segments.Count > 0 ? this._segments[0] : null;
-        if (this._text.Oldest() is { } month && (segment == null || month.Newest < segment.Last)) {
-            return (null, month.Month);
+    /// <param name="deleted">The segment deleted, if one was.</param>
+    /// <returns>False if nothing could be freed.</returns>
+    private bool FreeOldest(long over, out Segment? deleted) {
+        deleted = null;
+        if (this._text.HasPending) {
+            // Lines queued in this batch are only trimmed once on disk: written first (a big batch would otherwise crowd out
+            // everything else, and then itself).
+            try {
+                this._text.Write();
+            } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) {
+                this._textProblem ??= ex;
+            }
         }
 
-        return segment == null ? null : (segment, null);
+        var segment = this.CanTrim && this._segments.Count > 0 ? this._segments[0] : null;
+        if (this._text.OldestLine() is { } oldest && (segment == null || oldest <= segment.Last)) {
+            var stuck = this._text.StuckCount;
+            long freed = 0;
+            try {
+                freed = this._text.Trim(segment?.Last, Math.Max(over, this.SegmentLimit));
+            } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) {
+                // Said once by the log (TakeTextProblem); the segment goes instead.
+                this._textProblem ??= ex;
+            }
+
+            if (freed > 0 || this._text.StuckCount > stuck) {
+                return true;
+            }
+        }
+
+        if (segment == null) {
+            return false;
+        }
+
+        deleted = segment;
+        this.DeleteOldest();
+        return true;
     }
 
-    private void DeleteOldestOf((Segment? Segment, string? Month) oldest) {
-        if (oldest.Segment != null) {
-            this.DeleteOldest();
-        } else {
-            this._text.DeleteMonth(oldest.Month!);
-        }
+    /// <summary>What went wrong making room in the text files since this was last asked, if anything.</summary>
+    public Exception? TakeTextProblem() {
+        var problem = this._textProblem ?? this._text.TakeProblem();
+        this._textProblem = null;
+        return problem;
     }
 
     /// <summary>
@@ -666,18 +729,14 @@ internal sealed class ChatLogStore : IDisposable {
     public void Flush() => this._active?.Flush();
 
     /// <summary>
-    /// A new limit: the oldest go at once if the log is over it, segments and months of text files alike (only the text files
-    /// if the log can't be read here).
+    /// A new limit: the oldest go at once if the log is over it, from the segments and the text files alike (only the text
+    /// files if the log can't be read here, or couldn't be opened).
     /// </summary>
     public void SetLimit(long maxBytes) {
         this._maxBytes = maxBytes;
-        if (!this._opened) {
-            return;
-        }
-
+        // Even while the log couldn't be opened (its segments are counted, not deleted): the text files keep to the limit.
         this._text.TryScan();
-        while (this.Size > this._maxBytes && this.Oldest() is { } oldest) {
-            this.DeleteOldestOf(oldest);
+        while (this.Size > this._maxBytes && this.FreeOldest(this.Size - this._maxBytes, out _)) {
         }
     }
 
