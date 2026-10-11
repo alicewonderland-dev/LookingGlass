@@ -26,10 +26,10 @@ read back.
 
 - [ ] 3. **(changed)** Tick **Keep chat history on this computer**. No text
       under it: click the **?** after it. A small bubble says channel windows
-      show older messages next time you play, that it's stored scrambled and
-      never uploaded, and that the oldest go first when it's full; no "log",
-      "encrypted" or "key" in simple mode (in advanced mode it says encrypted,
-      and names the protection, such as Windows DPAPI). A **Size limit**
+      show older messages next time you play, that it's stored encrypted and
+      never uploaded, and that the oldest go first when it's full; no "log"
+      or "key" in simple mode (in advanced mode it also names the protection,
+      such as Windows DPAPI). A **Size limit**
       slider shows 50 MB, from 5 MB to 1024 MB.
 - [ ] 4. Send a few lines in `sky` (one with `<item>` after linking an item,
       one with `<flag>`), have B send a few and leave and rejoin `fc` (or
@@ -142,16 +142,16 @@ can recognise. Steps 24 to 28 and 30 to 35 need only A: for "B sends", use
 `/lgdebug` > Channel tools > pick the channel > **Simulate incoming** (it
 arrives as a message from "Simulated Sender"). Step 29 needs B.
 
-- [ ] 24. Under **Size limit**, **Keep my chat history unscrambled** is
+- [ ] 24. Under **Size limit**, **Keep my chat history unencrypted** is
       unticked, with a **?**: its bubble says it also writes new messages to
       text files any program can open, one per channel per month, and that
-      anything that can read your files can read them. No "log", "encrypted"
-      or "key" in simple mode; in advanced mode the setting reads **Keep my
+      anything that can read your files can read them. No "log", "key" or
+      "scrambled" in simple mode; in advanced mode the setting reads **Keep my
       chat log unencrypted**. Untick **Keep chat history on this computer**:
       the setting disappears with the size slider (Cancel the delete offer),
       then tick it again.
-- [ ] 25. Tick **Keep my chat history unscrambled**: a dialog asks first. It
-      says the files aren't scrambled, that anyone or anything that can read
+- [ ] 25. Tick **Keep my chat history unencrypted**: a dialog asks first. It
+      says the files aren't encrypted, that anyone or anything that can read
       your files can read them, including backup and cloud-sync tools, that
       nothing kept before is copied to them, that they count towards the size
       limit, and that **Delete my chat history** deletes them too. **Cancel**:
@@ -163,7 +163,7 @@ arrives as a message from "Simulated Sender"). Step 29 needs B.
       before was converted. The game doesn't stutter.
 - [ ] 27. Send a few lines in `sky` (one with an item link), have B send one,
       and send one in `fc`. A folder appears for each channel, named like
-      `<sky's name> (LGC1) 1a2b3c4d`, each with a file for this month
+      `<sky's name> (LGC1) 1a2b3c4d5e6f7a8b`, each with a file for this month
       (`2026-10.txt`). Open one in Notepad: one line per message, like
       `[2026-10-10 21:03] [sky] Alice Liddell@Twintania: pulling at 9`, with
       the same times as the window, your local time; the item shows as
@@ -182,18 +182,25 @@ arrives as a message from "Simulated Sender"). Step 29 needs B.
       sent" lines ever show in the files.
 - [ ] 30. Rename `sky` (or move it to another number in the channel list) and
       send a line: the folder is renamed to the new name or number, with the
-      same 8 characters at the end, and the older lines are still in its
+      same 16 characters at the end, and the older lines are still in its
       file. Create a second channel with the same name as `sky`, send in it:
       it gets a folder of its own, with other characters at the end.
 - [ ] 31. Settings' "Your chat history uses ..." grows as the text files do
       (compare with the files' sizes in the file manager: the `chatlog-…`
       folder's size, text folder included, matches). Optional, with a large
-      history: set the size limit to 5 MB: the size drops to at most 5 MB, and
-      the text files that went (if any) are a whole oldest month's, in every
-      channel's folder. Set it back to 50.
-- [ ] 32. Untick **Keep my chat history unscrambled**: no dialog, **Open
+      history: set the size limit to 5 MB: the size drops to at most 5 MB; the
+      text files lost their oldest lines from the top (the first line of each
+      file is about as old as the oldest line **Show older messages** reaches
+      after a relog), nothing is lost from the middle or the end, and no
+      `.trim` file is left in any folder. Set it back to 50.
+- [ ] 31b. With Notepad++ or Excel holding the oldest text file open (one that
+      locks it), keep chatting until the size limit is reached (5 MB helps):
+      nothing goes wrong in game, the encrypted history goes on, and `/xllog`
+      has one line saying the text files couldn't make room, naming no
+      channel.
+- [ ] 32. Untick **Keep my chat history unencrypted**: no dialog, **Open
       folder** disappears. Send more lines: the text files don't change, but
-      after a relog **Show older messages** still shows them (the scrambled
+      after a relog **Show older messages** still shows them (the encrypted
       history goes on). The text files stay.
 - [ ] 33. Tick it again (**Turn on**), send a line, then **Delete my chat
       history...**: the confirmation says the text files go too. Confirm:

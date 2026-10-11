@@ -44,10 +44,10 @@ early testing (version 0.2).
 - **Chat history (optional).** Turn on **Keep chat history on this
   computer** in Settings (in advanced mode, **Keep a chat log on this
   computer**), and channel windows show older messages when you scroll up,
-  even after you log out. It stays on your computer, scrambled so only you
+  even after you log out. It stays on your computer, encrypted so only you
   can read it there, is never uploaded, and you can delete it any time. If
   you'd like to read it in Notepad or search it, also turn on **Keep my chat
-  history unscrambled** (**Keep my chat log unencrypted** in advanced mode):
+  history unencrypted** (**Keep my chat log unencrypted** in advanced mode):
   new messages are also written to plain text files, one per channel per
   month (**Open folder** shows them). Anyone or anything that can read your
   files can read those, including backup and cloud-sync tools. They share

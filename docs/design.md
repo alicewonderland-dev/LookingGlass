@@ -3573,9 +3573,9 @@ log is unchanged, still has no export, and still powers **Show older
 messages**.
 
 - **The setting.** **Keep my chat log unencrypted** (simple mode: **Keep my
-  chat history unscrambled**, since simple mode never says "encrypted"; it
-  calls the log "scrambled"), off by default, shown under **Size limit** only
-  while the log is on. Its "?" says it also writes new lines to text files any
+  chat history unencrypted**, the owner's words: "encrypted" is a common
+  enough word for simple mode too), off by default, shown under **Size
+  limit** only while the log is on. Its "?" says it also writes new lines to text files any
   program can open, one per channel per month, and that anything that can read
   the player's files can read them. Ticking it asks first, in plain words:
   the files aren't encrypted, so anyone or anything that can read the
@@ -3596,15 +3596,18 @@ messages**.
   address; one delete covers both. **Open folder** goes straight there, so the
   log folder's unreadable name doesn't matter.
 - **One folder per channel, one file per month**:
-  `Sky Pirates (LGC3) 5f2a9c01\2026-10.txt`. The folder's name is the
-  channel's name and command number as they are now, then 8 hex digits of
-  the SHA-256 of its ID, which never change. The channel is found by those
+  `Sky Pirates (LGC3) 5f2a9c01d3e4b6a7\2026-10.txt`. The folder's name is the
+  channel's name and command number as they are now, then 16 hex digits (64
+  bits) of the SHA-256 of its ID, which never change. The channel is found by those
   digits, whatever its folder is called, so a rename or a new number renames
   the folder (at its next line, if the folder isn't in use; otherwise it keeps
   its name, and the rename is tried again at the next change of name or the
   next session), and its history stays together; two channels with the same
-  name never share one (a clash needs two of a character's channels to share
-  32 bits of hash: about one in 3 million with 50 channels). While a channel's name isn't known (it
+  name never share one. A clash needs two of a character's channels to share
+  64 bits of hash: by chance, about one in 10^16 with 50 channels; on purpose
+  (channel IDs are chosen by whoever creates a channel, so someone could try
+  to make one clash with another channel the player is in), about 2^64 tries,
+  out of reach (with 32 bits, as first built, it took minutes). While a channel's name isn't known (it
   was just left, say), its folder keeps the name it has; a new one is called
   "Channel". Names are made safe for Windows and whatever a backup copies them
   to: forbidden characters (`< > : " / \ | ? *`) become `_`, control,
@@ -3655,30 +3658,54 @@ messages**.
   they are written whether the encrypted log is open, failing for now (its key
   file in use), or unreadable here (copied from another computer): the player
   asked for a readable history, and a problem with a key they never see
-  shouldn't stop it. An unreadable log's files still count towards the limit,
-  but are never deleted to make room (nothing of it is changed), so the text
-  files keep to the room left; deleting the unreadable log (Settings offers
-  it) deletes its text files too.
+  shouldn't stop it. An unreadable log's files, and those of one that couldn't
+  be opened just now, still count towards the limit, but are never deleted to
+  make room (nothing of it is changed), so the text files keep to the room
+  left, and a lower limit trims them even then. If an unreadable log alone
+  takes the whole limit, no text is written until it is deleted (the text
+  doesn't get room of its own past the limit: the limit is the player's
+  promise of how much room LookingGlass takes); Settings' warning about the
+  unreadable log says so ("until it is deleted it still counts towards the
+  size limit, so text files only get the room left"), and that deleting it
+  deletes its text files too.
 - **One limit.** The text files count towards the same **Size limit**, and
   the size Settings shows includes them. When the two together would pass
-  it, whichever holds the oldest lines goes first: the oldest encrypted
-  segment, or the oldest month's text files (in every channel's folder at
-  once; a channel folder left empty goes too), each counted as old as its
-  newest line (a month never later than its end, so an edit in Notepad doesn't
-  make it new again; on a tie, the segment, the smaller step). So both reach
-  back about as far: the text files keep whole months, so they may reach back
-  up to a month further than the encrypted log, never the other way round by
-  more than one segment. At the default 50 MB, a month of text is a small part
-  of the limit, so this rarely shows; at 5 MB with a lot of chat, the
-  encrypted log can be trimmed back towards the start of the month before the
-  previous month's text goes. Text files kept before, while the setting is
-  off, still count and still go oldest first. A month's file that can't be
-  deleted (open in a program that locks it) stays counted and isn't picked
-  again that session, so trimming moves on to what is next. The count is
-  taken from the disk when the log opens and again whenever it is full, so
-  files deleted or edited by hand are counted as they are.
+  it, the oldest lines go first, from either:
+  - The text files lose lines from their front, a line at a time, oldest first
+    across the oldest month's files (each line's arrival is read back from
+    its start; one that can't be, edited or cut short, counts as oldest),
+    as long as those lines arrived no later than the newest record of the
+    oldest encrypted segment. Otherwise that segment goes, whole.
+  - So the guarantee, at any size, however busy a month: the text files never
+    reach back further than the encrypted log's oldest segment, and the
+    encrypted log never further than one segment (a sixteenth of the limit)
+    beyond the text files. Neither is ever wiped to make room for the other:
+    a month of text bigger than the whole limit is trimmed from its front,
+    never deleted whole. (As first built, a month went whole, counted as old
+    as its newest line; a review found that one busy month, bigger than the
+    limit, made the current month newest of all, so every finished segment
+    went first, then the whole month's text. Line-by-line trimming replaced it.)
+  - The text is trimmed by at least what is needed and about a segment's
+    worth at a time (a sixteenth of the limit), so a file isn't rewritten for
+    every line. A trimmed file's remaining lines are written to a new file
+    beside it (`2026-10.txt.trim`), handed to the disk, then put in its place
+    in one step: a crash leaves the old file or the new one, whole, never half
+    of either (a `.trim` file left behind is deleted when the log next
+    opens). A file left with nothing is deleted, and a channel folder left
+    empty too. Lines queued in the batch being written are written first, so
+    they can be trimmed like the rest.
+  - Text files kept before, while the setting is off, still count and still
+    go oldest first. A file that can't be trimmed (open in a program that
+    locks it) stays counted and isn't picked again that session: trimming
+    moves on to the next oldest, said once in the diagnostic log, and it never
+    costs the encrypted log a line, nor the encrypted log's trimming the text.
+  - The count is taken from the disk when the log opens and again whenever it
+    is full, so files deleted or edited by hand are counted as they are; one
+    folder that can't be looked at counts as nothing, and the rest still
+    count.
 - **Deleting.** **Delete my chat log** deletes the text files with the rest
-  (the whole folder, a link inside it removed, never followed).
+  (the whole folder; a link inside it, or a `chatlog-…` folder that is itself
+  a link, is removed, never followed).
 
 **Left for later.** A channel with more than 500 lines in one session (the
 window's in-memory cap) shows the ones that fell out of memory only after the
@@ -4165,8 +4192,9 @@ How it works:
   to the technical one rather than to nothing.
 - Tests check that every kind has a plain wording without jargon (a list of
   banned words: key, fingerprint, epoch, rekey, fork, log, pinned, signature,
-  encrypted, and the like), and that every notice raised anywhere in the test
-  suite is shown in both modes.
+  decrypted, and the like), and that every notice raised anywhere in the test
+  suite is shown in both modes. "Encrypted" is allowed (the owner, 2026-10-10:
+  a common enough word even for people who aren't technical).
 - The debug window (`/lgdebug`) always shows the technical details.
 
 ### The Settings window
@@ -4198,7 +4226,7 @@ The sections, in order, with the settings that have a "?" marked (?):
   is before it if it fits, else under it.
 - **Chat history** ("Chat log" in advanced mode): **Keep chat history on this
   computer** (?, naming the protection in advanced mode), **Size limit**,
-  **Keep my chat history unscrambled** (?; advanced mode: **Keep my chat log
+  **Keep my chat history unencrypted** (?; advanced mode: **Keep my chat log
   unencrypted**; asks first, see
   [Kept unencrypted too](#kept-unencrypted-too-opt-in)) with **Open folder**
   under it while on, how much room it takes (text files included), and
@@ -4790,9 +4818,15 @@ The owner's decisions, and why.
      both; Settings has **Open folder** for the text files.
 
   Settled when it was built: where the files go (inside each log's folder),
-  channel folders named by name and number with a stable hash, information
-  lines in simple mode's words, caught-up lines with both times, and the text
-  files written even when the encrypted log can't be read here. See
+  channel folders named by name and number with a stable 64-bit hash,
+  information lines in simple mode's words, caught-up lines with both times,
+  the text files written even when the encrypted log can't be read here, and
+  (after review) the text trimmed a line at a time, so the shared limit keeps
+  both reaching back about as far at any size. Also on 2026-10-10, the owner:
+  "Encrypt is a common enough word even for non-technical people that there's
+  no reason to avoid the word." Simple mode may say "encrypted" (it said
+  "scrambled"): the setting is **Keep my chat history unencrypted**, and the
+  plain-language tests no longer ban it. See
   [Kept unencrypted too](#kept-unencrypted-too-opt-in).
 - **Quiet start and stop lines (2026-10-07).** "Now talking in" and the
   "Stopped talking in" lines for stops the player chose are off by default
