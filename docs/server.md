@@ -219,8 +219,9 @@ All of these are under `LookingGlass`.
 | `Limits:LocalMessagesBetweenBurst` | 30 | Local chat messages one user may send one other at once; past it those copies are dropped. 1 to 10,000, and less than `LocalMessagesReceivedBurst` |
 | `Limits:LocalMessagesBetweenIntervalSeconds` | 2 | Seconds between them once those are spent. 1 to 86,400, and more than `LocalMessagesReceivedIntervalSeconds` |
 | `Abuse:...` | | When an account or address refused by limits again and again is flagged, how bans are picked up, and automatic blocks (on): see [Flags and bans](#flags-and-bans) |
-| `Operators:Characters` | empty | User IDs (Lodestone IDs) of the characters that may be operators in the plugin's operator panel (coming in a later update). Each is one only once its keys are pinned (`--operator-pin`), and only while its keys match the pin; `--ban` bans one only with `--force`. User IDs only: the server won't start with anything else. See [Operator characters](#operator-characters) |
+| `Operators:Characters` | empty | User IDs (Lodestone IDs) of the characters that may be operators in the plugin's operator panel (coming in a later update). Each is one only once its keys are pinned (on the web page, or `--operator-pin`), and only while its keys match the pin; `--ban` bans one only with `--force`, the web page never. User IDs only: the server won't start with anything else. See [Operator characters](#operator-characters) |
 | `Alerts:...` | | Alerts to a Discord channel, off until a webhook is set (a secret, kept out of this file): see [Alerts to Discord](#alerts-to-discord) |
+| `Admin:...` | | The operator web page, over Tailscale only, off until `Admin:Listen` is set: see [The operator web page](#the-operator-web-page) |
 
 The server won't start with an invite, lookup, registration lookup or local chat setting outside its range: see
 [Limits worth knowing](#limits-worth-knowing).
@@ -544,6 +545,9 @@ is kept. Follow the logs with `journalctl -u lookingglass -f`.
   private to it (`UMask=0077`). Root can still read it, so a backup or
   replication tool running as root needs nothing more (for one running as
   another user, see [Litestream](#replicating-with-litestream));
+- makes `/run/lookingglass` at each start (`RuntimeDirectory`, mode 0700,
+  owned by the service user, emptied when it stops), for the operator web
+  page's Unix socket (see [The operator web page](#the-operator-web-page));
 - restarts on failure, gives the server 30 seconds to stop, and runs with
   `NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome` and `PrivateTmp`.
 
@@ -576,6 +580,13 @@ give clients a `wss://` address:
       reverse_proxy 127.0.0.1:5180
   }
   ```
+
+**Never funnel or proxy the operator web page.** Funnel and the reverse proxy
+are for the public server's port only. The page has its own listener (a Unix
+socket), reached through `tailscale serve` on the tailnet alone (see
+[The operator web page](#the-operator-web-page)); the server refuses to start
+with the page's address on a port Funnel can serve (443, 8443, 10000), and
+answers any request Funnel brings it with 403 and an urgent alert.
 
 Either connects from this machine, so the server believes the client address
 it passes in `X-Forwarded-For` (see [Behind a reverse proxy](#behind-a-reverse-proxy)).
@@ -631,7 +642,15 @@ by name and user ID, with whether their keys are pinned (see
 Discord alerts are on, never the webhook; a failure to post one is a Warning,
 at most once every ten minutes, without the webhook; and bans and lifts made
 before alerts were on, marked as posted without being posted, are counted in an
-Information line (see [Alerts to Discord](#alerts-to-discord)).
+Information line (see [Alerts to Discord](#alerts-to-discord)). With the
+operator web page on, the startup line says where it is (`operator web page at
+https://...:8444/ (Unix socket; 1 login let in; times in Europe/London)`), a
+loopback port instead of a socket is a Warning, and a request the page refuses
+is a Warning at most once a minute, saying which check failed and the device's
+tailnet address (`Refused a request to the operator web page (GET "/" from
+100.x.y.z): its Tailscale login, "bob@github", isn't listed ...`), with how
+many more were refused since the last (see
+[The operator web page](#the-operator-web-page)).
 
 ### Flags and bans
 
@@ -687,12 +706,13 @@ server's own address, or a 100.x Tailscale address. Take the line out again
 afterwards.
 
 **One set of rules for every tool.** The commands below go through one layer
-in the server (`OperatorActions`), which the operator web page and the
-plugin's operator panel will use too when they come (see
+in the server (`OperatorActions`), which the operator web page (see
+[The operator web page](#the-operator-web-page)) uses too, and the plugin's
+operator panel will when it comes (see
 [operator-tools-plan.md](operator-tools-plan.md)), so the rules are written
 once. What each tool may do:
 
-| | Command line | Web page (coming) | Plugin (coming) |
+| | Command line | Web page | Plugin (coming) |
 | --- | --- | --- | --- |
 | See flags and bans | Yes, full addresses | Yes, full addresses | Yes, addresses shortened |
 | Ban or lift a character | Yes | Yes | Yes |
@@ -704,9 +724,9 @@ once. What each tool may do:
 | Let a key sign in again (`--allow-key-login`) | Yes | No | No |
 | Recorded as made by | The Unix user (`SUDO_USER`) | The Tailscale login | The operator character |
 
-A ban made on the web page or in the plugin will apply at once (the server
-makes it itself); one from the command line, another process, within 30
-seconds, as below.
+A ban made on the web page (or, when it comes, in the plugin) applies at once
+(the server makes it itself); one from the command line, another process,
+within 30 seconds, as below.
 
 **The commands.** Run them as the service's user, with the service's
 settings (as for `--backup`), while the server runs or not. They start no
@@ -783,8 +803,8 @@ No bans lifted or ended in the last 90 days.
 ```
 
 Each ban says which tool made it, and who: "made on the command line by
-alice" (the user who ran sudo), and later "on the web page by alice@github"
-or "in the plugin by Alice Wonderland@Lich"; "(made automatically)" for an
+alice" (the user who ran sudo), "on the web page by alice@github" (the
+Tailscale login), and later "in the plugin by Alice Wonderland@Lich"; "(made automatically)" for an
 automatic block. A lifted one says who lifted it the same way ("lifted
 2026-10-08 09:00 UTC on the command line by alice"), and one replaced by
 banning the same subject again says so ("replaced by a new ban ... on the
@@ -842,9 +862,9 @@ flagged (behind a large shared NAT, say); lower them to hear sooner.
 #### The audit trail
 
 Every ban, lift, operator pin and key login allowed again, tried with any
-tool, done or refused, is recorded: when, which tool, who, from where (the
-web page's device, once there is one), what, and the outcome, with why if it
-was refused. A change and its entry are written in one transaction, so
+tool, done or refused, is recorded: when, which tool, who, from where (for
+the web page, the device's tailnet address), what, and the outcome, with why
+if it was refused. The web page shows the last 50 too. A change and its entry are written in one transaction, so
 nothing is ever banned without its entry. Lists aren't recorded, only
 attempts to change something; nor is a command line that couldn't be read
 (a missing target, a bad `--days`, `--reason` or `--fingerprint`: exit code
@@ -883,7 +903,10 @@ register it again with keys of their own, and must get nothing from it.
 - **Pinned by you, never automatically.** A listed character is an operator
   only once its keys are pinned, and only while its account's keys are still
   those. In game, open LookingGlass's Settings with Advanced mode on and note
-  the fingerprint under **Your identity**; then pin it:
+  the fingerprint under **Your identity**; then pin it on the web page
+  (**Operators**, **Pin...**, check the fingerprint shown is the same, and
+  confirm: see [The operator web page](#the-operator-web-page)), or on the
+  command line:
 
   ```sh
   LG --operators                                              # each listed character: pinned and current keys
@@ -898,9 +921,12 @@ register it again with keys of their own, and must get nothing from it.
   computer, **Reset my identity**, recovering it) gives it new keys, which
   aren't the pinned ones: from then on it isn't an operator, and nothing
   pins the new keys by itself. `--operators` shows it as `NOT an operator
-  now`, with the pinned and current fingerprints and when the keys changed.
-  If its player did that, compare the new fingerprint in the plugin's
-  Settings and run `--operator-pin` again to restore it. If not, someone else
+  now`, with the pinned and current fingerprints and when the keys changed
+  (so does the web page, with **Restore operator status...**). If its player
+  did that, compare the new fingerprint in the plugin's Settings and restore
+  it: on the web page, whose confirmation pins only the keys it showed (if
+  they changed again meanwhile, it pins nothing and says so), or with
+  `--operator-pin` again. If not, someone else
   registered it: secure that Square Enix account first, and don't pin.
 - **Unlisted means gone.** At startup the server deletes the pin of any
   character the settings no longer list (a warning in the log says so), and
@@ -953,7 +979,7 @@ refuses. Treat it as a password: anyone who has it can post in that channel.
 
 **The ping role (optional).** To be pinged for urgent alerts (an address
 blocked automatically, the proxy warning, a request to the web page through
-Funnel once there is one, an operator character signing in with other keys,
+Funnel, an operator character signing in with other keys,
 an operator's keys pinned or restored), make a role (**Server Settings**,
 **Roles**), give it to whoever should hear, and copy its ID (turn on
 **Developer Mode** under **User Settings**, **Advanced**; then right-click the
@@ -1001,8 +1027,8 @@ only you can read.)
 **Check it works.** The startup line (`journalctl -u lookingglass -n 20`)
 says `Discord alerts on`, never the webhook, and the channel gets
 "**Server started:** LookingGlass 0.2.x, in Production." That message is the
-test that alerts work (the web page, when it comes, has **Send a test
-alert**). A webhook of the wrong shape stops the server, with a line saying
+test that alerts work (the web page's **Send a test alert** posts one at
+will). A webhook of the wrong shape stops the server, with a line saying
 what is wrong, not what it is.
 
 **Settings** (under `LookingGlass:Alerts`; the server won't start with one out
@@ -1041,6 +1067,11 @@ of range):
   See [Operator characters](#operator-characters).
 - **Every player seems to come from 127.0.0.1** (urgent): see
   [Behind a reverse proxy](#behind-a-reverse-proxy).
+- **The web page was asked for through Tailscale Funnel** (urgent; at most
+  once every ten minutes, counting the rest): something funnels the page's
+  socket to the public internet. The page refused it; turn that Funnel off
+  (see [The operator web page](#the-operator-web-page)).
+- **Test alert**, from the web page's **Send a test alert**, without a ping.
 - **Server started**, with whether it stopped cleanly, or had been running
   since when (a crash, the machine losing power, the process killed).
 - **Daily summary** at `DailySummaryHourUtc`: flags, blocks, bans made (by
@@ -1055,6 +1086,9 @@ message every 2 seconds). A long
 burst is cut at Discord's 2,000 characters with "and N more": the rest are
 in `LG --bans`, `LG --audit` and the journal. The commands an alert gives
 never include `--force` or a full address (look it up with `LG --bans`).
+With the operator web page on, alerts link it (`Admin:Url`) as well as giving
+the command: "Look: https://<machine>.<tailnet>.ts.net:8444/ or `LG --bans`",
+"Lift: ... or `LG --unban 31337`", and the daily summary ends with it.
 
 The first time the server starts with alerts on (or on again after they were
 off), the bans and lifts already made aren't posted: it marks them as posted,
@@ -1067,9 +1101,11 @@ address's /40), ban reasons, which tool made a ban (and the operator character
 for the plugin's), which characters are operators and their fingerprints
 (when one is pinned, restored, or signs in with other keys), counts, the
 server's version, uptime, database size and the most players online at once,
-the ping role, and, in the proxy warning, the server's own or its proxy's
-address. Never: players' full addresses, Tailscale logins, Unix users,
-tokens, keys, channels, or anything said (the server never has it).
+the ping role, the web page's address (its name is public anyway: HTTPS
+certificates for ts.net names are listed in public certificate logs), and, in
+the proxy warning, the server's own or its proxy's address. Never: players'
+full addresses, Tailscale logins, Unix users, tokens, keys, channels, or
+anything said (the server never has it).
 
 **If posting fails.** Discord being slow or down never slows the server.
 Rate limits are waited out as Discord asks; other failures are tried twice
@@ -1090,6 +1126,158 @@ shows the new one works.
 
 **Turning alerts off:** take the `EnvironmentFile=` line out of the drop-in
 (or empty the file), and restart.
+
+### The operator web page
+
+A page for banning and lifting bans, seeing flags and the audit trail, and
+pinning or restoring operator characters' keys, without SSH and without
+logging in to the game: from a phone, say. **Over Tailscale only**, never on
+the public internet. Off unless `Admin:Listen` is set. The design is in
+[design.md](design.md#the-operator-web-page), and the mockups in
+[operator-tools-plan.md](operator-tools-plan.md#the-web-page).
+
+**What it shows and does.** A line of counts (flagged, bans in force, blocked
+automatically, players online); **Ban someone** (name@world, Lodestone ID, or
+address or prefix; days, or empty for until lifted; a reason; a tick box for
+the server's own or its proxy's address), whose **Continue...** leads to a
+confirmation page, and only that page's button bans; the flags of the last
+24 hours, with full addresses, Lodestone links and **Ban...** (filling the
+form in, with 7 days); the bans in force, with who made each and with which
+tool, and **Lift...** (a confirmation page too); bans lifted or ended in the
+last 90 days; the characters in `Operators:Characters`, each with its pinned
+and current fingerprints, and **Pin...** or **Restore operator status...**;
+the last 50 entries of the audit trail; and **Send a test alert** (with
+alerts on). After each action the page says what was done at the top. It
+doesn't refresh by itself: **Refresh** reloads it. Everything goes through the
+same rules as the command line (see the table in
+[Flags and bans](#flags-and-bans)): 30 bans an hour, no operator character,
+no letting a key sign in again. Each ban, lift and pin is recorded as made on
+the web page by your Tailscale login, from your device's tailnet address, and
+applies at once.
+
+**Why Tailscale only, and why a socket.** The page listens on a Unix socket,
+`/run/lookingglass/admin.sock`, which only the `lookingglass` user and root
+can open, in its own small web host inside the server: the public server (the
+one Caddy or Funnel forwards to) has no route to it at all, so nothing in
+front of it can reach the page, however it is set up. `tailscale serve`
+passes on requests from your tailnet only, on its own HTTPS port, and tells
+the page who sent each: it sets `Tailscale-User-Login` from the tailnet's own
+record of the device (removing any such header the request brought), and
+never for a tagged device, a request from the machine itself, or a request
+through Funnel. The page lets in only a login listed in
+`Admin:TailscaleLogins`, asked for at `Admin:Url`, and never anything marked
+as through Funnel. The socket matters: the identity headers are only true
+when `tailscale serve` set them, and only it (as root) and the service's own
+user can open the socket. A loopback port instead (`http://127.0.0.1:5181`)
+could be opened by any program on the machine, which could then claim to be
+you; the server warns about that at startup.
+
+**Setting it up** (Linux, systemd):
+
+1. Update the server with the installer (the unit now has
+   `RuntimeDirectory=lookingglass`, which makes `/run/lookingglass` at each
+   start, mode 0700).
+2. Find your Tailscale login as the admin console's **Users** page shows it
+   (`alice@github`, `alice@example.com`), and the machine's full name
+   (`tailscale status --self`, or the admin console: `<machine>.<tailnet>.ts.net`).
+3. `sudo systemctl edit lookingglass` and add:
+
+   ```ini
+   [Service]
+   Environment=LookingGlass__Admin__Listen=unix:/run/lookingglass/admin.sock
+   Environment=LookingGlass__Admin__Url=https://<machine>.<tailnet>.ts.net:8444/
+   Environment=LookingGlass__Admin__TailscaleLogins__0=alice@github
+   Environment=LookingGlass__Admin__TimeZone=Europe/London
+   ```
+
+   and `sudo systemctl restart lookingglass`. The startup line says
+   `operator web page at https://<machine>.<tailnet>.ts.net:8444/ (Unix socket;
+   1 login let in; times in Europe/London)`. A setting it can't use stops it,
+   with a line saying which and why (`journalctl -u lookingglass -n 20`).
+4. Serve the socket on the tailnet only (Unix socket targets need Tailscale
+   1.94 or later; `tailscale version`). **Check the syntax on your server's
+   version first** (`tailscale serve --help`); it was written from Tailscale's
+   documentation, not yet run on the server:
+
+   ```sh
+   sudo tailscale serve --bg --https=8444 unix:/run/lookingglass/admin.sock
+   tailscale serve status      # :8444 must be tailnet only
+   tailscale funnel status     # must list only the public server's port (443)
+   ```
+
+   `--bg` keeps it across reboots. Port 8444 is one Funnel can't serve (Funnel
+   only serves 443, 8443 and 10000); the server won't start with `Admin:Url`
+   on one of those.
+5. Optional, in the tailnet's access rules: let only your own devices reach
+   port 8444 on the server.
+6. Open `https://<machine>.<tailnet>.ts.net:8444/` on a phone signed in to the
+   tailnet: the page, **Signed in:** your login. From a device signed in as
+   anyone else: "Not allowed".
+7. Pin your operator character's keys: in game, open Settings with Advanced
+   mode on and note the fingerprint under **Your identity**; on the page,
+   **Operators**, **Pin...**, check it shows the same, and confirm.
+
+**Settings** (under `LookingGlass:Admin`; the server won't start with one it
+can't use):
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `Listen` | empty (no page) | Where the page listens: `unix:/run/lookingglass/admin.sock` (a full path ending in `.sock`, in a folder that exists), or `http://127.0.0.1:<port>` (loopback only, with a warning; never the public server's port). Nothing else |
+| `Url` | empty | The page's address through `tailscale serve`, `https://<machine>.<tailnet>.ts.net:8444/`: HTTPS, the full name, a port Funnel can't serve (not 443, 8443 or 10000), nothing after the last `/`. Required with `Listen`. Every request must have been asked for at it, every form must come from it, and alerts link it |
+| `TailscaleLogins` | empty | The Tailscale logins let in, as the admin console's **Users** page shows them, compared ignoring case (`TailscaleLogins__0`, `__1`, ...). Required with `Listen`. Keep it to your own account |
+| `TimeZone` | `UTC` | The time zone the page shows times in, as an IANA name (`Europe/London`, `America/New_York`); each time carries the zone's abbreviation (`14:02 BST`), so a time copied from the page is never ambiguous. The server won't start with a name it doesn't know, page or not. `--bans` and `--audit` stay in UTC |
+
+**Forms.** Nothing changes when a page is only opened: banning, lifting,
+pinning and the test alert are forms with buttons. Each form works once, for
+30 minutes, for your login and the exact action it shows (a pin, the exact
+keys shown), so a page on another site can't send one. A form from before the
+server restarted says "This page is out of date (the server restarted). Check
+and confirm again."; one sent twice (going back and pressing again) says it was
+sent already, and does nothing more. A form must come from the page itself
+(its `Origin`, or the browser's `Sec-Fetch-Site`): any browser from 2023 on
+sends what is needed. The page loads nothing from anywhere else, runs no
+script, sets no cookies, and asks browsers not to keep it (full addresses
+aren't left in a phone's cache) and not to tell a Lodestone link where you
+came from.
+
+**If it says "Not allowed".** The page never says why (so nobody can probe
+it); the journal does, at most once a minute:
+`journalctl -u lookingglass | grep "operator web page"`.
+
+- "isn't listed in LookingGlass:Admin:TailscaleLogins": the device is signed
+  in to Tailscale as another account, or the login is spelt differently from
+  the admin console's **Users** page.
+- "has no Tailscale-User-Login": the request didn't come through `tailscale
+  serve` (a `curl` on the socket, a program on the machine), or came from a
+  tagged device or from the server itself, which Tailscale gives no login.
+- "it was asked for as ..., not ...": the address in the browser isn't
+  exactly `Admin:Url`'s (another name for the machine, the 100.x address, or
+  a missing or other port). Use the full name with `:8444`.
+- "it came through Tailscale Funnel": see below.
+- "a form came from another site": a form posted from anywhere but the page
+  (or a very old browser).
+- Nothing in the journal and no page: `tailscale serve status` (is :8444
+  there?), `sudo ls -la /run/lookingglass` (is `admin.sock` there, owned by
+  `lookingglass`?), and whether the device is on the tailnet at all.
+
+**Never funnel the page.** If Discord says "**Urgent: the web page was asked
+for through Tailscale Funnel**", something sends public traffic to the
+page's socket. The page refused it, but turn that Funnel off:
+`tailscale funnel status` shows which public port does it, `sudo tailscale
+funnel --https=<that port> off` turns it off, and check the public server
+still answers. Only the public server's own port belongs in Funnel.
+
+**On Windows, or in Docker**, there is no Unix socket at `/run`:
+`Admin:Listen=http://127.0.0.1:5181` works, with the warning above, and
+`tailscale serve --bg --https=8444 http://127.0.0.1:5181` in front. On
+Windows the server knows Windows' time zone names (`GMT Standard Time`)
+rather than IANA ones, and shows each time with its offset from UTC
+(`UTC+1`) where Windows has no abbreviation. In Docker, a socket in a mounted
+folder (`unix:/app/run/admin.sock`, the folder shared with the host) keeps it
+to whoever can open that folder.
+
+**Turning it off:** take the `Admin__` lines out of the drop-in, restart, and
+`sudo tailscale serve --https=8444 off`.
 ### Stopping and restarting
 
 `systemctl stop` (or `restart`, or the installer) sends SIGTERM. The server
@@ -1226,7 +1414,8 @@ docker run -p 127.0.0.1:5180:5180 -v lookingglass-data:/app/data \
 ```
 
 The image runs in Production, so `PublicUrls` is required. Put a TLS reverse
-proxy in front for anything beyond local testing.
+proxy in front for anything beyond local testing. For the operator web page
+in Docker, see [The operator web page](#the-operator-web-page).
 
 A reverse proxy on the host reaches the container through Docker's bridge
 network. Inside the container, the proxy's address is then the bridge gateway
@@ -1305,6 +1494,15 @@ default). Add `Operators__` to the `LG` helper's list, as in
 has what they need, and they are off until a webhook is set (see
 [Alerts to Discord](#alerts-to-discord)). The first start with them on
 doesn't post the bans and lifts made before.
+
+**The operator web page.** No database change, and off until `Admin:Listen`
+is set (see [The operator web page](#the-operator-web-page)). The new unit
+adds `RuntimeDirectory=lookingglass` for its socket: update with the
+installer, which replaces the unit (a unit installed by hand needs the two
+`RuntimeDirectory` lines added). An unknown `Admin:TimeZone` stops the server
+even without the page. With the page on, alerts link it. Going back to a
+version without the page: take the `Admin__` lines out first (an older server
+ignores them, but `tailscale serve` would then lead nowhere).
 
 **Going back to an older version** works with a schema 12 database: an older
 server opens it and ignores what it doesn't know (checked with the schema 11
