@@ -4890,8 +4890,8 @@ in [docs/testing/operator-panel-checklist.md](testing/operator-panel-checklist.m
   registered here (its Lodestone ID is banned on the web page; lifting such a
   ban is fine), no pinning or restoring, 10 bans an hour per operator
   character (counted by user ID; past them it is told to use the web page).
-  The rules about operator and unregistered characters are the owner's
-  defaults from the review (2026-10-11).
+  The rules about operator and unregistered characters came from the review,
+  and the owner accepted them (2026-10-11).
 - **Signed with the identity key.** Reading the lists needs the login; each
   ban and lift is also signed by the character's current identity key
   (`OperatorActionProof`, its own context), over the action, the operator's
@@ -5565,11 +5565,11 @@ The owner's decisions, and why.
   mockup did; Escape closes the dialog only while it has the keyboard; "not
   pinned yet" says "approve", not "restore"; Settings asks for the lists again
   after a reconnect; a ban or lift from an operator's own login without its
-  key's signature is posted to Discord as urgent. Defaults the owner may still
-  change: the plugin doesn't ban a character not registered here (the web
-  page bans its Lodestone ID), but lifts any character's ban; the notice once
-  a session, the menu greying from the last lists, and the audit trail's
-  "from" for plugin actions stay.
+  key's signature is posted to Discord as urgent. The owner accepted the
+  review's defaults (2026-10-11): the plugin doesn't ban a character not
+  registered here (the web page bans its Lodestone ID), but lifts any
+  character's ban; the notice once a session, the menu greying from the last
+  lists, and the audit trail's "from" for plugin actions stay.
 
 ## Open questions
 
