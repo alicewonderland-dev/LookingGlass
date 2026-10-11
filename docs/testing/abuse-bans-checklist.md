@@ -318,10 +318,23 @@ alerts on from the steps above, and A listed in `Operators:Characters`.
       to the operator web page (GET "/" from 100.x.y.z): its Tailscale login,
       "<their login>", isn't listed ...`; reloading within the minute adds no
       second line.
-- [ ] 50. **No identity, no page.** On the server, `sudo curl -s --unix-socket
-      /run/lookingglass/admin.sock http://x/` and `curl -s
-      https://<machine>.<tailnet>.ts.net:8444/` (a request from the machine
-      itself gets no Tailscale login) both answer "Not allowed.".
+- [ ] 50. **Not from the server itself.** On the server, as an ordinary user
+      (not root, not `lookingglass`): `curl -s
+      https://<machine>.<tailnet>.ts.net:8444/` answers "Not allowed.", and the
+      journal says `it came from this machine itself (100.x.y.z)` (Tailscale
+      may name such a request by your own login, the reason it is refused
+      whatever its login). Wait a minute, then `sudo curl -s --unix-socket
+      /run/lookingglass/admin.sock http://x/`: "Not allowed." too (`it has no
+      X-Forwarded-For address`). Optionally tag the server's node (see
+      server.md) and check steps 47 and 50 again.
+- [ ] 50a. **When the page can't start, chat goes on.** Take a port with
+      another program (`nc -l 127.0.0.1 5181 &`, or any listener), change the
+      drop-in's `Admin__Listen` to `http://127.0.0.1:5181` for the moment, and
+      restart: the service runs, A connects and chats, the journal has an
+      Error `The operator web page didn't start (...); the chat server runs on
+      without it`, and Discord gets "@(role) **Urgent: the operator web page
+      didn't start:** ...". Put `Admin__Listen` back, stop the listener
+      (`kill %1`), and restart: the page is back.
 - [ ] 51. **Outside the tailnet.** From a device not on the tailnet (a phone on
       mobile data with Tailscale off, say): `curl -v --max-time 10
       https://<machine>.<tailnet>.ts.net:8444/` gets no answer (the name doesn't

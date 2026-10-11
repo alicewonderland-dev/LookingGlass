@@ -649,8 +649,9 @@ loopback port instead of a socket is a Warning, and a request the page refuses
 is a Warning at most once a minute, saying which check failed and the device's
 tailnet address (`Refused a request to the operator web page (GET "/" from
 100.x.y.z): its Tailscale login, "bob@github", isn't listed ...`), with how
-many more were refused since the last (see
-[The operator web page](#the-operator-web-page)).
+many more were refused since the last; a page that can't start where its
+settings say is an Error ("The operator web page didn't start ..."), and the
+chat server runs on (see [The operator web page](#the-operator-web-page)).
 
 ### Flags and bans
 
@@ -1071,6 +1072,9 @@ of range):
   once every ten minutes, counting the rest): something funnels the page's
   socket to the public internet. The page refused it; turn that Funnel off
   (see [The operator web page](#the-operator-web-page)).
+- **The operator web page didn't start** (urgent): its settings are right,
+  but it couldn't listen where they say; the chat server runs on without it
+  (see [The operator web page](#the-operator-web-page)).
 - **Test alert**, from the web page's **Send a test alert**, without a ping.
 - **Server started**, with whether it stopped cleanly, or had been running
   since when (a crash, the machine losing power, the process killed).
@@ -1163,14 +1167,27 @@ front of it can reach the page, however it is set up. `tailscale serve`
 passes on requests from your tailnet only, on its own HTTPS port, and tells
 the page who sent each: it sets `Tailscale-User-Login` from the tailnet's own
 record of the device (removing any such header the request brought), and
-never for a tagged device, a request from the machine itself, or a request
-through Funnel. The page lets in only a login listed in
-`Admin:TailscaleLogins`, asked for at `Admin:Url`, and never anything marked
-as through Funnel. The socket matters: the identity headers are only true
-when `tailscale serve` set them, and only it (as root) and the service's own
-user can open the socket. A loopback port instead (`http://127.0.0.1:5181`)
-could be opened by any program on the machine, which could then claim to be
-you; the server warns about that at startup.
+never for a tagged device or a request through Funnel. The page lets in only
+a login listed in `Admin:TailscaleLogins`, asked for at `Admin:Url`, and never
+anything marked as through Funnel. The socket matters: the identity headers
+are only true when `tailscale serve` set them, and only it (as root) and the
+service's own user can open the socket. A loopback port instead
+(`http://127.0.0.1:5181`) could be opened by any program on the machine,
+which could then claim to be you; the server warns about that at startup.
+
+**Requests from the server itself are refused.** A request to the page's
+ts.net address made on the server (a `curl` by any user there) goes through
+`tailscale serve` from the server's own tailnet address, and Tailscale names
+it by the server's own login: if the server is signed in to Tailscale as you
+and not tagged, as you. So the page refuses every request whose address (the
+`X-Forwarded-For` that `tailscale serve` sets) is one of the server's own,
+whatever its login, and the log says "it came from this machine itself".
+Stronger still, and worth doing: **tag the server's node** in the Tailscale
+admin console (say `tag:server`, with an owner set in the access rules'
+`tagOwners`). A tagged node's requests carry no login at all; you reach the
+page from your own devices, which stay signed in as you. Tagging changes
+how the machine is owned in the tailnet: check your access rules still let
+your devices reach it (the public server is unaffected).
 
 **Setting it up** (Linux, systemd):
 
@@ -1192,8 +1209,16 @@ you; the server warns about that at startup.
 
    and `sudo systemctl restart lookingglass`. The startup line says
    `operator web page at https://<machine>.<tailnet>.ts.net:8444/ (Unix socket;
-   1 login let in; times in Europe/London)`. A setting it can't use stops it,
-   with a line saying which and why (`journalctl -u lookingglass -n 20`).
+   1 login let in; times in Europe/London)`, and the next lines `The operator
+   web page listens on unix:/run/lookingglass/admin.sock`. A setting it can't
+   use stops the server, with a line saying which and why (`journalctl -u
+   lookingglass -n 20`). If the settings are right but the page can't start
+   there (something else listening on the socket, a file or link in its place,
+   the folder not the service user's own or writable by others, the port
+   taken), **the chat server runs on without the page**: an Error line "The
+   operator web page didn't start (...)", and an urgent alert if alerts are
+   on. Fix what it says and restart. The server never deletes anything in the
+   socket's place but an old socket, and never follows a link there.
 4. Serve the socket on the tailnet only (Unix socket targets need Tailscale
    1.94 or later; `tailscale version`). **Check the syntax on your server's
    version first** (`tailscale serve --help`); it was written from Tailscale's
@@ -1208,8 +1233,9 @@ you; the server warns about that at startup.
    `--bg` keeps it across reboots. Port 8444 is one Funnel can't serve (Funnel
    only serves 443, 8443 and 10000); the server won't start with `Admin:Url`
    on one of those.
-5. Optional, in the tailnet's access rules: let only your own devices reach
-   port 8444 on the server.
+5. Recommended: tag the server's node (see above), so no request from it
+   carries a login. Optional, in the tailnet's access rules: let only your
+   own devices reach port 8444 on the server.
 6. Open `https://<machine>.<tailnet>.ts.net:8444/` on a phone signed in to the
    tailnet: the page, **Signed in:** your login. From a device signed in as
    anyone else: "Not allowed".
@@ -1224,7 +1250,7 @@ can't use):
 | --- | --- | --- |
 | `Listen` | empty (no page) | Where the page listens: `unix:/run/lookingglass/admin.sock` (a full path ending in `.sock`, in a folder that exists), or `http://127.0.0.1:<port>` (loopback only, with a warning; never the public server's port). Nothing else |
 | `Url` | empty | The page's address through `tailscale serve`, `https://<machine>.<tailnet>.ts.net:8444/`: HTTPS, the full name, a port Funnel can't serve (not 443, 8443 or 10000), nothing after the last `/`. Required with `Listen`. Every request must have been asked for at it, every form must come from it, and alerts link it |
-| `TailscaleLogins` | empty | The Tailscale logins let in, as the admin console's **Users** page shows them, compared ignoring case (`TailscaleLogins__0`, `__1`, ...). Required with `Listen`. Keep it to your own account |
+| `TailscaleLogins` | empty | The Tailscale logins let in, as the admin console's **Users** page shows them, compared ignoring case (`TailscaleLogins__0`, `__1`, ...). Required with `Listen`. Keep it to your own account. A login with letters outside plain ASCII never matches (Tailscale sends those encoded), so it is never let in |
 | `TimeZone` | `UTC` | The time zone the page shows times in, as an IANA name (`Europe/London`, `America/New_York`); each time carries the zone's abbreviation (`14:02 BST`), so a time copied from the page is never ambiguous. The server won't start with a name it doesn't know, page or not. `--bans` and `--audit` stay in UTC |
 
 **Forms.** Nothing changes when a page is only opened: banning, lifting,
@@ -1233,12 +1259,15 @@ pinning and the test alert are forms with buttons. Each form works once, for
 keys shown), so a page on another site can't send one. A form from before the
 server restarted says "This page is out of date (the server restarted). Check
 and confirm again."; one sent twice (going back and pressing again) says it was
-sent already, and does nothing more. A form must come from the page itself
-(its `Origin`, or the browser's `Sec-Fetch-Site`): any browser from 2023 on
-sends what is needed. The page loads nothing from anywhere else, runs no
+sent already, and does nothing more. A form must come from the page itself:
+its `Origin` exactly `Admin:Url`'s, and the browser's `Sec-Fetch-Site`, if it
+sends one, same-origin. The page loads nothing from anywhere else, runs no
 script, sets no cookies, and asks browsers not to keep it (full addresses
-aren't left in a phone's cache) and not to tell a Lodestone link where you
-came from.
+aren't left in a phone's cache) and not to tell another site, such as the
+Lodestone, where you came from (`Referrer-Policy: same-origin`). Every answer
+the page makes carries those headers, errors included; only Kestrel's own
+answer to a request it can't read at all (a broken request line, headers far
+too large) comes without them, and with nothing in it.
 
 **If it says "Not allowed".** The page never says why (so nobody can probe
 it); the journal does, at most once a minute:
@@ -1248,8 +1277,12 @@ it); the journal does, at most once a minute:
   in to Tailscale as another account, or the login is spelt differently from
   the admin console's **Users** page.
 - "has no Tailscale-User-Login": the request didn't come through `tailscale
-  serve` (a `curl` on the socket, a program on the machine), or came from a
-  tagged device or from the server itself, which Tailscale gives no login.
+  serve`, or came from a tagged device, which Tailscale gives no login.
+- "it came from this machine itself": a request made on the server (a
+  `curl` to the page's address there): always refused, as above. Use another
+  device.
+- "it has no X-Forwarded-For address": it didn't come through `tailscale
+  serve` (a `curl` on the socket, a program on the machine).
 - "it was asked for as ..., not ...": the address in the browser isn't
   exactly `Admin:Url`'s (another name for the machine, the 100.x address, or
   a missing or other port). Use the full name with `:8444`.
@@ -1267,14 +1300,20 @@ page's socket. The page refused it, but turn that Funnel off:
 funnel --https=<that port> off` turns it off, and check the public server
 still answers. Only the public server's own port belongs in Funnel.
 
-**On Windows, or in Docker**, there is no Unix socket at `/run`:
-`Admin:Listen=http://127.0.0.1:5181` works, with the warning above, and
-`tailscale serve --bg --https=8444 http://127.0.0.1:5181` in front. On
-Windows the server knows Windows' time zone names (`GMT Standard Time`)
-rather than IANA ones, and shows each time with its offset from UTC
-(`UTC+1`) where Windows has no abbreviation. In Docker, a socket in a mounted
-folder (`unix:/app/run/admin.sock`, the folder shared with the host) keeps it
-to whoever can open that folder.
+**On Windows**, `Admin:Listen=http://127.0.0.1:5181` works, with the warning
+above, and `tailscale serve --bg --https=8444 http://127.0.0.1:5181` in front.
+The server there knows Windows' time zone names (`GMT Standard Time`) rather
+than IANA ones, and shows each time with its offset from UTC (`UTC+1`) where
+Windows has no abbreviation.
+
+**In Docker**, use a socket in a folder shared with the host: mount a
+folder only the host's root and the container's user can open (`-v
+/run/lookingglass-docker:/app/run`, the folder mode 0700 and owned by the
+container's user), set `Admin:Listen=unix:/app/run/admin.sock`, and on the
+host `tailscale serve --bg --https=8444 unix:/run/lookingglass-docker/admin.sock`.
+A loopback port inside the container is the container's own loopback, which
+the host's `tailscale serve` can't reach (only with `--network host`, where
+any program on the host could reach it too).
 
 **Turning it off:** take the `Admin__` lines out of the drop-in, restart, and
 `sudo tailscale serve --https=8444 off`.

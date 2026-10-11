@@ -130,14 +130,23 @@ public can reach it:
   `Tailscale-User-Login`, `Tailscale-User-Name` and
   `Tailscale-User-Profile-Pic` headers a request arrives with, and sets them
   from the tailnet's own record of the device the request came from (its
-  WireGuard key, which can't be faked). It sets none for a tagged device, for
-  a request from the machine itself, or for a request through Funnel (which
-  it marks `Tailscale-Funnel-Request: ?1` instead). The page lets in a
+  WireGuard key, which can't be faked). It sets none for a tagged device, or
+  for a request through Funnel (which it marks `Tailscale-Funnel-Request: ?1`
+  instead). **A request from the machine itself** (a `curl` to the page's
+  ts.net address, run by any user there) comes from the machine's own
+  tailnet address, which Tailscale names by the machine's own login: on a
+  server signed in as the owner and not tagged, the owner's (corrected by the
+  review, 2026-10-11; this plan first said it gets none). So the page refuses
+  any request whose `X-Forwarded-For` (which `tailscale serve` sets to the
+  device's address) is one of the machine's own addresses, or that has none.
+  Tagging the server's node is stronger still: a tagged node's requests carry
+  no login at all, and the owner reaches the page from their own untagged
+  devices. The page lets in a
   request only when `Tailscale-User-Login` is exactly one of
   `Admin:TailscaleLogins` (ignoring case), no `Tailscale-Funnel-Request` is
-  present, and the address it was asked for (`X-Forwarded-Host`, which
-  `tailscale serve` also sets) is the one in `Admin:Url`. Everything else
-  gets **403**. (Checked against Tailscale's documentation and its source,
+  present, it came from another device, and the address it was asked for
+  (`X-Forwarded-Host`, which `tailscale serve` also sets) is the one in
+  `Admin:Url`. Everything else gets **403**. (Checked against Tailscale's documentation and its source,
   `ipn/ipnlocal/serve.go`, 2026-10-10; Unix socket targets need Tailscale
   1.94 or later.)
 
@@ -366,14 +375,18 @@ send a form to the page and the headers would come with it. So:
   for 30 minutes, once. Another site can't read the page, so it can't get
   one. After a restart old forms say "This page is out of date (the server
   restarted). Check and confirm again."
-- **`Origin` must be the page's own** (`Admin:Url`), or, without `Origin`,
-  `Sec-Fetch-Site` must be `same-origin`; a POST with neither is refused.
+- **`Origin` must be exactly the page's own** (`Admin:Url`'s; `null` is
+  refused), and a `Sec-Fetch-Site` that is there must be `same-origin`; only
+  without `Origin` may `Sec-Fetch-Site: same-origin` alone stand for it; a
+  POST with neither is refused.
 - **Headers on every answer:** a Content Security Policy that allows only the
   page's own stylesheet and forms (`default-src 'none'; style-src 'self';
   img-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri
   'none'`), so no script runs and no other site can frame it;
-  `X-Content-Type-Options: nosniff`; `Referrer-Policy: no-referrer` (a
-  Lodestone link doesn't tell the Lodestone the page's address);
+  `X-Content-Type-Options: nosniff`; `Referrer-Policy: same-origin` (a
+  Lodestone link doesn't tell the Lodestone the page's address; first
+  `no-referrer`, changed by the review, 2026-10-11, since `no-referrer` makes
+  browsers send `Origin: null` with the page's own forms);
   `Cache-Control: no-store` (full addresses aren't kept in a phone's cache).
 - **Everything shown is HTML-encoded**: names, worlds, reasons, limits.
 
@@ -854,6 +867,18 @@ own account.
   read the database. With a loopback TCP port instead, any local user could;
   the server warns about that at startup, and server.md says to use the
   socket on Linux.
+- *From another program on the server, through `tailscale serve`*: a request
+  to the page's ts.net address from the machine itself comes from the
+  machine's own tailnet address, and Tailscale names it by the machine's own
+  login, which on an untagged server signed in as the owner is the owner's:
+  any local user could reach the page as the owner, around the socket's
+  permissions (found by the review, 2026-10-11). So the page refuses any
+  request whose `X-Forwarded-For` is one of the machine's own addresses
+  (every interface's, Tailscale's 100.x and fd7a:115c:a1e0:: ones included,
+  read again whenever an address isn't among those known, since Tailscale's
+  can come after the server starts), or that has none. Stronger still:
+  tag the server's node in Tailscale, so that no request from it carries a
+  login at all.
 - *Through Funnel*: the page's port is one Funnel can't serve (the server
   won't start otherwise); `tailscale serve` never sets identity headers on a
   Funnel request and removes any the request brings; and a request marked
@@ -1164,9 +1189,9 @@ link in 3). Step 4 needs both updated; either alone does nothing new.
   connections).
 - **The socket** is made by Kestrel in `/run/lookingglass` (the unit's
   `RuntimeDirectory`, mode 0700) and set to 0600 by the server itself on
-  Linux, whatever the umask. A socket file left by a server that didn't stop
+  Linux, whatever the umask. A socket left by a server that didn't stop
   cleanly is replaced; if something answers on it (another server running),
-  the page doesn't start. Windows has Unix sockets too, so the tests use a
+  the page doesn't start (see "If the page can't start" below). Windows has Unix sockets too, so the tests use a
   real one there; the 0600 is checked on Linux only (by hand: step 45 of the
   bans checklist).
 - **Settings checked at start** (`AdminOptions.Problem`): `Listen` is
@@ -1182,6 +1207,7 @@ link in 3). Step 4 needs both updated; either alone does nothing new.
   port is a Warning.
 - **Who gets in**, in this order: a `Tailscale-Funnel-Request` (any value) is
   refused and calls `ServerAlerts.FunnelRequest()`, even with a listed login;
+  then an `X-Forwarded-For` address that isn't the machine's own (see below);
   then exactly one `Tailscale-User-Login`, equal ignoring case to a listed
   login; then exactly one `X-Forwarded-Host`, equal ignoring case to
   `Admin:Url`'s name and port. The audit trail records the login as Tailscale
@@ -1198,12 +1224,47 @@ link in 3). Step 4 needs both updated; either alone does nothing new.
   refused (`OperatorActions.Lift(..., banId)`). A form with a token that isn't
   good gets 403 and the main page again, with why: out of date (restarted, or
   over 30 minutes), sent already, or not one the page made.
-- **Origin**: `Origin: null` counts as no Origin. Browsers send `null` with a
-  form from a page whose `Referrer-Policy` is `no-referrer` (the Fetch
-  standard), which is this page's, so a same-origin form arrives with
-  `Origin: null` and `Sec-Fetch-Site: same-origin`; `null` with anything else
-  is refused. Browsers without `Sec-Fetch-Site` (Safari before 16.4, 2023)
-  can't send the page's forms.
+- **Origin** (after the review, 2026-10-11): `Referrer-Policy: same-origin`
+  rather than `no-referrer`, since `no-referrer` makes browsers send
+  `Origin: null` with the page's own forms (the Fetch standard); with
+  `same-origin` they send the real Origin, and a link elsewhere (the
+  Lodestone) still carries no referrer (the links have `rel="noreferrer"`
+  too). A form's `Origin` must be exactly `Admin:Url`'s scheme, name and port
+  (`null`, another case, another port: refused); a `Sec-Fetch-Site` that is
+  there must be `same-origin`; only a form without `Origin` may pass on
+  `Sec-Fetch-Site: same-origin` alone.
+- **Requests from the machine itself are refused** (after the review,
+  2026-10-11): `tailscale serve` names a request by the login of the device
+  it came from, and a request from the server itself (a local `curl` to the
+  ts.net address) comes from the server's own tailnet address, so it carries
+  the server's own login, the owner's on an untagged server. The page
+  refuses any request whose first `X-Forwarded-For` (the device's address,
+  as `tailscale serve` sets it) is one of the machine's own addresses
+  (loopback, the unspecified addresses, and every unicast address of every
+  interface, read at start and again whenever an address isn't among those
+  known, since Tailscale's can come after the start), or that has none, with
+  its own reason in the log. Tagging the server's node is stronger: tagged
+  nodes' requests carry no login.
+- **If the page can't start** where its settings say (something listening
+  on the socket, a file or a link in its place, its folder not the service
+  user's own or writable by others, the port taken), the chat server runs on
+  without it (the owner's default, 2026-10-11): an Error in the log and an
+  urgent alert ("the operator web page didn't start"). Settings wrong in
+  themselves still stop the server at start. On Linux the socket's folder is
+  checked with `statx` (not following links): a folder, owned by the
+  service's user, writable by nobody else. Only a socket is ever deleted in
+  the socket's place, never a file or a link (which isn't followed). The
+  socket is made with the umask 0177 for the moment of listening, then set
+  to 0600 again.
+- **Errors** the page doesn't expect are answered by the page itself (500,
+  with the security headers and no detail); a form it can't read is a 400
+  with the headers. Kestrel's own answers to requests it can't parse at all
+  (a malformed request line, headers too large) come before the page and
+  carry no headers; they have no content either.
+- **The page's host** has no lifetime of its own (no second "Application
+  started", no signal handlers of its own); the server's host stops it.
+- Non-ASCII Tailscale logins (which Tailscale sends MIME-encoded) never match
+  a listed login: the page fails closed.
 - **Continue...** asks `OperatorActions.CheckBan` (the same checks as `Ban`,
   nothing done, nothing recorded), so a ban the rules refuse comes back to the
   form, filled in as typed, with why, before any confirmation page; the

@@ -4685,8 +4685,13 @@ is in [server.md](server.md#the-operator-web-page).
   connect and claim to be an allowed login). The public host has no route to
   the page at all, so nothing in front of it (Funnel, Caddy) can reach it,
   however it is set up. Any other address is refused at start, and so is the
-  public server's own port. A stale socket file is replaced; one something
-  answers on (another server) is refused.
+  public server's own port. A stale socket is replaced; one something answers
+  on (another server), or a file or link in its place, is left alone. On
+  Linux the socket's folder must be the service user's own, writable by
+  nobody else. If the page can't start where its settings say, the chat
+  server runs on without it (the owner's default, 2026-10-11), with an error
+  in the log and an urgent alert; settings wrong in themselves still stop the
+  server.
 - **Reached through `tailscale serve`** on the tailnet, on an HTTPS port
   Funnel can't use (`Admin:Url`, such as
   `https://<machine>.<tailnet>.ts.net:8444/`); the server won't start with it
@@ -4694,11 +4699,16 @@ is in [server.md](server.md#the-operator-web-page).
   https address with the machine's full name and a port.
 - **Only listed logins.** `tailscale serve` removes the identity headers a
   request brings and sets `Tailscale-User-Login` from the tailnet's record of
-  the device (none for a tagged device, the machine itself, or Funnel, which it
-  marks `Tailscale-Funnel-Request`). The page lets a request in only when that
-  login is exactly one of `Admin:TailscaleLogins` (ignoring case), no
-  `Tailscale-Funnel-Request` is there, and `X-Forwarded-Host` is exactly
-  `Admin:Url`'s name and port. Everything else gets 403 and the same words
+  the device (none for a tagged device, or Funnel, which it marks
+  `Tailscale-Funnel-Request`). A request from the server itself comes from the
+  server's own tailnet address, so it carries the server's own login, the
+  owner's on an untagged server (found by the review, 2026-10-11): so a
+  request whose `X-Forwarded-For` is one of the machine's own addresses (or
+  that has none) is refused, whatever its login; tagging the server's node
+  is stronger still. The page lets a request in only when its login is
+  exactly one of `Admin:TailscaleLogins` (ignoring case), no
+  `Tailscale-Funnel-Request` is there, it came from another device, and
+  `X-Forwarded-Host` is exactly `Admin:Url`'s name and port. Everything else gets 403 and the same words
   ("Not allowed. This page is only for this server's operators, ..."),
   never which check failed; the log says that, at most once a minute,
   counting the rest. A request through Funnel also raises the urgent alert.
@@ -4725,7 +4735,9 @@ is in [server.md](server.md#the-operator-web-page).
   allowing only the page's own stylesheet and forms (`default-src 'none';
   style-src 'self'; img-src 'self'; form-action 'self'; frame-ancestors
   'none'; base-uri 'none'`), `X-Content-Type-Options: nosniff`,
-  `Referrer-Policy: no-referrer` and `Cache-Control: no-store`. Everything
+  `Referrer-Policy: same-origin` (no other site learns the page's address)
+  and `Cache-Control: no-store`; an unexpected error is answered by the page
+  with them too. Everything
   shown from outside (names, worlds, reasons, limits, logins) is shown
   visibly first (control and format characters as escapes) and HTML-encoded.
 - **Forms and CSRF.** The identity headers come with every request from an
@@ -4739,10 +4751,11 @@ is in [server.md](server.md#the-operator-web-page).
   (the character and the full hash of the keys shown, so keys that changed
   again aren't pinned unseen). A token works once, for 30 minutes; after a
   restart, an old form says the page is out of date. A form's `Origin` must
-  be `Admin:Url`'s; without one, `Sec-Fetch-Site` must say same-origin. (The
-  page's own `no-referrer` makes browsers send `Origin: null` with its forms,
-  as the Fetch standard says, so `null` counts as no Origin: then only
-  `Sec-Fetch-Site`, which no page can set, decides.)
+  be exactly `Admin:Url`'s (never `null`), and a `Sec-Fetch-Site` that is
+  there must say same-origin; only without an Origin may `Sec-Fetch-Site:
+  same-origin` alone stand for it. (The plan's `no-referrer` became
+  `same-origin` in the review: `no-referrer` makes browsers send `Origin:
+  null` with the page's own forms.)
 - **Times in the owner's time zone** (owner, 2026-10-10): `Admin:TimeZone`, an
   IANA name, UTC by default, each time with the zone's abbreviation ("14:02
   BST"; the Linux server names zones by their abbreviations; where the system
@@ -5363,9 +5376,7 @@ The owner's decisions, and why.
   confirmation pages; it is so for the main form and the test alert too), and
   a lift's token names the ban's ID, so a ban that replaced it meanwhile isn't
   lifted unseen (`OperatorActions.Lift` takes the ID, and refuses then, in the
-  audit trail). `Origin: null` counts as no Origin, because the page's own
-  `no-referrer` makes browsers send it with every form; `Sec-Fetch-Site`
-  decides then. **Continue...** checks the rules without recording anything
+  audit trail). **Continue...** checks the rules without recording anything
   (`OperatorActions.CheckBan`); only a confirmed ban is an attempt in the
   audit trail. After an action the page redirects to itself, with the line
   saying what was done kept in memory for 10 minutes, for that login. Times
@@ -5373,7 +5384,26 @@ The owner's decisions, and why.
   UTC. The pin page's "Its plugin sees the Operator section from its next
   login" is left out until the plugin's panel exists. The wide-screen layout
   opens the folded sections where the browser supports `::details-content`;
-  elsewhere they open with a click.
+  elsewhere they open with a click (opening them on a wide screen in any
+  other way would need script).
+- **Operator web page review (2026-10-11).** An independent review found
+  that a request from the server itself, through `tailscale serve`, carries
+  the server's own Tailscale login (the owner's, on an untagged server), so
+  any program there could have reached the page as the owner, around the
+  socket's permissions: the page now refuses any request whose
+  `X-Forwarded-For` is one of the machine's own addresses (read again
+  whenever an address isn't among those known), or that has none; tagging
+  the server's node is the stronger choice, and server.md says so. Also from
+  the review: `Referrer-Policy: same-origin` instead of `no-referrer` (which
+  made browsers send `Origin: null` with the page's own forms), and `Origin`
+  must be exactly the page's, with `Sec-Fetch-Site` same-origin when present;
+  the page's host has no lifetime of its own; unexpected errors are answered
+  with the security headers; on Linux the socket's folder must be the
+  service user's own and private, a link or file in the socket's place is
+  never followed or deleted, and the socket is made 0600. The owner's
+  default for now: if the page can't start where its settings say, the chat
+  server runs on without it, with an error and an urgent alert (wrong
+  settings still stop the server).
 
 ## Open questions
 
