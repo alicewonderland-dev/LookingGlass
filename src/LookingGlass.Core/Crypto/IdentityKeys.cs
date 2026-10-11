@@ -116,11 +116,21 @@ public sealed class IdentityKeys : IDisposable {
     /// A 25-digit code (five groups of five) that two people can compare to
     /// confirm they see the same identity keys.
     /// </summary>
-    public static string FingerprintOf(ReadOnlySpan<byte> signingPublicKey, ReadOnlySpan<byte> agreementPublicKey) {
-        var hash = KeyHash(signingPublicKey, agreementPublicKey);
+    public static string FingerprintOf(ReadOnlySpan<byte> signingPublicKey, ReadOnlySpan<byte> agreementPublicKey) =>
+        FingerprintOfHash(KeyHash(signingPublicKey, agreementPublicKey));
+
+    /// <summary>
+    /// The fingerprint of keys whose <see cref="KeyHash"/> is <paramref name="keyHash"/> (as <see cref="FingerprintOf"/> gives it),
+    /// for showing a key hash kept on its own, such as a server's operator pin.
+    /// </summary>
+    public static string FingerprintOfHash(ReadOnlySpan<byte> keyHash) {
+        if (keyHash.Length < 20) {
+            throw new ArgumentException("A key hash is 32 bytes.", nameof(keyHash));
+        }
+
         var groups = new string[5];
         for (var i = 0; i < groups.Length; i++) {
-            var value = BitConverter.ToUInt32(hash, i * 4) % 100_000;
+            var value = BitConverter.ToUInt32(keyHash.Slice(i * 4, 4)) % 100_000;
             groups[i] = value.ToString("D5");
         }
 

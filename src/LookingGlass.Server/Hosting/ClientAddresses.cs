@@ -180,6 +180,30 @@ public static class ClientAddresses {
     }
 
     /// <summary>
+    /// An address or prefix shortened, for places that mustn't hand out players' addresses (the plugin's operator panel, the
+    /// alerts channel): an IPv4 address, or a prefix of /24 or narrower, as its first three parts ("203.0.113.x"); an IPv6 one,
+    /// or a prefix of /40 or narrower, as its /40 ("2001:db8:ab00::/40", 256 customers' /48s, about what a /24 holds); a wider
+    /// prefix as it is. Anything else is returned as it is.
+    /// </summary>
+    public static string Shorten(string addressOrPrefix) {
+        if (!TryNetwork(addressOrPrefix, out var network)) {
+            return addressOrPrefix;
+        }
+
+        var bytes = network.BaseAddress.GetAddressBytes();
+        if (network.BaseAddress.AddressFamily != AddressFamily.InterNetworkV6) {
+            return network.PrefixLength < 24 ? network.ToString() : $"{bytes[0]}.{bytes[1]}.{bytes[2]}.x";
+        }
+
+        if (network.PrefixLength < 40) {
+            return network.ToString();
+        }
+
+        Array.Clear(bytes, 5, 11);
+        return $"{new IPAddress(bytes)}/40";
+    }
+
+    /// <summary>
     /// Whether a ban's prefix (as <see cref="BanPrefix"/> writes it) covers an address as <see cref="LimitKey"/> gives it (an
     /// IPv4 address, or an IPv6 /64, which a prefix of /64 or wider covers whole or not at all).
     /// </summary>

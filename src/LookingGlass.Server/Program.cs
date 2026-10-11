@@ -16,8 +16,8 @@ using LookingGlass.Server.Services;
 // (systemd, Windows service, Docker, or by hand).
 var builder = WebApplication.CreateBuilder(new WebApplicationOptions {
     // Settings can be given on the command line too (--LookingGlass:DataDirectory=...), where a switch without "=" takes the
-    // next argument as its value: "--bans" and "--force", which have none, would take the setting after them.
-    Args = args.Where(arg => arg is not ("--bans" or "--force")).ToArray(),
+    // next argument as its value: "--bans", "--force", "--audit" and "--operators", which have none, would take the setting after them.
+    Args = args.Where(arg => arg is not ("--bans" or "--force" or "--audit" or "--operators")).ToArray(),
     ContentRootPath = AppContext.BaseDirectory,
 });
 
@@ -25,7 +25,8 @@ string DatabasePath(ServerOptions options) =>
     Path.Combine(Path.GetFullPath(options.DataDirectory, builder.Environment.ContentRootPath), "lookingglass.db");
 
 // "--backup <file or folder> [--keep N]": an online backup of the configured database, and no server (nothing listens).
-// "--ban <whom> [--days N] [--reason "..."]", "--unban <whom>" and "--bans": the operator's bans, likewise (see BanCommand);
+// "--ban <whom> [--days N] [--reason "..."]", "--unban <whom>", "--bans" and "--audit": the operator's bans and the audit
+// trail, likewise (see BanCommand); "--operators" and "--operator-pin <whom> --fingerprint "..."", the plugin's operators;
 // and "--allow-key-login <whom>", undoing a player's "Sign out everywhere else" for their key.
 BackupCommand.Request? backup;
 BanCommand.Request? banning;
@@ -33,7 +34,7 @@ try {
     backup = BackupCommand.Parse(args);
     banning = BanCommand.Parse(args);
     if (backup != null && banning != null) {
-        throw new ArgumentException("Use --backup on its own, not with --ban, --unban, --bans or --allow-key-login.");
+        throw new ArgumentException("Use --backup on its own, not with --ban, --unban, --bans, --audit, --operators, --operator-pin or --allow-key-login.");
     }
 } catch (ArgumentException ex) {
     Console.Error.WriteLine(ex.Message);
@@ -43,9 +44,16 @@ try {
 
 if (backup != null || banning != null) {
     var configured = builder.Configuration.GetSection(ServerOptions.Section).Get<ServerOptions>() ?? new ServerOptions();
+    if (banning != null && configured.Operators.Problem() is { } operatorList) {
+        Console.Error.WriteLine(operatorList.Replace("so the server won't start", "so this won't run", StringComparison.Ordinal));
+        Environment.ExitCode = 1;
+        return;
+    }
+
     Environment.ExitCode = backup != null
         ? BackupCommand.Run(backup, DatabasePath(configured), Console.Out, Console.Error)
-        : BanCommand.Run(banning!, DatabasePath(configured), configured.Abuse, Console.Out, Console.Error, trustedProxies: configured.TrustedProxies);
+        : BanCommand.Run(banning!, DatabasePath(configured), configured.Abuse, Console.Out, Console.Error, trustedProxies: configured.TrustedProxies,
+            operators: configured.Operators.UserIds);
     return;
 }
 
@@ -69,7 +77,12 @@ builder.Services.AddSingleton<ConnectionRegistry>();
 // Bans, and noticing abuse (see "Spotting abuse, and banning" in docs/design.md).
 builder.Services.AddSingleton<BanList>();
 builder.Services.AddSingleton<AbuseMonitor>();
-builder.Services.AddHostedService<BanEnforcer>();
+builder.Services.AddSingleton<BanEnforcer>();
+builder.Services.AddHostedService(services => services.GetRequiredService<BanEnforcer>());
+// The operator's actions, for every tool, under one policy; made here (the web page, the plugin), a ban applies at once.
+builder.Services.AddSingleton(services => new OperatorActions(services.GetRequiredService<Database>(),
+    OperatorSettings.From(services.GetRequiredService<IOptions<ServerOptions>>().Value), services.GetService<TimeProvider>(),
+    services.GetRequiredService<BanEnforcer>().ApplyNow, services.GetRequiredService<ILogger<OperatorActions>>()));
 builder.Services.AddSingleton<RequestHandler>();
 builder.Services.AddHttpClient<LodestoneClient>(client => {
     client.DefaultRequestHeaders.UserAgent.ParseAdd("LookingGlass/0.1 (+character verification)");
@@ -130,6 +143,15 @@ if (options.Abuse.Problem() is { } abuseSettings) {
     Environment.ExitCode = 1;
     return;
 }
+
+// Who may be an operator: user IDs only. Pins for characters no longer listed go now, and how each listed one stands is logged.
+if (options.Operators.Problem() is { } operatorSettings) {
+    app.Logger.LogCritical("{Problem}", operatorSettings);
+    Environment.ExitCode = 1;
+    return;
+}
+
+app.Services.GetRequiredService<OperatorActions>().StartUp();
 
 // Debug accounts let anyone who can reach the server register, or take over, any debug account (the echo bot needs them).
 // Outside Development that is almost certainly a mistake, such as a test server's settings copied to a public one.

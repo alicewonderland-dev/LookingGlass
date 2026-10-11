@@ -8,9 +8,10 @@ namespace LookingGlass.Server.Hosting;
 /// <summary>
 /// Puts bans made while the server runs into effect: every <see cref="AbuseOptions.BanCheckSeconds"/> it reads the bans
 /// (see <see cref="BanList"/>) and closes every open connection a ban covers, by its account or its address. The plugin
-/// reconnects, is told it is blocked when it logs in (or says hello), and stops trying for a while. Also, at startup and
-/// every <see cref="SweepEvery"/>, deletes bans lifted or ended longer ago than <see cref="AbuseOptions.BanHistoryDays"/>
-/// and flags that have expired.
+/// reconnects, is told it is blocked when it logs in (or says hello), and stops trying for a while. A ban made inside the
+/// server (see <see cref="OperatorActions"/>) is put into effect at once, through <see cref="ApplyNow"/>. Also, at startup and
+/// every <see cref="SweepEvery"/>, deletes bans lifted or ended longer ago than <see cref="AbuseOptions.BanHistoryDays"/>,
+/// flags that have expired, and audit entries older than <see cref="OperatorActions.AuditKeptDays"/>.
 /// </summary>
 public sealed class BanEnforcer(BanList bans, ConnectionRegistry registry, Database db, IOptions<ServerOptions> options, ILogger<BanEnforcer> logger,
     TimeProvider? time = null) : BackgroundService {
@@ -50,6 +51,15 @@ public sealed class BanEnforcer(BanList bans, ConnectionRegistry registry, Datab
         }
     }
 
+    /// <summary>
+    /// Rereads the bans and closes the connections they cover, now rather than at the next check: for a ban made or lifted
+    /// inside the server (the web page, the plugin).
+    /// </summary>
+    public void ApplyNow() {
+        bans.Refresh();
+        this.Enforce();
+    }
+
     /// <summary>Closes every open connection a ban in force covers, as the list was last read.</summary>
     /// <returns>How many were closed.</returns>
     internal int Enforce() {
@@ -81,11 +91,13 @@ public sealed class BanEnforcer(BanList bans, ConnectionRegistry registry, Datab
             var settings = options.Value.Abuse;
             var bansGone = db.SweepBans(now, Math.Clamp(settings.BanHistoryDays, 1, 3650));
             var flagsGone = db.SweepFlags(now - Math.Clamp(settings.FlagExpiresAfterHours, 1, 8760) * 3600L);
-            if (bansGone + flagsGone > 0) {
-                logger.LogDebug("Deleted {Bans} old bans and {Flags} expired flags", bansGone, flagsGone);
+            var auditGone = db.SweepOperatorLog(now - OperatorActions.AuditKeptDays * 86400L);
+            if (bansGone + flagsGone + auditGone > 0) {
+                logger.LogDebug("Deleted {Bans} old bans, {Flags} expired flags and {Audit} audit entries older than {Days} days", bansGone, flagsGone, auditGone,
+                    OperatorActions.AuditKeptDays);
             }
         } catch (Exception ex) {
-            logger.LogWarning(ex, "Deleting old bans and expired flags failed");
+            logger.LogWarning(ex, "Deleting old bans, expired flags and old audit entries failed");
         }
     }
 }
