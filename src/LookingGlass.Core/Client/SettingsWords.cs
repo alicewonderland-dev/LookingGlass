@@ -11,6 +11,7 @@ public enum SettingHelp {
     LocalChat,
     LocalPrivacy,
     ChatHistory,
+    UnencryptedHistory,
     AdvancedMode,
     ResetIdentity,
     SignedInComputers,
@@ -64,7 +65,7 @@ public static class SettingsWords {
         ServerAddress, ConnectAutomatically, ShowMessagesIn, ColourWholeLine, NicknameTags, SayWhenTalking, WindowsOnly.SettingName,
         NewChannelsOpen, WindowsOnly.NameOf(WindowOpening.AddToLastUsed), WindowsOnly.NameOf(WindowOpening.NewWindow), LocalChatHeading,
         LocalColour, PrivacyAccepted, PrivacyNotAccepted, ReadPrivacy, WithdrawPrivacy, ChatLogWords.KeepIt.Plain,
-        ChatLogWords.SizeLimit.Plain, AdvancedMode, ResetIdentity, DeviceWords.Label, DeviceWords.SignOutButton,
+        ChatLogWords.SizeLimit.Plain, ChatLogWords.KeepUnencrypted.Plain, ChatLogWords.OpenFolder.Plain, AdvancedMode, ResetIdentity, DeviceWords.Label, DeviceWords.SignOutButton,
     ];
 
     /// <summary>What a setting's "?" bubble says, in both modes' words.</summary>
@@ -82,6 +83,7 @@ public static class SettingsWords {
         SettingHelp.LocalPrivacy => Wording.Same(
             $"To find friends near you, the server learns their names when you use {LocalChat.Command}. It never sees what you say."),
         SettingHelp.ChatHistory => ChatLogWords.Explanation(protection),
+        SettingHelp.UnencryptedHistory => ChatLogWords.UnencryptedExplanation,
         // The one bubble simple mode shows that names advanced mode's words: it says what turning it on shows.
         SettingHelp.AdvancedMode => Wording.Same(
             "Shows encryption details, like fingerprints to compare with friends, and technical wording in warnings."),

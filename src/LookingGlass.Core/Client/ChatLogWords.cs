@@ -19,6 +19,38 @@ public static class ChatLogWords {
 
     public static readonly Wording SizeLimit = Wording.Same("Size limit");
 
+    /// <summary>
+    /// Keeping the chat log unencrypted too, in text files (off by default, shown only while the log is on). Simple mode
+    /// doesn't say "encrypted": the history is "scrambled" there, so this is keeping it "unscrambled".
+    /// </summary>
+    public static readonly Wording KeepUnencrypted = new(NoticeKind.General,
+        "Keep my chat log unencrypted",
+        "Keep my chat history unscrambled");
+
+    /// <summary>What <see cref="KeepUnencrypted"/> does, in the bubble of its "?" in Settings (see <see cref="SettingsWords"/>).</summary>
+    public static readonly Wording UnencryptedExplanation = new(NoticeKind.General,
+        "Also writes new lines to plain text files any program can open, one per channel per month. Anything that can read " +
+        "your files can read them.",
+        "Also writes new messages to text files any program can open, one per channel per month. Anything that can read " +
+        "your files can read them.");
+
+    /// <summary>Asked before <see cref="KeepUnencrypted"/> is turned on: the plain warning the owner asked for.</summary>
+    public static readonly Wording UnencryptedWarning = new(NoticeKind.General,
+        "From now on, LookingGlass also writes your chat log to plain text files on this computer, one per channel per month, " +
+        "that Notepad and other programs can open. They aren't encrypted: anyone or anything that can read your files can " +
+        "read them, including backup and cloud-sync tools. Nothing kept before is copied to them. They count towards the size " +
+        "limit, and Delete my chat log deletes them too.",
+        "From now on, LookingGlass also writes your chat history to text files on this computer, one per channel per month, " +
+        "that Notepad and other programs can open. They aren't scrambled: anyone or anything that can read your files can " +
+        "read them, including backup and cloud-sync tools. Nothing kept before is copied to them. They count towards the size " +
+        "limit, and Delete my chat history deletes them too.");
+
+    /// <summary>The button that turns <see cref="KeepUnencrypted"/> on, after <see cref="UnencryptedWarning"/>.</summary>
+    public static readonly Wording TurnOn = Wording.Same("Turn on");
+
+    /// <summary>Opens the folder with this character's text files for this server.</summary>
+    public static readonly Wording OpenFolder = Wording.Same("Open folder");
+
     /// <summary>"Your chat log uses 12.3 MB on this computer."</summary>
     public static Wording Uses(long bytes) => new(NoticeKind.General,
         $"Your chat log uses {ChatLogLimits.Describe(bytes)} on this computer.",
@@ -28,10 +60,10 @@ public static class ChatLogWords {
 
     /// <summary>What the confirmation of <see cref="Delete"/> says.</summary>
     public static Wording DeleteConfirm(long bytes) => new(NoticeKind.General,
-        $"This deletes the chat log LookingGlass keeps on this computer, for every character and server ({ChatLogLimits.Describe(bytes)}). " +
+        $"This deletes the chat log LookingGlass keeps on this computer, and its text files if you kept any, for every character and server ({ChatLogLimits.Describe(bytes)}). " +
         "It can't be undone. Your channels and their members aren't affected, and what came since you logged in stays in " +
         "channel windows until you log out.",
-        $"This deletes the chat history LookingGlass keeps on this computer, for every character and server ({ChatLogLimits.Describe(bytes)}). " +
+        $"This deletes the chat history LookingGlass keeps on this computer, and its text files if you kept any, for every character and server ({ChatLogLimits.Describe(bytes)}). " +
         "It can't be undone. Your channels and their members aren't affected, and what came since you logged in stays in " +
         "channel windows until you leave the game or change character.");
 
@@ -70,7 +102,8 @@ public static class ChatLogWords {
 
     /// <summary>Every wording above, with examples for those that take something: for the plain-language tests.</summary>
     public static IEnumerable<Wording> Examples() => [
-        KeepIt, Explanation("Windows DPAPI"), SizeLimit, Uses(12_900_000), Delete, DeleteConfirm(52_428_800),
+        KeepIt, Explanation("Windows DPAPI"), SizeLimit, KeepUnencrypted, UnencryptedExplanation, UnencryptedWarning, TurnOn, OpenFolder,
+        Uses(12_900_000), Delete, DeleteConfirm(52_428_800),
         TurnedOff(800_000), Unreadable("the file that unlocks it is missing"), Unreadable(null), ShowOlder, Loading, NothingOlder,
         Earlier(new DateTimeOffset(2026, 10, 6, 12, 0, 0, TimeSpan.Zero)), SinceLogin,
     ];
