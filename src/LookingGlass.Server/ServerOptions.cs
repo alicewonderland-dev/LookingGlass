@@ -71,6 +71,17 @@ public sealed class AdminOptions {
     /// <summary>The time zone the page shows times in, as an IANA name (<c>Europe/London</c>); <c>UTC</c> by default.</summary>
     public string TimeZone { get; set; } = "UTC";
 
+    /// <summary>
+    /// More addresses or prefixes counted as this machine's own, whose requests the page refuses whatever their login (as it does
+    /// its own interfaces' addresses): in Docker, the host's tailnet addresses (its 100.x and fd7a:115c:a1e0:: ones), which are on
+    /// no interface the container sees. Empty by default.
+    /// </summary>
+    public string[] OwnAddresses { get; set; } = [];
+
+    /// <summary>The <see cref="OwnAddresses"/>, as networks (once <see cref="Problem"/> has found nothing wrong).</summary>
+    public IReadOnlyList<System.Net.IPNetwork> OwnNetworks =>
+        this.OwnAddresses.Where(entry => !string.IsNullOrWhiteSpace(entry)).Select(Admin.LocalAddresses.ParseNetwork).OfType<System.Net.IPNetwork>().ToList();
+
     /// <summary>Whether the page is on: <see cref="Listen"/> is set.</summary>
     public bool On => !string.IsNullOrWhiteSpace(this.Listen);
 
@@ -178,6 +189,13 @@ public sealed class AdminOptions {
         if (this.Logins.Count == 0) {
             return "LookingGlass:Admin:Listen is set but LookingGlass:Admin:TailscaleLogins lists nobody, so the server won't start: list the Tailscale " +
                    "accounts let in (LookingGlass__Admin__TailscaleLogins__0=alice@github), as the Tailscale admin console's Users page shows them.";
+        }
+
+        foreach (var entry in this.OwnAddresses.Where(entry => !string.IsNullOrWhiteSpace(entry))) {
+            if (Admin.LocalAddresses.ParseNetwork(entry) == null) {
+                return $"LookingGlass:Admin:OwnAddresses lists \"{Services.VisibleText.Of(entry.Trim(), 60)}\", so the server won't start: each entry must be " +
+                       "an address (100.101.102.103) or a prefix (fd7a:115c:a1e0::/48), such as the Docker host's tailnet addresses (tailscale ip on the host).";
+            }
         }
 
         foreach (var login in this.Logins) {

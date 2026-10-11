@@ -24,10 +24,14 @@ public sealed partial class PageServer : IAsyncDisposable {
     ];
 
     /// <param name="settings">More settings (after <see cref="On"/>, so they can change its).</param>
+    /// <param name="services">More changes to the server's services (as <c>ConfigureTestServices</c>).</param>
     public PageServer(TimeProvider? time = null, FakeDiscord? discord = null, CapturingLoggerProvider? logs = null, string? directory = null,
-        params (string Key, string Value)[] settings) {
+        Action<IServiceCollection>? services = null, params (string Key, string Value)[] settings) {
         this.Server = new Harness(directory, serverTime: time, logs: logs, discord: discord,
-            testServices: services => services.AddSingleton(new OperatorPageListener(web => web.UseTestServer())),
+            testServices: collection => {
+                collection.AddSingleton(new OperatorPageListener(web => web.UseTestServer()));
+                services?.Invoke(collection);
+            },
             settings: [.. On, .. settings]);
     }
 

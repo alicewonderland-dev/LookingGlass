@@ -107,7 +107,9 @@ builder.Services.AddSingleton(services => {
 // LookingGlass:Admin:Listen is set. This host, the public one, has no route to it.
 builder.Services.AddSingleton(services => new OperatorPage(services.GetRequiredService<Database>(), services.GetRequiredService<OperatorActions>(),
     services.GetRequiredService<ServerAlerts>(), services.GetRequiredService<ConnectionRegistry>(), services.GetRequiredService<IOptions<ServerOptions>>(),
-    services.GetRequiredService<ILogger<OperatorPage>>(), services.GetService<TimeProvider>()));
+    services.GetRequiredService<ILogger<OperatorPage>>(), services.GetService<TimeProvider>(), services.GetRequiredService<LocalAddresses>()));
+// This machine's own addresses (and Admin:OwnAddresses), whose requests the page refuses whatever their login.
+builder.Services.AddSingleton(services => new LocalAddresses(services.GetRequiredService<IOptions<ServerOptions>>().Value.Admin.OwnNetworks));
 builder.Services.AddSingleton<OperatorPageHost>();
 builder.Services.AddHostedService(services => services.GetRequiredService<OperatorPageHost>());
 builder.Services.AddSingleton<RequestHandler>();
@@ -288,7 +290,7 @@ app.Logger.LogInformation(
     : sharedAddresses == 0 ? $"every address is wss:// with a fully qualified name ({publicOrigins.Count})"
     : $"{sharedAddresses} of {publicOrigins.Count} addresses may not be this server's alone (see the warnings above)",
     options.Admin.On
-        ? $"operator web page at {options.Admin.PageLink} ({(options.Admin.SocketPath != null ? "Unix socket" : "loopback port")}; " +
+        ? $"operator web page starting, for {options.Admin.PageLink} ({(options.Admin.SocketPath != null ? "Unix socket" : "loopback port")}; " +
           $"{options.Admin.Logins.Count} {(options.Admin.Logins.Count == 1 ? "login" : "logins")} let in; times in {options.Admin.Zone.Id})"
         : "no operator web page",
     // Only whether they are on: never the webhook.

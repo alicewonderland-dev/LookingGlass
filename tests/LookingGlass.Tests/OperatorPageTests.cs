@@ -166,7 +166,7 @@ public sealed class OperatorPageTests {
     [Fact]
     public void AnAddressThatComesLaterIsFound() {
         var current = new List<IPAddress> { IPAddress.Parse("192.0.2.10") };
-        var local = new LocalAddresses(() => current.ToList());
+        var local = new LocalAddresses(source: () => current.ToList());
         Assert.True(local.IsLocal(IPAddress.Parse("192.0.2.10")));
         Assert.True(local.IsLocal(IPAddress.Parse("::ffff:192.0.2.10")));
         Assert.False(local.IsLocal(IPAddress.Parse("100.64.0.7")));
@@ -176,6 +176,70 @@ public sealed class OperatorPageTests {
         Assert.True(local.IsLocal(IPAddress.Parse("fd7a:115c:a1e0::7")));
         Assert.True(local.IsLocal(IPAddress.Loopback));
         Assert.False(local.IsLocal(IPAddress.Parse(PageServer.TailnetAddress)));
+    }
+
+    /// <summary>
+    /// <c>Admin:OwnAddresses</c> adds addresses and prefixes counted as this machine's own (in Docker, the host's tailnet
+    /// addresses, on no interface the container sees): their requests are refused whatever their login.
+    /// </summary>
+    [Fact]
+    public async Task OwnAddressesAreRefusedLikeThisMachines() {
+        var logs = new CapturingLoggerProvider();
+        await using var page = new PageServer(logs: logs, settings: [("LookingGlass:Admin:OwnAddresses:0", "100.101.102.7/24"), ("LookingGlass:Admin:OwnAddresses:1", "fd7a:115c:a1e0::5")]);
+        var refused = await page.GetAsync("/");
+        Assert.Equal(HttpStatusCode.Forbidden, refused.Status);
+        Assert.Contains(logs.Entries, entry => entry.Message.Contains($"it came from this machine itself ({PageServer.TailnetAddress}), or from an address in LookingGlass:Admin:OwnAddresses"));
+        Assert.Equal(HttpStatusCode.Forbidden, (await page.GetAsync("/", forwardedFor: "fd7a:115c:a1e0::5")).Status);
+        Assert.Equal(HttpStatusCode.OK, (await page.GetAsync("/", forwardedFor: "100.101.103.4")).Status);
+        Assert.Equal(HttpStatusCode.OK, (await page.GetAsync("/", forwardedFor: "fd7a:115c:a1e0::6")).Status);
+
+        Assert.Equal("100.101.102.0/24", LocalAddresses.ParseNetwork(" 100.101.102.7/24 ")!.Value.ToString());
+        Assert.Equal("fd7a:115c:a1e0::5/128", LocalAddresses.ParseNetwork("fd7a:115c:a1e0::5")!.Value.ToString());
+        Assert.Equal("203.0.113.9/32", LocalAddresses.ParseNetwork("::ffff:203.0.113.9")!.Value.ToString());
+        foreach (var wrong in new[] { "", "not-an-address", "10.0.0.0/33", "10.0.0.0/", "fe80::1%eth0", "fd7a::/129" }) {
+            Assert.Null(LocalAddresses.ParseNetwork(wrong));
+        }
+    }
+
+    /// <summary>
+    /// The interfaces are read again only for a request from a listed login (the address check comes after the login checks), so a
+    /// tailnet member who isn't listed can't make the server read them for every request.
+    /// </summary>
+    [Fact]
+    public async Task OnlyAListedLoginsRequestsMakeTheInterfacesBeReadAgain() {
+        var local = new LocalAddresses(source: () => [IPAddress.Parse("100.64.0.1")]);
+        var logs = new CapturingLoggerProvider();
+        await using var page = new PageServer(logs: logs, services: services => services.AddSingleton(local));
+        var reads = local.Reads;
+        for (var i = 0; i < 5; i++) {
+            Assert.Equal(HttpStatusCode.Forbidden, (await page.GetAsync("/", "mallory@github")).Status);
+        }
+
+        Assert.Equal(reads, local.Reads);
+        // An unlisted login from this machine's own address is refused for its login, before the address is looked at.
+        Assert.Equal(HttpStatusCode.Forbidden, (await page.GetAsync("/", "mallory@github", forwardedFor: "100.64.0.1")).Status);
+        Assert.Contains(logs.Entries, entry => entry.Message.Contains("isn't listed"));
+        Assert.Equal(reads, local.Reads);
+
+        Assert.Equal(HttpStatusCode.OK, (await page.GetAsync("/")).Status);
+        Assert.Equal(reads + 1, local.Reads);
+        Assert.Equal(HttpStatusCode.Forbidden, (await page.GetAsync("/", forwardedFor: "100.64.0.1")).Status);
+        Assert.Equal(reads + 1, local.Reads);
+    }
+
+    /// <summary>
+    /// If the interfaces can't be read, the server starts all the same, and every request counts as from this machine: refused,
+    /// saying why, rather than let in on a guess.
+    /// </summary>
+    [Fact]
+    public async Task IfTheInterfacesCantBeReadRequestsAreRefused() {
+        var local = new LocalAddresses(source: () => throw new InvalidOperationException("No interfaces"));
+        Assert.True(local.ReadFailed);
+        Assert.True(local.IsLocal(IPAddress.Parse(PageServer.TailnetAddress)));
+        var logs = new CapturingLoggerProvider();
+        await using var page = new PageServer(logs: logs, services: services => services.AddSingleton(local));
+        Assert.Equal(HttpStatusCode.Forbidden, (await page.GetAsync("/")).Status);
+        Assert.Contains(logs.Entries, entry => entry.Message.Contains("this machine's own addresses couldn't be read"));
     }
 
     /// <summary>A request that fails unexpectedly is answered by the page itself, with the security headers and nothing about the error.</summary>

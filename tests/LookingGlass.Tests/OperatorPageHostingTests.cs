@@ -75,7 +75,7 @@ public sealed class OperatorPageHostingTests {
         var warning = Assert.Single(logs.Entries, entry => entry.Message.StartsWith("The operator web page listens on a loopback port", StringComparison.Ordinal));
         Assert.Equal(LogLevel.Warning, warning.Level);
         Assert.Contains("any program or user on this machine can connect to it", warning.Message);
-        Assert.Contains(logs.Entries, entry => entry.Message.Contains($"; operator web page at {PageServer.Url} (loopback port; 1 login let in; times in UTC); Discord alerts off;"));
+        Assert.Contains(logs.Entries, entry => entry.Message.Contains($"; operator web page starting, for {PageServer.Url} (loopback port; 1 login let in; times in UTC); Discord alerts off;"));
     }
 
     /// <summary>
@@ -263,6 +263,8 @@ public sealed class OperatorPageHostingTests {
     [InlineData("LookingGlass:Admin:TailscaleLogins:0", "", "TailscaleLogins lists nobody")]
     [InlineData("LookingGlass:Admin:TailscaleLogins:0", "Alice Liddell", "LookingGlass:Admin:TailscaleLogins lists")]
     [InlineData("LookingGlass:Admin:TimeZone", "Mars/Olympus_Mons", "LookingGlass:Admin:TimeZone")]
+    [InlineData("LookingGlass:Admin:OwnAddresses:0", "the host", "LookingGlass:Admin:OwnAddresses lists")]
+    [InlineData("LookingGlass:Admin:OwnAddresses:0", "100.64.0.0/33", "LookingGlass:Admin:OwnAddresses lists")]
     public async Task TheServerWontStartWithThePageSetUpWrongly(string key, string value, string said) {
         var logs = new CapturingLoggerProvider();
         await ExitCodeGate.WaitAsync(Ct);

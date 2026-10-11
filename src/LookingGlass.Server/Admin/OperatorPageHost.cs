@@ -100,8 +100,9 @@ public sealed class OperatorPageHost(OperatorPage page, IOptions<ServerOptions> 
         app.Run(page.HandleAsync);
         this._app = app;
         if (socket != null && test == null && OperatingSystem.IsLinux()) {
-            // Made 0600 as it is made (the umask is the process's, so only for the moment of listening), and set so again
-            // after: only the service's user (and root, which tailscaled runs as) may open it.
+            // Made 0600 as it is made, and set so again after: only the service's user (and root, which tailscaled runs as) may
+            // open it. The umask is the whole process's: for the moment of listening, at startup, anything else the server makes
+            // is made private too (as the unit's UMask=0077 makes everything anyway), which does no harm.
             var before = UnixFiles.SetUmask(0x7F);
             try {
                 await app.StartAsync(cancellationToken);
@@ -145,7 +146,7 @@ public sealed class OperatorPageHost(OperatorPage page, IOptions<ServerOptions> 
         try {
             stat = UnixFiles.Lstat(folder) ?? throw new InvalidOperationException($"The folder {folder} doesn't exist.");
         } catch (IOException) {
-            // No statx (an old or unusual C library): at least the permissions .NET can read.
+            // No statx (an old or unusual C library): at least the permissions .NET can read; who owns the folder isn't checked.
             if ((File.GetUnixFileMode(folder) & (UnixFileMode.GroupWrite | UnixFileMode.OtherWrite)) != 0) {
                 throw new InvalidOperationException($"Others can write in {folder}, the operator web page's socket's folder, so it doesn't start there.");
             }
@@ -180,10 +181,14 @@ public sealed class OperatorPageHost(OperatorPage page, IOptions<ServerOptions> 
             try {
                 stat = UnixFiles.Lstat(path);
             } catch (IOException) {
-                // No statx: what .NET can tell. A socket is an empty file that isn't a link.
+                // No statx (an old or unusual C library): .NET can't tell a socket from a file, so nothing there is deleted.
                 var info = new FileInfo(path);
-                stat = !info.Exists && info.LinkTarget == null ? null
-                    : new UnixFiles.Stat(info.LinkTarget != null ? 0xA000u : info.Length == 0 ? 0xC000u : 0x8000u, 0, 0);
+                if (!info.Exists && info.LinkTarget == null) {
+                    return;
+                }
+
+                throw new InvalidOperationException($"{path} is there already, and this system can't tell whether it is an old socket, so the operator " +
+                                                    "web page doesn't replace it: delete it yourself (if it is an old socket), or choose another path.");
             }
 
             if (stat == null) {

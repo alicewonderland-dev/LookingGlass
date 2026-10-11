@@ -66,7 +66,7 @@ public sealed class OperatorPage {
         this._admin = options.Value.Admin;
         this._logger = logger;
         this._time = time ?? TimeProvider.System;
-        this._local = local ?? new LocalAddresses();
+        this._local = local ?? new LocalAddresses(this._admin.OwnNetworks);
         this._zone = this._admin.Zone;
         this._logins = this._admin.Logins;
         var page = this._admin.PageUri ?? new Uri("https://unset.invalid:1/");
@@ -88,7 +88,23 @@ public sealed class OperatorPage {
         var request = context.Request;
         var response = context.Response;
         SetSecurityHeaders(response.Headers);
+        try {
+            await this.AnswerAsync(context);
+        } catch (Exception ex) when (!response.HasStarted && ex is not OperationCanceledException) {
+            // Answered here, not by Kestrel (which would drop the security headers): a plain page, nothing about the error.
+            this._logger.LogError(ex, "The operator web page failed to answer {Method} {Path}", Visible(request.Method), Visible(request.Path.Value));
+            response.Clear();
+            SetSecurityHeaders(response.Headers);
+            await Write(response, StatusCodes.Status500InternalServerError,
+                Document("Not done", "<main class=\"confirm\"><h1>Not done</h1><p>Something went wrong on the server, so that may not have been done. " +
+                                     "The server's log says what. <a href=\"/\">Back to the page</a></p></main>", styled: false));
+        }
+    }
 
+    private async Task AnswerAsync(HttpContext context) {
+        var request = context.Request;
+        var response = context.Response;
+        this.BeforeAnswerForTests?.Invoke(context);
         var login = this.Identify(request);
         if (login == null) {
             await Write(response, StatusCodes.Status403Forbidden, Document("Not allowed", $"<main class=\"confirm\"><h1>Not allowed.</h1><p>{E(NotAllowed)}</p></main>", styled: false));
@@ -100,7 +116,6 @@ public sealed class OperatorPage {
         var posting = HttpMethods.IsPost(request.Method);
         var actor = new OperatorActor(OperatorTool.WebPage, login, From(request));
         try {
-            this.BeforeAnswerForTests?.Invoke(context);
             switch (path) {
                 case "/" when reading:
                     await Write(response, StatusCodes.Status200OK, this.MainPage(login, this.Prefilled(request, login)));
@@ -136,18 +151,10 @@ public sealed class OperatorPage {
             this._logger.LogWarning(ex, "The operator web page couldn't read or write the database");
             await Write(response, StatusCodes.Status503ServiceUnavailable,
                 this.Message(login, "Not now", "The server couldn't read or write its database just now, so nothing was done. Try again in a moment."));
-        } catch (Exception ex) when (!response.HasStarted && ex is not OperationCanceledException) {
-            // Answered here, not by Kestrel (which would drop the security headers): a plain page, nothing about the error.
-            this._logger.LogError(ex, "The operator web page failed to answer {Method} {Path}", Visible(request.Method), Visible(request.Path.Value));
-            response.Clear();
-            SetSecurityHeaders(response.Headers);
-            await Write(response, StatusCodes.Status500InternalServerError,
-                Document("Not done", "<main class=\"confirm\"><h1>Not done</h1><p>Something went wrong on the server, so that may not have been done. " +
-                                     "The server's log says what. <a href=\"/\">Back to the page</a></p></main>", styled: false));
         }
     }
 
-    /// <summary>For tests: run before each request let in is answered (to make one fail, say).</summary>
+    /// <summary>For tests: run before each request is answered, before even who sent it is looked at (to make one fail, say).</summary>
     internal Action<HttpContext>? BeforeAnswerForTests { get; set; }
 
     /// <summary>
@@ -183,15 +190,18 @@ public sealed class OperatorPage {
             why = "it came through Tailscale Funnel (Tailscale-Funnel-Request), from the public internet; Funnel must never lead to the page";
         } else if (ForwardedFor(request) is not { } source) {
             why = "it has no X-Forwarded-For address (tailscale serve always sets one): it didn't come through tailscale serve";
-        } else if (this._local.IsLocal(source)) {
-            why = $"it came from this machine itself ({source}): tailscale serve would name such a request by this machine's own Tailscale login, " +
-                  "which any program here could use, so the page is only for other devices";
         } else if (request.Headers["Tailscale-User-Login"] is not { Count: 1 } logins || string.IsNullOrEmpty(logins[0])) {
             why = request.Headers["Tailscale-User-Login"].Count > 1
                 ? "it has more than one Tailscale-User-Login"
                 : "it has no Tailscale-User-Login (it didn't come through tailscale serve, or came from a tagged device or from this machine itself)";
         } else if (this._logins.FirstOrDefault(listed => string.Equals(listed, logins[0], StringComparison.OrdinalIgnoreCase)) == null) {
             why = $"its Tailscale login, {Visible(logins[0])}, isn't listed in LookingGlass:Admin:TailscaleLogins";
+        } else if (this._local.IsLocal(source)) {
+            // After the login checks, so only a listed login's requests make the interfaces be read again.
+            why = this._local.ReadFailed
+                ? "this machine's own addresses couldn't be read, so it can't tell the request didn't come from this machine itself"
+                : $"it came from this machine itself ({source}), or from an address in LookingGlass:Admin:OwnAddresses: tailscale serve names such a " +
+                  "request by this machine's own Tailscale login, which any program here could use, so the page is only for other devices";
         } else if (request.Headers["X-Forwarded-Host"] is not { Count: 1 } host || !string.Equals(host[0], this._host, StringComparison.OrdinalIgnoreCase)) {
             why = $"it was asked for as {(request.Headers["X-Forwarded-Host"].Count == 0 ? "(no X-Forwarded-Host)" : Visible(request.Headers["X-Forwarded-Host"].ToString()))}, " +
                   $"not {this._host} (LookingGlass:Admin:Url)";
