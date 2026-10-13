@@ -175,6 +175,31 @@ internal sealed unsafe class ChatInterop : IDisposable {
         }
     }
 
+    /// <summary>
+    /// Runs a line as the game's chat box does when Enter is pressed: through <c>ExecuteCommandInner</c>, whose hook is the
+    /// gate (so it is judged as typed in the game, <see cref="LineSource.Game"/>). Not added to the input history. For the
+    /// self-test only, which checks the place and the game's chat channel first. Game thread, outside any other line.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The gate isn't hooked, or a line is being run already.</exception>
+    public void TypeLine(byte[] line) {
+        if (!this.InputHooked || this._linesRunning > 0) {
+            throw new InvalidOperationException("A line can't be typed now.");
+        }
+
+        var shell = RaptureShellModule.Instance();
+        var ui = UIModule.Instance();
+        if (shell == null || ui == null) {
+            throw new InvalidOperationException("The game's chat box isn't there.");
+        }
+
+        var text = Utf8String.FromSequence(line);
+        try {
+            shell->ShellCommandModule.ExecuteCommandInner(text, ui);
+        } finally {
+            text->Dtor(true);
+        }
+    }
+
     /// <summary>A line is being run by the game now (game thread only).</summary>
     public bool LineInFlight => this._linesRunning > 0;
 
@@ -197,6 +222,19 @@ internal sealed unsafe class ChatInterop : IDisposable {
     public static GameChannel? CurrentChannel() {
         var shell = RaptureShellModule.Instance();
         return shell == null ? null : new GameChannel(shell->ChatType);
+    }
+
+    /// <summary>
+    /// Sets the game's chat channel (as /s would; <see cref="GameChannel.ChatType"/>). For the self-test, which sets Say before
+    /// typing a line and puts the channel back at the end. Ends talking in a channel, if on. Game thread.
+    /// </summary>
+    public static void SetChannel(int chatType) {
+        var shell = RaptureShellModule.Instance();
+        if (shell == null) {
+            throw new InvalidOperationException("The game's chat box isn't there.");
+        }
+
+        shell->ChangeChatChannel(chatType, 0, null, true);
     }
 
     /// <summary>

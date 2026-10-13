@@ -9,6 +9,9 @@ namespace LookingGlass.Plugin;
 /// anywhere it shouldn't): in game chat, or where the caller says (a channel window shows it in itself).
 /// </summary>
 public sealed class ChannelSender(SessionManager sessions, ChatOutput chat) {
+    /// <summary>The self-test: told when a send failed (null unless a run is on), so a refusal for a limit stops it.</summary>
+    internal Action<Exception>? Failed { get; set; }
+
     /// <summary>
     /// Sends what was typed, links and all (see <see cref="LinkText"/>): each link as its "[name]" in the text, and as a
     /// link over it. A placeholder still in it is resolved now, from what the game holds for it. A link the game says
@@ -60,6 +63,12 @@ public sealed class ChannelSender(SessionManager sessions, ChatOutput chat) {
             try {
                 await session.SendAsync(channelId, message);
             } catch (Exception ex) {
+                try {
+                    this.Failed?.Invoke(ex);
+                } catch {
+                    // Never in the way of telling the player.
+                }
+
                 var advanced = sessions.AdvancedMode;
                 var reason = PlainMessages.MessageOf(ex, advanced);
                 tell(NoticeTone.Info, PlainMessages.Of(stickyTag == null ? $"Not sent: {reason}" : StickyMessages.NotSent(stickyTag, reason), advanced));

@@ -16,6 +16,14 @@ public sealed class LocalSender(SessionManager sessions, ChatOutput chat, Func<b
     /// <summary>The player accepted what local chat tells the server.</summary>
     internal bool PrivacyAccepted => privacyAccepted();
 
+    /// <summary>The self-test: told when a send failed (null unless a run is on), so a refusal for a limit stops it.</summary>
+    internal Action<Exception>? Failed { get; set; }
+
+    private int _sends;
+
+    /// <summary>How many local messages reached the session (looked up and sent, or tried), since the plugin started: the self-test counts them.</summary>
+    internal int Sends => Volatile.Read(ref this._sends);
+
     /// <summary>Opens the privacy notice, as the first /lgl does (once accepted, game chat says what to type again).</summary>
     internal void AskPrivacy(LocalPrivacyAsked why) => askPrivacy(why);
 
@@ -86,11 +94,18 @@ public sealed class LocalSender(SessionManager sessions, ChatOutput chat, Func<b
         var friends = LocalChat.Recipients(around, LocalChat.MaxRecipients).Select(friend => (friend.Name, friend.WorldName)).ToList();
         // Counts only: never who, nor what.
         Services.Log.Debug($"Local chat: sending to {friends.Count} friends near ({around.Players.Count} players near, friends list {(around.FriendsListLoaded ? "loaded" : "not loaded")})");
+        Interlocked.Increment(ref this._sends);
         _ = Task.Run(async () => {
             LocalSendResult result;
             try {
                 result = await session.SendLocalAsync(friends, message);
             } catch (Exception ex) {
+                try {
+                    this.Failed?.Invoke(ex);
+                } catch {
+                    // Never in the way of telling the player.
+                }
+
                 var advanced = sessions.AdvancedMode;
                 var reason = PlainMessages.MessageOf(ex, advanced);
                 chat.Notice(NoticeTone.Info, PlainMessages.Of(stickyTag == null ? $"Not sent: {reason}" : StickyMessages.NotSent(stickyTag, reason), advanced));

@@ -91,6 +91,44 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
     /// <summary>Talking in local chat now (<see cref="StickyChannel.LocalId"/>).</summary>
     internal bool TalkingInLocal => StickyChannel.IsLocal(this._state.ChannelId);
 
+    /// <summary>Where typing goes now (a channel, <see cref="StickyChannel.LocalId"/>, or null), for the self-test. Read-only.</summary>
+    internal string? TalkingIn => this._state.ChannelId;
+
+    /// <summary>The tag and colour the labels show, or null, for the self-test. Read-only.</summary>
+    internal (string Tag, ChannelColour Colour)? Shown => this._shown;
+
+    /// <summary>The server info bar entry's text while it is shown, or null, for the self-test. Read-only.</summary>
+    internal string? InfoBarText => this._infoBar is { Shown: true } bar ? bar.Text?.TextValue : null;
+
+    /// <summary>ChatTwo is loaded (the self-test).</summary>
+    internal bool ChatTwoLoaded => this._chatTwo.Loaded;
+
+    /// <summary>The chat box gate's hooks are in place: lines can be typed through it (the self-test).</summary>
+    internal bool InputHooked => this._interop.InputHooked;
+
+    /// <summary>
+    /// What the game's chat input names its channel now (where it says "Say", or a tag), or null if unreadable, for the
+    /// self-test. Game thread.
+    /// </summary>
+    internal static unsafe string? ChatInputLabel() {
+        var addon = Services.GameGui.GetAddonByName(ChatLogAddon).Address;
+        if (addon == 0) {
+            return null;
+        }
+
+        var node = ((FFXIVClientStructs.FFXIV.Client.UI.AddonChatLog*) addon)->CurrentChannelTextNode;
+        return node == null ? null : node->NodeText.ToString();
+    }
+
+    /// <summary>
+    /// Puts a line through the chat box's gate as if typed in the game's chat box (the self-test; see
+    /// <see cref="ChatInterop.TypeLine"/>). Framework thread.
+    /// </summary>
+    internal void TypeLine(byte[] line) => this._interop.TypeLine(line);
+
+    /// <summary>Stops talking in a channel, if on, as clicking the info bar does (the self-test's clean-up). Framework thread.</summary>
+    internal void StopTalking() => this.Leave(StickyEnd.Stopped);
+
     /// <summary>/lgl with no message: talks in local chat, as <see cref="Enter"/> in a channel. Call on the framework thread.</summary>
     public void EnterLocal() => this.Enter(StickyChannel.LocalId);
 

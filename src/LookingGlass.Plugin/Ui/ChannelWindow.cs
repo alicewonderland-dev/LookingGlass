@@ -122,8 +122,18 @@ public sealed class ChannelWindow : Window {
     public void Flash(int pulses, string channelId) {
         if (this._flash.Start(DateTimeOffset.UtcNow, pulses)) {
             this._flashChannel = channelId;
+            this.LastFlashPulses = pulses;
         }
     }
+
+    /// <summary>Puts the window at a place from the next frame (the self-test moves one near a corner).</summary>
+    internal void MoveTo(WindowPlace place) => this._restorePlace = place;
+
+    /// <summary>The pulses of the last flash it started, or 0, for the self-test. Read-only.</summary>
+    internal int LastFlashPulses { get; private set; }
+
+    /// <summary>It may take the keyboard when it appears (opened by the player), for the self-test. Read-only.</summary>
+    internal bool TakesFocus => !this.Flags.HasFlag(ImGuiWindowFlags.NoFocusOnAppearing);
 
     public override void Update() {
         // The selected channel's name: the window says which channel its input box sends to. "##" can't end the title early.

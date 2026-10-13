@@ -444,6 +444,9 @@ public sealed class SessionManager : IDisposable {
         }
     }
 
+    /// <summary>The name colours were changed in the settings directly (the self-test putting one back): read them again. Framework thread.</summary>
+    internal void NameColoursChanged() => this._nameColours = this._config.NameColours.ToImmutableDictionary();
+
     /// <summary>
     /// Whether a channel's messages also go to the game's chat log ("Show in game chat"; on unless turned off). Off,
     /// they show only in its channel windows, and its notices too, but warnings. Safe from any thread.
@@ -521,6 +524,18 @@ public sealed class SessionManager : IDisposable {
         var channel = snapshot.FindChannel(channelId);
         var sender = new Protocol.User { UserId = -1, Name = "Simulated Sender", WorldName = Protocol.ProtocolInfo.DebugWorldName };
         this.Deliver(new IncomingMessage(channelId, channel?.Name, sender, false, text, false, DateTimeOffset.Now));
+    }
+
+    /// <summary>
+    /// A fake warning about a channel (light red), printed and kept locally only, as a real one would be: in game chat, and in
+    /// the channel's windows. For the self-test (windows-only step 11); nothing is sent. Call on the framework thread.
+    /// </summary>
+    public void SimulateNotice(string channelId) {
+        if (this.Session == null) {
+            return;
+        }
+
+        this.OnNotice(SessionNotice.Of(NoticeLevel.Warning, Core.SelfTest.SelfTestWords.SimulatedWarning, channelId), this.History.Generation);
     }
 
     /// <summary>
