@@ -147,6 +147,49 @@ public static partial class ChatLogFiles {
     }
 
     /// <summary>
+    /// Every chat log folder, with when anything in it was last written (the newest file's time, or the folder's): for the
+    /// self-test, which deletes a history only while nothing in it is newer than its run.
+    /// </summary>
+    public static IReadOnlyList<(string Folder, DateTimeOffset Newest)> FoldersWithTimes(string configDirectory) =>
+        Folders(configDirectory).Select(folder => (folder, Newest(new DirectoryInfo(folder)))).ToList();
+
+    private static DateTimeOffset Newest(DirectoryInfo folder) {
+        var newest = DateTimeOffset.MinValue;
+        try {
+            newest = new DateTimeOffset(folder.LastWriteTimeUtc, TimeSpan.Zero);
+            foreach (var file in folder.EnumerateFiles("*", SearchOption.AllDirectories)) {
+                var written = new DateTimeOffset(file.LastWriteTimeUtc, TimeSpan.Zero);
+                if (written > newest) {
+                    newest = written;
+                }
+            }
+        } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) {
+            // Can't tell: as new as can be, so it is never taken for old.
+            return DateTimeOffset.MaxValue;
+        }
+
+        return newest;
+    }
+
+    /// <summary>Deletes these chat log folders (only ones <see cref="Folders"/> lists), with every file in each.</summary>
+    /// <exception cref="IOException">Some couldn't be deleted (in use, say).</exception>
+    public static void DeleteFolders(string configDirectory, IEnumerable<string> folders) {
+        var ours = Folders(configDirectory).Select(Path.GetFullPath).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var failed = 0;
+        foreach (var folder in folders.Where(folder => ours.Contains(Path.GetFullPath(folder)))) {
+            lock (AtomicFile.LockFor(folder)) {
+                if (!DeleteFolder(folder)) {
+                    failed++;
+                }
+            }
+        }
+
+        if (failed > 0) {
+            throw new IOException($"{failed} chat log folders couldn't be deleted (they may be in use). Try again later.");
+        }
+    }
+
+    /// <summary>
     /// Deletes every chat log folder but <paramref name="except"/> (one a log has open, which deletes its own), with every
     /// file in it. Nothing outside the chat log folders is touched.
     /// </summary>

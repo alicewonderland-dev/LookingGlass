@@ -259,7 +259,14 @@ internal sealed partial class FakeSelfTestHost : ISelfTestHost, IDisposable {
 
     public Task<JsonElement> ReadSettingAsync(SelfTestSetting setting) => Task.FromResult(this.Settings[setting]);
 
+    /// <summary>A setting that can't be written once the run has ended (put back), if set.</summary>
+    public SelfTestSetting? FailWriteBack { get; set; }
+
     public Task WriteSettingAsync(SelfTestSetting setting, JsonElement value) {
+        if (setting == this.FailWriteBack && this.Ops.Contains($"write:{setting}")) {
+            throw new IOException("Can't.");
+        }
+
         this.Ops.Add($"write:{setting}");
         this.Settings[setting] = value.Clone();
         if (setting == SelfTestSetting.LocalPrivacyAccepted && !this.Is(setting) && this.Sticky == StickyChannel.LocalId) {

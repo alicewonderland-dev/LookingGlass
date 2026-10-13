@@ -165,6 +165,15 @@ public sealed class SelfTestRunData {
 
     /// <summary>The run disconnected on purpose and hasn't connected again yet: the clean-up connects first.</summary>
     public bool DisconnectedByRun { get; set; }
+
+    /// <summary>When the run last saved this file: nothing of a history newer than this (and a little) is the test's.</summary>
+    public DateTimeOffset LastActive { get; set; }
+
+    /// <summary>
+    /// The test's chat history couldn't be deleted by itself (the history was turned on since, or holds something newer):
+    /// the self-test window asks the tester, never deleting anything without them.
+    /// </summary>
+    public bool HistoryNeedsAsking { get; set; }
 }
 
 /// <summary>A step's result as the run file keeps it over a relog or reload: fixed words only.</summary>
@@ -373,18 +382,53 @@ public sealed record OwnNameColourValue(string Key, uint? Rgb);
 
 /// <summary>
 /// What the plugin does at its start with a run file an interrupted run left (one not waiting for a relog or reload), before
-/// any session: the settings put back at once, and the whole chat history deleted if it was off and empty before the run
-/// (everything in it is the test's, the tester's real channels' lines recorded during the run too). Its test channels are
-/// left later, once connected.
+/// any session: the settings put back at once, and the test's chat history deleted if the history was off and empty before
+/// the run, but only while it is still off and nothing in it is newer than the run (so the tester's own history, started
+/// later, is never touched; then the window asks). Its test channels are left later, once connected.
 /// </summary>
 public static class SelfTestRecovery {
+    /// <summary>How long after the run's last save a history may still have been written by it (its last lines, closing).</summary>
+    public static readonly TimeSpan HistoryGrace = TimeSpan.FromMinutes(2);
+
     /// <summary>A run file that lost whose it was (damaged): it can't be finished by itself.</summary>
     public static bool Unknown(SelfTestRunData data) => data.ContentId == 0 || string.IsNullOrEmpty(data.ServerUrl);
 
-    /// <summary>Puts back what it can now; the file is to be kept (and finished once connected) unless this returns true.</summary>
-    /// <param name="deleteAllHistory">Deletes every chat history on this computer (none was there before the run).</param>
+    /// <summary>
+    /// What to do with the chat history a run left, when it was off and empty before the run: every chat log folder there is
+    /// was made since, by the run, unless the history was turned on again or something in it is newer than the run (then
+    /// ask, and delete nothing).
+    /// </summary>
+    /// <param name="historyOnNow">"Keep chat history on this computer" is on now.</param>
+    /// <param name="folders">Every chat log folder, with when it was last written.</param>
+    /// <param name="lastActive">When the run last saved its file.</param>
+    public static (IReadOnlyList<string> Delete, bool Ask) HistoryCleanup(bool historyOnNow, IReadOnlyList<(string Folder, DateTimeOffset Newest)> folders,
+        DateTimeOffset lastActive) {
+        if (folders.Count == 0) {
+            return ([], false);
+        }
+
+        if (historyOnNow || folders.Any(folder => folder.Newest > lastActive + HistoryGrace)) {
+            return ([], true);
+        }
+
+        return (folders.Select(folder => folder.Folder).ToList(), false);
+    }
+
+    /// <summary>
+    /// For the tester's own choice (the window's "Delete the test's chat history"): the folders nothing has written to since
+    /// the run, but the one a log has open now.
+    /// </summary>
+    public static IReadOnlyList<string> UntouchedSince(IReadOnlyList<(string Folder, DateTimeOffset Newest)> folders, DateTimeOffset lastActive, string? open) =>
+        folders.Where(folder => folder.Newest <= lastActive + HistoryGrace
+                                && (open == null || !string.Equals(Path.GetFullPath(folder.Folder), Path.GetFullPath(open), StringComparison.OrdinalIgnoreCase)))
+            .Select(folder => folder.Folder).ToList();
+
+    /// <summary>Puts back what it can now; the file is to be kept (and finished once connected, or asked) unless this returns true.</summary>
+    /// <param name="historyFolders">Every chat log folder, with when it was last written.</param>
+    /// <param name="deleteFolders">Deletes chat log folders.</param>
     /// <returns>Whether nothing is left to do (the file can go).</returns>
-    public static bool PutBack(SelfTestRunData data, ISelfTestSettings settings, Action deleteAllHistory, Action<string>? log = null) {
+    public static bool PutBack(SelfTestRunData data, ISelfTestSettings settings, Func<IReadOnlyList<(string Folder, DateTimeOffset Newest)>> historyFolders,
+        Action<IReadOnlyList<string>> deleteFolders, Action<string>? log = null) {
         if (Unknown(data)) {
             // The windows' layouts are a character's own: whose isn't known, so they can't be put back.
             data.Settings.Remove(SelfTestSetting.ChannelWindows);
@@ -392,19 +436,41 @@ public static class SelfTestRecovery {
 
         var (restored, failed) = SelfTestSettingsSnapshot.Restore(data, settings);
         log?.Invoke($"[selftest] an interrupted run's settings were put back ({restored}, {failed} couldn't be)");
-        if (data.HistoryWasOffAndEmpty && !data.Settings.ContainsKey(SelfTestSetting.KeepHistory)) {
-            try {
-                deleteAllHistory();
-                data.HistoryWasOffAndEmpty = false;
-                log?.Invoke("[selftest] an interrupted run's chat history was deleted (it was off and empty before)");
-            } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) {
-                log?.Invoke($"[selftest] an interrupted run's chat history couldn't be deleted ({ex.GetType().Name})");
-            }
-        }
-
+        CleanUpHistory(data, () => settings.Read(SelfTestSetting.KeepHistory).ValueKind == System.Text.Json.JsonValueKind.True, historyFolders, deleteFolders, log);
         data.Phase = SelfTestPhase.Running;
         data.WaitingSince = null;
         data.NextCheck = null;
-        return data.TestChannels.Count == 0 && data.Settings.Count == 0 && !data.HistoryWasOffAndEmpty && data.GameChannelBefore == null;
+        return data.TestChannels.Count == 0 && data.Settings.Count == 0 && !data.HistoryWasOffAndEmpty && !data.HistoryNeedsAsking && data.GameChannelBefore == null;
+    }
+
+    /// <summary>
+    /// The test's chat history, after its settings are back: deleted if it may be (see <see cref="HistoryCleanup"/>);
+    /// otherwise marked to ask the tester, and never deleted by itself again.
+    /// </summary>
+    /// <param name="historyOnNow">Whether "Keep chat history on this computer" is on now (read only if needed).</param>
+    public static void CleanUpHistory(SelfTestRunData data, Func<bool> historyOnNow, Func<IReadOnlyList<(string Folder, DateTimeOffset Newest)>> historyFolders,
+        Action<IReadOnlyList<string>> deleteFolders, Action<string>? log = null) {
+        if (!data.HistoryWasOffAndEmpty || data.Settings.ContainsKey(SelfTestSetting.KeepHistory)) {
+            return;
+        }
+
+        var (delete, ask) = HistoryCleanup(historyOnNow(), historyFolders(), data.LastActive);
+        if (ask) {
+            data.HistoryWasOffAndEmpty = false;
+            data.HistoryNeedsAsking = true;
+            log?.Invoke("[selftest] an earlier run's chat history wasn't deleted: the history was turned on since, or holds something newer");
+            return;
+        }
+
+        try {
+            if (delete.Count > 0) {
+                deleteFolders(delete);
+            }
+
+            data.HistoryWasOffAndEmpty = false;
+            log?.Invoke("[selftest] an earlier run's chat history was deleted (it was off and empty before)");
+        } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) {
+            log?.Invoke($"[selftest] an earlier run's chat history couldn't be deleted ({ex.GetType().Name})");
+        }
     }
 }

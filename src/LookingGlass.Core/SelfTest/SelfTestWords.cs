@@ -60,6 +60,14 @@ public static partial class SelfTestWords {
     public const string TwoPlayersLater = "Two-player checks need a partner. They are coming in a later version.";
     public const string NoteReminder = "Don't put names in a note: it is copied into the report as you type it.";
     public const string LeftoverHeading = "Left over from an earlier test?";
+
+    /// <summary>An earlier test's chat history couldn't be deleted by itself: the tester chooses.</summary>
+    public const string HistoryAsk =
+        "An earlier self-test kept a chat history for its checks, and couldn't delete it by itself: your chat history was turned on since, or has newer lines. " +
+        "Delete the folders nothing has written to since that test? Folders used since are kept (Settings' Delete my chat history clears everything).";
+
+    public const string HistoryDelete = "Delete the test's chat history";
+    public const string HistoryKeep = "Keep it";
     public const string LeftoverExplained = "Channels named like a self-test's that no run knows about. Remove one only if you're sure it is a test channel.";
 
     /// <summary>"The self-test only runs in a private place": the refusal, with the places that count.</summary>
@@ -79,6 +87,9 @@ public static partial class SelfTestWords {
 
     /// <summary>Paused while another character, or another server, is logged in.</summary>
     public const string PausedOtherCharacter = "Paused: another character is in. Come back with the character the test started with, and it carries on.";
+
+    /// <summary>A step that asks the tester to type waits while the game's chat channel isn't Say.</summary>
+    public const string WaitingSay = "Waiting: the game's chat channel isn't Say. Type /s on its own to put it back.";
 
     /// <summary>A step that asks the tester to type waits until ChatTwo's input is on Say.</summary>
     public const string ChatTwoToSay = "Put ChatTwo's input on Say first (pick Say in its channel picker).";
@@ -207,8 +218,8 @@ public static partial class SelfTestWords {
     public static IReadOnlyList<string> All() => [
         WindowTitle, ReportTitle, OpenButton, Start, StopAndCleanUp, NeedsYou, Done, DidntWork, SkipStep, Yes, No, CopyReport, RunFailedAgain,
         CheckAgain, CarryOn, Close, TwoPlayers, WhichOnes, Remove, Passed, Failed, Skipped, StoppedWord, NoteLabel, .. Consent, Intro,
-        NoNamesInReport, StayHere, HouseVisitors, HandChanges, ClosingDoesntStop, TwoPlayersLater, NoteReminder, LeftoverHeading,
-        LeftoverExplained, .. PrivatePlaces, OnlyInPrivate, PausedLeft, WaitingSomeoneNear, PausedDisconnected, PausedOtherCharacter, ChatTwoToSay, WaitingPlace,
+        NoNamesInReport, HistoryAsk, HistoryDelete, HistoryKeep, StayHere, HouseVisitors, HandChanges, ClosingDoesntStop, TwoPlayersLater, NoteReminder, LeftoverHeading,
+        LeftoverExplained, .. PrivatePlaces, OnlyInPrivate, PausedLeft, WaitingSomeoneNear, PausedDisconnected, PausedOtherCharacter, ChatTwoToSay, WaitingSay, WaitingPlace,
         WaitingToCarryOn, InterruptedRun, InterruptedRunChannelLeft, WaitBeforeStart(TimeSpan.FromMinutes(20)),
         .. Enum.GetValues<PlaceKind>().Select(Place), .. Enum.GetValues<SelfTestSetting>().Select(SettingName), .. Reasons(), CleanUp(1, 1, 7, 1, true, true, true, true), SimulatedWarning.Plain,
     ];

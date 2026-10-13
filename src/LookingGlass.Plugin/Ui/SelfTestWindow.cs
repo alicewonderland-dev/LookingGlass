@@ -143,7 +143,17 @@ internal sealed class SelfTestWindow : Window {
         ImGui.TextWrapped(SelfTestWords.TwoPlayersLater);
 
         this.DrawLeftovers();
-        if (this._service.FileUnknown) {
+        if (this._service.AskHistory) {
+            Widgets.WrappedColoured(Widgets.Warning, SelfTestWords.HistoryAsk);
+            if (UiActions.ConfirmButton(SelfTestWords.HistoryDelete)) {
+                this._service.AnswerHistory(delete: true);
+            }
+
+            ImGui.SameLine();
+            if (ImGui.Button(SelfTestWords.HistoryKeep)) {
+                this._service.AnswerHistory(delete: false);
+            }
+        } else if (this._service.FileUnknown) {
             Widgets.WrappedColoured(Widgets.Warning, "The last test's file is damaged: it doesn't say which character it was for, so it can't finish by itself. " +
                                                      "Its settings were put back. Clearing it forgets it; a test channel it left shows above, to remove yourself.");
             if (UiActions.ConfirmButton("Clear it")) {

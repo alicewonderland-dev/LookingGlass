@@ -73,7 +73,7 @@ internal sealed class SelfTestStopException(string why) : Exception(why) {
 /// <item>Results and the log lines hold fixed words only: no names, no message text.</item>
 /// </list>
 /// </summary>
-public sealed class SelfTestRun {
+public sealed partial class SelfTestRun {
     /// <summary>How long a run waits for a relog or reload before it gives up and cleans up.</summary>
     public static readonly TimeSpan MostWaitToCarryOn = TimeSpan.FromMinutes(30);
 
@@ -172,6 +172,15 @@ public sealed class SelfTestRun {
 
     /// <summary>The marker every typed and sent line starts with: "LG self-test K7Q2".</summary>
     public string MarkerPrefix => $"LG self-test {this.Code}";
+
+    /// <summary>
+    /// Whether a channel's name looks like a self-test's (made by one, or renamed by its history check: "LG self-test K7Q2",
+    /// "... b", "... r"): only for the leftovers list, never to remove anything by itself.
+    /// </summary>
+    public static bool IsTestChannelName(string? name) => name != null && TestName().IsMatch(name);
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"^LG self-test [A-Z0-9]{4}( .*)?$")]
+    private static partial System.Text.RegularExpressions.Regex TestName();
 
     /// <summary>The test channel's name for a run: "LG self-test K7Q2", then "LG self-test K7Q2 b" and "c".</summary>
     public static string ChannelName(string code, int index) => index == 0 ? $"LG self-test {code}" : $"LG self-test {code} {(char) ('a' + index)}";
@@ -389,6 +398,9 @@ public sealed class SelfTestRun {
                 }
 
                 results.Add((step, result, this._host.Now));
+                // A step that failed, threw or timed out between its own disconnect and reconnect: connected again now, so
+                // the gates' connection and same-character checks are back for what comes next.
+                await this.ReconnectIfTheRunDisconnectedAsync().ConfigureAwait(false);
                 if (result.Outcome == StepOutcome.Failed) {
                     // The rest of a check builds on what failed: it stops there.
                     break;
@@ -669,6 +681,29 @@ public sealed class SelfTestRun {
         }
     }
 
+    /// <summary>
+    /// If the run disconnected on purpose and hasn't connected again, connects (waiting up to a minute) and, once connected,
+    /// clears the mark. Never throws.
+    /// </summary>
+    private async Task ReconnectIfTheRunDisconnectedAsync() {
+        if (!this.DisconnectedByRun) {
+            return;
+        }
+
+        try {
+            await this._host.ConnectAsync().ConfigureAwait(false);
+            for (var waited = TimeSpan.Zero; waited < TimeSpan.FromMinutes(1) && !await this.ReadyAsync().ConfigureAwait(false); waited += Poll) {
+                await this._host.Delay(Poll, CancellationToken.None).ConfigureAwait(false);
+            }
+        } catch (Exception ex) {
+            this._host.Log($"[selftest] couldn't connect again ({ex.GetType().Name})");
+        }
+
+        if (await this.ReadyAsync().ConfigureAwait(false)) {
+            this.MarkDisconnected(false);
+        }
+    }
+
     /// <summary>The run disconnected on purpose and hasn't connected again: its gates don't wait for a connection.</summary>
     internal bool DisconnectedByRun {
         get {
@@ -769,7 +804,8 @@ public sealed class SelfTestRun {
                     return answer.Task.Result;
                 }
 
-                if (prompt.TesterTypes && await this.WhyWaitAsync(typing: true, this.DisconnectedByRun).ConfigureAwait(false) != null) {
+                if (prompt.TesterTypes && (await this.WhyWaitAsync(typing: true, this.DisconnectedByRun).ConfigureAwait(false) != null
+                                           || !await this.SayStillAsync(prompt).ConfigureAwait(false))) {
                     // Off the screen until it may be typed again: no line asked for while not private, or someone is near.
                     if (!await this.TypingReadyAsync(check, index, prompt, answer.Task, token).ConfigureAwait(false)) {
                         return answer.Task.Result;
@@ -825,6 +861,13 @@ public sealed class SelfTestRun {
 
             await this.GateAsync(typing: true, token).ConfigureAwait(false);
             await this.EnsureSayAsync().ConfigureAwait(false);
+            if (!await this.GameOnSayAsync().ConfigureAwait(false)) {
+                // Talking in a channel over another chat channel (the switch would end it), or unreadable: not asked to type.
+                this.SetView(view => view with { State = SelfTestState.Paused, Pause = SelfTestWords.WaitingSay, Prompt = null });
+                await this._host.Delay(Poll, token).ConfigureAwait(false);
+                continue;
+            }
+
             if (!prompt.ChatTwoOnSay || await this.ChatTwoOnSayAsync().ConfigureAwait(false)) {
                 return true;
             }
@@ -835,13 +878,27 @@ public sealed class SelfTestRun {
         }
     }
 
+    /// <summary>ChatTwo's input is on Say, or can't be read (no ChatTwo, or one too old to say).</summary>
     private async Task<bool> ChatTwoOnSayAsync() {
         try {
-            return await this._host.ChatTwoInputAsync().ConfigureAwait(false) == SelfTestGameChannels.ChatTwoSay;
+            return await this._host.ChatTwoInputAsync().ConfigureAwait(false) is null or SelfTestGameChannels.ChatTwoSay;
         } catch (Exception ex) when (ex is not OperationCanceledException) {
             return false;
         }
     }
+
+    /// <summary>The game's chat channel is Say (underneath, while talking in a channel); null (unreadable) is not.</summary>
+    private async Task<bool> GameOnSayAsync() {
+        try {
+            return await this._host.GameChannelAsync().ConfigureAwait(false) == SelfTestGameChannels.Say;
+        } catch (Exception ex) when (ex is not OperationCanceledException) {
+            return false;
+        }
+    }
+
+    /// <summary>While a line to type is asked for: the game's chat channel still Say, and ChatTwo's input too where asked.</summary>
+    private async Task<bool> SayStillAsync(GuidedPrompt prompt) =>
+        await this.GameOnSayAsync().ConfigureAwait(false) && (!prompt.ChatTwoOnSay || await this.ChatTwoOnSayAsync().ConfigureAwait(false));
     // ================================================================ settings and channels
 
     /// <summary>Changes a setting for the run: snapshotted in the run file (saved) before its first change.</summary>
@@ -975,17 +1032,7 @@ public sealed class SelfTestRun {
         }).ConfigureAwait(false);
 
         // Stopped while the run had disconnected on purpose: connect again first (the player didn't press Disconnect).
-        if (this.DisconnectedByRun) {
-            await this.TryAsync("connect", async () => {
-                await this._host.ConnectAsync().ConfigureAwait(false);
-                for (var waited = TimeSpan.Zero; waited < TimeSpan.FromMinutes(1) && !await this.ReadyAsync().ConfigureAwait(false); waited += Poll) {
-                    await this._host.Delay(Poll, CancellationToken.None).ConfigureAwait(false);
-                }
-            }).ConfigureAwait(false);
-            if (await this.ReadyAsync().ConfigureAwait(false)) {
-                this.MarkDisconnected(false);
-            }
-        }
+        await this.TryAsync("connect", this.ReconnectIfTheRunDisconnectedAsync).ConfigureAwait(false);
 
         // Only with the run's own character, connected: otherwise its channels and its file stay, for the next connection.
         var reachable = await this.ReadyAsync().ConfigureAwait(false) && await this.IsForAsync().ConfigureAwait(false);
@@ -1051,7 +1098,15 @@ public sealed class SelfTestRun {
 
         // Off and empty before the run: everything in the history is the test's (real channels' lines recorded during the
         // run too). Deleted once the setting is back off, so nothing more is recorded after it.
-        if (historyWasOffAndEmpty) {
+        bool historyBack;
+        lock (this._lock) {
+            historyBack = !this._data.Settings.ContainsKey(SelfTestSetting.KeepHistory);
+        }
+
+        if (historyWasOffAndEmpty && !historyBack) {
+            // The setting couldn't be put back off: nothing is deleted while it may be recording; the next start decides.
+            historyFailed = true;
+        } else if (historyWasOffAndEmpty) {
             historyFailed = !await this.TryAsync("history", () => this._host.DeleteHistoryAsync()).ConfigureAwait(false);
             if (!historyFailed) {
                 lock (this._lock) {
@@ -1131,6 +1186,7 @@ public sealed class SelfTestRun {
     private void Save() {
         try {
             lock (this._lock) {
+                this._data.LastActive = this._host.Now;
                 this._file.Write(this._data);
             }
         } catch (Exception ex) {

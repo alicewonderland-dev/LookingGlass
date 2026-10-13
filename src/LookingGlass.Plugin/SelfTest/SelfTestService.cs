@@ -29,6 +29,8 @@ internal sealed partial class SelfTestService : IDisposable {
     private ClientSession? _listening;
     private SelfTestRunData? _resume;
     private SelfTestRunData? _recover;
+    // A run file whose test history couldn't be deleted by itself: the window asks the tester.
+    private SelfTestRunData? _askHistory;
     private bool _recovering;
     private bool _tellInterrupted;
     private Task _lastRun = Task.CompletedTask;
@@ -71,7 +73,8 @@ internal sealed partial class SelfTestService : IDisposable {
             return new SelfTestStart(data, null, false);
         }
 
-        var done = SelfTestRecovery.PutBack(data, new PluginSettings(config, data.ContentId, data.ServerUrl), () => ChatLogFiles.DeleteAll(configFolder),
+        var done = SelfTestRecovery.PutBack(data, new PluginSettings(config, data.ContentId, data.ServerUrl), () => ChatLogFiles.FoldersWithTimes(configFolder),
+            folders => ChatLogFiles.DeleteFolders(configFolder, folders),
             line => Services.Log.Information(line));
         try {
             if (done) {
@@ -84,7 +87,51 @@ internal sealed partial class SelfTestService : IDisposable {
             Services.Log.Warning($"[selftest] the run file couldn't be updated ({ex.GetType().Name})");
         }
 
+        // Nothing else to do but ask about the test's history: the window asks at once, whoever is logged in.
         return new SelfTestStart(null, data, damaged);
+    }
+
+    /// <summary>The window asks whether to delete an earlier test's chat history (it couldn't be by itself).</summary>
+    public bool AskHistory => this._askHistory != null || this._recover is { HistoryNeedsAsking: true };
+
+    /// <summary>
+    /// The tester's answer about an earlier test's chat history. Yes deletes the chat log folders nothing has written to
+    /// since that test (never the one open now); No keeps everything. Either way it isn't asked again.
+    /// </summary>
+    public void AnswerHistory(bool delete) {
+        var data = this._askHistory ?? this._recover;
+        if (data is not { HistoryNeedsAsking: true }) {
+            return;
+        }
+
+        var folder = Services.PluginInterface.ConfigDirectory.FullName;
+        if (delete) {
+            try {
+                var folders = SelfTestRecovery.UntouchedSince(ChatLogFiles.FoldersWithTimes(folder), data.LastActive, this._parts.Sessions.ChatLog?.Folder);
+                ChatLogFiles.DeleteFolders(folder, folders);
+                Services.Log.Information($"[selftest] an earlier test's chat history was deleted, as the tester chose ({folders.Count} folders)");
+            } catch (Exception ex) {
+                Services.Log.Warning($"[selftest] an earlier test's chat history couldn't be deleted ({ex.GetType().Name})");
+                return;
+            }
+        }
+
+        data.HistoryNeedsAsking = false;
+        this._askHistory = null;
+        try {
+            if (data.TestChannels.Count == 0 && data.Settings.Count == 0 && data.GameChannelBefore == null) {
+                this._file.Delete();
+                if (this._recover == data) {
+                    this._recover = null;
+                }
+            } else {
+                this._file.Write(data);
+            }
+        } catch (Exception ex) {
+            Services.Log.Warning($"[selftest] the run file couldn't be updated ({ex.GetType().Name})");
+        }
+
+        this._files = null;
     }
 
     /// <summary>A run file that lost whose it was (damaged): it can't be finished by itself, only cleared.</summary>
@@ -147,6 +194,10 @@ internal sealed partial class SelfTestService : IDisposable {
 
         if (this._resume != null) {
             return "A run is waiting to carry on.";
+        }
+
+        if (this.AskHistory) {
+            return "Answer about the last test's chat history first.";
         }
 
         if (this.FileUnknown) {
@@ -259,6 +310,10 @@ internal sealed partial class SelfTestService : IDisposable {
         }
     }
 
+    /// <summary>
+    /// A refusal from the session: raised on the thread its answer came on (a background one), not the framework thread;
+    /// <see cref="SelfTestRun.ReportRefusal"/> is safe from any thread.
+    /// </summary>
     private void OnRefused(Protocol.ErrorCode code) {
         if (this.Run is { View.State: not SelfTestState.Done } run) {
             run.ReportRefusal();
@@ -332,8 +387,6 @@ internal sealed partial class SelfTestService : IDisposable {
 
     // ================================================================ leftovers
 
-    [GeneratedRegex(@"^LG self-test [A-Z0-9]{4}( [bc])?$")]
-    private static partial Regex TestChannelName();
 
     /// <summary>
     /// Channels named like a self-test's that no run file knows about (the file was lost): listed, never removed by
@@ -345,7 +398,7 @@ internal sealed partial class SelfTestService : IDisposable {
             known.UnionWith(recover.TestChannels);
         }
 
-        return this._parts.Sessions.Snapshot.Channels.Where(channel => channel.Name is { } name && TestChannelName().IsMatch(name) && !known.Contains(channel.Id)).ToList();
+        return this._parts.Sessions.Snapshot.Channels.Where(channel => SelfTestRun.IsTestChannelName(channel.Name) && !known.Contains(channel.Id)).ToList();
     }
 
     /// <summary>Leaves a leftover channel the tester chose to remove.</summary>
@@ -442,21 +495,25 @@ internal sealed partial class SelfTestService : IDisposable {
             }
 
             if (data.HistoryWasOffAndEmpty) {
-                // Off and empty before the run (and off again now): everything in it is the test's.
-                if (!data.Settings.ContainsKey(SelfTestSetting.KeepHistory)) {
-                    await this._parts.Sessions.DeleteChatLogs();
-                    data.HistoryWasOffAndEmpty = false;
-                }
+                // Off and empty before the run: the test's history is deleted only while the history is still off and
+                // nothing in it is newer than the run; otherwise the window asks (see SelfTestRecovery).
+                var folder = Services.PluginInterface.ConfigDirectory.FullName;
+                SelfTestRecovery.CleanUpHistory(data, () => this._parts.Config.KeepChatLog, () => ChatLogFiles.FoldersWithTimes(folder),
+                    folders => ChatLogFiles.DeleteFolders(folder, folders), line => Services.Log.Information(line));
             } else if (this._parts.Sessions.ChatLog is { } log) {
                 foreach (var channelId in channels) {
                     await log.ForgetChannelAsync(channelId);
                 }
             }
 
-            if (left && data.Settings.Count == 0 && !data.HistoryWasOffAndEmpty) {
+            if (left && data.Settings.Count == 0 && !data.HistoryWasOffAndEmpty && !data.HistoryNeedsAsking) {
                 this._file.Delete();
             } else {
                 this._file.Write(data);
+            }
+
+            if (data.HistoryNeedsAsking) {
+                this._askHistory = data;
             }
         } catch (Exception ex) {
             // A history that couldn't be cleared keeps the file too: tried again at the next start.

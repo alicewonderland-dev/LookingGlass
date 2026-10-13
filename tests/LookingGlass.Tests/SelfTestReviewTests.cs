@@ -221,13 +221,15 @@ public sealed class SelfTestReviewTests : IDisposable {
 
     [Fact]
     public void AfterACrashAnOffAndEmptyHistoryIsDeletedAtTheNextStart() {
-        var data = new SelfTestRunData { Code = "K7Q2", ContentId = 42, ServerUrl = "x", HistoryWasOffAndEmpty = true, TestChannels = ["c1"] };
+        var lastActive = this._host.Now;
+        var data = new SelfTestRunData { Code = "K7Q2", ContentId = 42, ServerUrl = "x", HistoryWasOffAndEmpty = true, TestChannels = ["c1"], LastActive = lastActive };
         data.Settings[SelfTestSetting.KeepHistory] = JsonSerializer.SerializeToElement(false);
         var settings = new MapSettings();
         settings.Values[SelfTestSetting.KeepHistory] = JsonSerializer.SerializeToElement(true);
         var deleted = 0;
+        IReadOnlyList<(string, DateTimeOffset)> folders = [("chatlog-a", lastActive.AddMinutes(-5))];
 
-        var done = SelfTestRecovery.PutBack(data, settings, () => deleted++);
+        var done = SelfTestRecovery.PutBack(data, settings, () => folders, _ => deleted++);
 
         Assert.Equal(1, deleted);
         Assert.False(settings.Values[SelfTestSetting.KeepHistory].GetBoolean());
@@ -237,7 +239,7 @@ public sealed class SelfTestReviewTests : IDisposable {
 
         // A history that was the tester's is never deleted.
         var theirs = new SelfTestRunData { Code = "K7Q2", ContentId = 42, ServerUrl = "x" };
-        Assert.True(SelfTestRecovery.PutBack(theirs, settings, () => deleted++));
+        Assert.True(SelfTestRecovery.PutBack(theirs, settings, () => folders, _ => deleted++));
         Assert.Equal(1, deleted);
     }
 
@@ -248,7 +250,7 @@ public sealed class SelfTestReviewTests : IDisposable {
         data.Settings[SelfTestSetting.WindowsOnly] = JsonSerializer.SerializeToElement(false);
         var settings = new MapSettings();
 
-        SelfTestRecovery.PutBack(data, settings, () => { });
+        SelfTestRecovery.PutBack(data, settings, () => [], _ => { });
 
         Assert.True(SelfTestRecovery.Unknown(data));
         Assert.False(settings.Values.ContainsKey(SelfTestSetting.ChannelWindows));
