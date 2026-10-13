@@ -74,6 +74,9 @@ internal sealed partial class FakeSelfTestHost : ISelfTestHost, IDisposable {
 
     public List<string> CreatedNames { get; } = [];
 
+    /// <summary>The channels the run made, by ID.</summary>
+    public List<string> Created { get; } = [];
+
     public FakeSelfTestHost() {
         foreach (var setting in Enum.GetValues<SelfTestSetting>()) {
             this.Settings[setting] = JsonSerializer.SerializeToElement(setting.ToString() + " before");
@@ -168,6 +171,7 @@ internal sealed partial class FakeSelfTestHost : ISelfTestHost, IDisposable {
         this.Creates++;
         this.CreatedNames.Add(name);
         var id = $"channel{Interlocked.Increment(ref this._ids)}";
+        this.Created.Add(id);
         this.Channels.Add(new SelfTestChannel(id, name, 1));
         this.Slots[id] = Enumerable.Range(1, 50).First(slot => !this.Slots.ContainsValue(slot));
         return Task.FromResult(id);

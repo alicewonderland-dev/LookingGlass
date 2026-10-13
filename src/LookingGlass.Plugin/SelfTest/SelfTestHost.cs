@@ -34,15 +34,13 @@ internal sealed record SelfTestParts(
 internal sealed partial class SelfTestHost : ISelfTestHost, IDisposable {
     private readonly SelfTestParts _parts;
     private readonly Lock _lock = new();
-    private readonly List<(long Seq, TapLine Line)> _printed = [];
-    private readonly List<(long Seq, GameChatLine Line)> _gameChat = [];
+    // Each holds the run's newest lines (the oldest dropped first, see RunTap).
+    private readonly RunTap<TapLine> _printed = new();
+    private readonly RunTap<GameChatLine> _gameChat = new();
     private long _seq;
     private string? _marker;
     private int _logins;
     private int _localSendsAtStart;
-
-    /// <summary>The most lines each tap holds (a run prints far fewer).</summary>
-    private const int MostLines = 2000;
 
     public SelfTestHost(SelfTestParts parts) {
         this._parts = parts;
@@ -89,9 +87,7 @@ internal sealed partial class SelfTestHost : ISelfTestHost, IDisposable {
 
     private void OnPrinted(TapLine line) {
         lock (this._lock) {
-            if (this._printed.Count < MostLines) {
-                this._printed.Add((++this._seq, line));
-            }
+            this._printed.Add(++this._seq, line);
         }
     }
 
@@ -125,9 +121,7 @@ internal sealed partial class SelfTestHost : ISelfTestHost, IDisposable {
             }
 
             lock (this._lock) {
-                if (this._gameChat.Count < MostLines) {
-                    this._gameChat.Add((++this._seq, new GameChatLine(kind, fromTester, marked ? text : "")));
-                }
+                this._gameChat.Add(++this._seq, new GameChatLine(kind, fromTester, marked ? text : ""));
             }
         } catch {
             // The watcher must never be in the way of game chat.
@@ -437,13 +431,13 @@ internal sealed partial class SelfTestHost : ISelfTestHost, IDisposable {
 
     public IReadOnlyList<TapLine> PrintedSince(long mark) {
         lock (this._lock) {
-            return this._printed.Where(entry => entry.Seq > mark).Select(entry => entry.Line).ToList();
+            return this._printed.Since(mark);
         }
     }
 
     public IReadOnlyList<GameChatLine> GameChatSince(long mark) {
         lock (this._lock) {
-            return this._gameChat.Where(entry => entry.Seq > mark).Select(entry => entry.Line).ToList();
+            return this._gameChat.Since(mark);
         }
     }
 

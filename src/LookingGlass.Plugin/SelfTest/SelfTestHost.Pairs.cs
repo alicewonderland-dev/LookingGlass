@@ -11,7 +11,7 @@ namespace LookingGlass.Plugin.SelfTest;
 /// here refuses anyone but the paired tester, and any channel but the run's.
 /// </summary>
 internal sealed partial class SelfTestHost {
-    private readonly List<(long Seq, ReceivedLine Line)> _received = [];
+    private readonly RunTap<ReceivedLine> _received = new();
     private (string? Other, string Code, SelfTestRole Role)? _pair;
     private long _otherId;
 
@@ -67,18 +67,23 @@ internal sealed partial class SelfTestHost {
         ? userId
         : throw new InvalidOperationException("Only the other tester.");
 
+    /// <summary>
+    /// A message delivered: kept only if it is the run's (in a test channel, own or joined, or local chat, and from the other
+    /// tester or with the run's prefix), never a real channel's (see <see cref="SelfTestTaps.Keeps"/>). From any thread.
+    /// </summary>
     private void OnDelivered(ReceivedLine line) {
+        var channels = this.TestChannels?.Invoke() ?? [];
         lock (this._lock) {
-            if (this._pair != null && this._received.Count < MostLines) {
+            if (this._pair is { } pair && SelfTestTaps.Keeps(line, channels, pair.Other, this._otherId, pair.Code)) {
                 var seq = ++this._seq;
-                this._received.Add((seq, line with { Seq = seq }));
+                this._received.Add(seq, line with { Seq = seq });
             }
         }
     }
 
     public IReadOnlyList<ReceivedLine> ReceivedSince(long mark) {
         lock (this._lock) {
-            return this._received.Where(entry => entry.Seq > mark).Select(entry => entry.Line).ToList();
+            return this._received.Since(mark);
         }
     }
 

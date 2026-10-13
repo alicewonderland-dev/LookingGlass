@@ -182,6 +182,20 @@ public sealed class ChatLogForgetTests : IDisposable {
     }
 
     [Fact]
+    public async Task OnceForgottenTheNewPlaceIsReadyBeforeTheCallerHearsIt() {
+        // The version and the windows' places change before the forget is done, never after (it was a race under load).
+        var log = this.Open();
+        for (var i = 0; i < 100; i++) {
+            log.Record(Line("test", $"t{i}"));
+            var earlier = log.Earlier("sky");
+            var version = log.Version;
+            await log.ForgetChannelAsync("test");
+            Assert.True(log.Version > version, $"The version hadn't moved on at forget {i}.");
+            Assert.NotSame(earlier, log.Earlier("sky"));
+        }
+    }
+
+    [Fact]
     public async Task ASegmentHalfWrittenAgainIsClearedAndNeverCounted() {
         var first = this.Open();
         first.Record(Line("sky", "s1"));

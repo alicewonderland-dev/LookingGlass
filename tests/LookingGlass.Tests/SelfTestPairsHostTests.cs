@@ -229,6 +229,32 @@ public sealed class SelfTestPairsHostTests : IDisposable {
     }
 
     [Fact]
+    public async Task ABusyTestersOwnChannelsNeverCrowdOutThePartner() {
+        var real = new SelfTestChannel("fc", "Free Company", 30);
+        this._host.Channels.Add(real);
+        this._partner.Answer = (request, channel) => {
+            // Thousands of lines in the tester's real channels, mid-request, with the prefix in some of them too.
+            for (var i = 0; i < 5000; i++) {
+                this._host.Deliver("fc", 100 + (i % 7), "Someone Busy@Lich", i % 100 == 0 ? $"LG self-test K7Q2 #{i} done" : $"line {i}");
+            }
+
+            return null;
+        };
+        PartnerAnswer? got = null;
+        var run = this.NewRun(Check("busy", Auto("asks", async context => {
+            got = await context.Partner.AskAsync(context, PartnerVerb.ReportWindows);
+            return StepResult.Pass();
+        })));
+
+        await run.RunAsync();
+
+        Assert.Equal(CheckOutcome.Passed, Result(run, "busy").Outcome);
+        Assert.NotNull(got);
+        // Nothing of a real channel was kept (nor taken as someone meddling).
+        Assert.DoesNotContain(this._host.ReceivedSince(0), line => line.ChannelId == "fc");
+    }
+
+    [Fact]
     public async Task LinesWithoutThePrefixFromAnyoneAreIgnored() {
         this._partner.Answer = (request, channel) => {
             this._host.Deliver(channel, 99, "Mallory Meddler@Lich", "pulling at 9");

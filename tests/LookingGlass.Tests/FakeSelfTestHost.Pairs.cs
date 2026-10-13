@@ -57,9 +57,15 @@ internal sealed partial class FakeSelfTestHost {
 
     /// <summary>Delivers a line, as the session would (a channel's, or local chat's with a null channel).</summary>
     public void Deliver(string? channelId, long senderId, string sender, string text, bool own = false, bool caughtUp = false, IReadOnlyList<ChatLink>? links = null) {
+        var line = new ReceivedLine(channelId, senderId, sender, own, text, links ?? [], caughtUp);
+        // As the plugin's tap: only the run's lines (its test channels, own or joined, and local chat), never a real channel's.
+        if (this.Paired is { } pair && !SelfTestTaps.Keeps(line, [.. this.Created, .. this.Accepted], pair.Other, pair.Role == SelfTestRole.Partner ? ScriptedHost.Id : ScriptedPartner.Id, pair.Code)) {
+            return;
+        }
+
         lock (this._lock) {
             var seq = ++this._seq;
-            this._received.Add((seq, new ReceivedLine(channelId, senderId, sender, own, text, links ?? [], caughtUp) { Seq = seq }));
+            this._received.Add((seq, line with { Seq = seq }));
         }
     }
 
