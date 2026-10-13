@@ -32,6 +32,7 @@ public sealed class SelfTestProtocolTests {
             PartnerRequest.Of(16, PartnerVerb.Ask, "say-hello"),
             PartnerRequest.Of(17, PartnerVerb.InviteMe),
             PartnerRequest.Of(18, PartnerVerb.Bye),
+            PartnerRequest.Of(21, PartnerVerb.KeepAlive),
         };
 
         foreach (var request in requests) {
@@ -107,6 +108,7 @@ public sealed class SelfTestProtocolTests {
     [InlineData("LG self-test K7Q2 #1 report")]
     [InlineData("LG self-test K7Q2 #1 report saw abc")]
     [InlineData("LG self-test K7Q2 #1 leave in=d")]
+    [InlineData("LG self-test K7Q2 #1 alive now")]
     [InlineData("LG self-test K7Q2 #1 leave in=b in=c")]
     [InlineData("LG self-test K7Q2 #1 leave link=item")]
     public void AnythingElseIsRefused(string line) {
@@ -134,6 +136,9 @@ public sealed class SelfTestProtocolTests {
         Assert.Equal(3, SelfTestProtocol.MostDisconnects);
         Assert.Equal(TimeSpan.FromSeconds(60), SelfTestProtocol.AnswerWithin);
         Assert.Equal(TimeSpan.FromMinutes(10), SelfTestProtocol.GuidedAnswerWithin);
-        Assert.Equal(TimeSpan.FromMinutes(15), SelfTestProtocol.PartnerGivesUpAfter);
+        Assert.Equal(TimeSpan.FromMinutes(45), SelfTestProtocol.PartnerGivesUpOffline);
+        Assert.Equal(TimeSpan.FromMinutes(60), SelfTestProtocol.PartnerGivesUpSilent);
+        Assert.Equal(TimeSpan.FromMinutes(5), SelfTestProtocol.KeepAliveEvery);
+        Assert.Equal(30, SelfTestProtocol.MostKeepAlives);
     }
 }

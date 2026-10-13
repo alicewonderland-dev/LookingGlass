@@ -39,6 +39,12 @@ public sealed class PartnerLink {
     /// <summary>The partner stopped answering (twice), or left the test channel, or was told bye: no more requests.</summary>
     public bool Gone { get; private set; }
 
+    /// <summary>The pair has ended: no more requests, and the partner's name goes from the run file at once (their number stays, for a block to undo).</summary>
+    private void MarkGone() {
+        this.Gone = true;
+        this._run.ForgetOtherName();
+    }
+
     /// <summary>The partner's facts, as its hello said: its version, private place, ChatTwo, mode, place kind, data centre.</summary>
     public IReadOnlyDictionary<string, string> Hello => this.Data.PartnerHello ?? new Dictionary<string, string>();
 
@@ -121,6 +127,7 @@ public sealed class PartnerLink {
 
         this.Data.PartnerHello = found.Fields.ToDictionary();
         this._silences = 0;
+        this.LastSent = this.Host.Now;
         return null;
     }
 
@@ -229,7 +236,7 @@ public sealed class PartnerLink {
             // Out of the test channel, and not invited to it: asked to leave by a check that stopped before inviting them back
             // (invited back now), or their run has ended.
             if (!this._left.Contains(channel) || !await this.InviteAndWaitAsync(context, channel).ConfigureAwait(false)) {
-                this.Gone = true;
+                this.MarkGone();
                 throw new PartnerSilentException(gone: true);
             }
         }
@@ -237,6 +244,7 @@ public sealed class PartnerLink {
         var number = ++this.Data.ProtocolNumber;
         var line = SelfTestProtocol.Write(this._run.Code, new PartnerRequest(number, verb, args));
         await context.ServerAsync(SelfTestAction.PartnerMessage, () => this.Host.SendAsync(channel, line)).ConfigureAwait(false);
+        this.LastSent = this.Host.Now;
         return number;
     }
 
@@ -279,7 +287,7 @@ public sealed class PartnerLink {
         }
 
         if (++this._silences >= 2 || verb == PartnerVerb.StillThere) {
-            this.Gone = true;
+            this.MarkGone();
             throw new PartnerSilentException(gone: true);
         }
 
@@ -287,7 +295,7 @@ public sealed class PartnerLink {
         try {
             await this.AskAsync(context, PartnerVerb.StillThere).ConfigureAwait(false);
         } catch (PartnerSilentException) {
-            this.Gone = true;
+            this.MarkGone();
         }
 
         throw new PartnerSilentException(this.Gone);
@@ -303,6 +311,37 @@ public sealed class PartnerLink {
         };
     }
 
+    // ================================================================ keeping the partner
+
+    /// <summary>When the host last sent the partner anything (a request, or "alive").</summary>
+    public DateTimeOffset LastSent { get; private set; }
+
+    /// <summary>How many "alive" lines this run sent.</summary>
+    public int KeepAlives { get; private set; }
+
+    /// <summary>Whether an "alive" is due: paired, still there, quiet for five minutes, and not past its most.</summary>
+    internal bool KeepAliveDue => this.Paired && !this.Gone && this.ChannelId != null && this.KeepAlives < SelfTestProtocol.MostKeepAlives
+                                  && this.Host.Now - this.LastSent >= SelfTestProtocol.KeepAliveEvery;
+
+    /// <summary>
+    /// Sends "alive" (never answered), paced as a protocol line: while the host's tester takes long on a step, or relogs,
+    /// the partner doesn't give up. A refusal goes up (the run stops); its most reached, it just stops sending them.
+    /// </summary>
+    internal async Task KeepAliveAsync(SelfTestPacer pacer, CancellationToken token) {
+        var channel = this.ChannelId!;
+        this.LastSent = this.Host.Now;
+        this.KeepAlives++;
+        try {
+            await pacer.WaitAsync(SelfTestAction.PartnerMessage, token).ConfigureAwait(false);
+        } catch (SelfTestSpentException) {
+            this.KeepAlives = SelfTestProtocol.MostKeepAlives;
+            return;
+        }
+
+        var number = ++this.Data.ProtocolNumber;
+        await this.Host.SendAsync(channel, SelfTestProtocol.Write(this._run.Code, new PartnerRequest(number, PartnerVerb.KeepAlive, []))).ConfigureAwait(false);
+    }
+
     // ================================================================ the end
 
     /// <summary>
@@ -316,7 +355,7 @@ public sealed class PartnerLink {
         }
 
         var wasGone = this.Gone;
-        this.Gone = true;
+        this.MarkGone();
         try {
             if (!wasGone) {
                 var number = ++this.Data.ProtocolNumber;

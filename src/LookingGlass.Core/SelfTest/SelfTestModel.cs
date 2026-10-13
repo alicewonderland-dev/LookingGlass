@@ -141,6 +141,15 @@ public sealed record GuidedPrompt(string Text, PromptKind Kind = PromptKind.DoTh
 
     /// <summary>ChatTwo's input must be on Say before it shows (the tester is asked to put it there first).</summary>
     public bool ChatTwoOnSay { get; init; }
+
+    /// <summary>
+    /// With <see cref="TesterTypes"/>: something else that must hold while the line is asked for (a party of just the two
+    /// testers, before /p), checked with the typing gate before it shows and at every poll; while it doesn't, the request is
+    /// off the screen, and <see cref="HoldsWhy"/> says why.
+    /// </summary>
+    public Func<Task<bool>>? Holds { get; init; }
+
+    public string? HoldsWhy { get; init; }
 }
 
 /// <summary>What the runner sees while a guided step waits, and whether it is what the step expects.</summary>

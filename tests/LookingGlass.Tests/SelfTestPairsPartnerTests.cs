@@ -202,19 +202,121 @@ public sealed class SelfTestPairsPartnerTests : IDisposable {
         Assert.Contains(ScriptedHost.Channel, this._host.Left);
     }
 
+    private string? _waitingShown;
+
+    /// <summary>Plays the host's presence over time: online or not, and a request after some quiet minutes.</summary>
+    private void HostOverTime(ScriptedHost host, Func<TimeSpan, bool> online, TimeSpan? byeAt = null) {
+        DateTimeOffset? joined = null;
+        var said = false;
+        this._host.OnTick = () => {
+            if (this._host.Accepted.Count == 0) {
+                return;
+            }
+
+            joined ??= this._host.Now;
+            var since = this._host.Now - joined.Value;
+            this._host.SetOnline(ScriptedHost.Channel, ScriptedHost.Id, online(since));
+            if (since > TimeSpan.FromMinutes(30) && this._waitingShown == null) {
+                this._waitingShown = this._run?.View.PairLine;
+            }
+
+            if (byeAt is { } at && since >= at && !said) {
+                said = true;
+                host.Say("LG self-test K7Q2 #50 bye");
+            }
+        };
+    }
+
     [Fact]
-    public async Task FifteenMinutesWithoutARequestEndIt() {
+    public async Task AHostOnlineButQuietForFortyMinutesIsWaitedFor() {
+        // Its tester on a long guided step (its "alive" lines aside): the host shows online, so the partner waits.
         var host = new ScriptedHost(this._host);
         host.Invite();
+        this.HostOverTime(host, _ => true, byeAt: TimeSpan.FromMinutes(50));
         var run = this.NewRun();
 
         await run.RunAsync();
 
         var result = Result(run);
         Assert.Equal(CheckOutcome.Passed, result.Outcome);
-        Assert.Contains(result.NotRun, notRun => notRun.Contains(SelfTestWords.HostSilent, StringComparison.Ordinal));
-        Assert.True(this._host.Now - run.View.StartedAt >= SelfTestProtocol.PartnerGivesUpAfter);
+        Assert.Empty(result.NotRun);
+        Assert.Equal(PartnerOutcome.Done, host.Answers[^1].Outcome);
+        Assert.Equal(SelfTestWords.PartnerWaitingOnHost(true), this._waitingShown);
+    }
+
+    [Fact]
+    public async Task AHostRelogOfFortyMinutesIsWaitedFor() {
+        var host = new ScriptedHost(this._host);
+        host.Invite();
+        this.HostOverTime(host, since => since < TimeSpan.FromMinutes(2) || since >= TimeSpan.FromMinutes(42), byeAt: TimeSpan.FromMinutes(43));
+        var run = this.NewRun();
+
+        await run.RunAsync();
+
+        Assert.Empty(Result(run).NotRun);
+        Assert.Equal(PartnerOutcome.Done, host.Answers[^1].Outcome);
+    }
+
+    [Fact]
+    public async Task AHostOfflineFor45MinutesEndsIt() {
+        var host = new ScriptedHost(this._host);
+        host.Invite();
+        this.HostOverTime(host, since => since < TimeSpan.FromMinutes(2));
+        var run = this.NewRun();
+
+        await run.RunAsync();
+
+        var result = Result(run);
+        Assert.Contains(result.NotRun, notRun => notRun.Contains(SelfTestWords.HostAway, StringComparison.Ordinal));
+        Assert.InRange(this._host.Now - run.View.StartedAt, SelfTestProtocol.PartnerGivesUpOffline, SelfTestProtocol.PartnerGivesUpOffline + TimeSpan.FromMinutes(15));
         Assert.Contains(ScriptedHost.Channel, this._host.Left);
+    }
+
+    [Fact]
+    public async Task AHostOnlineAndSilentForAnHourEndsIt() {
+        var host = new ScriptedHost(this._host);
+        host.Invite();
+        this.HostOverTime(host, _ => true);
+        var run = this.NewRun();
+
+        await run.RunAsync();
+
+        Assert.Contains(Result(run).NotRun, notRun => notRun.Contains(SelfTestWords.HostSilent, StringComparison.Ordinal));
+        Assert.True(this._host.Now - run.View.StartedAt >= SelfTestProtocol.PartnerGivesUpSilent);
+    }
+
+    [Fact]
+    public async Task AliveIsNeverAnsweredAndKeepsItWaiting() {
+        var host = new ScriptedHost(this._host);
+        host.Invite();
+        var aliveSent = 0;
+        DateTimeOffset? joined = null;
+        // Offline the whole time, but "alive" every five minutes for an hour (the host connected elsewhere, say): waited for.
+        this._host.OnTick = () => {
+            if (this._host.Accepted.Count == 0) {
+                return;
+            }
+
+            joined ??= this._host.Now;
+            this._host.SetOnline(ScriptedHost.Channel, ScriptedHost.Id, false);
+            var due = (int) ((this._host.Now - joined.Value) / SelfTestProtocol.KeepAliveEvery);
+            while (aliveSent < due && aliveSent < 12) {
+                aliveSent++;
+                host.Say($"LG self-test K7Q2 #{100 + aliveSent} alive");
+            }
+
+            if (aliveSent == 12 && host.Requests.Count == 0) {
+                host.Say("LG self-test K7Q2 #200 bye");
+                aliveSent++;
+            }
+        };
+        var run = this.NewRun();
+
+        await run.RunAsync();
+
+        Assert.Empty(Result(run).NotRun);
+        // Only hello and bye were answered.
+        Assert.Equal([0, 200], host.Answers.Select(answer => answer.Number).ToArray());
     }
 
     [Fact]
@@ -298,6 +400,35 @@ public sealed class SelfTestPairsPartnerTests : IDisposable {
         Assert.Equal(PartnerOutcome.Done, Of(host, 3).Outcome);
         Assert.Equal(PartnerOutcome.Refused, Of(host, 4).Outcome);
         Assert.Equal(PartnerOutcome.Refused, Of(host, 5).Outcome);
+    }
+
+    [Fact]
+    public async Task ItsPlayerIsAskedAtMostTwentyStepsAndTheNameGoesWithThePair() {
+        var host = new ScriptedHost(this._host, [.. Enumerable.Repeat("ask open-friends", SelfTestProtocol.MostAsks + 1), "bye"]);
+        host.Invite();
+        string? nameAfter = "unset";
+        host.AfterAnswer = answer => {
+            if (answer.Number == SelfTestProtocol.MostAsks + 2) {
+                nameAfter = null;
+            }
+        };
+        this._host.OnTick = () => {
+            if (this._run?.View.Prompt != null) {
+                this._run.Answer(GuidedAnswer.Done);
+            }
+
+            if (this._run?.View.State == SelfTestState.CleaningUp) {
+                nameAfter ??= this._run.Data.Partner ?? "gone";
+            }
+        };
+        var run = this.NewRun();
+
+        await run.RunAsync();
+
+        Assert.Equal(PartnerOutcome.Yes, Of(host, SelfTestProtocol.MostAsks).Outcome);
+        Assert.Equal(PartnerOutcome.Refused, Of(host, SelfTestProtocol.MostAsks + 1).Outcome);
+        // By the clean-up, the host's name had left the run file.
+        Assert.Equal("gone", nameAfter);
     }
 
     [Fact]

@@ -248,7 +248,7 @@ internal sealed class ScriptedPartner {
             return;
         }
 
-        if (this.Silent || this.Ignore?.Invoke(request) == true) {
+        if (this.Silent || request.Verb == PartnerVerb.KeepAlive || this.Ignore?.Invoke(request) == true) {
             return;
         }
 

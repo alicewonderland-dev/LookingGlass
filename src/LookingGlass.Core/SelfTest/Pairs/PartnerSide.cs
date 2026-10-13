@@ -9,7 +9,10 @@ namespace LookingGlass.Core.SelfTest;
 /// list, each within its cap, and nothing else. It never types in game chat by itself: a step that needs its player shows a
 /// "Needs you" box, behind the same typing gate as any step. A line with the run's prefix from anyone but the two testers
 /// stops it; so do "bye", fifteen minutes without a request, and the host's channel going away. The host's name is held in
-/// the run file only while the run lasts, and is compared, never shown or logged.
+/// the run file only while the pair lasts, and is compared, never shown or logged. Its caps (leaves, accepts, withdraws,
+/// asks) are kept in memory only: a partner's run never carries on after a reload (the next start puts back what it
+/// changed and ends it), so its caps last as long as its run; what the pacer counts (its 80 lines, its reconnects, its
+/// one channel and one invite) is in the run file anyway.
 /// </summary>
 public sealed class PartnerSide {
     /// <summary>How long the partner waits for the host's first invite.</summary>
@@ -32,6 +35,8 @@ public sealed class PartnerSide {
     private int _got, _own, _caught, _named;
     private string? _myName;
     private bool _invitedHost, _bye;
+    private DateTimeOffset _seenOnline;
+    private string? _waitingLine;
 
     public PartnerSide(StepContext context) {
         this._context = context;
@@ -146,8 +151,27 @@ public sealed class PartnerSide {
                 }
             }
 
-            if (this.Host.Now - this._heard > SelfTestProtocol.PartnerGivesUpAfter) {
+            // The host online in its test channel counts as alive (it sends "alive" every few minutes while its tester is busy);
+            // offline (a relog, or the game closed) it has 45 minutes; online and silent for an hour, its runner has gone.
+            var online = await this.HostOnlineAsync().ConfigureAwait(false);
+            if (online) {
+                this._seenOnline = this.Host.Now;
+            }
+
+            var quiet = this.Host.Now - this._heard;
+            if (!online && this.Host.Now - (this._seenOnline > this._heard ? this._seenOnline : this._heard) > SelfTestProtocol.PartnerGivesUpOffline) {
+                return this.Done(SelfTestWords.HostAway);
+            }
+
+            if (quiet > SelfTestProtocol.PartnerGivesUpSilent) {
                 return this.Done(SelfTestWords.HostSilent);
+            }
+
+            // Its player is told what it waits for, once the host has been quiet a while.
+            var waiting = quiet > TimeSpan.FromMinutes(1) ? SelfTestWords.PartnerWaitingOnHost(online) : null;
+            if (waiting != this._waitingLine) {
+                this._waitingLine = waiting;
+                this._context.ShowPairLine(waiting ?? $"{SelfTestWords.PartnerJoined} {SelfTestWords.PartnerAnswered(this._answered)}");
             }
 
             if (await this.HostChannelGoneAsync().ConfigureAwait(false)) {
@@ -159,10 +183,23 @@ public sealed class PartnerSide {
     }
 
     private StepResult Done(string? stopped) {
+        // The pair has ended (bye, or the host gone): the host's name leaves the run file now.
+        this._context.ForgetOtherName();
         var did = $"answered {this._answered} requests: {this._lines} test lines sent, {this._locals} to local chat, {this._reports} reports, " +
                   $"{this._leaves} leaves, {this._disconnects} disconnects, {this._asks} steps asked of you" +
                   (this._saidYes.Count > 0 ? $"; you said yes: {string.Join(", ", this._saidYes)}" : "");
         return (stopped == null ? StepResult.Pass() : StepResult.Skip(stopped)) with { Did = did };
+    }
+
+    /// <summary>The host shows online in one of its test channels this partner is in.</summary>
+    private async Task<bool> HostOnlineAsync() {
+        foreach (var channel in this._context.Data.Joined.Where(channel => !this._left.Contains(channel)).ToList()) {
+            if ((await this.Host.MembersAsync(channel).ConfigureAwait(false)).Any(member => this.IsHost(member.Who, member.UserId) && member.Online)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>A channel of the host's it joined, gone from its list without being asked to leave: disbanded, or it was removed.</summary>
@@ -222,6 +259,10 @@ public sealed class PartnerSide {
                 this._caught += line.CaughtUp ? 1 : 0;
                 this._named += this._myName is { Length: > 0 } me && line.Text.Contains(me, StringComparison.Ordinal) ? 1 : 0;
 
+                break;
+            case ProtocolLine.Request { Value: { Verb: PartnerVerb.KeepAlive } alive } when alive.Number > this._context.Data.ProtocolNumber:
+                // Never answered: it only says the host is still there.
+                this._context.Data.ProtocolNumber = alive.Number;
                 break;
             case ProtocolLine.Request { Value: var request } when line.ChannelId != null && request.Number > this._context.Data.ProtocolNumber:
                 await this.HandleAsync(request, line.ChannelId).ConfigureAwait(false);
@@ -385,7 +426,7 @@ public sealed class PartnerSide {
             }
 
             case PartnerVerb.Ask:
-                return (await this.AskPlayerAsync(request).ConfigureAwait(false), null);
+                return this._asks >= SelfTestProtocol.MostAsks ? (Refused(request), null) : (await this.AskPlayerAsync(request).ConfigureAwait(false), null);
             case PartnerVerb.InviteMe: {
                 if (this._invitedHost || !PartnerLink.SplitName(this.HostName, out var name, out var world)) {
                     return (Refused(request), null);

@@ -55,6 +55,12 @@ public enum PartnerVerb {
 
     /// <summary>"bye": cleans up and stops.</summary>
     Bye,
+
+    /// <summary>
+    /// "alive": the host is still running (sent while it waits on its own tester, every few minutes): never answered, it only
+    /// keeps the partner from giving up.
+    /// </summary>
+    KeepAlive,
 }
 
 /// <summary>The guided steps a host may ask the partner's player to do: a fixed list, each with fixed words.</summary>
@@ -166,13 +172,28 @@ public static partial class SelfTestProtocol {
     public const int MostDisconnects = 3;
     public const int MostWithdraws = 1;
 
+    /// <summary>The most fixed steps a partner's player is asked for in a run (a full pass asks about a dozen).</summary>
+    public const int MostAsks = 20;
+
     /// <summary>How long the host waits for an answer (a loading screen included), or for one that waits on the partner's player.</summary>
     public static readonly TimeSpan AnswerWithin = TimeSpan.FromSeconds(60);
 
     public static readonly TimeSpan GuidedAnswerWithin = TimeSpan.FromMinutes(10);
 
-    /// <summary>A partner hearing nothing this long leaves the test channel and stops by itself.</summary>
-    public static readonly TimeSpan PartnerGivesUpAfter = TimeSpan.FromMinutes(15);
+    /// <summary>The host sends "alive" this often while paired and quiet (its tester on a long step, say).</summary>
+    public static readonly TimeSpan KeepAliveEvery = TimeSpan.FromMinutes(5);
+
+    /// <summary>The most "alive" lines a host sends in a run (within its 150 protocol lines).</summary>
+    public const int MostKeepAlives = 30;
+
+    /// <summary>
+    /// A partner whose host shows offline in the test channel this long (since its last line, or since it was last seen
+    /// online: a relog, or the game closed) leaves the test channel and stops by itself.
+    /// </summary>
+    public static readonly TimeSpan PartnerGivesUpOffline = TimeSpan.FromMinutes(45);
+
+    /// <summary>A partner whose host is online but sends nothing at all this long (not even "alive") stops too: its runner has gone.</summary>
+    public static readonly TimeSpan PartnerGivesUpSilent = TimeSpan.FromMinutes(60);
 
     /// <summary>How long pairing waits for the partner to join.</summary>
     public static readonly TimeSpan PairingWithin = TimeSpan.FromMinutes(2);
@@ -195,6 +216,7 @@ public static partial class SelfTestProtocol {
         [PartnerVerb.Ask] = "ask",
         [PartnerVerb.InviteMe] = "invite-me",
         [PartnerVerb.Bye] = "bye",
+        [PartnerVerb.KeepAlive] = "alive",
     };
 
     private static readonly Dictionary<PartnerOutcome, string> Outcomes = new() {

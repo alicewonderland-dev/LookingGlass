@@ -221,6 +221,19 @@ public sealed partial class SelfTestRun {
         this.Save();
     }
 
+    /// <summary>Two players: the pair has ended (bye, or gone): the other tester's name goes from the run file now.</summary>
+    internal void ForgetOtherName() {
+        lock (this._lock) {
+            if (this._data.Partner == null) {
+                return;
+            }
+
+            this._data.Partner = null;
+        }
+
+        this.Save();
+    }
+
     /// <summary>Saves the run file (after a step changed the run's data).</summary>
     internal void SaveNow() => this.Save();
 
@@ -579,6 +592,7 @@ public sealed partial class SelfTestRun {
         try {
             while (true) {
                 token.ThrowIfCancellationRequested();
+                await this.KeepPartnerAsync(token).ConfigureAwait(false);
                 if (carryOn.Task.IsCompleted || this._host.Logins != logins) {
                     break;
                 }
@@ -662,6 +676,7 @@ public sealed partial class SelfTestRun {
         var paused = false;
         while (true) {
             token.ThrowIfCancellationRequested();
+            await this.KeepPartnerAsync(token).ConfigureAwait(false);
             var now = this._host.Now;
             var why = await this.WhyWaitAsync(typing, whileDisconnected || this.DisconnectedByRun).ConfigureAwait(false);
             if (why == SelfTestWords.PausedDisconnected) {
@@ -729,6 +744,32 @@ public sealed partial class SelfTestRun {
             return await this._host.IsReadyAsync().ConfigureAwait(false);
         } catch (Exception ex) when (ex is not OperationCanceledException) {
             return false;
+        }
+    }
+
+    private int _keepingPartner;
+
+    /// <summary>
+    /// Two players, the host: sends "alive" when due (five minutes since its last line to the partner), while the run waits
+    /// anywhere (a gate, a guided step, a relog), so the partner never gives up on a host whose tester is busy. Only while
+    /// connected with the run's own character. A refusal stops the run, as for any request.
+    /// </summary>
+    private async Task KeepPartnerAsync(CancellationToken token) {
+        if (this.Link is not { KeepAliveDue: true } link || this.Pacer.Refused || Interlocked.Exchange(ref this._keepingPartner, 1) == 1) {
+            return;
+        }
+
+        try {
+            if (await this.ReadyAsync().ConfigureAwait(false) && await this.IsForAsync().ConfigureAwait(false)) {
+                await link.KeepAliveAsync(this.Pacer, token).ConfigureAwait(false);
+            }
+        } catch (Exception ex) when (SelfTestPacer.IsRefusal(ex)) {
+            this.Pacer.Refuse();
+            throw new SelfTestRefusedException();
+        } catch (Exception ex) when (ex is not (OperationCanceledException or SelfTestRefusedException)) {
+            this._host.Log($"[selftest] the partner couldn't be told the run is still on ({ex.GetType().Name})");
+        } finally {
+            Interlocked.Exchange(ref this._keepingPartner, 0);
         }
     }
 
@@ -885,12 +926,13 @@ public sealed partial class SelfTestRun {
         try {
             while (true) {
                 token.ThrowIfCancellationRequested();
+                await this.KeepPartnerAsync(token).ConfigureAwait(false);
                 if (answer.Task.IsCompleted) {
                     return answer.Task.Result;
                 }
 
                 if (prompt.TesterTypes && (await this.WhyWaitAsync(typing: true, this.DisconnectedByRun).ConfigureAwait(false) != null
-                                           || !await this.SayStillAsync(prompt).ConfigureAwait(false))) {
+                                           || !await this.SayStillAsync(prompt).ConfigureAwait(false) || !await HoldsAsync(prompt).ConfigureAwait(false))) {
                     // Off the screen until it may be typed again: no line asked for while not private, or someone is near.
                     if (!await this.TypingReadyAsync(check, index, prompt, answer.Task, token).ConfigureAwait(false)) {
                         return answer.Task.Result;
@@ -953,6 +995,13 @@ public sealed partial class SelfTestRun {
                 continue;
             }
 
+            if (!await HoldsAsync(prompt).ConfigureAwait(false)) {
+                // Something the line needs isn't so (a party of just the two testers): not asked to type meanwhile.
+                this.SetView(view => view with { State = SelfTestState.Paused, Pause = prompt.HoldsWhy ?? SelfTestWords.WaitingSay, Prompt = null });
+                await this._host.Delay(Poll, token).ConfigureAwait(false);
+                continue;
+            }
+
             if (!prompt.ChatTwoOnSay || await this.ChatTwoOnSayAsync().ConfigureAwait(false)) {
                 return true;
             }
@@ -960,6 +1009,15 @@ public sealed partial class SelfTestRun {
             var ask = new PromptView(new GuidedPrompt(SelfTestWords.ChatTwoToSay, PromptKind.SkipOnly), index + 1, check.StepList.Count, "ChatTwo's input isn't on Say");
             this.SetView(view => view with { State = SelfTestState.NeedsYou, Prompt = ask, Pause = null });
             await this._host.Delay(Poll, token).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>What a line to type needs besides the gate holds (see <see cref="GuidedPrompt.Holds"/>); a failure to tell is no.</summary>
+    private static async Task<bool> HoldsAsync(GuidedPrompt prompt) {
+        try {
+            return prompt.Holds == null || await prompt.Holds().ConfigureAwait(false);
+        } catch (Exception ex) when (ex is not OperationCanceledException) {
+            return false;
         }
     }
 
@@ -1502,6 +1560,9 @@ public sealed class StepContext {
 
     /// <summary>Joined the other tester's channel: left (never disbanded) at the clean-up.</summary>
     internal void MarkJoined(string channelId) => this._run.MarkJoined(channelId);
+
+    /// <summary>The pair has ended: the other tester's name goes from the run file now.</summary>
+    internal void ForgetOtherName() => this._run.ForgetOtherName();
 
     /// <summary>Shows a line about the other tester in the window (fixed words, never a name).</summary>
     public void ShowPairLine(string line) => this._run.ShowPairLine(line);

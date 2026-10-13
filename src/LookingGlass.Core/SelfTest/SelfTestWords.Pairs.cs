@@ -36,8 +36,16 @@ public static partial class SelfTestWords {
         "It never types in game chat by itself: when a step needs that, it asks you. Some settings change for a while and are put back.",
     ];
 
+    /// <summary>A line to type with /p (or into ChatTwo on Party) waits until the party is just the two testers.</summary>
+    public const string WaitingPartyOfTwo = "Waiting: the party isn't just the two of you. It carries on once it is.";
+
     public const string PartnerWaiting = "Waiting for their invite. It is accepted only from them, to their test channel.";
     public const string PartnerJoined = "Joined their test channel. Answering their requests.";
+
+    /// <summary>The partner's line while the host is quiet: what it waits for, and when it gives up.</summary>
+    public static string PartnerWaitingOnHost(bool hostOnline) => hostOnline
+        ? "Waiting for your partner's next request: they may be doing a step of their own. Nothing to do here meanwhile."
+        : "Waiting for your partner: they show offline (relogging, perhaps). This stops by itself if they stay offline for 45 minutes.";
 
     /// <summary>The partner's run line: how many requests it answered.</summary>
     public static string PartnerAnswered(int answered) => answered == 1 ? "Answered 1 request." : $"Answered {answered} requests.";
@@ -77,7 +85,8 @@ public static partial class SelfTestWords {
     public const string NoPartnerName = "no partner name@world was given";
     public const string PartnerRefused = "your partner's plugin said no (past what it may do in a run)";
     public const string Meddling = "stopped: someone else wrote the test's own lines in its channel";
-    public const string HostSilent = "stopped: no request from the other tester for 15 minutes";
+    public const string HostSilent = "stopped: no word from the other tester for an hour";
+    public const string HostAway = "stopped: the other tester was offline for 45 minutes";
     public const string HostLeft = "stopped: the other tester's test channel is gone";
     public const string NoInvite = "no invite came from the other tester";
     public const string NeedsSamePlace = "needs both of you inside the same house or apartment";
@@ -90,13 +99,13 @@ public static partial class SelfTestWords {
 
     private static IReadOnlyList<string> PairWords() => [
         TwoPlayersTitle, BeAPartner, InviteAPartner, UseMyTarget, PartnerLabel, HostIntro, HostStarts, TellThemCode("K7Q2"), WaitingForPartner(TimeSpan.FromSeconds(102)),
-        HostLabel, CodeLabel, .. PartnerConsent, PartnerWaiting, PartnerJoined, PartnerAnswered(1), PartnerAnswered(23),
+        HostLabel, CodeLabel, .. PartnerConsent, PartnerWaiting, WaitingPartyOfTwo, PartnerJoined, PartnerWaitingOnHost(true), PartnerWaitingOnHost(false), PartnerAnswered(1), PartnerAnswered(23),
         PartnerFacts(false, null, null, null, null, null), PartnerFacts(true, true, 12, true, false, false), PartnerFacts(true, null, null, null, null, null),
         .. Enum.GetValues<PartnerAsk>().Select(ask => PartnerAskText(ask, "LG self-test K7Q2 p4, please ignore")),
     ];
 
     private static IReadOnlyList<string> PairReasons() => [
-        PartnerSilent, PartnerGone, PartnerDidntJoin, PartnerNotRegistered, NoPartnerName, PartnerRefused, Meddling, HostSilent, HostLeft, NoInvite, NeedsSamePlace,
+        PartnerSilent, PartnerGone, PartnerDidntJoin, PartnerNotRegistered, NoPartnerName, PartnerRefused, Meddling, HostSilent, HostAway, HostLeft, NoInvite, NeedsSamePlace,
         NeedsFriends, NeedsPartyOfTwo, NeedsOtherDataCentre, PartnerWasBlocked, PartnerNotPrivate, PartnerNeedsChatTwo,
     ];
 }
