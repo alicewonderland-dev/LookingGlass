@@ -45,6 +45,9 @@ public interface ISelfTestHost {
     /// <summary>Leaves a channel (as its only member, that deletes it on the server).</summary>
     Task LeaveChannelAsync(string channelId);
 
+    /// <summary>Renames a channel (the run's own test channel only).</summary>
+    Task RenameChannelAsync(string channelId, string name);
+
     /// <summary>Sends a message to a channel for real, as the debug window's "Send for real".</summary>
     Task SendAsync(string channelId, string text);
 
@@ -182,6 +185,18 @@ public interface ISelfTestHost {
     /// <summary>Moves a window (screen pixels).</summary>
     Task MoveWindowAsync(string layoutId, float x, float y);
 
+    /// <summary>Adds a channel to a window as a tab (selected), as the channel list's menu does.</summary>
+    Task AddTabAsync(string layoutId, string channelId);
+
+    /// <summary>Closes a window, as its close button does (it is forgotten).</summary>
+    Task CloseWindowAsync(string layoutId);
+
+    /// <summary>The game's screen (the main viewport's work area), in pixels.</summary>
+    Task<WindowPlace> ScreenAsync();
+
+    /// <summary>The player is in combat.</summary>
+    Task<bool> InCombatAsync();
+
     // ---------------------------------------------------------------- chat history
 
     Task<HistoryView> HistoryAsync();
@@ -196,6 +211,9 @@ public interface ISelfTestHost {
 
     /// <summary>Writes a line to dalamud.log, as "[selftest] ...": the runner gives no names and no text.</summary>
     void Log(string line);
+
+    /// <summary>Something the tester typed in (a name@world) that must never reach the log or the report.</summary>
+    void Forbid(string text);
 }
 
 /// <summary>The host didn't type a line: the place wasn't private, or the game's chat channel wasn't Say, right then.</summary>
@@ -212,15 +230,19 @@ public static class SelfTestGameChannels {
 /// <summary>A channel as the runner sees it.</summary>
 public sealed record SelfTestChannel(string Id, string? Name, int Members);
 
-/// <summary>Kinds of thing right-clicked, for the invite item's rule (see ContextInvites).</summary>
+/// <summary>Kinds of thing right-clicked, for the invite item's rule (see ContextInvites): how many channels its menu would offer.</summary>
 public enum RightClickKind {
-    OwnName,
-    OwnCharacter,
-    Minion,
-    Item,
-    ItemLink,
-    NonPlayer,
-    OtherPlayer,
+    /// <summary>The tester's own name or character.</summary>
+    Yourself,
+
+    /// <summary>A one-word name (a non-player character, a retainer).</summary>
+    OneWordName,
+
+    /// <summary>A menu that isn't about a player (an item in the inventory).</summary>
+    ItemMenu,
+
+    /// <summary>Another player (a made-up name: nothing is sent).</summary>
+    AnotherPlayer,
 }
 
 /// <summary>What the plugin printed to game chat (the ChatOutput tap).</summary>
@@ -231,18 +253,24 @@ public enum RightClickKind {
 /// <param name="ChannelId">A channel message's channel.</param>
 /// <param name="Own">A message the tester sent.</param>
 /// <param name="Advanced">Printed while advanced mode was on.</param>
-public sealed record TapLine(TapKind Kind, NoticeTone? Tone, string Text, string? Tag = null, string? ChannelId = null, bool Own = false, bool Advanced = false);
+public sealed record TapLine(TapKind Kind, NoticeTone? Tone, string Text, string? Tag = null, string? ChannelId = null, bool Own = false, bool Advanced = false) {
+    /// <summary>A message's links (held for the run only, as the line is).</summary>
+    public IReadOnlyList<ChatLink> Links { get; init; } = [];
+}
 
 public enum TapKind {
     Message,
     LocalMessage,
     Notice,
+
+    /// <summary>A line of the colour test (/lgdebug colours).</summary>
+    ColourSample,
 }
 
 /// <summary>A line with the run's marker seen in the game's own chat (the game chat watcher).</summary>
 /// <param name="Channel">Where it showed: Say, Party, Emote, or the plugin's own lines (LookingGlass), or another.</param>
 /// <param name="FromTester">Said by the tester (not someone else).</param>
-/// <param name="Text">The line's text, held for the run only to match markers; never logged or reported.</param>
+/// <param name="Text">The line's text if it holds the run's marker (empty for the tester's other lines in Say, Party or emotes), held for the run only to match markers; never logged or reported.</param>
 public sealed record GameChatLine(GameChatKind Channel, bool FromTester, string Text);
 
 public enum GameChatKind {
@@ -260,7 +288,8 @@ public enum GameChatKind {
 /// <param name="ForbiddenHits">Lines holding something that must never be in the log: the run's marker, a name, the test channel's name.</param>
 /// <param name="StickyLocalLines">"[sticky]" lines that say "talking in [Local]".</param>
 /// <param name="StickyLines">"[sticky]" lines.</param>
-public sealed record LogTapCounts(int Errors, int Warnings, int ForbiddenHits, int StickyLocalLines, int StickyLines);
+/// <param name="LastLinkKind">The kind number of the last "link put in the chat input" line (a number only), or null.</param>
+public sealed record LogTapCounts(int Errors, int Warnings, int ForbiddenHits, int StickyLocalLines, int StickyLines, uint? LastLinkKind = null);
 
 /// <summary>Sticky mode as the runner sees it.</summary>
 /// <param name="ChannelId">The channel typing goes to, or <see cref="StickyChannel.LocalId"/> for local chat, or null.</param>

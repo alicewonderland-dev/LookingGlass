@@ -107,6 +107,12 @@ public sealed record GuidedPrompt(string Text, PromptKind Kind = PromptKind.DoTh
 
     /// <summary>The short name for the report's "you said yes: ..." ("Tab", "info bar").</summary>
     public string? Short { get; init; }
+
+    /// <summary>
+    /// A box to type something in (its label), such as a player's name@world: what is typed goes to the step only, never to
+    /// the notes, the report or the log.
+    /// </summary>
+    public string? Input { get; init; }
 }
 
 /// <summary>What the runner sees while a guided step waits, and whether it is what the step expects.</summary>
@@ -162,6 +168,12 @@ public sealed record SelfTestSuite(string Id, string Title, IReadOnlyList<SelfTe
 
     /// <summary>How many of its steps wait on a relog or a reload.</summary>
     public int CarryOns => this.Checks.Sum(check => check.StepList.Count(step => step.Kind == StepKind.CarryOnAfter));
+
+    /// <summary>The settings its checks may change for a while (the start screen's "Which ones?").</summary>
+    public IReadOnlyList<SelfTestSetting> Changes { get; init; } = [];
+
+    /// <summary>A line about what it needs, for the start screen ("needs a striking dummy for one check").</summary>
+    public string? Note { get; init; }
 
     /// <summary>What it may ask the server for at most, for the hour's budget.</summary>
     public IReadOnlyDictionary<SelfTestAction, int> Planned { get; init; } = new Dictionary<SelfTestAction, int>();

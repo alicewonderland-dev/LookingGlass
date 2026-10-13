@@ -128,6 +128,15 @@ internal sealed class FakeSelfTestHost : ISelfTestHost, IDisposable {
         return Task.CompletedTask;
     }
 
+    public Task RenameChannelAsync(string channelId, string name) {
+        var at = this.Channels.FindIndex(channel => channel.Id == channelId);
+        if (at >= 0) {
+            this.Channels[at] = this.Channels[at] with { Name = name };
+        }
+
+        return Task.CompletedTask;
+    }
+
     public Task SendAsync(string channelId, string text) {
         if (this.SendFails is { } fails) {
             this.SendFails = null;
@@ -259,6 +268,14 @@ internal sealed class FakeSelfTestHost : ISelfTestHost, IDisposable {
 
     public Task MoveWindowAsync(string layoutId, float x, float y) => Task.CompletedTask;
 
+    public Task AddTabAsync(string layoutId, string channelId) => Task.CompletedTask;
+
+    public Task CloseWindowAsync(string layoutId) => Task.CompletedTask;
+
+    public Task<WindowPlace> ScreenAsync() => Task.FromResult(new WindowPlace(0, 0, 1920, 1080));
+
+    public Task<bool> InCombatAsync() => Task.FromResult(false);
+
     public Task<HistoryView> HistoryAsync() => Task.FromResult(new HistoryView(false, false, null, 0, 50));
 
     public Task ForgetHistoryAsync(IReadOnlyCollection<string> channelIds) {
@@ -270,6 +287,10 @@ internal sealed class FakeSelfTestHost : ISelfTestHost, IDisposable {
         this.Deleted++;
         return Task.CompletedTask;
     }
+
+    public List<string> Forbidden { get; } = [];
+
+    public void Forbid(string text) => this.Forbidden.Add(text);
 
     public void Log(string line) {
         lock (this._lock) {

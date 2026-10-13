@@ -132,6 +132,9 @@ public sealed class SelfTestRunData {
     /// <summary>The suites chosen, by ID.</summary>
     public List<string> Suites { get; set; } = [];
 
+    /// <summary>Only these checks of the suites, by ID (the failed ones, run again); empty for all.</summary>
+    public List<string> OnlyChecks { get; set; } = [];
+
     /// <summary>The check to carry on with, and its step (0-based), after a relog or reload.</summary>
     public string? NextCheck { get; set; }
 
@@ -326,3 +329,29 @@ public static class SelfTestSettingsSnapshot {
     /// <summary>A JSON value for a setting.</summary>
     public static JsonElement Value<T>(T value) => JsonSerializer.SerializeToElement(value);
 }
+
+/// <summary>How some settings' values are written in the run file (see <see cref="SelfTestSetting"/>).</summary>
+public static class SelfTestValues {
+    /// <summary>A colour as a setting's value: "row:12", "custom:FF66CC", or null for the default.</summary>
+    public static string? Colour(ChannelColour? colour) => colour switch {
+        null => null,
+        { IsCustom: true } custom => $"custom:{custom.Rgb:X6}",
+        { } row => $"row:{row.Row}",
+    };
+
+    /// <summary>The colour a <see cref="Colour(ChannelColour?)"/> value stands for; null for the default or anything else.</summary>
+    public static ChannelColour? Colour(string? value) {
+        if (value?.StartsWith("row:", StringComparison.Ordinal) == true && ushort.TryParse(value[4..], out var row) && row > 0) {
+            return ChannelColour.OfRow(row);
+        }
+
+        if (value?.StartsWith("custom:", StringComparison.Ordinal) == true && uint.TryParse(value[7..], System.Globalization.NumberStyles.HexNumber, null, out var rgb)) {
+            return ChannelColour.Custom(rgb);
+        }
+
+        return null;
+    }
+}
+
+/// <summary>The tester's own name colour, as the run file keeps it: the key it is saved under (a number) and the colour, or null.</summary>
+public sealed record OwnNameColourValue(string Key, uint? Rgb);

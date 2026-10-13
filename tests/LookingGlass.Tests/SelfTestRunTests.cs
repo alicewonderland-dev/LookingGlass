@@ -299,7 +299,7 @@ public sealed class SelfTestRunTests : IDisposable {
         // It waited a minute, then cleaned up.
         Assert.True(this._host.Now - started >= SelfTestRun.AfterRefusal);
         Assert.Single(this._host.Left);
-        await Assert.ThrowsAsync<SelfTestRefusedException>(() => run.Pacer.WaitAsync(SelfTestAction.ChannelMessage));
+        await Assert.ThrowsAsync<SelfTestRefusedException>(() => run.Pacer.WaitAsync(SelfTestAction.ChannelMessage, TestContext.Current.CancellationToken));
     }
 
     [Fact]

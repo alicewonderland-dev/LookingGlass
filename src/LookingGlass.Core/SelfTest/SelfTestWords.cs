@@ -97,6 +97,25 @@ public static partial class SelfTestWords {
     public static string WaitBeforeStart(TimeSpan wait) =>
         $"Wait about {Math.Max(1, (int) Math.Ceiling(wait.TotalMinutes))} minutes: the last run used most of what the self-test may use in an hour.";
 
+    /// <summary>A setting's name for the start screen's "Which ones?" list, as Settings names it.</summary>
+    public static string SettingName(SelfTestSetting setting) => setting switch {
+        SelfTestSetting.WindowsOnly => WindowsOnly.SettingName,
+        SelfTestSetting.NewChannelsOpen => SettingsWords.NewChannelsOpen,
+        SelfTestSetting.SayWhenTalking => SettingsWords.SayWhenTalking,
+        SelfTestSetting.ColourWholeLine => SettingsWords.ColourWholeLine,
+        SelfTestSetting.AdvancedMode => SettingsWords.AdvancedMode,
+        SelfTestSetting.KeepHistory => ChatLogWords.KeepIt.Plain,
+        SelfTestSetting.KeepHistoryUnencrypted => ChatLogWords.KeepUnencrypted.Plain,
+        SelfTestSetting.HistoryMegabytes => ChatLogWords.SizeLimit.Plain,
+        SelfTestSetting.LocalPrivacyAccepted => "Local chat's privacy notice accepted",
+        SelfTestSetting.LocalTalkNoteShown => "Local chat's once-only line shown",
+        SelfTestSetting.ChatTwoNoteShown => "The ChatTwo line shown",
+        SelfTestSetting.LocalChatColour => "Local chat's colour",
+        SelfTestSetting.OwnNameColour => "Your own name colour",
+        SelfTestSetting.ChannelWindows => "Your channel windows (closed for a while, then opened again)",
+        _ => setting.ToString(),
+    };
+
     /// <summary>Names a place kind for the window and the report (never the place's own name).</summary>
     public static string Place(PlaceKind kind) => kind switch {
         PlaceKind.InnRoom => "an inn room",
@@ -172,7 +191,7 @@ public static partial class SelfTestWords {
         NoNamesInReport, StayHere, HouseVisitors, HandChanges, ClosingDoesntStop, TwoPlayersLater, NoteReminder, LeftoverHeading,
         LeftoverExplained, .. PrivatePlaces, OnlyInPrivate, PausedLeft, WaitingSomeoneNear, PausedDisconnected, WaitingPlace,
         WaitingToCarryOn, InterruptedRun, InterruptedRunChannelLeft, WaitBeforeStart(TimeSpan.FromMinutes(20)),
-        .. Enum.GetValues<PlaceKind>().Select(Place), .. Reasons(), CleanUp(1, 1, 7, 1, true, true),
+        .. Enum.GetValues<PlaceKind>().Select(Place), .. Enum.GetValues<SelfTestSetting>().Select(SettingName), .. Reasons(), CleanUp(1, 1, 7, 1, true, true), SimulatedWarning.Plain,
     ];
 
     /// <summary>Every reason, for the tests (lengths).</summary>
@@ -189,6 +208,9 @@ public static partial class SelfTestWords {
 
     /// <summary>The technical words in a line simple mode printed, if any (names in it left out by the caller).</summary>
     public static IReadOnlyList<string> JargonIn(string text) => Jargon().Matches(text).Select(match => match.Value).ToList();
+
+    /// <summary>The fake warning the self-test shows about its test channel (windows-only step 11): local only, nothing is wrong.</summary>
+    public static readonly Wording SimulatedWarning = Wording.Same("A test warning from the LookingGlass self-test. Nothing is wrong.");
 
     /// <summary>Wording for something a check is about that advanced mode names differently.</summary>
     public static readonly Wording CheckCode = new(NoticeKind.General, "log head (check code)", "check code");

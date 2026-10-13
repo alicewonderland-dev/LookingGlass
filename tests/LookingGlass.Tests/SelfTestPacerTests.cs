@@ -55,7 +55,7 @@ public sealed class SelfTestPacerTests {
         var server = new ServerBucket(burst, TimeSpan.FromSeconds(everySeconds));
         var times = new List<DateTimeOffset>();
         for (var i = 0; i < rule.RunMost; i++) {
-            await pacer.WaitAsync(action);
+            await pacer.WaitAsync(action, TestContext.Current.CancellationToken);
             times.Add(this._now);
             Assert.True(server.Take(this._now), $"The server would refuse {action} number {i + 1}.");
         }
@@ -77,7 +77,7 @@ public sealed class SelfTestPacerTests {
         var start = this._now;
         var times = new List<double>();
         for (var i = 0; i < 7; i++) {
-            await pacer.WaitAsync(SelfTestAction.ChannelMessage);
+            await pacer.WaitAsync(SelfTestAction.ChannelMessage, TestContext.Current.CancellationToken);
             times.Add((this._now - start).TotalSeconds);
         }
 
@@ -88,10 +88,10 @@ public sealed class SelfTestPacerTests {
     public async Task ARunStopsAtItsMost() {
         var pacer = this.NewPacer();
         for (var i = 0; i < SelfTestPacer.Rules[SelfTestAction.CreateChannel].RunMost; i++) {
-            await pacer.WaitAsync(SelfTestAction.CreateChannel);
+            await pacer.WaitAsync(SelfTestAction.CreateChannel, TestContext.Current.CancellationToken);
         }
 
-        var spent = await Assert.ThrowsAsync<SelfTestSpentException>(() => pacer.WaitAsync(SelfTestAction.CreateChannel));
+        var spent = await Assert.ThrowsAsync<SelfTestSpentException>(() => pacer.WaitAsync(SelfTestAction.CreateChannel, TestContext.Current.CancellationToken));
         Assert.Equal(SelfTestAction.CreateChannel, spent.Action);
         Assert.Equal(3, pacer.CountThisRun(SelfTestAction.CreateChannel));
     }
@@ -99,11 +99,11 @@ public sealed class SelfTestPacerTests {
     [Fact]
     public async Task AfterTheFirstRefusalNothingMoreIsAskedFor() {
         var pacer = this.NewPacer();
-        await pacer.WaitAsync(SelfTestAction.ChannelMessage);
+        await pacer.WaitAsync(SelfTestAction.ChannelMessage, TestContext.Current.CancellationToken);
         pacer.Refuse();
 
         foreach (var action in Enum.GetValues<SelfTestAction>()) {
-            await Assert.ThrowsAsync<SelfTestRefusedException>(() => pacer.WaitAsync(action));
+            await Assert.ThrowsAsync<SelfTestRefusedException>(() => pacer.WaitAsync(action, TestContext.Current.CancellationToken));
         }
 
         Assert.True(pacer.Refused);
@@ -123,7 +123,7 @@ public sealed class SelfTestPacerTests {
     public async Task ARunThatWouldTakeTheHourPastItsMostWaits() {
         var first = this.NewPacer();
         for (var i = 0; i < 3; i++) {
-            await first.WaitAsync(SelfTestAction.CreateChannel);
+            await first.WaitAsync(SelfTestAction.CreateChannel, TestContext.Current.CancellationToken);
         }
 
         var spent = first.Spent;

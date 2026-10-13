@@ -95,7 +95,7 @@ public sealed class SelfTestRun {
     private readonly Lock _lock = new();
     private SelfTestView _view;
     private string? _stopWhy;
-    private TaskCompletionSource<(GuidedAnswer Answer, string? Note)>? _answer;
+    private TaskCompletionSource<(GuidedAnswer Answer, string? Note, string? Input)>? _answer;
     private TaskCompletionSource? _carryOn;
     private int? _gameChannelBefore;
     private int _marker;
@@ -119,13 +119,16 @@ public sealed class SelfTestRun {
     }
 
     /// <summary>A new run's file contents: its code, the character and server, the suites chosen.</summary>
-    public static SelfTestRunData NewData(string code, ulong contentId, string serverUrl, DateTimeOffset now, IEnumerable<SelfTestSuite> suites) => new() {
+    /// <param name="onlyChecks">Only these checks of the suites (the failed ones, run again), or all.</param>
+    public static SelfTestRunData NewData(string code, ulong contentId, string serverUrl, DateTimeOffset now, IEnumerable<SelfTestSuite> suites,
+        IEnumerable<string>? onlyChecks = null) => new() {
         Code = code,
         ContentId = contentId,
         ServerUrl = serverUrl,
         StartedAt = now,
         Phase = SelfTestPhase.Running,
         Suites = suites.Select(suite => suite.Id).ToList(),
+        OnlyChecks = onlyChecks?.ToList() ?? [],
     };
 
     /// <summary>A new run's code: four capital letters and digits, without the ones easily mistaken (0, O, 1, I).</summary>
@@ -160,7 +163,8 @@ public sealed class SelfTestRun {
 
     /// <summary>The checks of the suites chosen, in order.</summary>
     private IEnumerable<(SelfTestSuite Suite, SelfTestCheck Check)> Checks() =>
-        this._suites.SelectMany(suite => suite.Checks.Select(check => (suite, check)));
+        this._suites.SelectMany(suite => suite.Checks.Where(check => this._data.OnlyChecks.Count == 0 || this._data.OnlyChecks.Contains(check.Id))
+            .Select(check => (suite, check)));
 
     // ================================================================ the tester's buttons
 
@@ -196,13 +200,14 @@ public sealed class SelfTestRun {
 
     /// <summary>The tester answered a guided step.</summary>
     /// <param name="note">An optional note, as typed (the window asks for no names).</param>
-    public void Answer(GuidedAnswer answer, string? note = null) {
-        TaskCompletionSource<(GuidedAnswer, string?)>? waiting;
+    /// <param name="input">What was typed in the step's own box (<see cref="GuidedPrompt.Input"/>): for the step only.</param>
+    public void Answer(GuidedAnswer answer, string? note = null, string? input = null) {
+        TaskCompletionSource<(GuidedAnswer, string?, string?)>? waiting;
         lock (this._lock) {
             waiting = this._answer;
         }
 
-        waiting?.TrySetResult((answer, string.IsNullOrWhiteSpace(note) ? null : note.Trim()));
+        waiting?.TrySetResult((answer, string.IsNullOrWhiteSpace(note) ? null : note.Trim(), string.IsNullOrWhiteSpace(input) ? null : input.Trim()));
     }
 
     /// <summary>The server refused something for a limit (seen by the plugin, for a line typed): the run stops sending.</summary>
@@ -307,6 +312,7 @@ public sealed class SelfTestRun {
         this.SetView(view => view with { State = SelfTestState.Running, Checks = this.CheckViews(check.Id), Prompt = null });
         var results = new List<(SelfTestStep Step, StepResult Result, DateTimeOffset At)>();
         var notes = new List<string>();
+        var state = new Dictionary<string, object>();
         if (first > 0) {
             // Carried on after a reload: the steps before were done before it, and the one it waited for is.
             results.AddRange(check.StepList.Take(first).Select(step => (step, StepResult.Pass(), this._host.Now)));
@@ -327,7 +333,7 @@ public sealed class SelfTestRun {
             for (var i = first; i < check.StepList.Count; i++) {
                 var step = check.StepList[i];
                 await this.GateAsync(step.Types, token).ConfigureAwait(false);
-                var context = new StepContext(this, check, i, token, notes);
+                var context = new StepContext(this, check, i, token, notes, state);
                 StepResult result;
                 if (step.Kind == StepKind.CarryOnAfter) {
                     result = await this.CarryOnAsync(check, i, step, context, token).ConfigureAwait(false);
@@ -420,7 +426,7 @@ public sealed class SelfTestRun {
                 }
 
                 if (answer.Task.IsCompleted) {
-                    var (given, note) = answer.Task.Result;
+                    var (given, note, _) = answer.Task.Result;
                     context.AddNote(note);
                     if (given == GuidedAnswer.Skip) {
                         result = StepResult.Skip(SelfTestWords.YouSkipped);
@@ -489,7 +495,8 @@ public sealed class SelfTestRun {
     /// or apartment, nobody else near. Shows why it waits meanwhile. Throws to stop (the tester stopped, or five minutes
     /// without a connection).
     /// </summary>
-    internal async Task GateAsync(bool typing, CancellationToken token) {
+    /// <param name="whileDisconnected">A step that types while disconnected on purpose: the connection isn't waited for.</param>
+    internal async Task GateAsync(bool typing, CancellationToken token, bool whileDisconnected = false) {
         DateTimeOffset? disconnectedSince = null;
         var paused = false;
         while (true) {
@@ -506,7 +513,7 @@ public sealed class SelfTestRun {
             string? why = null;
             if (!isPrivate) {
                 why = this._place.Last.Private || this._place.Last.Kind is PlaceKind.Loading ? SelfTestWords.WaitingPlace : SelfTestWords.PausedLeft;
-            } else if (!await this.ReadyAsync().ConfigureAwait(false)) {
+            } else if (!whileDisconnected && !await this.ReadyAsync().ConfigureAwait(false)) {
                 disconnectedSince ??= now;
                 if (now - disconnectedSince > MostDisconnected) {
                     throw new SelfTestStopException(SelfTestWords.Disconnected);
@@ -555,9 +562,9 @@ public sealed class SelfTestRun {
     /// Types a line: the private-area check right before (and nobody near, in a house), the game's chat channel set to Say
     /// first (unless talking in a channel, when it must already be Say underneath), then through the host, which checks again.
     /// </summary>
-    internal async Task TypeAsync(string line, TestLink link, CancellationToken token) {
+    internal async Task TypeAsync(string line, TestLink link, CancellationToken token, bool whileDisconnected = false) {
         for (var attempt = 0; ; attempt++) {
-            await this.GateAsync(typing: true, token).ConfigureAwait(false);
+            await this.GateAsync(typing: true, token, whileDisconnected).ConfigureAwait(false);
             await this.EnsureSayAsync().ConfigureAwait(false);
             try {
                 await this._host.TypeAsync(line, link).ConfigureAwait(false);
@@ -595,8 +602,8 @@ public sealed class SelfTestRun {
 
     // ================================================================ guided steps
 
-    private TaskCompletionSource<(GuidedAnswer Answer, string? Note)> NewAnswer() {
-        var answer = new TaskCompletionSource<(GuidedAnswer, string?)>(TaskCreationOptions.RunContinuationsAsynchronously);
+    private TaskCompletionSource<(GuidedAnswer Answer, string? Note, string? Input)> NewAnswer() {
+        var answer = new TaskCompletionSource<(GuidedAnswer, string?, string?)>(TaskCreationOptions.RunContinuationsAsynchronously);
         lock (this._lock) {
             this._answer = answer;
         }
@@ -605,7 +612,7 @@ public sealed class SelfTestRun {
     }
 
     /// <summary>Shows a guided step and waits for the tester's answer, or for the runner to see the expected change.</summary>
-    internal async Task<(GuidedAnswer Answer, string? Note)> AskAsync(SelfTestCheck check, int index, GuidedPrompt prompt, CancellationToken token) {
+    internal async Task<(GuidedAnswer Answer, string? Note, string? Input)> AskAsync(SelfTestCheck check, int index, GuidedPrompt prompt, CancellationToken token) {
         var answer = this.NewAnswer();
         string? watching = null;
         this.SetView(view => view with { State = SelfTestState.NeedsYou, Prompt = new PromptView(prompt, index + 1, check.StepList.Count, null) });
@@ -625,7 +632,7 @@ public sealed class SelfTestRun {
                     }
 
                     if (update.Done) {
-                        return (GuidedAnswer.Seen, null);
+                        return (GuidedAnswer.Seen, null, null);
                     }
 
                     if (update.Seeing != watching) {
@@ -917,12 +924,13 @@ public sealed class StepContext {
     private readonly int _index;
     private readonly List<string> _notes;
 
-    internal StepContext(SelfTestRun run, SelfTestCheck check, int index, CancellationToken token, List<string> notes) {
+    internal StepContext(SelfTestRun run, SelfTestCheck check, int index, CancellationToken token, List<string> notes, IDictionary<string, object> state) {
         this._run = run;
         this._check = check;
         this._index = index;
         this.Token = token;
         this._notes = notes;
+        this.State = state;
     }
 
     public ISelfTestHost Host => this._run.Host;
@@ -941,13 +949,17 @@ public sealed class StepContext {
 
     /// <summary>Types a line through the game's chat box gate (see <see cref="SelfTestRun"/>: checked first, every time).</summary>
     /// <param name="spends">What the line asks the server for, if anything (a /lgc line sends a channel message): paced first.</param>
-    public async Task TypeAsync(string line, TestLink link = TestLink.None, SelfTestAction? spends = null) {
+    /// <param name="whileDisconnected">Typed while disconnected on purpose (the step disconnected): the connection isn't waited for.</param>
+    public async Task TypeAsync(string line, TestLink link = TestLink.None, SelfTestAction? spends = null, bool whileDisconnected = false) {
         if (spends is { } action) {
             await this._run.Pacer.WaitAsync(action, this.Token).ConfigureAwait(false);
         }
 
-        await this._run.TypeAsync(line, link, this.Token).ConfigureAwait(false);
+        await this._run.TypeAsync(line, link, this.Token, whileDisconnected).ConfigureAwait(false);
     }
+
+    /// <summary>What the check's steps share (marks, a channel's ID), in memory, for this check only.</summary>
+    public IDictionary<string, object> State { get; }
 
     /// <summary>Asks the server for something, paced; a refusal for a limit stops the run (it is never retried).</summary>
     public async Task<T> ServerAsync<T>(SelfTestAction action, Func<Task<T>> request) {
@@ -966,10 +978,13 @@ public sealed class StepContext {
     });
 
     /// <summary>Shows a guided step and waits for the answer (see <see cref="GuidedPrompt"/>).</summary>
-    public async Task<GuidedAnswer> AskAsync(GuidedPrompt prompt) {
-        var (answer, note) = await this._run.AskAsync(this._check, this._index, prompt, this.Token).ConfigureAwait(false);
+    public async Task<GuidedAnswer> AskAsync(GuidedPrompt prompt) => (await this.AskForInputAsync(prompt).ConfigureAwait(false)).Answer;
+
+    /// <summary>Shows a guided step with a box to type in (<see cref="GuidedPrompt.Input"/>): the answer, and what was typed.</summary>
+    public async Task<(GuidedAnswer Answer, string? Input)> AskForInputAsync(GuidedPrompt prompt) {
+        var (answer, note, input) = await this._run.AskAsync(this._check, this._index, prompt, this.Token).ConfigureAwait(false);
         this.AddNote(note);
-        return answer;
+        return (answer, input);
     }
 
     /// <summary>Asks, and turns the answer into the step's result: Done, Yes or seen pass; No or It didn't work fail; Skip skips.</summary>
@@ -1029,4 +1044,7 @@ public sealed class StepContext {
 
     /// <summary>Waits for the gate again: private, connected (and nobody near, before typing).</summary>
     public Task GateAsync(bool typing = false) => this._run.GateAsync(typing, this.Token);
+
+    /// <summary>The environment as read at the start of the run (the plugin's version, ChatTwo, the mode).</summary>
+    public Task<SelfTestEnvironment> EnvironmentAsync() => this.Host.ReadEnvironmentAsync();
 }
