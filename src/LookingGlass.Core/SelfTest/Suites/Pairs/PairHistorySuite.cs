@@ -14,7 +14,7 @@ public static class PairHistorySuite {
     public static SelfTestSuite Create() => new(Id, "Chat history, with a partner", [OffByDefault(), KeptAndShown(), Missed(), Blocking(), TextFiles()]) {
         Changes = [SelfTestSetting.KeepHistory, SelfTestSetting.KeepHistoryUnencrypted, SelfTestSetting.ChannelWindows],
         Planned = new Dictionary<SelfTestAction, int> {
-            [SelfTestAction.ChannelMessage] = 4, [SelfTestAction.Rename] = 1, [SelfTestAction.Reconnect] = 2, [SelfTestAction.Invite] = 2, [SelfTestAction.Lookup] = 1,
+            [SelfTestAction.ChannelMessage] = 4, [SelfTestAction.Rename] = 2, [SelfTestAction.Reconnect] = 2, [SelfTestAction.Invite] = 2, [SelfTestAction.Lookup] = 1,
             [SelfTestAction.PartnerMessage] = 24,
         },
         Note = "2 relogs; only if your chat history is off and empty",
@@ -60,6 +60,8 @@ public static class PairHistorySuite {
                 var (_, arrived) = await PartnerSendsAsync(context, 2, link: "map").ConfigureAwait(false);
                 var rejoined = await PartnerLeavesAsync(context, channel).ConfigureAwait(false) && await context.Partner.InviteAndWaitAsync(context, channel).ConfigureAwait(false);
                 await context.ServerAsync(SelfTestAction.Rename, () => context.Host.RenameChannelAsync(channel, SelfTestRun.ChannelName(context.Code, 0) + " r")).ConfigureAwait(false);
+                // And back: the partner's plugin knows the host's channels by their names (an invite back is accepted only to them).
+                await context.ServerAsync(SelfTestAction.Rename, () => context.Host.RenameChannelAsync(channel, SelfTestRun.ChannelName(context.Code, 0))).ConfigureAwait(false);
                 var history = await context.Host.HistoryAsync().ConfigureAwait(false);
                 return StepResult.All((arrived == 2, "your partner's lines didn't arrive"), (rejoined, "your partner didn't leave and join again"), (history.Size > 0, "nothing was kept"));
             }, types: true),
