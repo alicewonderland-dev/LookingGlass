@@ -192,6 +192,8 @@ internal sealed partial class FakeSelfTestHost : ISelfTestHost, IDisposable {
         }
 
         this.Sent.Add((channelId, text));
+        this.Deliver(channelId, MyId, Me, text, own: true);
+        this.OnSent?.Invoke(channelId, text);
         return Task.CompletedTask;
     }
 
@@ -243,6 +245,11 @@ internal sealed partial class FakeSelfTestHost : ISelfTestHost, IDisposable {
 
     public Task InviteAsync(string channelId, string name, string world) {
         this.Invited.Add((channelId, name));
+        if (this.OnInvite is { } invite) {
+            invite(channelId, name, world);
+            return Task.CompletedTask;
+        }
+
         if (this.Registered == true) {
             // Registered: the invite goes, and the channel has someone else in it (invited).
             var at = this.Channels.FindIndex(channel => channel.Id == channelId);

@@ -49,6 +49,12 @@ public sealed record SelfTestView {
 
     public DateTimeOffset? EndedAt { get; init; }
 
+    /// <summary>Alone, the host of two players, or the partner.</summary>
+    public SelfTestRole Role { get; init; }
+
+    /// <summary>Two players: a line about the other tester (the partner's facts, or what the partner answered), never a name.</summary>
+    public string? PairLine { get; init; }
+
     /// <summary>How many checks have a result.</summary>
     public int Finished => this.Checks.Count(check => check.Result != null);
 }
@@ -110,6 +116,12 @@ public sealed partial class SelfTestRun {
         this._data = data;
         this._resumed = resume;
         host.RunFor(data.ContentId, data.ServerUrl);
+        if (data.Role != SelfTestRole.Solo) {
+            // The other tester isn't "someone near", and only their lines are read as the protocol's.
+            host.Pair(data.Partner, data.Code, data.Role);
+        }
+
+        this.Link = data.Role == SelfTestRole.Host ? new PartnerLink(this) : null;
         // Every action spent goes in the run file at once: a reload keeps the run's pace and its most.
         pacer.OnSpend = spend => {
             lock (this._lock) {
@@ -123,13 +135,19 @@ public sealed partial class SelfTestRun {
             Code = data.Code,
             StartedAt = data.StartedAt,
             Checks = this.CheckViews(null),
+            Role = data.Role,
         };
     }
 
+    /// <summary>The host's side of two players (null alone, or for the partner).</summary>
+    public PartnerLink? Link { get; }
+
     /// <summary>A new run's file contents: its code, the character and server, the suites chosen.</summary>
     /// <param name="onlyChecks">Only these checks of the suites (the failed ones, run again), or all.</param>
+    /// <param name="role">Alone, or which of two players.</param>
+    /// <param name="other">Two players: the other tester's name@world (held in the run file while the run lasts only).</param>
     public static SelfTestRunData NewData(string code, ulong contentId, string serverUrl, DateTimeOffset now, IEnumerable<SelfTestSuite> suites,
-        IEnumerable<string>? onlyChecks = null) => new() {
+        IEnumerable<string>? onlyChecks = null, SelfTestRole role = SelfTestRole.Solo, string? other = null) => new() {
         Code = code,
         ContentId = contentId,
         ServerUrl = serverUrl,
@@ -137,11 +155,18 @@ public sealed partial class SelfTestRun {
         Phase = SelfTestPhase.Running,
         Suites = suites.Select(suite => suite.Id).ToList(),
         OnlyChecks = onlyChecks?.ToList() ?? [],
+        Role = role,
+        Partner = role == SelfTestRole.Solo ? null : other?.Trim(),
     };
+
+    /// <summary>A code typed in by a partner: four of the letters and digits a code is made of.</summary>
+    public static bool IsCode(string? code) => code is { Length: 4 } && code.All(c => CodeLetters.Contains(c, StringComparison.Ordinal));
+
+    private const string CodeLetters = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
     /// <summary>A new run's code: four capital letters and digits, without the ones easily mistaken (0, O, 1, I).</summary>
     public static string NewCode() {
-        const string letters = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+        const string letters = CodeLetters;
         return new string(Enumerable.Range(0, 4).Select(_ => letters[System.Security.Cryptography.RandomNumberGenerator.GetInt32(letters.Length)]).ToArray());
     }
 
@@ -163,11 +188,49 @@ public sealed partial class SelfTestRun {
         }
     }
 
-    /// <summary>The run's test channels so far (a copy, safe from any thread).</summary>
+    /// <summary>
+    /// The run's test channels so far, and the other tester's it joined (a copy, safe from any thread): the only channels
+    /// the plugin's host sends to, leaves or changes for the run.
+    /// </summary>
     public IReadOnlyList<string> TestChannelsNow() {
         lock (this._lock) {
-            return this._data.TestChannels.ToList();
+            return this._data.TestChannels.Concat(this._data.Joined).Distinct().ToList();
         }
+    }
+
+    /// <summary>Joined the other tester's channel (a partner joins the host's; the host the partner's one): kept in the run file.</summary>
+    internal void MarkJoined(string channelId) {
+        lock (this._lock) {
+            if (!this._data.Joined.Contains(channelId)) {
+                this._data.Joined.Add(channelId);
+            }
+        }
+
+        this.Save();
+    }
+
+    /// <summary>Two players: shows a line about the other tester (fixed words, never a name).</summary>
+    internal void ShowPairLine(string line) => this.SetView(view => view with { PairLine = line });
+
+    /// <summary>The run blocked the other tester (unblocked at the clean-up), or unblocked them again.</summary>
+    internal void MarkBlocked(bool blocked) {
+        lock (this._lock) {
+            this._data.BlockedOther = blocked;
+        }
+
+        this.Save();
+    }
+
+    /// <summary>Saves the run file (after a step changed the run's data).</summary>
+    internal void SaveNow() => this.Save();
+
+    /// <summary>A test channel the run made by itself, kept in the file before anything is sent to it.</summary>
+    internal void AddTestChannel(string channelId) {
+        lock (this._lock) {
+            this._data.TestChannels.Add(channelId);
+        }
+
+        this.Save();
     }
 
     /// <summary>The marker every typed and sent line starts with: "LG self-test K7Q2".</summary>
@@ -353,6 +416,15 @@ public sealed partial class SelfTestRun {
         try {
             var environment = await this._host.ReadEnvironmentAsync().ConfigureAwait(false);
             var needs = check.Needs;
+            if (needs.HasFlag(SelfTestNeeds.Partner)) {
+                // Only the host of two players, paired, with the partner still answering.
+                if ((this.Link == null ? SelfTestWords.NeedsPartner : this.Link.Lacks) is { } noPartner) {
+                    return new CheckRecord { Check = check.Id, Outcome = CheckOutcome.Skipped, Why = noPartner, At = this._host.Now };
+                }
+
+                needs &= ~SelfTestNeeds.Partner;
+            }
+
             if (needs.HasFlag(SelfTestNeeds.HistoryOffAndEmpty)) {
                 bool already;
                 lock (this._lock) {
@@ -451,6 +523,18 @@ public sealed partial class SelfTestRun {
             return StepResult.Fail(SelfTestWords.TimedOut);
         } catch (SelfTestSpentException) {
             return StepResult.Skip(SelfTestWords.RunSpent);
+        } catch (PartnerSilentException silent) {
+            return StepResult.Skip(silent.Gone ? SelfTestWords.PartnerGone : SelfTestWords.PartnerSilent);
+        } catch (PartnerRefusedException) {
+            return StepResult.Skip(SelfTestWords.PartnerRefused);
+        } catch (PartnerMeddlingException) {
+            // Someone else knows the run's lines: nothing more is sent, and the run cleans up.
+            lock (this._lock) {
+                this._stopWhy ??= SelfTestWords.Meddling;
+            }
+
+            this._stop.Cancel();
+            throw new SelfTestStopException(SelfTestWords.Meddling);
         } catch (SelfTestNotTypedException notTyped) {
             return StepResult.Fail(notTyped.NotPrivate ? SelfTestWords.NotPrivate : SelfTestWords.NotSay);
         } catch (Exception ex) {
@@ -544,10 +628,11 @@ public sealed partial class SelfTestRun {
             .Concat(results.Where(entry => entry.Result.Outcome == StepOutcome.Skipped).Select(entry => $"{Lower(entry.Step.Title)}: {entry.Result.Why}"))
             .Distinct().ToList();
         var confirmed = results.Where(entry => entry.Result.Confirmed != null).Select(entry => entry.Result.Confirmed!).Distinct().ToList();
+        var did = results.Where(entry => entry.Result.Did != null).Select(entry => entry.Result.Did!).ToList();
         if (failed.Result != null) {
             return new CheckRecord {
                 Check = check.Id, Outcome = CheckOutcome.Failed, Why = failed.Result.Why, Step = failed.Step.Checklist, At = failed.At,
-                NotRun = notRun, Confirmed = confirmed, Notes = notes.ToList(),
+                NotRun = notRun, Confirmed = confirmed, Notes = notes.ToList(), Did = did,
             };
         }
 
@@ -556,7 +641,7 @@ public sealed partial class SelfTestRun {
         }
 
         return new CheckRecord {
-            Check = check.Id, Outcome = CheckOutcome.Passed, At = results.Count > 0 ? results[^1].At : null, NotRun = notRun, Confirmed = confirmed, Notes = notes.ToList(),
+            Check = check.Id, Outcome = CheckOutcome.Passed, At = results.Count > 0 ? results[^1].At : null, NotRun = notRun, Confirmed = confirmed, Notes = notes.ToList(), Did = did,
         };
     }
 
@@ -1037,14 +1122,37 @@ public sealed partial class SelfTestRun {
         // Only with the run's own character, connected: otherwise its channels and its file stay, for the next connection.
         var reachable = await this.ReadyAsync().ConfigureAwait(false) && await this.IsForAsync().ConfigureAwait(false);
         List<string> channels;
+        List<string> joined;
         bool historyWasOffAndEmpty;
         lock (this._lock) {
             channels = this._data.TestChannels.ToList();
+            joined = this._data.Joined.Where(id => !this._data.TestChannels.Contains(id)).ToList();
             historyWasOffAndEmpty = this._data.HistoryWasOffAndEmpty;
         }
 
-        var channelsLater = channels.Count > 0 && !reachable;
+        var channelsLater = channels.Count + joined.Count > 0 && !reachable;
         if (reachable) {
+            // The other tester's channels this run joined: only ever left, never disbanded.
+            foreach (var channelId in joined) {
+                var ok = await this.TryAsync("leave", async () => {
+                    if ((await this._host.ChannelsAsync().ConfigureAwait(false)).Any(channel => channel.Id == channelId)) {
+                        await this._host.LeaveChannelAsync(channelId).ConfigureAwait(false);
+                    }
+                }).ConfigureAwait(false);
+                if (ok) {
+                    left++;
+                } else {
+                    notLeft++;
+                }
+            }
+
+            // The host of two players: the partner leaves first (asked "bye"), so the host leaves last, and disbands a test
+            // channel only if the partner is still in it after a minute.
+            // After a refusal nothing more is sent: no bye then (the partner, if still in, goes with the disbanded channel).
+            if (this.Link != null && !this.Pacer.Refused) {
+                await this.TryAsync("bye", this.Link.ByeAsync).ConfigureAwait(false);
+            }
+
             foreach (var channelId in channels) {
                 var ok = await this.TryAsync("leave", async () => {
                     var listed = (await this._host.ChannelsAsync().ConfigureAwait(false)).FirstOrDefault(channel => channel.Id == channelId);
@@ -1062,15 +1170,31 @@ public sealed partial class SelfTestRun {
                 }
             }
 
+            // Unblocked if the run blocked the other tester (never someone the tester had blocked before).
+            bool blocked;
+            long other;
+            lock (this._lock) {
+                blocked = this._data.BlockedOther;
+                other = this._data.OtherUserId;
+            }
+
+            if (blocked && other != 0 && await this.TryAsync("unblock", () => this._host.SetBlockedAsync(other, false)).ConfigureAwait(false)) {
+                lock (this._lock) {
+                    this._data.BlockedOther = false;
+                }
+            }
+
             // The tester's own history (on before the run): only the test channels' lines go, before any setting changes.
-            if (!historyWasOffAndEmpty && channels.Count > 0) {
-                historyCleared = await this.TryAsync("history", () => this._host.ForgetHistoryAsync(channels)).ConfigureAwait(false);
+            var tested = channels.Concat(joined).ToList();
+            if (!historyWasOffAndEmpty && tested.Count > 0) {
+                historyCleared = await this.TryAsync("history", () => this._host.ForgetHistoryAsync(tested)).ConfigureAwait(false);
                 historyFailed = !historyCleared;
             }
 
             if (notLeft == 0 && !historyFailed) {
                 lock (this._lock) {
                     this._data.TestChannels.Clear();
+                    this._data.Joined.Clear();
                 }
             }
         }
@@ -1143,7 +1267,12 @@ public sealed partial class SelfTestRun {
         }).ConfigureAwait(false);
 
         // The file stays if anything is left to do: the next connection (or start) finishes it.
-        if (!channelsLater && notLeft == 0 && failed == 0 && !historyFailed) {
+        bool stillBlocked;
+        lock (this._lock) {
+            stillBlocked = this._data.BlockedOther;
+        }
+
+        if (!channelsLater && notLeft == 0 && failed == 0 && !historyFailed && !stillBlocked) {
             await this.TryAsync("run file", () => {
                 this._file.Delete();
                 return Task.CompletedTask;
@@ -1354,4 +1483,48 @@ public sealed class StepContext {
 
     /// <summary>The environment as read at the start of the run (the plugin's version, ChatTwo, the mode).</summary>
     public Task<SelfTestEnvironment> EnvironmentAsync() => this.Host.ReadEnvironmentAsync();
+
+    // ---------------------------------------------------------------- two players
+
+    /// <summary>Alone, the host, or the partner.</summary>
+    public SelfTestRole Role => this._run.Data.Role;
+
+    /// <summary>The host's link to the partner (a check that needs one has <see cref="SelfTestNeeds.Partner"/>).</summary>
+    public PartnerLink Partner => this._run.Link ?? throw new PartnerSilentException(gone: true);
+
+    /// <summary>The run's file contents (for the partner's runner and the pairing check).</summary>
+    internal SelfTestRunData Data => this._run.Data;
+
+    /// <summary>Saves the run file after a change to <see cref="Data"/>.</summary>
+    internal void Save() => this._run.SaveNow();
+
+    /// <summary>Joined the other tester's channel: left (never disbanded) at the clean-up.</summary>
+    internal void MarkJoined(string channelId) => this._run.MarkJoined(channelId);
+
+    /// <summary>Shows a line about the other tester in the window (fixed words, never a name).</summary>
+    public void ShowPairLine(string line) => this._run.ShowPairLine(line);
+
+    /// <summary>
+    /// Blocks or unblocks the partner (only them, by their user ID): the run file says so before a block, so the clean-up
+    /// (or the next start) unblocks them. Never when the tester had blocked them before the test.
+    /// </summary>
+    public async Task BlockPartnerAsync(bool blocked) {
+        if (this._run.Data.OtherWasBlocked || this._run.Data.OtherUserId == 0) {
+            throw new InvalidOperationException("Only a partner the tester hadn't blocked.");
+        }
+
+        if (blocked) {
+            this._run.MarkBlocked(true);
+            await this.Host.SetBlockedAsync(this._run.Data.OtherUserId, true).ConfigureAwait(false);
+        } else {
+            await this.Host.SetBlockedAsync(this._run.Data.OtherUserId, false).ConfigureAwait(false);
+            this._run.MarkBlocked(false);
+        }
+    }
+
+    /// <summary>The pacer (the partner's runner checks its most before it answers).</summary>
+    internal SelfTestPacer Pacer => this._run.Pacer;
+
+    /// <summary>Adds a channel this run made by itself (the partner's one channel of its own), to the file at once.</summary>
+    internal void AddTestChannel(string channelId) => this._run.AddTestChannel(channelId);
 }

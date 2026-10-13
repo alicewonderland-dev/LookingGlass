@@ -232,6 +232,59 @@ public interface ISelfTestHost {
 
     /// <summary>Something the tester typed in (a name@world) that must never reach the log or the report.</summary>
     void Forbid(string text);
+
+    // ---------------------------------------------------------------- two players
+
+    /// <summary>
+    /// The other tester (name@world) and the run's code, for two players (null: alone): they don't count as "someone near",
+    /// their lines are the only protocol lines read, and (for a partner) only their invite to this run's channel is accepted.
+    /// Held while the run lasts only.
+    /// </summary>
+    void Pair(string? other, string code, SelfTestRole role);
+
+    /// <summary>Every message delivered since <paramref name="mark"/> (channels' and local chat's), wherever it was shown: held for the run only.</summary>
+    IReadOnlyList<ReceivedLine> ReceivedSince(long mark);
+
+    /// <summary>The invites waiting for this character.</summary>
+    Task<IReadOnlyList<SelfTestInvite>> InvitesAsync();
+
+    /// <summary>Accepts an invite: only the paired tester's, to a channel named for this run (the host checks too).</summary>
+    Task AcceptInviteAsync(string channelId);
+
+    /// <summary>Who a name@world is on this server (one lookup): their user ID, or null if not registered (or unknown).</summary>
+    Task<long?> UserIdAsync(string name, string world);
+
+    /// <summary>Blocks or unblocks the paired tester only (by their user ID).</summary>
+    Task SetBlockedAsync(long userId, bool blocked);
+
+    Task<bool> IsBlockedAsync(long userId);
+
+    /// <summary>A channel's check code now, or null.</summary>
+    Task<string?> CheckCodeAsync(string channelId);
+
+    /// <summary>A channel's members and invitees, as the verified membership says.</summary>
+    Task<IReadOnlyList<SelfTestMember>> MembersAsync(string channelId);
+
+    /// <summary>The party: how many are in it, and whether the paired tester is (for /p: only the two testers).</summary>
+    Task<(int Count, bool OtherIn)> PartyAsync();
+
+    /// <summary>How far the paired tester is, in yalms, if in sight; and whether they are on this character's friends list.</summary>
+    Task<(double? Distance, bool? Friend)> OtherAsync();
+
+    /// <summary>Sends a line to local chat as /lgl &lt;line&gt; would (never game chat): the partner's "local n".</summary>
+    Task SendLocalAsync(string text);
+
+    /// <summary>
+    /// Sends a message with one link after the text to one of the run's channels: "item" (a Potion), "map" (a map flag where
+    /// the player is), or "status" (Well Fed). Never a party finder listing (that is the tester's own, sent by hand).
+    /// </summary>
+    Task SendWithLinkAsync(string channelId, string text, string linkKind);
+
+    /// <summary>A person's name colour (by user ID), as the plugin would show it, or null.</summary>
+    Task<uint?> NameColourOfAsync(long userId);
+
+    /// <summary>In combat, a cutscene, or a loading screen.</summary>
+    Task<bool> BusyAsync();
 }
 
 /// <summary>The host didn't type a line: the place wasn't private, or the game's chat channel wasn't Say, right then.</summary>
@@ -260,6 +313,20 @@ public static class SelfTestGameChannels {
         _ => 0,
     };
 }
+
+/// <summary>A message delivered (held for the run only, never logged).</summary>
+/// <param name="ChannelId">Its channel, or null for local chat.</param>
+/// <param name="Sender">Who sent it, name@world (compared with the paired tester only).</param>
+public sealed record ReceivedLine(string? ChannelId, long SenderId, string Sender, bool Own, string Text, IReadOnlyList<ChatLink> Links, bool CaughtUp) {
+    /// <summary>Its place in the taps (a mark): a reader carries on after the last it read.</summary>
+    public long Seq { get; init; }
+}
+
+/// <summary>An invite waiting: its channel, the channel's name if verified, and who invited (name@world).</summary>
+public sealed record SelfTestInvite(string ChannelId, string? ChannelName, string Inviter, bool Verified);
+
+/// <summary>A channel's member or invitee.</summary>
+public sealed record SelfTestMember(long UserId, string Who, bool Invited, bool Online);
 
 /// <summary>A channel as the runner sees it.</summary>
 public sealed record SelfTestChannel(string Id, string? Name, int Members);

@@ -32,7 +32,7 @@ public enum SelfTestNeeds {
     /// <summary>The chat box gate's hooks (the runner types through it).</summary>
     Typing = 16,
 
-    /// <summary>A second player with LookingGlass (two players: not built yet).</summary>
+    /// <summary>A second player with LookingGlass, paired with this run (the host's side of two players).</summary>
     Partner = 32,
 
     /// <summary>The server offers local chat.</summary>
@@ -89,6 +89,9 @@ public enum StepOutcome {
 /// <param name="NotRun">A part of it that wasn't run ("the part next to a stranger").</param>
 /// <param name="Confirmed">For a guided step the tester said worked: its short name.</param>
 public sealed record StepResult(StepOutcome Outcome, string? Why = null, string? NotRun = null, string? Confirmed = null) {
+    /// <summary>What the step did, in fixed words with numbers only (a partner's "answered 23 requests"), for the report.</summary>
+    public string? Did { get; init; }
+
     public static StepResult Pass(string? notRun = null) => new(StepOutcome.Passed, NotRun: notRun);
 
     public static StepResult Fail(string why) => new(StepOutcome.Failed, why);
@@ -225,6 +228,9 @@ public sealed record SelfTestEnvironment {
 
     /// <summary>The game's chat input names its channel (the ChatLog addon is there to read).</summary>
     public bool ChatInputReadable { get; init; }
+
+    /// <summary>The data centre the character is on now (a row number), or 0 if unknown: two players compare theirs.</summary>
+    public uint DataCentre { get; init; }
 
     /// <summary>Most channels a user may be in, and the most a run may need: a test channel needs room under this.</summary>
     public const int MaxChannels = 50;

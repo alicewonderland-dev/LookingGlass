@@ -68,6 +68,8 @@ public static class SelfTestReport {
                     details.Add($"you said yes: {string.Join(", ", record.Confirmed)}");
                 }
 
+                details.AddRange(record.Did);
+
                 if (details.Count > 0) {
                     line.Append(" (").Append(string.Join("; ", details)).Append(')');
                 }

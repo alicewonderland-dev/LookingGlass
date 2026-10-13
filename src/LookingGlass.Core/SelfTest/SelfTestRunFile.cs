@@ -52,6 +52,9 @@ public enum SelfTestSetting {
 
     /// <summary>The tester's channel windows on this server, for this character (their layouts, as saved).</summary>
     ChannelWindows,
+
+    /// <summary>The partner's name colour (an <see cref="OwnNameColourValue"/>: their key, a number, and the colour or null).</summary>
+    PartnerNameColour,
 }
 
 /// <summary>Reads and writes the settings the self-test may change, as JSON values (the plugin's settings; a fake in tests).</summary>
@@ -96,6 +99,9 @@ public sealed record CheckRecord {
 
     /// <summary>The tester's own notes, as typed (the window asks for no names).</summary>
     public List<string> Notes { get; init; } = [];
+
+    /// <summary>What its steps did, in fixed words with numbers only (a partner's "answered 23 requests").</summary>
+    public List<string> Did { get; init; } = [];
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter<CheckOutcome>))]
@@ -151,8 +157,35 @@ public sealed class SelfTestRunData {
     /// <summary>The chat history was off with nothing in it before the run: everything in it at the end is the test's.</summary>
     public bool HistoryWasOffAndEmpty { get; set; }
 
-    /// <summary>The partner's name@world, for two players (while the run lasts only). Not used yet.</summary>
+    /// <summary>
+    /// The other tester's name@world, for two players: the partner (on the host's side) or the host (on the partner's). Held
+    /// only while the run lasts (the file goes with it), never in the report.
+    /// </summary>
     public string? Partner { get; set; }
+
+    /// <summary>Alone, the host, or the partner.</summary>
+    public SelfTestRole Role { get; set; }
+
+    /// <summary>The other tester's user ID (a number), once looked up or seen: their block and name colour.</summary>
+    public long OtherUserId { get; set; }
+
+    /// <summary>The other tester was blocked before the run: never unblocked by it (and the blocking checks are skipped).</summary>
+    public bool OtherWasBlocked { get; set; }
+
+    /// <summary>The run blocked the other tester: unblocked at the end.</summary>
+    public bool BlockedOther { get; set; }
+
+    /// <summary>
+    /// Channels this run joined but didn't make (the host's, for a partner; the partner's own, for the host): only ever left,
+    /// never disbanded.
+    /// </summary>
+    public List<string> Joined { get; set; } = [];
+
+    /// <summary>The protocol's last request number (host), or the last answered (partner): carried over a reload.</summary>
+    public int ProtocolNumber { get; set; }
+
+    /// <summary>The partner's hello (fixed fields: its version, private place, ChatTwo, mode, place kind), once paired: null before.</summary>
+    public Dictionary<string, string>? PartnerHello { get; set; }
 
     /// <summary>The game's chat channel before the run first set it to Say, to put back at the end (never a tell).</summary>
     public int? GameChannelBefore { get; set; }
@@ -291,6 +324,17 @@ public sealed class SelfTestRunFile(string folder) {
 
             if (root.TryGetProperty(nameof(SelfTestRunData.HistoryWasOffAndEmpty), out var history) && history.ValueKind is JsonValueKind.True or JsonValueKind.False) {
                 data.HistoryWasOffAndEmpty = history.GetBoolean();
+            }
+
+            // Two players: the other tester's channels joined (left, never disbanded), and a block the run made (undone).
+            if (root.TryGetProperty(nameof(SelfTestRunData.Joined), out var joined) && joined.ValueKind == JsonValueKind.Array) {
+                data.Joined = joined.EnumerateArray().Where(channel => channel.ValueKind == JsonValueKind.String).Select(channel => channel.GetString()!).ToList();
+            }
+
+            if (root.TryGetProperty(nameof(SelfTestRunData.OtherUserId), out var other) && other.TryGetInt64(out var otherId)
+                && root.TryGetProperty(nameof(SelfTestRunData.BlockedOther), out var blocked) && blocked.ValueKind == JsonValueKind.True) {
+                data.OtherUserId = otherId;
+                data.BlockedOther = true;
             }
 
             return data;
@@ -440,7 +484,8 @@ public static class SelfTestRecovery {
         data.Phase = SelfTestPhase.Running;
         data.WaitingSince = null;
         data.NextCheck = null;
-        return data.TestChannels.Count == 0 && data.Settings.Count == 0 && !data.HistoryWasOffAndEmpty && !data.HistoryNeedsAsking && data.GameChannelBefore == null;
+        return data.TestChannels.Count == 0 && data.Joined.Count == 0 && !data.BlockedOther && data.Settings.Count == 0 && !data.HistoryWasOffAndEmpty && !data.HistoryNeedsAsking
+               && data.GameChannelBefore == null;
     }
 
     /// <summary>

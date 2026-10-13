@@ -57,7 +57,7 @@ public static partial class SelfTestWords {
     public const string HouseVisitors = "In a house, people who come in could see a test line in Say. It waits while anyone else is near.";
     public const string HandChanges = "If you change one of these settings during the run, the end puts back what it was before.";
     public const string ClosingDoesntStop = "Closing this window doesn't stop the run. Type /lgdebug test to see it again.";
-    public const string TwoPlayersLater = "Two-player checks need a partner. They are coming in a later version.";
+    public const string TwoPlayersLater = "Two-player checks need a partner with LookingGlass: choose Two players... to invite one, or to be one.";
     public const string NoteReminder = "Don't put names in a note: it is copied into the report as you type it.";
     public const string LeftoverHeading = "Left over from an earlier test?";
 
@@ -130,6 +130,7 @@ public static partial class SelfTestWords {
         SelfTestSetting.LocalChatColour => "Local chat's colour",
         SelfTestSetting.OwnNameColour => "Your own name colour",
         SelfTestSetting.ChannelWindows => "Your channel windows (closed for a while, then opened again)",
+        SelfTestSetting.PartnerNameColour => "Your partner's name colour",
         _ => setting.ToString(),
     };
 
@@ -152,7 +153,7 @@ public static partial class SelfTestWords {
     public const string YouSaidNo = "you said it didn't work";
     public const string NeedsChatTwo = "needs ChatTwo, which is off";
     public const string NeedsChatTwoOff = "needs ChatTwo to be off";
-    public const string NeedsPartner = "needs a partner (coming in a later version)";
+    public const string NeedsPartner = "needs a partner (choose Two players...)";
     public const string NeedsStranger = "needs a stranger";
     public const string NeedsAnotherCharacter = "needs another of your characters";
     public const string NeedsStrikingDummy = "needs a striking dummy";
@@ -221,14 +222,14 @@ public static partial class SelfTestWords {
         NoNamesInReport, HistoryAsk, HistoryDelete, HistoryKeep, StayHere, HouseVisitors, HandChanges, ClosingDoesntStop, TwoPlayersLater, NoteReminder, LeftoverHeading,
         LeftoverExplained, .. PrivatePlaces, OnlyInPrivate, PausedLeft, WaitingSomeoneNear, PausedDisconnected, PausedOtherCharacter, ChatTwoToSay, WaitingSay, WaitingPlace,
         WaitingToCarryOn, InterruptedRun, InterruptedRunChannelLeft, WaitBeforeStart(TimeSpan.FromMinutes(20)),
-        .. Enum.GetValues<PlaceKind>().Select(Place), .. Enum.GetValues<SelfTestSetting>().Select(SettingName), .. Reasons(), CleanUp(1, 1, 7, 1, true, true, true, true), SimulatedWarning.Plain,
+        .. Enum.GetValues<PlaceKind>().Select(Place), .. Enum.GetValues<SelfTestSetting>().Select(SettingName), .. Reasons(), CleanUp(1, 1, 7, 1, true, true, true, true), SimulatedWarning.Plain, .. PairWords(),
     ];
 
     /// <summary>Every reason, for the tests (lengths).</summary>
     public static IReadOnlyList<string> Reasons() => [
         YouSkipped, YouSaidNo, NeedsChatTwo, NeedsChatTwoOff, NeedsPartner, NeedsStranger, NeedsAnotherCharacter, NeedsStrikingDummy,
         NeedsConnection, NeedsChannelRoom, NeedsGateHooks, HistoryWasYours, ServerSlowDown, StoppedByYou, StoppedLeft, RunSpent,
-        SomethingWentWrong, TimedOut, NotSay, NotPrivate, Disconnected, GaveUpWaiting, OtherCharacter, Registered,
+        SomethingWentWrong, TimedOut, NotSay, NotPrivate, Disconnected, GaveUpWaiting, OtherCharacter, Registered, .. PairReasons(),
     ];
 
     /// <summary>The words simple mode never uses (the plain-language tests' list): to check what the plugin printed during a run.</summary>

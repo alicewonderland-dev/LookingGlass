@@ -31,6 +31,13 @@ internal sealed partial class FakeSelfTestHost {
         }
     }
 
+    /// <summary>A line in the game's chat with the run's marker, said by someone (the other tester).</summary>
+    public void GameChat(GameChatKind channel, string text, bool fromTester) {
+        lock (this._lock) {
+            this._gameChat.Add((++this._seq, new GameChatLine(channel, fromTester, text)));
+        }
+    }
+
     private void Say(GameChatKind channel, string text) {
         lock (this._lock) {
             this._gameChat.Add((++this._seq, new GameChatLine(channel, true, text)));
