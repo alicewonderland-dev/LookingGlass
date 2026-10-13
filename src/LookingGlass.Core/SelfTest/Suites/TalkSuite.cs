@@ -19,7 +19,7 @@ public static class TalkSuite {
     public static SelfTestSuite Create() => new(Id, "Talking in a channel and local chat", [
         Free(), AskFirst(), Starting(), NeverSay(), OneOffs(), Ending(), Refused(), LogAndWords(),
     ]) {
-        Changes = [SelfTestSetting.LocalPrivacyAccepted, SelfTestSetting.LocalTalkNoteShown, SelfTestSetting.SayWhenTalking],
+        Changes = [SelfTestSetting.LocalPrivacyAccepted, SelfTestSetting.LocalTalkNoteShown, SelfTestSetting.SayWhenTalking, SelfTestSetting.WindowsOnly],
         Planned = new Dictionary<SelfTestAction, int> { [SelfTestAction.ChannelMessage] = 2, [SelfTestAction.CreateChannel] = 1, [SelfTestAction.Reconnect] = 3 },
         Note = "2 reloads, 1 relog",
     };

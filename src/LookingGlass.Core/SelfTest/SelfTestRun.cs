@@ -155,6 +155,13 @@ public sealed class SelfTestRun {
         }
     }
 
+    /// <summary>The run's test channels so far (a copy, safe from any thread).</summary>
+    public IReadOnlyList<string> TestChannelsNow() {
+        lock (this._lock) {
+            return this._data.TestChannels.ToList();
+        }
+    }
+
     /// <summary>The marker every typed and sent line starts with: "LG self-test K7Q2".</summary>
     public string MarkerPrefix => $"LG self-test {this.Code}";
 

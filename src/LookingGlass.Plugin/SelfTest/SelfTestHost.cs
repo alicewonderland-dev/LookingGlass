@@ -181,17 +181,25 @@ internal sealed class SelfTestHost : ISelfTestHost, IDisposable {
 
     private ClientSession Session => this.Sessions.Session ?? throw new SessionDisconnectedException("Not connected.");
 
+    /// <summary>The run's own test channels (set by the service while a run is on): the only ones the host changes or sends to.</summary>
+    public Func<IReadOnlyCollection<string>>? TestChannels { get; set; }
+
+    /// <summary>Refuses anything about a channel that isn't one of the run's own test channels: the tester's are never touched.</summary>
+    private string Own(string channelId) => this.TestChannels?.Invoke().Contains(channelId) == true
+        ? channelId
+        : throw new InvalidOperationException("Not one of the run's test channels.");
+
     public Task<string> CreateChannelAsync(string name) => this.Session.CreateChannelAsync(name);
 
-    public Task LeaveChannelAsync(string channelId) => this.Session.LeaveAsync(channelId);
+    public Task LeaveChannelAsync(string channelId) => this.Session.LeaveAsync(this.Own(channelId));
 
-    public Task RenameChannelAsync(string channelId, string name) => this.Session.RenameAsync(channelId, name);
+    public Task RenameChannelAsync(string channelId, string name) => this.Session.RenameAsync(this.Own(channelId), name);
 
-    public Task SendAsync(string channelId, string text) => this.Session.SendTextAsync(channelId, text);
+    public Task SendAsync(string channelId, string text) => this.Session.SendTextAsync(this.Own(channelId), text);
 
-    public Task SimulateIncomingAsync(string channelId, string text) => OnFramework(() => this.Sessions.SimulateIncoming(channelId, text));
+    public Task SimulateIncomingAsync(string channelId, string text) => OnFramework(() => this.Sessions.SimulateIncoming(this.Own(channelId), text));
 
-    public Task SimulateWarningAsync(string channelId) => OnFramework(() => this.Sessions.SimulateNotice(channelId));
+    public Task SimulateWarningAsync(string channelId) => OnFramework(() => this.Sessions.SimulateNotice(this.Own(channelId)));
 
     public Task DisconnectAsync() => OnFramework(this.Sessions.Disconnect);
 
@@ -199,15 +207,22 @@ internal sealed class SelfTestHost : ISelfTestHost, IDisposable {
 
     public Task<int?> SlotOfAsync(string channelId) => Task.FromResult(this.Sessions.SlotOf(channelId));
 
-    public Task AssignSlotAsync(string channelId, int slot) => OnFramework(() => this.Sessions.AssignSlot(channelId, slot));
+    public Task AssignSlotAsync(string channelId, int slot) => OnFramework(() => {
+        // Only to a free number: the tester's own channels never move.
+        if (this.Sessions.Slots.Any(entry => entry.Value == slot && entry.Key != channelId)) {
+            throw new InvalidOperationException("That number is taken.");
+        }
+
+        this.Sessions.AssignSlot(this.Own(channelId), slot);
+    });
 
     public Task<IReadOnlyCollection<int>> SlotsInUseAsync() => Task.FromResult<IReadOnlyCollection<int>>(this.Sessions.Slots.Values.ToList());
 
-    public Task<string?> SetNicknameAsync(string channelId, string nickname) => OnFramework(() => this.Sessions.SetNickname(channelId, nickname));
+    public Task<string?> SetNicknameAsync(string channelId, string nickname) => OnFramework(() => this.Sessions.SetNickname(this.Own(channelId), nickname));
 
     public Task<string?> NicknameOfAsync(string channelId) => Task.FromResult(this.Sessions.NicknameOf(channelId));
 
-    public Task SetChannelColourAsync(string channelId, ChannelColour? colour) => OnFramework(() => this.Sessions.SetColour(channelId, colour));
+    public Task SetChannelColourAsync(string channelId, ChannelColour? colour) => OnFramework(() => this.Sessions.SetColour(this.Own(channelId), colour));
 
     public Task<ChannelColour?> SavedChannelColourAsync(string channelId) => OnFramework<ChannelColour?>(() => {
         // As saved: read back from the settings file, not from memory.
@@ -244,7 +259,7 @@ internal sealed class SelfTestHost : ISelfTestHost, IDisposable {
         }
     }
 
-    public Task SetShowInGameChatAsync(string channelId, bool show) => OnFramework(() => this._parts.Windows.SetShowInGameChat(channelId, show));
+    public Task SetShowInGameChatAsync(string channelId, bool show) => OnFramework(() => this._parts.Windows.SetShowInGameChat(this.Own(channelId), show));
 
     public Task<bool> ShowsInGameChatAsync(string channelId) => Task.FromResult(this.Sessions.ShowsInGameChat(channelId));
 
@@ -279,6 +294,7 @@ internal sealed class SelfTestHost : ISelfTestHost, IDisposable {
     });
 
     public Task InviteAsync(string channelId, string name, string world) => OnFramework(() => {
+        this.Own(channelId);
         var target = new InviteTarget(name, world);
         var offer = this._parts.Inviter.OffersFor(target).FirstOrDefault(offer => offer.ChannelId == channelId)
                     ?? throw new InvalidOperationException("The test channel isn't offered for that player.");
@@ -458,6 +474,10 @@ internal sealed class SelfTestHost : ISelfTestHost, IDisposable {
     }
 
     public async Task ForgetHistoryAsync(IReadOnlyCollection<string> channelIds) {
+        foreach (var channelId in channelIds) {
+            this.Own(channelId);
+        }
+
         if (this.Sessions.ChatLog is not { } log) {
             // Off: nothing of the run was kept (the run turns it on only for the checks that need it).
             return;

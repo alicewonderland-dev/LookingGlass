@@ -206,6 +206,7 @@ internal sealed partial class SelfTestService : IDisposable {
         }
 
         this._host.StartTaps(run.MarkerPrefix, logForbidden);
+        this._host.TestChannels = run.TestChannelsNow;
         this._parts.Sender.Failed = ex => this.OnSendFailed(run, ex);
         this._parts.Local.Failed = ex => this.OnSendFailed(run, ex);
         Services.Log.Information(resume ? "[selftest] a run carries on" : "[selftest] a run starts");
@@ -269,7 +270,7 @@ internal sealed partial class SelfTestService : IDisposable {
     /// themselves, since a player could name a real channel that.
     /// </summary>
     public IReadOnlyList<ChannelView> Leftovers() {
-        var known = new HashSet<string>(this.Run?.Data.TestChannels ?? []);
+        var known = new HashSet<string>(this.Run?.TestChannelsNow() ?? []);
         if (this._recover is { } recover) {
             known.UnionWith(recover.TestChannels);
         }

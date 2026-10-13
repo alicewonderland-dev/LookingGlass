@@ -13,6 +13,7 @@ public static class PartyFinderSuite {
     public const string Id = "party-finder";
 
     public static SelfTestSuite Create() => new(Id, "Party finder links", [ChatButton(), Sending(), HomeWorld(), TheLog()]) {
+        Changes = [SelfTestSetting.WindowsOnly],
         Planned = new Dictionary<SelfTestAction, int> { [SelfTestAction.ChannelMessage] = 8, [SelfTestAction.CreateChannel] = 1 },
         Note = "needs a recruitment of your own",
     };
