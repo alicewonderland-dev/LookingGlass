@@ -46,10 +46,19 @@ private) rather than doing something it shouldn't: report it.
 ## Typing and the chat channel
 
 - [ ] 9. **(confirm)** Start with the game's chat channel on Free Company (or
-      Party). When the first step types a line, the chat channel is set to Say
-      first; at the end of the run it is put back to Free Company. No line ever
-      reaches Free Company, a linkshell, Shout, Yell, a tell or the Novice
-      Network.
+      Party, or a linkshell). When the first step types a line, or asks you to
+      type one, the chat channel is set to Say first; at the end of the run
+      (also after a reload in the middle) it is put back as it was, a
+      linkshell to the same linkshell. Started on a tell, it is left on Say,
+      and the report's last line says so. No line ever reaches Free Company, a
+      linkshell, Shout, Yell, a tell or the Novice Network.
+- [ ] 9b. With ChatTwo on and its input on Party: before a step asks you to
+      type in ChatTwo, it asks you to put ChatTwo's input on Say, and waits.
+      After the steps that have you move it (to Party, a tell, another channel)
+      it asks for it back on Say, even when that step failed.
+- [ ] 9c. In a house, have someone come within 30 yalms while a step asks you
+      to type a line: the request goes off the screen ("Waiting: someone else
+      is nearby..."), and comes back once they leave.
 - [ ] 10. **(confirm)** The lines it types are judged as typed in the game's
       chat box: in `/xllog` the `[sticky]` lines for them say the line came
       from the game (as your own typing would), never "from a plugin".
@@ -82,12 +91,20 @@ private) rather than doing something it shouldn't: report it.
 
 - [ ] 19. After a full run: your channel windows are open again where they
       were; every setting in **Which ones?** is as before; the test channels
-      are gone from your channel list; the game's chat channel is as before;
+      are gone from your channel list; the game's chat channel is as before
+      (on Say if it was a tell); with the chat history off and empty before
+      the run, there is no `chatlog-...` folder in the plugin's config folder
+      afterwards (with it on before, the history suite says it was skipped);
       the report's last line says what the clean-up did.
-- [ ] 20. With **Keep chat history on this computer** on before the run: after
-      it, the test channels' lines aren't among the older lines of any window,
-      and no text folder of a test channel is left. Your own channels' history
-      is untouched.
+- [ ] 20. With **Keep chat history on this computer** on before the run: the
+      history suite is skipped, saying why; after the run, the test channels'
+      lines aren't among the older lines of any window, and no text folder of a
+      test channel is left. Your own channels' history is untouched, and no
+      text file of yours was started.
+- [ ] 20b. Press **Stop and clean up** while a step has LookingGlass
+      disconnected (local-chat 35 or 37): it connects again and cleans up.
+      Relog onto another character in the middle of a run: it pauses ("another
+      character is in") and does nothing until you come back.
 - [ ] 21. Close the game (or turn LookingGlass off in `/xlplugins`) in the
       middle of a run, not at a relog or reload step. Start it again and log
       in: your settings are as before the run at once, and once connected one

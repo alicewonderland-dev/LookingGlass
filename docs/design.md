@@ -5079,16 +5079,33 @@ virtual clock; the plugin's `SelfTest` folder and `SelfTestWindow`):
   through `ISelfTestHost`; the plugin's `SelfTestHost` does every game call on
   the framework thread. Results and the `[selftest]` log lines are fixed words.
 - `PrivateArea` (the rule table, failing closed, settled for two seconds) is
-  checked before every step and again right before every typed line, by the
-  runner and once more by the host on the framework thread; in a house or
-  apartment a typing step waits while anyone else is within 30 yalms.
+  checked before every step, during every wait inside one (a step pauses
+  there when the tester leaves, its time-out started again), and right before
+  every line the runner types: by the runner, and once more by the host on
+  the framework thread together with nobody near and Say. A line the tester
+  is asked to type (in the game's chat box or ChatTwo's input) gets the same
+  gate before the request shows, and the request comes off the screen while
+  the gate is closed; the game's chat channel is set to Say first, and for
+  ChatTwo its input must be on Say (the tester is asked, and a step that moves
+  it to Party or a tell asks for it back). In a house or apartment a typing
+  step waits while anyone else is within 30 yalms. Guided steps that only ask
+  the tester to look or click aren't paused.
 - `SelfTestPacer` keeps the plan's pace table, stops at the first refusal for
-  a limit (`RateLimited`, `LimitReached`, `Blocked`) and never retries, and
-  keeps the last hour's spending in `selftest-spent.json`.
-- `selftest-run.json` holds the run's code, the test channels (written before
-  anything is sent), the settings snapshot, the results and where to carry
-  on; at the plugin's start an interrupted run's settings are put back before
-  any session, and its channels left once connected.
+  a limit (`RateLimited`, `LimitReached`, `Blocked`, from any request while a
+  run is on, background catch-up retries included) and never retries, and
+  keeps the last hour's spending in `selftest-spent.json` and the run's own in
+  its run file (so a reload keeps its pace and its most).
+- `selftest-run.json` holds the run's code, its character and server, the
+  test channels (written before anything is sent), the settings snapshot, the
+  game's chat channel before the run, the results, the steps done before a
+  relog or reload, and where to carry on. Nothing is done while another
+  character (or server) is logged in: the run pauses until the run's own is
+  back. At the plugin's start an interrupted run's settings are put back
+  before any session (and the whole chat history deleted if it was off and
+  empty before the run), and its channels left once connected; a clean-up
+  that couldn't reach the server keeps them, and the file, for the next
+  connection. A damaged file that lost whose it was can only be cleared, with
+  a warning.
 - Eight suites cover the plan's 45 one-player tasks (`SelfTestSuites`).
   Two-player checks aren't listed yet; the start screen says they come later.
 
@@ -5701,6 +5718,31 @@ The owner's decisions, and why.
     only: no seam counts ChatTwo's registrations.
   - Custom-colours 17 leaves the run's third test channel (the last check to
     use it), so a run makes at most three, as planned.
+  - **After the independent review (2026-10-13)**, more choices, each where the
+    first build was unsafe or the plan was silent:
+    - Every check of the chat history suite (chat-log 8 to 9, 24 to 28, 30 to
+      35) runs only when the history was off with nothing in it before the run,
+      not only the ones that would delete history: turning the history or its
+      text files on records every channel, the tester's real ones too, and the
+      text files of real channels would have stayed after the run. Off and
+      empty, everything in it is the test's, and the clean-up (or the next
+      start, after a crash) deletes it whole once the setting is back off.
+      Otherwise the suite is skipped, saying why.
+    - The invite check (context-invites 15) looks its person up first and
+      invites only someone not registered, so a solo run never sends an
+      invite to anyone; an invite that goes anyway (registered meanwhile)
+      isn't repeated, and a test channel with anyone else in it is disbanded at
+      the clean-up rather than left. Lookups may be 3 a run (the plan said 2:
+      the check's own lookup, then the invite's in each mode; the server allows
+      60 at once).
+    - The game's chat channel is put back at the end, also after a reload (it
+      is in the run file), but never a tell, which would need the person's
+      name: the run leaves it on Say and the report says so. The channel is set
+      as ChatTwo sets it (its number, a linkshell's index, an empty name).
+    - A clean-up while disconnected connects again first if the run had
+      disconnected on purpose; if it still can't reach the server (or another
+      character is logged in), its test channels and its file stay, and the
+      next connection with the run's character finishes it, quietly.
   - The game's chat channel is set to Say only while not talking in a channel
     (setting it would end that); while talking in one, the host types only if
     Say is underneath, which the runner set before starting it.
