@@ -5129,8 +5129,15 @@ virtual clock; the plugin's `SelfTest` folder and `SelfTestWindow`):
   host (`PartnerLink`) waits a minute for an answer (ten for one that waits
   on the partner's player), asks "still-there" after a silence and takes the
   partner as gone after a second, and stops the run if a line with the run's
-  prefix comes from anyone else. A partner hearing nothing for 15 minutes,
-  or seeing the host's channel go, stops. Clean-up on both sides: the host
+  prefix comes from anyone else. While paired and quiet (its tester on a long
+  step, or relogging while still connected), the host sends "alive" every 5
+  minutes (never answered; at most 30). The partner counts a host online in
+  the test channel as alive, and stops once the host has been offline for 45
+  minutes, online but without a single line for an hour, or its channel goes;
+  meanwhile its window says what it waits for. The run taps keep only the
+  run's own lines (its test channels and local chat, from the other tester
+  or with the run's prefix), never a real channel's, and drop their oldest
+  first. Clean-up on both sides: the host
   leaves the partner's channel, asks bye, waits a minute for the partner to
   leave, then leaves last (disbanding only a channel the partner is still
   in), and undoes a block it made; the partner leaves every channel it
@@ -5837,6 +5844,35 @@ The owner's decisions, and why.
   - The partner's name leaves the run file when the run ends: a file kept for
     what is left to do (a test channel not yet left, a block not yet undone)
     keeps only the partner's user number.
+  - **After the review (2026-10-13):**
+    - The delivered-messages tap keeps only the run's own lines: in its test
+      channels (its own, and the other tester's it joined) or local chat, from
+      the other tester or carrying the run's prefix. A real channel's message
+      is never held, and a line with the prefix there no longer counts as
+      meddling. Every tap drops its oldest line when full (2,000), so a busy
+      tester's chat never pushes out a partner's answer.
+    - The partner no longer gives up after 15 minutes without a request: a
+      host's tester may take longer on a guided step, or a relog. While paired
+      and quiet, the host sends `alive` (never answered) every 5 minutes from
+      wherever the run waits, while connected with its own character: at most
+      30 a run, planned within its 150 protocol lines. The partner counts a
+      host shown online in the test channel as alive; it gives up after 45
+      minutes with the host offline (a relog, the game closed), or an hour
+      online without a single line (its runner gone). Its window says what it
+      waits for.
+    - ChatTwo with a partner: every line typed into ChatTwo on Party waits
+      while the party isn't just the two testers (checked before the request
+      shows and at every poll), and ChatTwo's input is asked back on Say after
+      each step, whatever its result.
+    - The partner's caps (leaves, accepts, withdraws, and now at most 20 steps
+      asked of its player) stay in memory: its run never carries on after a
+      reload (the next start ends it and puts back what it changed), and what
+      the pacer counts is in the run file anyway.
+    - The other tester's name leaves the run file as soon as the pair ends (bye,
+      or the partner gone), not only at the end.
+    - Removing a channel from the chat history moved its windows' place in the
+      older lines on only after telling the caller it was done; it does so
+      first now, as a deletion does (a test caught the race under load).
 
 ## Open questions
 

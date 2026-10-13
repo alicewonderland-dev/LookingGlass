@@ -182,9 +182,14 @@ each other's friends list. Both keep `/xllog` open.
       up (disbanding a test channel B may still be in). B turned back on and
       logged in: its settings are back, and it has left A's channels.
 - [ ] 33. **A goes silent.** Mid-run, A turns LookingGlass off (or closes the
-      game). B's run stops by itself within 15 minutes ("no request from the
-      other tester for 15 minutes", or "the other tester's test channel is
-      gone" once A's next start cleans up), leaving A's channels.
+      game). B's window says it waits for A, who shows offline. B's run stops
+      by itself after 45 minutes ("the other tester was offline for 45
+      minutes"), or sooner with "the other tester's test channel is gone" once
+      A's next start cleans up, leaving A's channels.
+- [ ] 33b. **A long step, and a relog.** A takes 30 minutes on a guided step,
+      then relogs for 20 minutes: B's window says what it waits for, and B's
+      run carries on (the test channel shows A's "alive" lines about every 5
+      minutes while A is in).
 - [ ] 34. **Old and repeated requests.** While a run is on, A types
       `/lgc50 LG self-test XXXX #1 send 5` by hand (an old number): B's plugin
       ignores it and sends no test line for it (check B's `/xllog` and the

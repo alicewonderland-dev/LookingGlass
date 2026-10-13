@@ -1027,6 +1027,13 @@ plan above (each in design.md's Decisions):
 - Not run, as parts of covered tasks: the exact local chat distances and
   another zone (local-chat 10 to 11), a loading screen between private places
   (windows-only 19).
+- After review: instead of a partner giving up after 15 minutes without a
+  request, the host sends `alive` (never answered, at most 30 a run) every 5
+  minutes while paired and quiet, from wherever the run waits (a gate, a guided
+  step, a relog while still connected); the partner counts a host online in
+  the test channel as alive, and gives up after 45 minutes offline, or an hour
+  online without a single line. Its player is told what it waits for. The
+  partner's player is asked at most 20 steps a run.
 
 ## How it is tested
 
