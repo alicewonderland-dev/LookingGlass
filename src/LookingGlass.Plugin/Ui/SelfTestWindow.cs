@@ -2,6 +2,7 @@ using System.Numerics;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.Windowing;
 using LookingGlass.Core.SelfTest;
+using LookingGlass.Core.SelfTest.Suites;
 using LookingGlass.Plugin.SelfTest;
 
 namespace LookingGlass.Plugin.Ui;
@@ -19,6 +20,13 @@ internal sealed class SelfTestWindow : Window {
     private DateTimeOffset _readAt;
     private bool _showSettings;
     private bool _startScreen = true;
+    // The two-player screen instead of the start screen; as the host (or the partner).
+    private bool _twoPlayers;
+    private bool _asPartner;
+    private string _partner = "";
+    private string _host = "";
+    private string _code = "";
+    private readonly HashSet<string> _pairTicked;
     private string _note = "";
     private string _input = "";
     private string? _copied;
@@ -29,6 +37,7 @@ internal sealed class SelfTestWindow : Window {
     public SelfTestWindow(SelfTestService service) : base($"{SelfTestWords.WindowTitle}###lookingglass-selftest") {
         this._service = service;
         this._ticked = service.Suites.Select(suite => suite.Id).ToHashSet();
+        this._pairTicked = service.PairSuites.Select(suite => suite.Id).ToHashSet();
         this.SizeConstraints = new WindowSizeConstraints { MinimumSize = new Vector2(480, 360), MaximumSize = new Vector2(float.MaxValue, float.MaxValue) };
         this.Size = new Vector2(560, 620);
         this.SizeCondition = ImGuiCond.FirstUseEver;
@@ -53,6 +62,8 @@ internal sealed class SelfTestWindow : Window {
                 this.DrawRun(run);
             } else if (run != null && !this._startScreen) {
                 this.DrawReport(run);
+            } else if (this._twoPlayers) {
+                this.DrawTwoPlayers();
             } else {
                 this.DrawStart();
             }
@@ -140,7 +151,7 @@ internal sealed class SelfTestWindow : Window {
         chosen = this._service.Suites.Where(suite => this._ticked.Contains(suite.Id) && SuiteLacks(suite, environment) == null).ToList();
         var planned = SelfTestService.Planned(chosen);
         ImGui.TextDisabled($"At most {planned.GetValueOrDefault(SelfTestAction.ChannelMessage) + planned.GetValueOrDefault(SelfTestAction.LocalMessage)} test lines sent, slowly.");
-        ImGui.TextWrapped(SelfTestWords.TwoPlayersLater);
+        ImGui.TextDisabled(SelfTestWords.TwoPlayersLater);
 
         this.DrawLeftovers();
         if (this._service.AskHistory) {
@@ -181,10 +192,13 @@ internal sealed class SelfTestWindow : Window {
 
         ImGui.EndDisabled();
         ImGui.SameLine();
-        ImGui.BeginDisabled();
-        ImGui.Button(SelfTestWords.TwoPlayers);
-        ImGui.EndDisabled();
-        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled)) {
+        if (ImGui.Button(SelfTestWords.TwoPlayers)) {
+            this._twoPlayers = true;
+            this._error = null;
+            this._service.NewHostCode();
+        }
+
+        if (ImGui.IsItemHovered()) {
             ImGui.SetTooltip(SelfTestWords.TwoPlayersLater);
         }
 
@@ -209,6 +223,167 @@ internal sealed class SelfTestWindow : Window {
         }
 
         var lacks = suite.Checks.Select(check => environment.Lacks(check.Needs)).ToList();
+        return lacks.All(why => why != null) ? lacks[0] : null;
+    }
+
+    // ================================================================ two players
+
+    /// <summary>The two-player screen (docs/self-test-plan.md, "Two players: the host" and "the partner"): invite a partner, or be one.</summary>
+    private void DrawTwoPlayers() {
+        var place = SelfTestService.PlaceNow(out var placeName);
+        if (!place.Private) {
+            this.DrawNotPrivate(place, placeName);
+            return;
+        }
+
+        ImGui.TextUnformatted(SelfTestWords.TwoPlayersTitle);
+        if (ImGui.RadioButton(SelfTestWords.InviteAPartner, !this._asPartner)) {
+            this._asPartner = false;
+        }
+
+        ImGui.SameLine();
+        if (ImGui.RadioButton(SelfTestWords.BeAPartner, this._asPartner)) {
+            this._asPartner = true;
+        }
+
+        ImGui.Separator();
+        if (this._asPartner) {
+            this.DrawBeAPartner();
+        } else {
+            this.DrawInviteAPartner(place);
+        }
+
+        if (this._error != null) {
+            Widgets.WrappedColoured(Widgets.Error, this._error);
+        }
+    }
+
+    private void DrawInviteAPartner(PlaceVerdict place) {
+        ImGui.TextWrapped(SelfTestWords.HostIntro);
+        ImGui.Spacing();
+        ImGui.SetNextItemWidth(-Widgets.ButtonWidth(SelfTestWords.UseMyTarget) - (16 * Widgets.Scale));
+        // The name stays in this box and the run file only, while the run lasts: never logged or reported.
+        ImGui.InputTextWithHint("##partner", SelfTestWords.PartnerLabel, ref this._partner, 80);
+        ImGui.SameLine();
+        if (ImGui.Button(SelfTestWords.UseMyTarget) && SelfTestService.TargetName() is { } target) {
+            this._partner = target;
+        }
+
+        ImGui.TextColored(Widgets.Warning, SelfTestWords.TellThemCode(this._service.HostCode));
+        ImGui.TextWrapped(SelfTestWords.HostStarts);
+        ImGui.Spacing();
+        ImGui.TextUnformatted("What it does:");
+        foreach (var line in SelfTestWords.Consent) {
+            ImGui.Bullet();
+            ImGui.SameLine();
+            ImGui.TextWrapped(line);
+        }
+
+        ImGui.TextWrapped(SelfTestWords.NoNamesInReport);
+        ImGui.TextColored(Widgets.Success, $"You're in: {SelfTestWords.Place(place.Kind)}.  OK");
+        if (place.NeedsNobodyNear) {
+            Widgets.WrappedColoured(Widgets.Warning, SelfTestWords.HouseVisitors);
+        }
+
+        ImGui.Separator();
+        var environment = this.Environment();
+        foreach (var suite in this._service.PairSuites) {
+            var lacks = PairSuiteLacks(suite, environment);
+            var ticked = this._pairTicked.Contains(suite.Id) && lacks == null;
+            ImGui.BeginDisabled(lacks != null);
+            if (ImGui.Checkbox($"{suite.Title}##{suite.Id}", ref ticked)) {
+                if (ticked) {
+                    this._pairTicked.Add(suite.Id);
+                } else {
+                    this._pairTicked.Remove(suite.Id);
+                }
+            }
+
+            ImGui.EndDisabled();
+            ImGui.SameLine();
+            ImGui.TextDisabled($"{suite.Checks.Count} checks" + (suite.Note is { } note ? $", {note}" : "") + (lacks is { } why ? $"  ({why})" : ""));
+        }
+
+        var chosen = this._service.PairSuites.Where(suite => this._pairTicked.Contains(suite.Id) && PairSuiteLacks(suite, environment) == null).ToList();
+        ImGui.Separator();
+        var cant = chosen.Count == 0 ? "Tick at least one." : this._service.CantStart(SelfTestSuites.ForHost(chosen), SelfTestRole.Host) ?? this._service.CantPair(this._partner);
+        ImGui.BeginDisabled(cant != null);
+        if (ImGui.Button(SelfTestWords.Start)) {
+            try {
+                this._service.StartHost(chosen, this._partner.Trim());
+                this._startScreen = false;
+                this._twoPlayers = false;
+                this._note = "";
+                this._error = null;
+            } catch (Exception ex) {
+                this._error = ex.Message;
+            }
+        }
+
+        ImGui.EndDisabled();
+        this.DrawPairButtons(cant);
+    }
+
+    private void DrawBeAPartner() {
+        ImGui.SetNextItemWidth(260 * Widgets.Scale);
+        ImGui.InputTextWithHint("##host", SelfTestWords.HostLabel, ref this._host, 80);
+        ImGui.SameLine();
+        ImGui.SetNextItemWidth(80 * Widgets.Scale);
+        ImGui.InputTextWithHint("##code", SelfTestWords.CodeLabel, ref this._code, 4, ImGuiInputTextFlags.CharsUppercase | ImGuiInputTextFlags.CharsNoBlank);
+        ImGui.Spacing();
+        ImGui.TextWrapped("While it runs, your plugin answers their test by itself, in their test channel only:");
+        foreach (var line in SelfTestWords.PartnerConsent) {
+            ImGui.Bullet();
+            ImGui.SameLine();
+            ImGui.TextWrapped(line);
+        }
+
+        ImGui.TextWrapped(SelfTestWords.NoNamesInReport);
+        ImGui.Separator();
+        var suites = new[] { PartnerSuite.Create() };
+        var cant = this._service.CantStart(suites, SelfTestRole.Partner) ?? this._service.CantPair(this._host)
+                   ?? (SelfTestRun.IsCode(this._code.Trim().ToUpperInvariant()) ? null : "Type their four-letter code.");
+        ImGui.BeginDisabled(cant != null);
+        if (ImGui.Button(SelfTestWords.Start)) {
+            try {
+                this._service.StartPartner(this._host.Trim(), this._code);
+                this._startScreen = false;
+                this._twoPlayers = false;
+                this._note = "";
+                this._error = null;
+            } catch (Exception ex) {
+                this._error = ex.Message;
+            }
+        }
+
+        ImGui.EndDisabled();
+        this.DrawPairButtons(cant);
+    }
+
+    private void DrawPairButtons(string? cant) {
+        ImGui.SameLine();
+        if (ImGui.Button("Back")) {
+            this._twoPlayers = false;
+            this._error = null;
+        }
+
+        ImGui.SameLine();
+        if (ImGui.Button(SelfTestWords.Close)) {
+            this.IsOpen = false;
+        }
+
+        if (cant != null) {
+            ImGui.TextDisabled(cant);
+        }
+    }
+
+    /// <summary>Why none of a two-player suite's checks can run here (the partner aside: pairing comes first), or null.</summary>
+    private static string? PairSuiteLacks(SelfTestSuite suite, SelfTestEnvironment? environment) {
+        if (environment == null) {
+            return null;
+        }
+
+        var lacks = suite.Checks.Select(check => environment.Lacks(check.Needs & ~SelfTestNeeds.Partner)).ToList();
         return lacks.All(why => why != null) ? lacks[0] : null;
     }
 
@@ -269,6 +444,11 @@ internal sealed class SelfTestWindow : Window {
 
         ImGui.EndDisabled();
         ImGui.TextDisabled(SelfTestWords.ClosingDoesntStop);
+        if (view.PairLine is { } pair) {
+            // Two players: the other tester's facts, or what this partner answered (fixed words, never a name).
+            ImGui.TextWrapped(pair);
+        }
+
         if (view.State == SelfTestState.CleaningUp) {
             Widgets.WrappedColoured(Widgets.Warning, view.Pause == SelfTestWords.ServerSlowDown ? $"{SelfTestWords.ServerSlowDown}. Cleaning up in a minute..." : "Cleaning up...");
         } else if (view.State == SelfTestState.Paused && view.Pause != null) {
@@ -403,12 +583,22 @@ internal sealed class SelfTestWindow : Window {
 
         ImGui.SameLine();
         var failed = results.Where(result => result.Outcome is CheckOutcome.Failed or CheckOutcome.Stopped).Select(result => result.Check).ToList();
-        var suites = this._service.Suites.Where(suite => suite.Checks.Any(check => failed.Contains(check.Id))).ToList();
-        var cant = failed.Count == 0 ? "Nothing failed." : this._service.CantStart(suites);
+        // Two players: the host runs its failed ones again with the same partner (paired afresh); a partner has nothing to run again.
+        var host = view.Role == SelfTestRole.Host;
+        var suites = (host ? this._service.PairSuites : this._service.Suites).Where(suite => suite.Checks.Any(check => failed.Contains(check.Id))).ToList();
+        var cant = view.Role == SelfTestRole.Partner ? "Your partner starts their run again."
+            : failed.Count == 0 ? "Nothing failed."
+            : host ? this._service.CantStart(SelfTestSuites.ForHost(suites), SelfTestRole.Host) ?? this._service.CantPair(this._partner)
+            : this._service.CantStart(suites);
         ImGui.BeginDisabled(cant != null);
         if (ImGui.Button(SelfTestWords.RunFailedAgain)) {
             try {
-                this._service.Start(suites, failed);
+                if (host) {
+                    // The name the tester typed (the run forgot it at its end).
+                    this._service.StartHost(suites, this._partner.Trim(), failed);
+                } else {
+                    this._service.Start(suites, failed);
+                }
             } catch (Exception ex) {
                 this._error = ex.Message;
             }
@@ -418,6 +608,7 @@ internal sealed class SelfTestWindow : Window {
         ImGui.SameLine();
         if (ImGui.Button("Back to the start")) {
             this._startScreen = true;
+            this._twoPlayers = false;
             this._copied = null;
         }
 

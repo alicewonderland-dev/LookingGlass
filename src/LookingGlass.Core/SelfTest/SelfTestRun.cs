@@ -1269,6 +1269,8 @@ public sealed partial class SelfTestRun {
         // The file stays if anything is left to do: the next connection (or start) finishes it.
         bool stillBlocked;
         lock (this._lock) {
+            // The other tester's name goes with the run: a file kept for what is left to do doesn't need it.
+            this._data.Partner = null;
             stillBlocked = this._data.BlockedOther;
         }
 

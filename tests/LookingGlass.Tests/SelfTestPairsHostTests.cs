@@ -285,7 +285,12 @@ public sealed class SelfTestPairsHostTests : IDisposable {
         await run.RunAsync();
 
         Assert.True(this._host.File.Exists);
-        Assert.True(this._host.File.Read(out _)!.BlockedOther);
+        var left = this._host.File.Read(out _)!;
+        Assert.True(left.BlockedOther);
+        Assert.Equal(ScriptedPartner.Id, left.OtherUserId);
+        // The partner's name went with the run: what is left to do needs only their number.
+        Assert.Null(left.Partner);
+        Assert.DoesNotContain("Bob", File.ReadAllText(this._host.File.Path), StringComparison.Ordinal);
     }
 
     [Fact]

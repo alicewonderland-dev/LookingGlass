@@ -118,6 +118,15 @@ public sealed class SessionManager : IDisposable {
     public ChannelHistory History { get; } = new();
 
     /// <summary>
+    /// The self-test's tap (two players): told of every message delivered, a channel's (live or caught up) or local chat's
+    /// shown, as its sender, text and links, held by the run only. Null unless a run is on. From any thread.
+    /// </summary>
+    internal Action<Core.SelfTest.ReceivedLine>? Delivered { get; set; }
+
+    private static Core.SelfTest.ReceivedLine Received(string? channelId, Protocol.User sender, bool own, string? text, IReadOnlyList<MessageLink> links, bool caughtUp) =>
+        new(channelId, sender.UserId, $"{sender.Name}@{sender.WorldName}", own, text ?? "", links.Select(link => link.Target).ToList(), caughtUp);
+
+    /// <summary>
     /// The current session's chat log on this computer, while the player keeps one (<see cref="Configuration.KeepChatLog"/>):
     /// channel windows read older lines from it. Null when off or logged out. Safe from any thread.
     /// </summary>
@@ -555,6 +564,11 @@ public sealed class SessionManager : IDisposable {
 
         this.History.Add(message, generation);
         this.Unread.Add(message);
+        if (message.Sender.UserId != -1) {
+            // Never a simulated line (the debug window's, or the one-player self-test's): only what the server delivered.
+            this.Delivered?.Invoke(Received(message.ChannelId, message.Sender, message.IsOwn, message.Text, message.Links, caughtUp: false));
+        }
+
         if (WindowsOnly.MessageToGameChat(windowsOnly, off, message.ChannelId)) {
             this._chat.Message(message, this.SlotOf(message.ChannelId), this.NicknameOf(message.ChannelId), this.ColourOf(message.ChannelId),
                 nameColour: this.NameColourOf(message.Sender));
@@ -581,6 +595,7 @@ public sealed class SessionManager : IDisposable {
         this.History.AddCaughtUp(caughtUp, generation);
         foreach (var message in caughtUp.Messages) {
             this.Unread.Add(message);
+            this.Delivered?.Invoke(Received(caughtUp.ChannelId, message.Sender, message.IsOwn, message.Text, message.Links, caughtUp: true));
         }
 
         if (!WindowsOnly.MessageToGameChat(windowsOnly, off, caughtUp.ChannelId)) {
@@ -655,6 +670,7 @@ public sealed class SessionManager : IDisposable {
                 }
             }
 
+            this.Delivered?.Invoke(Received(null, message.Sender, message.IsOwn, message.Text, message.Links, caughtUp: false));
             this._chat.LocalMessage(message, this._config.LocalChatColour(), this.NameColourOf(message.Sender));
         });
     }

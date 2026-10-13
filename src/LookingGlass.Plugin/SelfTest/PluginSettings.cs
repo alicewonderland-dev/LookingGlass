@@ -10,7 +10,7 @@ namespace LookingGlass.Plugin.SelfTest;
 /// or closes, and its caches follow); without one (the plugin starting, putting back what an interrupted run changed),
 /// straight into the settings. Each write saves the settings. Framework thread (or the plugin's constructor).
 /// </summary>
-internal sealed class PluginSettings(Configuration config, ulong contentId, string serverUrl, SessionManager? sessions = null) : ISelfTestSettings {
+internal sealed class PluginSettings(Configuration config, ulong contentId, string serverUrl, SessionManager? sessions = null, long otherUserId = 0) : ISelfTestSettings {
     public JsonElement Read(SelfTestSetting setting) => setting switch {
         SelfTestSetting.WindowsOnly => Value(config.MessagesOnlyInWindows),
         SelfTestSetting.NewChannelsOpen => Value((int) config.WindowOpening),
@@ -25,6 +25,7 @@ internal sealed class PluginSettings(Configuration config, ulong contentId, stri
         SelfTestSetting.ChatTwoNoteShown => Value(config.ChatTwoLabelNoteShown),
         SelfTestSetting.LocalChatColour => Value(SelfTestValues.Colour(config.LocalChatColour())),
         SelfTestSetting.OwnNameColour => Value(this.OwnNameColour()),
+        SelfTestSetting.PartnerNameColour => Value(this.PartnerNameColour()),
         SelfTestSetting.ChannelWindows => Value(config.ForCharacter(contentId).WindowsIfAny(serverUrl) ?? []),
         _ => throw new ArgumentOutOfRangeException(nameof(setting), setting, null),
     };
@@ -83,6 +84,7 @@ internal sealed class PluginSettings(Configuration config, ulong contentId, stri
                 config.SetLocalChatColour(SelfTestValues.Colour(value.ValueKind == JsonValueKind.String ? value.GetString() : null));
                 break;
             case SelfTestSetting.OwnNameColour:
+            case SelfTestSetting.PartnerNameColour:
                 var own = value.Deserialize<OwnNameColourValue>() ?? throw new JsonException("No name colour.");
                 // Only a number (a Lodestone ID), as every name colour is kept: never anything else.
                 if (own.Key.Length == 0 || !own.Key.All(c => char.IsAsciiDigit(c) || c is '-' or '@' or ':' or '/' or '.')) {
@@ -114,6 +116,15 @@ internal sealed class PluginSettings(Configuration config, ulong contentId, stri
     private OwnNameColourValue OwnNameColour() {
         if (sessions?.Snapshot.Me is not { } me || NameColours.KeyOf(me.UserId, serverUrl) is not { } key) {
             throw new InvalidOperationException("Not logged in to LookingGlass: the name colour's key isn't known.");
+        }
+
+        return new OwnNameColourValue(key, config.NameColours.TryGetValue(key, out var rgb) ? rgb : null);
+    }
+
+    /// <summary>The other tester's name colour (two players), keyed as saved: needs their user ID.</summary>
+    private OwnNameColourValue PartnerNameColour() {
+        if (otherUserId == 0 || NameColours.KeyOf(otherUserId, serverUrl) is not { } key) {
+            throw new InvalidOperationException("The other tester isn't known: their name colour's key isn't either.");
         }
 
         return new OwnNameColourValue(key, config.NameColours.TryGetValue(key, out var rgb) ? rgb : null);

@@ -22,4 +22,6 @@ internal sealed class Services {
     [PluginService] public static IContextMenu ContextMenu { get; private set; } = null!;
     [PluginService] public static ICondition Condition { get; private set; } = null!;
     [PluginService] public static IObjectTable Objects { get; private set; } = null!;
+    [PluginService] public static IPartyList Party { get; private set; } = null!;
+    [PluginService] public static ITargetManager Targets { get; private set; } = null!;
 }

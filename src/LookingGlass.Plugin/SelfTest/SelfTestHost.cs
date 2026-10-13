@@ -31,7 +31,7 @@ internal sealed record SelfTestParts(
 /// when it ends, and the log tap's counts. Typing checks the place and the game's chat channel once more, right before the
 /// line goes through the gate, and types nothing if either isn't as it must be.
 /// </summary>
-internal sealed class SelfTestHost : ISelfTestHost, IDisposable {
+internal sealed partial class SelfTestHost : ISelfTestHost, IDisposable {
     private readonly SelfTestParts _parts;
     private readonly Lock _lock = new();
     private readonly List<(long Seq, TapLine Line)> _printed = [];
@@ -62,11 +62,13 @@ internal sealed class SelfTestHost : ISelfTestHost, IDisposable {
             this._printed.Clear();
             this._gameChat.Clear();
             this._forbiddenExtra.Clear();
+            this._received.Clear();
             this._marker = markerPrefix;
         }
 
         this._localSendsAtStart = this._parts.Local.Sends;
         this._parts.Chat.Tap = this.OnPrinted;
+        this.Sessions.Delivered = this.OnDelivered;
         this._parts.LogTap.Watch(forbidden);
         Services.Chat.ChatMessage += this.OnChatMessage;
     }
@@ -74,6 +76,8 @@ internal sealed class SelfTestHost : ISelfTestHost, IDisposable {
     /// <summary>Stops the taps and drops everything they held.</summary>
     public void StopTaps() {
         Services.Chat.ChatMessage -= this.OnChatMessage;
+        this.Sessions.Delivered = null;
+        this.StopPair();
         this._parts.Chat.Tap = null;
         this._parts.LogTap.Stop();
         lock (this._lock) {
@@ -144,7 +148,8 @@ internal sealed class SelfTestHost : ISelfTestHost, IDisposable {
 
     public Task<PlaceFacts> ReadPlaceAsync() => OnFramework(PrivateAreaReader.Read);
 
-    public Task<int> OthersNearAsync(double yalms) => OnFramework(() => PrivateAreaReader.OthersNear(yalms));
+    // The other tester (two players) isn't "someone near": they are a tester too (decision 3).
+    public Task<int> OthersNearAsync(double yalms) => OnFramework(() => PrivateAreaReader.OthersNear(yalms, this.Other));
 
     public int Logins => Volatile.Read(ref this._logins);
 
@@ -171,6 +176,7 @@ internal sealed class SelfTestHost : ISelfTestHost, IDisposable {
             HistoryOn = this.Config.KeepChatLog,
             HistoryEmpty = historyEmpty,
             ChatInputReadable = StickyMode.ChatInputLabel() != null,
+            DataCentre = Services.Objects.LocalPlayer?.CurrentWorld.ValueNullable?.DataCenter.RowId ?? 0,
         };
     });
 
@@ -331,6 +337,11 @@ internal sealed class SelfTestHost : ISelfTestHost, IDisposable {
     });
 
     public async Task InviteAsync(string channelId, string name, string world) {
+        if (this.Other != null && !this.IsOther(name, world)) {
+            // Two players: only ever the other tester (never a registered third person).
+            throw new InvalidOperationException("Only the other tester is invited.");
+        }
+
         var target = new InviteTarget(name, world);
         var offer = await OnFramework(() => {
             this.Own(channelId);
@@ -362,7 +373,7 @@ internal sealed class SelfTestHost : ISelfTestHost, IDisposable {
         }
 
         var theirs = this.Sessions.SessionPlayer?.ContentId == contentId && this.Sessions.ServerUrl == serverUrl;
-        return new PluginSettings(this.Config, contentId, serverUrl, theirs ? this.Sessions : null);
+        return new PluginSettings(this.Config, contentId, serverUrl, theirs ? this.Sessions : null, this.OtherUserId());
     }
 
     public Task<int?> GameChannelAsync() => OnFramework(() => ChatInterop.CurrentChannel()?.ChatType);
