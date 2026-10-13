@@ -1,6 +1,11 @@
 # Self-test: a plan for approval
 
-Status: a plan (2026-10-13), nothing built. The owner asked for "a debug
+Status: approved by the owner (2026-10-13), with all ten open decisions taken
+as recommended. **Steps 1 to 4 as built** (2026-10-13): the one-player
+self-test (the runner, the plugin's seams, the window, the one-player suites);
+the choices made in building it are in design.md's
+[Decisions](design.md#decisions). Step 5 (two players) is still to build;
+step 6's docs are written for what is built. The owner asked for "a debug
 function that tests as many of the remaining checklist items as possible. If
 human input is required, give the user instructions. Tests that require 2
 players to confirm can be included. Require that the player be in an inn
@@ -978,6 +983,18 @@ Rough sizes in lines of code, tests separate.
 Steps 1 to 4 make a useful one-player self-test on their own; step 5 can
 follow. About 4,700 lines of code and 2,000 of tests in all, mostly the
 checks themselves.
+
+**As built (steps 1 to 4, 2026-10-13):** `src/LookingGlass.Core/SelfTest`
+(the runner, `PrivateArea`, `SelfTestPacer`, `SelfTestReport`,
+`SelfTestWords`, `SelfTestRunFile`, `ISelfTestHost`, and `Suites`), the
+plugin's `src/LookingGlass.Plugin/SelfTest` (the host, the log tap,
+`PrivateAreaReader`, the settings, `SelfTestService`) and
+`Ui/SelfTestWindow.cs`, `ChatLog.ForgetChannelAsync`, and the tests
+(`SelfTest*Tests.cs`, `ChatLogForgetTests.cs`). The runner's design is ready
+for step 5: the run file has the partner's place, PrivateAreaReader can
+already leave a partner out of "someone near", and the protocol's requests
+would be steps like any other. The two-player suites aren't listed on the start screen; it
+says they come later.
 
 ## How it is tested
 

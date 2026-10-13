@@ -5005,6 +5005,11 @@ How to build, configure, deploy, back up and restore a server is in
   and the echo bot.
 - **`/lgdebug`.** Connection state, protocol trace, notices, and tools to ping,
   force a rekey, or simulate an incoming message.
+- **The self-test (`/lgdebug test`).** Runs the one-player in-game tests it can
+  by itself, guides the tester through the rest, and gives a report without
+  names, only in an inn room, an apartment or a house (see
+  [Self-test in the plugin](#self-test-in-the-plugin)). Checked itself with
+  [self-test-checklist.md](testing/self-test-checklist.md).
 - **Automated tests.** Cryptography, the policy table, the membership log and
   its rules, key login, recovery, identity resets, server moves, secrets
   files, limits, message catch-up (storage, sweeps, who may fetch what, paging,
@@ -5053,13 +5058,39 @@ name and `/lgc` commands, so it can be installed beside ExtraChat.
 
 ### Self-test in the plugin
 
-Status: a plan for the owner's approval (2026-10-13), nothing built. The full
+Status: the one-player self-test is built (2026-10-13: the plan's steps 1 to
+4); two players (step 5: pairing, the protocol, the partner's runner and the
+group 2 suites) are planned. The plan was approved by the owner on 2026-10-13,
+with every open choice as recommended (see [Decisions](#decisions)). The full
 plan, with mockups, the coverage of every open task, pacing and the
-two-player protocol, is in [self-test-plan.md](self-test-plan.md). Asked for by
-the owner (2026-10-13): a debug function that tests as many of the remaining
+two-player protocol, is in [self-test-plan.md](self-test-plan.md); checking
+the self-test itself in game is
+[self-test-checklist.md](testing/self-test-checklist.md). Asked for by the
+owner (2026-10-13): a debug function that tests as many of the remaining
 in-game checklist tasks as it can, gives the tester instructions where a
 person is needed, includes two-player tests, and runs only in an inn room, an
 apartment or a house, so test lines can't leak to other players.
+
+**As built** (`LookingGlass.Core.SelfTest`, tested against a fake host with a
+virtual clock; the plugin's `SelfTest` folder and `SelfTestWindow`):
+
+- `SelfTestRun` runs the chosen suites' checks, each a list of steps
+  (automatic, guided, or waiting in the run file over a relog or reload),
+  through `ISelfTestHost`; the plugin's `SelfTestHost` does every game call on
+  the framework thread. Results and the `[selftest]` log lines are fixed words.
+- `PrivateArea` (the rule table, failing closed, settled for two seconds) is
+  checked before every step and again right before every typed line, by the
+  runner and once more by the host on the framework thread; in a house or
+  apartment a typing step waits while anyone else is within 30 yalms.
+- `SelfTestPacer` keeps the plan's pace table, stops at the first refusal for
+  a limit (`RateLimited`, `LimitReached`, `Blocked`) and never retries, and
+  keeps the last hour's spending in `selftest-spent.json`.
+- `selftest-run.json` holds the run's code, the test channels (written before
+  anything is sent), the settings snapshot, the results and where to carry
+  on; at the plugin's start an interrupted run's settings are put back before
+  any session, and its channels left once connected.
+- Eight suites cover the plan's 45 one-player tasks (`SelfTestSuites`).
+  Two-player checks aren't listed yet; the start screen says they come later.
 
 - **Where.** `/lgdebug test`, and a **Self-test...** button in `/lgdebug`,
   open a window of its own. No new top-level command.
@@ -5623,6 +5654,56 @@ The owner's decisions, and why.
   [Self-test in the plugin](#self-test-in-the-plugin)), for the owner's
   approval before anything is built; its open choices are under Open
   questions.
+- **The self-test: approved, with every recommendation (owner, 2026-10-13).**
+  1. `/lgdebug test` and a **Self-test...** button in `/lgdebug`, opening a
+     window of its own; no new command.
+  2. Inn rooms, inside apartments, and inside houses on any floor, their
+     private chambers, FC chambers and the company workshop count; never an
+     apartment lobby, a yard or a ward. In a house or apartment a step that
+     types waits while anyone other than the testers is within 30 yalms.
+  3. Two-player local chat may happen in either tester's house or apartment.
+  4. Allowed on the public server, at the planned pace (no refusal, no flag,
+     no block), stopping at the first refusal.
+  5. The test's lines are removed from the tester's chat history at clean-up
+     (`ChatLog.ForgetChannelAsync`); the checks that would destroy history
+     run only if it was off and empty before.
+  6. The runner types its own test lines through the game chat box's gate,
+     Say only; `/p` only when the party is exactly the two testers.
+  7. The log tap: yes.
+  8. The report has no names, times with the time zone; each tester copies
+     their own.
+  9. The self-test never edits pending-tests.md or sends results anywhere.
+  10. "Lots of history" uses simulated lines.
+- **The one-player self-test built (2026-10-13)**, as the plan says (steps 1
+  to 4). Choices made in building it, where the plan was silent or had to
+  give:
+  - The clean-up's order puts leaving the test channels and removing their
+    lines from the chat history before the settings go back (the plan lists
+    the settings third): leaving adds a line to the history, and the history
+    must still be open to remove it.
+  - A run paused by leaving the private place carries on by itself once back
+    and settled (there is no separate **Carry on** press needed; the button
+    is there for a relog or reload the runner can't see).
+  - The report, the window and the log tap's list scrub names as whole words;
+    the log tap looks only for the run's marker, its code and the tester's
+    name and world (a channel's own name can be any word, which the plugin's
+    log lines may hold by chance), while the report is scrubbed of every
+    channel's name too. A name@world typed for the invite check goes to the
+    step only, and is scrubbed from both.
+  - The 5 MB limit (chat-log 31) and a text file locked by another program
+    (31b) are reported as not run: filling 5 MB in a run is too slow, and the
+    unit tests cover both. A second channel with the same name (chat-log 30)
+    isn't run either: it would need a fourth test channel.
+  - "Where it must not show" (context-invites 7 to 9a) checks the menus' rules
+    for the tester, a one-word name, an item's menu and another player,
+    rather than each game object kind (the game's own menus decide those).
+    ChatTwo's menu registration count (context-invites 19 to 21) is guided
+    only: no seam counts ChatTwo's registrations.
+  - Custom-colours 17 leaves the run's third test channel (the last check to
+    use it), so a run makes at most three, as planned.
+  - The game's chat channel is set to Say only while not talking in a channel
+    (setting it would end that); while talking in one, the host types only if
+    Say is underneath, which the runner set before starting it.
 
 ## Open questions
 
@@ -5687,4 +5768,6 @@ The owner's decisions, and why.
   server (paced as planned); what to do with a tester's own chat history; the
   runner typing its own test lines (Say only, `/p` only with the two testers
   as the party); a log tap; a report with no names; ticking pending-tests.md
-  by hand; and "lots of history" with simulated lines.
+  by hand; and "lots of history" with simulated lines. Answered (2026-10-13):
+  the owner approved the plan and took every recommendation (see Decisions);
+  the one-player self-test is built, two players come next.
