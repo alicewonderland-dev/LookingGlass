@@ -9,6 +9,13 @@ here only say roughly what to do.
 The owner hands out the tasks and ticks them off as results come in, so ask
 which ones are yours before you start, and send your results to the owner.
 
+**The self-test (the build after 0.2.16):** in an inn room, an apartment or a
+house, `/lgdebug test` runs many of group 1's tasks by itself and tells you
+what to do for others, then gives a report to copy (no names in it). Send that
+report as your results for the tasks it lists; it never ticks this list
+itself. Two-player tasks aren't in it yet. Before trusting its reports, the
+self-test itself has a checklist: [self-test](self-test-checklist.md).
+
 **Plugin version:** 0.2.12 is current. Each feature below says the oldest
 version it needs. Use 0.2.12 when you can.
 

@@ -14,13 +14,16 @@ public sealed class DebugWindow : Window {
     private readonly SessionManager _sessions;
     private readonly ChatOutput _chat;
     private readonly UiActions _actions = new();
+    private readonly Action _openSelfTest;
     private string _testMessage = "test message";
     private string _testColours = "";
     private string? _channelId;
 
-    public DebugWindow(SessionManager sessions, ChatOutput chat) : base("LookingGlass debug###lookingglass-debug") {
+    /// <param name="openSelfTest">Opens the self-test's window (its button at the top, and /lgdebug test).</param>
+    public DebugWindow(SessionManager sessions, ChatOutput chat, Action openSelfTest) : base("LookingGlass debug###lookingglass-debug") {
         this._sessions = sessions;
         this._chat = chat;
+        this._openSelfTest = openSelfTest;
         this.SizeConstraints = new WindowSizeConstraints {
             MinimumSize = new Vector2(420, 300),
             MaximumSize = new Vector2(float.MaxValue, float.MaxValue),
@@ -31,6 +34,12 @@ public sealed class DebugWindow : Window {
         var session = this._sessions.Session;
         var snapshot = this._sessions.Snapshot;
 
+        if (ImGui.Button(Core.SelfTest.SelfTestWords.OpenButton)) {
+            this._openSelfTest();
+        }
+
+        ImGui.SameLine();
+        ImGui.TextDisabled("Checks the testing list in a private place (also /lgdebug test).");
         ImGui.TextUnformatted($"State: {snapshot.State}");
         ImGui.TextDisabled(snapshot.StatusText ?? "");
         ImGui.TextUnformatted($"Server: {session?.ServerUri.ToString() ?? "-"}");

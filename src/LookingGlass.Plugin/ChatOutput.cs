@@ -14,12 +14,31 @@ public sealed class ChatOutput(Configuration config) {
     /// <summary>The channel tag's colour unless the channel has one of its own: LookingGlass blue.</summary>
     public const ushort TagColour = NoticeColours.Blue;
 
+    /// <summary>
+    /// The self-test's tap: told every line printed, as it is asked for (null unless a run is on, so nothing changes
+    /// otherwise). What it is told stays in memory for the run only; it is never logged or saved.
+    /// </summary>
+    internal Action<Core.SelfTest.TapLine>? Tap { get; set; }
+
+    private void Tapped(Core.SelfTest.TapLine line) {
+        try {
+            this.Tap?.Invoke(line);
+        } catch {
+            // The tap must never keep a line from being printed.
+        }
+    }
+
     /// <param name="slot">The channel's command number, if it has one.</param>
     /// <param name="nickname">The channel's nickname, if it has one: its tag, unless nickname tags are turned off.</param>
     /// <param name="colour">The channel's colour (a UIColor row or a custom colour), or null for the default: only the tag coloured.</param>
     /// <param name="sentAt">For a message caught up from while the player was away: when it was sent (see <see cref="CatchUpChat.TimeLabel"/>), after the tag.</param>
     /// <param name="nameColour">The sender's name colour (0xRRGGBB; see <see cref="NameColours"/>), or null: their name in the line's colour.</param>
     public void Message(IncomingMessage message, int? slot, string? nickname, ChannelColour? colour = null, string? sentAt = null, uint? nameColour = null) {
+        if (this.Tap != null) {
+            this.Tapped(new Core.SelfTest.TapLine(Core.SelfTest.TapKind.Message, null, message.Linked.Text, ChannelTag.For(slot, nickname, config.NicknameTags),
+                message.ChannelId, message.IsOwn, config.AdvancedMode) { Links = message.Links.Select(link => link.Target).ToList() });
+        }
+
         RunOnFramework(() => {
             var tag = ChannelTag.For(slot, nickname, config.NicknameTags);
             // The tag in the channel's colour, and the whole line too (like the game's own linkshells) if that's on; the
@@ -37,6 +56,12 @@ public sealed class ChatOutput(Configuration config) {
     /// <param name="colour">Local chat's colour, or null for the default: only the tag coloured, in LookingGlass blue.</param>
     /// <param name="nameColour">The sender's name colour (0xRRGGBB; see <see cref="NameColours"/>), or null.</param>
     public void LocalMessage(IncomingLocalMessage message, ChannelColour? colour, uint? nameColour) {
+        if (this.Tap != null) {
+            this.Tapped(new Core.SelfTest.TapLine(Core.SelfTest.TapKind.LocalMessage, null, message.Linked.Text, LocalChat.Tag, null, message.IsOwn, config.AdvancedMode) {
+                Links = message.Links.Select(link => link.Target).ToList(),
+            });
+        }
+
         RunOnFramework(() => {
             var parts = ColouredText.Message(LocalChat.Tag, colour, null, config.ColourWholeLine, GameText.Nearest, message.Sender.Name, message.Sender.WorldName, nameColour);
             this.Print(parts, message.Unsupported, message.Linked);
@@ -97,6 +122,10 @@ public sealed class ChatOutput(Configuration config) {
         // Notices embed remote text (names, channel names, server errors and announcements).
         text = TextSanitizer.Clean(text);
         tag = tag == null ? null : TextSanitizer.Clean(tag);
+        if (this.Tap != null) {
+            this.Tapped(new Core.SelfTest.TapLine(Core.SelfTest.TapKind.Notice, tone, text, tag, Advanced: config.AdvancedMode));
+        }
+
         RunOnFramework(() => {
             var parts = ColouredText.Notice(tone, text, tag, tagColour, GameText.Nearest);
             Services.Chat.Print(new XivChatEntry { Type = config.ChatType, Message = GameText.Build(parts) });
@@ -115,6 +144,14 @@ public sealed class ChatOutput(Configuration config) {
     /// </summary>
     public void ColourSamples(IEnumerable<uint> colours) {
         var samples = colours.ToList();
+        if (this.Tap != null) {
+            foreach (var rgb in samples) {
+                foreach (var _ in ColouredText.Samples(rgb, GameText.Nearest)) {
+                    this.Tapped(new Core.SelfTest.TapLine(Core.SelfTest.TapKind.ColourSample, null, HexColour.Format(rgb), Advanced: config.AdvancedMode));
+                }
+            }
+        }
+
         RunOnFramework(() => {
             foreach (var rgb in samples) {
                 foreach (var line in ColouredText.Samples(rgb, GameText.Nearest)) {

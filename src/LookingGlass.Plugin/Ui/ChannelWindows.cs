@@ -251,6 +251,14 @@ public sealed class ChannelWindows(WindowSystem system, Configuration config, Se
         window.Show(channelId);
     }
 
+    /// <summary>Moves a window (screen pixels), keeping its size: as dragging it does (the self-test). Draw thread.</summary>
+    internal void Move(ChannelWindow window, float x, float y) {
+        var place = window.Layout.Place;
+        window.Layout.Place = new WindowPlace(x, y, place?.Width ?? ChannelWindow.DefaultSize.X * Widgets.Scale, place?.Height ?? ChannelWindow.DefaultSize.Y * Widgets.Scale);
+        window.MoveTo(window.Layout.Place);
+        config.Save();
+    }
+
     /// <summary>The first window with a channel as a tab, or null.</summary>
     public ChannelWindow? Showing(string channelId) => this._open.FirstOrDefault(window => window.Layout.Tabs.Contains(channelId));
 

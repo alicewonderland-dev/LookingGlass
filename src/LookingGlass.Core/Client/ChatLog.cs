@@ -168,6 +168,17 @@ public sealed partial class ChatLog : IChannelHistoryRecorder, IAsyncDisposable 
         }, CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default);
     }
 
+    /// <summary>
+    /// Removes one channel's lines from the log, and its text files, after what was queued before (see
+    /// <see cref="ChatLogStore.ForgetChannel"/>): the self-test's test channel, at its clean-up. Nothing of another
+    /// channel's changes. The older lines windows show are read again (records moved in the segments written again).
+    /// </summary>
+    /// <returns>How many records were removed. Fails if a file couldn't be written or deleted (what could be, was).</returns>
+    public Task<int> ForgetChannelAsync(string channelId) {
+        var op = new Op.Forget(channelId, new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously));
+        return this._ops.Writer.TryWrite(op) ? op.Done.Task : Task.FromException<int>(new InvalidOperationException("The chat log is closed."));
+    }
+
     /// <summary>Done once everything queued before it is done, and handed to the operating system.</summary>
     public Task FlushAsync() {
         var op = new Op.Flush(new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously));
@@ -294,6 +305,23 @@ public sealed partial class ChatLog : IChannelHistoryRecorder, IAsyncDisposable 
                 }
 
                 break;
+            case Op.Forget forget:
+                // What was queued before it is written first, so its lines are among those removed.
+                this.Write();
+                try {
+                    var removed = this._state == ChatLogState.Ready || this._state == ChatLogState.Unreadable ? this._store.ForgetChannel(forget.ChannelId) : 0;
+                    forget.Done.TrySetResult(removed);
+                } catch (Exception ex) {
+                    this.Warn("remove a channel from the chat log", ex);
+                    forget.Done.TrySetException(ex);
+                } finally {
+                    // Records moved within the segments written again: every window's place in the older lines starts over,
+                    // as after a deletion.
+                    Interlocked.Increment(ref this._version);
+                    this._earlier.Clear();
+                }
+
+                break;
             case Op.Flush flush:
                 this.Write();
                 Interlocked.Exchange(ref this._size, this._store.Size);
@@ -388,6 +416,9 @@ public sealed partial class ChatLog : IChannelHistoryRecorder, IAsyncDisposable 
             case Op.Flush flush:
                 flush.Done.TrySetResult();
                 break;
+            case Op.Forget forget:
+                forget.Done.TrySetException(new InvalidOperationException("The chat log closed before a channel could be removed from it."));
+                break;
         }
     }
 
@@ -402,6 +433,8 @@ public sealed partial class ChatLog : IChannelHistoryRecorder, IAsyncDisposable 
         public sealed record Delete(TaskCompletionSource Done) : Op;
 
         public sealed record Flush(TaskCompletionSource Done) : Op;
+
+        public sealed record Forget(string ChannelId, TaskCompletionSource<int> Done) : Op;
     }
 }
 

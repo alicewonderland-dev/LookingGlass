@@ -120,7 +120,10 @@ public static partial class ChatLogFiles {
         long size = 0;
         try {
             foreach (var file in folder.EnumerateFiles()) {
-                size += SafeLength(file);
+                // A segment being written again (see ChatLogStore.ForgetChannel) is the same lines twice for a moment.
+                if (!file.Name.EndsWith(ChatLogStore.ForgetExtension, StringComparison.Ordinal)) {
+                    size += SafeLength(file);
+                }
             }
 
             foreach (var inner in folder.EnumerateDirectories()) {
@@ -140,6 +143,49 @@ public static partial class ChatLogFiles {
             return info.Attributes.HasFlag(FileAttributes.ReparsePoint);
         } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) {
             return false;
+        }
+    }
+
+    /// <summary>
+    /// Every chat log folder, with when anything in it was last written (the newest file's time, or the folder's): for the
+    /// self-test, which deletes a history only while nothing in it is newer than its run.
+    /// </summary>
+    public static IReadOnlyList<(string Folder, DateTimeOffset Newest)> FoldersWithTimes(string configDirectory) =>
+        Folders(configDirectory).Select(folder => (folder, Newest(new DirectoryInfo(folder)))).ToList();
+
+    private static DateTimeOffset Newest(DirectoryInfo folder) {
+        var newest = DateTimeOffset.MinValue;
+        try {
+            newest = new DateTimeOffset(folder.LastWriteTimeUtc, TimeSpan.Zero);
+            foreach (var file in folder.EnumerateFiles("*", SearchOption.AllDirectories)) {
+                var written = new DateTimeOffset(file.LastWriteTimeUtc, TimeSpan.Zero);
+                if (written > newest) {
+                    newest = written;
+                }
+            }
+        } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) {
+            // Can't tell: as new as can be, so it is never taken for old.
+            return DateTimeOffset.MaxValue;
+        }
+
+        return newest;
+    }
+
+    /// <summary>Deletes these chat log folders (only ones <see cref="Folders"/> lists), with every file in each.</summary>
+    /// <exception cref="IOException">Some couldn't be deleted (in use, say).</exception>
+    public static void DeleteFolders(string configDirectory, IEnumerable<string> folders) {
+        var ours = Folders(configDirectory).Select(Path.GetFullPath).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var failed = 0;
+        foreach (var folder in folders.Where(folder => ours.Contains(Path.GetFullPath(folder)))) {
+            lock (AtomicFile.LockFor(folder)) {
+                if (!DeleteFolder(folder)) {
+                    failed++;
+                }
+            }
+        }
+
+        if (failed > 0) {
+            throw new IOException($"{failed} chat log folders couldn't be deleted (they may be in use). Try again later.");
         }
     }
 
@@ -418,6 +464,9 @@ internal sealed class ChatLogStore : IDisposable {
     public const string KeyFileName = "chatlog.key";
     public const string SegmentExtension = ".lgl";
 
+    /// <summary>A segment written again without a channel's lines, before it takes the old one's place (see <see cref="ForgetChannel"/>).</summary>
+    public const string ForgetExtension = ".forget";
+
     private const int HeaderSize = 8;
     private const int LengthSize = 4;
     private const int MaxPlaintext = 64 * 1024;
@@ -503,6 +552,11 @@ internal sealed class ChatLogStore : IDisposable {
         if (!Directory.Exists(this._folder)) {
             this.SessionStart = new ChatLogPosition(0, 0);
             return;
+        }
+
+        // A segment a crash left half written again (ForgetChannel): the old one is whole beside it.
+        foreach (var stale in Directory.EnumerateFiles(this._folder, "*" + SegmentExtension + ForgetExtension)) {
+            TryDelete(stale);
         }
 
         foreach (var file in Directory.EnumerateFiles(this._folder, "*" + SegmentExtension)) {
@@ -787,6 +841,113 @@ internal sealed class ChatLogStore : IDisposable {
 
         found.Reverse();
         return new LogPage(found.Select(entry => entry.Line).ToList(), null);
+    }
+
+    /// <summary>
+    /// Removes one channel's lines (the self-test's test channel, at its clean-up): from every segment holding any, which is
+    /// written again without them (each record sealed afresh at its new place, then put in the old file's place, so a
+    /// crash leaves one whole file or the other), and its text files' folder. Nothing of another channel's changes. Where
+    /// this session's lines start moves with the records, and each segment keeps its time (the size limit goes by it). A
+    /// record that can't be read (damaged) is dropped from a segment written again, as reading skips it anyway; one that
+    /// opens but isn't a line this version knows is kept. A log that can't be read here keeps its segments (which lines are
+    /// the channel's can't be told), and loses only the text folder.
+    /// </summary>
+    /// <returns>How many records were removed.</returns>
+    /// <exception cref="IOException">A file couldn't be written or replaced (what was done stays done).</exception>
+    public int ForgetChannel(string channelId) {
+        this.Open();
+        // The text files first, and a failure there kept until the segments are done too: neither stops the other.
+        IOException? textFailed = null;
+        try {
+            this._text.ForgetChannel(channelId);
+        } catch (IOException ex) {
+            textFailed = ex;
+        }
+
+        if (this._unreadable != null || this._key == null) {
+            return textFailed == null ? 0 : throw textFailed;
+        }
+
+        this.CloseActive();
+        var removed = 0;
+        foreach (var segment in this._segments.ToList()) {
+            byte[] bytes;
+            try {
+                bytes = this.ReadSegment(segment.Number, segment.Size);
+            } catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException) {
+                continue;
+            }
+
+            if (!ValidHeader(bytes)) {
+                continue;
+            }
+
+            var frames = this.Frames(segment.Number, bytes).ToList();
+            var kept = new List<(long Offset, byte[] Plaintext)>();
+            foreach (var (offset, _, plaintext) in frames) {
+                string? of;
+                try {
+                    of = ChatLogFormat.Decode(plaintext).ChannelId;
+                } catch (InvalidDataException) {
+                    // Not readable as a line: not the channel's, as far as can be told. Kept as it is.
+                    of = null;
+                }
+
+                if (of == channelId) {
+                    removed++;
+                } else {
+                    kept.Add((offset, plaintext));
+                }
+            }
+
+            if (kept.Count == frames.Count) {
+                continue;
+            }
+
+            // Written afresh: a record is bound to its place, so each one kept is sealed again at its new offset.
+            var output = new MemoryStream();
+            output.Write([.. SegmentMagic, FormatVersion, 0, 0, 0]);
+            long? sessionStart = null;
+            foreach (var (offset, plaintext) in kept) {
+                if (segment.Number == this.SessionStart.Segment && sessionStart == null && offset >= this.SessionStart.Offset) {
+                    sessionStart = output.Length;
+                }
+
+                var nonce = RandomNumberGenerator.GetBytes(Aead.NonceSize);
+                var frame = new byte[Overhead + plaintext.Length];
+                BinaryPrimitives.WriteInt32LittleEndian(frame, Aead.NonceSize + plaintext.Length + Aead.TagSize);
+                nonce.CopyTo(frame, LengthSize);
+                Aead.Encrypt(this._key, nonce, AssociatedData(segment.Number, output.Length), plaintext, frame.AsSpan(LengthSize + Aead.NonceSize));
+                output.Write(frame);
+            }
+
+            var path = this.PathOf(segment.Number);
+            var temporary = path + ForgetExtension;
+            var written = File.GetLastWriteTimeUtc(path);
+            try {
+                using (var stream = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None)) {
+                    output.Position = 0;
+                    output.CopyTo(stream);
+                    stream.Flush(flushToDisk: true);
+                }
+
+                File.Move(temporary, path, overwrite: true);
+                File.SetLastWriteTimeUtc(path, written);
+            } catch {
+                TryDelete(temporary);
+                throw;
+            }
+
+            if (segment.Number == this.SessionStart.Segment) {
+                this.SessionStart = new ChatLogPosition(segment.Number, sessionStart ?? output.Length);
+            }
+
+            segment.Size = output.Length;
+        }
+
+        this._channelsIn.Clear();
+        this._cached = null;
+        return textFailed == null ? removed : throw textFailed;
     }
 
     /// <summary>

@@ -13,7 +13,8 @@ internal sealed class Services {
     [PluginService] public static IPlayerState PlayerState { get; private set; } = null!;
     [PluginService] public static IFramework Framework { get; private set; } = null!;
     [PluginService] public static IDataManager Data { get; private set; } = null!;
-    [PluginService] public static IPluginLog Log { get; private set; } = null!;
+    /// <summary>The plugin's log: Dalamud's, wrapped by the self-test's log tap once the plugin starts (see <see cref="SelfTest.LogTap"/>).</summary>
+    [PluginService] public static IPluginLog Log { get; internal set; } = null!;
     [PluginService] public static IGameInteropProvider GameInterop { get; private set; } = null!;
     [PluginService] public static IAddonLifecycle AddonLifecycle { get; private set; } = null!;
     [PluginService] public static IGameGui GameGui { get; private set; } = null!;

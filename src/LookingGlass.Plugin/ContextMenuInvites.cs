@@ -37,27 +37,34 @@ internal sealed class ContextInviter(Configuration config, SessionManager sessio
     /// Sends the invite off the game thread, and says how it went in chat (which prints on the framework thread): "Invited
     /// Bob@Lich to [sky]." or why not, in LookingGlass blue with the tag in the channel's colour.
     /// </summary>
-    public void Invite(InviteTarget target, InviteOffer offer) {
+    public void Invite(InviteTarget target, InviteOffer offer) => _ = Task.Run(() => this.InviteAsync(target, offer));
+
+    /// <summary>
+    /// <see cref="Invite"/>, waited for (the self-test): says how it went in chat, as the menu does, and returns what went
+    /// wrong, or null if the invite was sent.
+    /// </summary>
+    public async Task<Exception?> InviteAsync(InviteTarget target, InviteOffer offer) {
         var tag = ContextInvites.TagIn(offer);
         if (sessions.Session is not { } session) {
-            chat.Notice(NoticeTone.Info, ContextInvites.NotInvited(target, offer, new SessionDisconnectedException("Not connected to the server."),
-                config.AdvancedMode), tag, offer.Colour);
-            return;
+            var notConnected = new SessionDisconnectedException("Not connected to the server.");
+            chat.Notice(NoticeTone.Info, ContextInvites.NotInvited(target, offer, notConnected, config.AdvancedMode), tag, offer.Colour);
+            return notConnected;
         }
 
-        _ = Task.Run(async () => {
-            string line;
-            try {
-                await session.InviteAsync(offer.ChannelId, target.Name, target.WorldName);
-                line = ContextInvites.Invited(target, offer);
-            } catch (Exception ex) {
-                // Asked when it happens, as the channel's Invite button does. Names stay out of the plugin's log.
-                Services.Log.Debug($"An invite from a menu failed: {ex.GetType().Name}");
-                line = ContextInvites.NotInvited(target, offer, ex, config.AdvancedMode);
-            }
+        string line;
+        Exception? failed = null;
+        try {
+            await session.InviteAsync(offer.ChannelId, target.Name, target.WorldName);
+            line = ContextInvites.Invited(target, offer);
+        } catch (Exception ex) {
+            // Asked when it happens, as the channel's Invite button does. Names stay out of the plugin's log.
+            Services.Log.Debug($"An invite from a menu failed: {ex.GetType().Name}");
+            line = ContextInvites.NotInvited(target, offer, ex, config.AdvancedMode);
+            failed = ex;
+        }
 
-            chat.Notice(NoticeTone.Info, line, tag, offer.Colour);
-        });
+        chat.Notice(NoticeTone.Info, line, tag, offer.Colour);
+        return failed;
     }
 }
 
