@@ -101,11 +101,12 @@ public sealed class PartnerSide {
                 continue;
             }
 
+            // In the run file first: a crash right after still leaves it at the next start.
+            this._context.MarkJoined(invite.ChannelId);
             await this.Host.AcceptInviteAsync(invite.ChannelId).ConfigureAwait(false);
             this._accepts++;
             this._left.Remove(invite.ChannelId);
             this._acceptedAt[invite.ChannelId] = this.Host.Now;
-            this._context.MarkJoined(invite.ChannelId);
             this._heard = this.Host.Now;
         }
     }

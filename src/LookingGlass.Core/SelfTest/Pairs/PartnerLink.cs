@@ -186,8 +186,9 @@ public sealed class PartnerLink {
         await context.WaitUntilAsync(async () => {
             foreach (var invite in await this.Host.InvitesAsync().ConfigureAwait(false)) {
                 if (invite.Verified && this.IsPartner(invite.Inviter) && invite.ChannelName == PartnerSide.OwnChannelName(this._run.Code)) {
-                    await this.Host.AcceptInviteAsync(invite.ChannelId).ConfigureAwait(false);
+                    // In the run file first: a crash right after still leaves it at the next start.
                     context.MarkJoined(invite.ChannelId);
+                    await this.Host.AcceptInviteAsync(invite.ChannelId).ConfigureAwait(false);
                     accepted = invite.ChannelId;
                     return true;
                 }
