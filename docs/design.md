@@ -5051,6 +5051,51 @@ name and `/lgc` commands, so it can be installed beside ExtraChat.
 
 ## Planned features
 
+### Self-test in the plugin
+
+Status: a plan for the owner's approval (2026-10-13), nothing built. The full
+plan, with mockups, the coverage of every open task, pacing and the
+two-player protocol, is in [self-test-plan.md](self-test-plan.md). Asked for by
+the owner (2026-10-13): a debug function that tests as many of the remaining
+in-game checklist tasks as it can, gives the tester instructions where a
+person is needed, includes two-player tests, and runs only in an inn room, an
+apartment or a house, so test lines can't leak to other players.
+
+- **Where.** `/lgdebug test`, and a **Self-test...** button in `/lgdebug`,
+  open a window of its own. No new top-level command.
+- **Only in a private place** (`PrivateArea`, in Core, failing closed): an inn
+  room (territory use 2); inside a house on any floor, its private chambers,
+  FC chambers or the company workshop; inside an apartment (use 14 with
+  `HousingManager`'s type, plot and room; never the apartment lobby, a yard
+  or a ward). Checked at the start, at every zone change (pausing the run),
+  and before every step that types a line; in a house or apartment such a
+  step also waits while anyone but the testers is within 30 yalms.
+- **Kept apart.** A temporary test channel per run (`LG self-test <code>`),
+  never the tester's channels; every setting it changes snapshotted in a run
+  file and put back at the end, and at the next start after a crash; the test
+  channel left (deleted as its last member) at the end; the game's chat
+  channel set to Say before any typed line, and `/p` only when the party is
+  the two testers.
+- **Checks.** Automatic where the plugin's own state, its printed lines, the
+  game's chat events and its log show the result; guided ("Needs you": an
+  instruction, then Done, It didn't work or Skip) where only the player's
+  eyes or hands can (colours, menus, ChatTwo, Tab, relogs). Lines are typed
+  through the game chat box's own gate (`ExecuteCommandInner`).
+- **Two players.** A host and a partner, paired by name@world and a code; the
+  partner's plugin answers by itself, over ordinary messages in the test
+  channel, from a fixed list of capped requests (send lines, report what it
+  received and its check code, leave and rejoin). No server change.
+- **Pacing.** Far inside every server limit (a channel message every 2
+  seconds at most, at most three test channels, reconnects a minute apart),
+  and it stops at the first refusal, so a run can't flag or block anyone.
+- **Report.** Copyable text in pending-tests.md's "How to report" shape:
+  checklist steps, passed, failed or skipped, and why. No names, no message
+  text.
+- **Coverage** of the 121 open tasks: 13 automatic, 11 automatic with a
+  guided step, 21 guided, 39 with a partner, 37 not covered (27 of them the
+  owner's server-side tasks; the rest need a second install, three players,
+  an identity reset or an older build).
+
 ### Garbled speech with GagSpeak
 
 Status: not possible at this time; nothing built, and no request made. The
@@ -5570,6 +5615,14 @@ The owner's decisions, and why.
   registered here (the web page bans its Lodestone ID), but lifts any
   character's ban; the notice once a session, the menu greying from the last
   lists, and the audit trail's "from" for plugin actions stay.
+- **A self-test, asked for (2026-10-13).** The owner asked for a debug
+  function that runs as many of the remaining in-game tests as it can, with
+  instructions where a person is needed, two-player tests included, and only
+  in an inn room, an apartment or a house to keep test lines from leaking.
+  Planned in [self-test-plan.md](self-test-plan.md) (see
+  [Self-test in the plugin](#self-test-in-the-plugin)), for the owner's
+  approval before anything is built; its open choices are under Open
+  questions.
 
 ## Open questions
 
@@ -5623,3 +5676,15 @@ The owner's decisions, and why.
   `--operators`, `--operator-pin`) on 2026-10-10, the second (Discord
   alerts) and the third (the web page) the same day, and the fourth, the
   last (the plugin's panel), on 2026-10-11.
+- **The self-test** (2026-10-13): the owner approves
+  [self-test-plan.md](self-test-plan.md) (its mockups and coverage) before it
+  is built, and answers its open choices, each with a recommendation in
+  [Open decisions for the owner](self-test-plan.md#open-decisions-for-the-owner):
+  `/lgdebug test` rather than a new command; which places count (the
+  recommendation adds private chambers, FC chambers and the workshop to inn
+  rooms, apartments and houses, never the lobby or a yard); visiting the
+  other tester's house for two-player local chat; running on the public
+  server (paced as planned); what to do with a tester's own chat history; the
+  runner typing its own test lines (Say only, `/p` only with the two testers
+  as the party); a log tap; a report with no names; ticking pending-tests.md
+  by hand; and "lots of history" with simulated lines.
