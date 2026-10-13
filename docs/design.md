@@ -5101,8 +5101,10 @@ virtual clock; the plugin's `SelfTest` folder and `SelfTestWindow`):
   relog or reload, and where to carry on. Nothing is done while another
   character (or server) is logged in: the run pauses until the run's own is
   back. At the plugin's start an interrupted run's settings are put back
-  before any session (and the whole chat history deleted if it was off and
-  empty before the run), and its channels left once connected; a clean-up
+  before any session (and the test's chat history deleted if it was off and
+  empty before the run, only while it is still off and nothing in it is
+  newer than the run; otherwise the window asks, and deletes only folders
+  nothing has written to since), and its channels left once connected; a clean-up
   that couldn't reach the server keeps them, and the file, for the next
   connection. A damaged file that lost whose it was can only be cleared, with
   a warning.
@@ -5742,7 +5744,19 @@ The owner's decisions, and why.
     - A clean-up while disconnected connects again first if the run had
       disconnected on purpose; if it still can't reach the server (or another
       character is logged in), its test channels and its file stay, and the
-      next connection with the run's character finishes it, quietly.
+      next connection with the run's character finishes it, quietly. A step
+      that fails between its own disconnect and reconnect is followed by a
+      reconnect at once.
+  - **After the second review (2026-10-13):** a run file left behind (its
+    deletion failed, say) never deletes the tester's own history later: the
+    test's history goes by itself only while **Keep chat history on this
+    computer** is still off and no chat log folder holds anything newer than
+    the run's last save (and two minutes); otherwise the self-test window asks,
+    once, and **Delete the test's chat history** deletes only the folders
+    nothing has written to since (never the one open now). Also: while a line
+    to type is asked for, it comes off the screen if the game's chat channel
+    stops being Say, or ChatTwo's input leaves Say (where ChatTwo says); and
+    channels renamed by the history check are listed as leftovers too.
   - The game's chat channel is set to Say only while not talking in a channel
     (setting it would end that); while talking in one, the host types only if
     Say is underneath, which the runner set before starting it.

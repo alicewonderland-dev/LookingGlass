@@ -101,6 +101,14 @@ private) rather than doing something it shouldn't: report it.
       lines aren't among the older lines of any window, and no text folder of a
       test channel is left. Your own channels' history is untouched, and no
       text file of yours was started.
+- [ ] 20a. With the chat history off and empty, run the history suite, and
+      before it ends open one of its text files in a program that locks it
+      (Notepad++ or Excel), so the clean-up can't delete the history. Then turn
+      **Keep chat history on this computer** on and chat a little. Turn
+      LookingGlass off and on: nothing is deleted, and the self-test window asks
+      about the test's chat history (**Delete the test's chat history** / **Keep
+      it**). Delete removes only folders nothing has written to since the test,
+      never your own newer lines.
 - [ ] 20b. Press **Stop and clean up** while a step has LookingGlass
       disconnected (local-chat 35 or 37): it connects again and cleans up.
       Relog onto another character in the middle of a run: it pauses ("another
