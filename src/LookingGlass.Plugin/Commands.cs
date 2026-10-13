@@ -22,8 +22,10 @@ public sealed class Commands : IDisposable {
     private readonly StickyMode _sticky;
     private readonly Action _toggleMain;
     private readonly Action _toggleDebug;
+    private readonly Action _openSelfTest;
 
-    public Commands(SessionManager sessions, ChatOutput chat, ChannelSender sender, LocalSender local, StickyMode sticky, Action toggleMain, Action toggleDebug) {
+    public Commands(SessionManager sessions, ChatOutput chat, ChannelSender sender, LocalSender local, StickyMode sticky, Action toggleMain, Action toggleDebug,
+        Action openSelfTest) {
         this._sessions = sessions;
         this._chat = chat;
         this._sender = sender;
@@ -31,6 +33,7 @@ public sealed class Commands : IDisposable {
         this._sticky = sticky;
         this._toggleMain = toggleMain;
         this._toggleDebug = toggleDebug;
+        this._openSelfTest = openSelfTest;
 
         // Fifty numbered commands would swamp Dalamud's command list, so only /lgc is listed, and explains them.
         for (var slot = 1; slot <= Configuration.SlotCount; slot++) {
@@ -55,18 +58,24 @@ public sealed class Commands : IDisposable {
             HelpMessage = "Short for /lookingglass.",
         });
         Services.Commands.AddHandler(DebugCommand, new CommandInfo(this.OnDebugCommand) {
-            HelpMessage = "Open the LookingGlass debug window. /lgdebug colours [#RRGGBB ...] prints custom colour samples to chat.",
+            HelpMessage = "Open the LookingGlass debug window. /lgdebug colours [#RRGGBB ...] prints custom colour samples to chat. /lgdebug test opens the self-test.",
         });
     }
 
     /// <summary>
     /// /lgdebug opens the debug window; "/lgdebug colours" (or "colors") with colour codes, or none for five samples,
     /// prints the colour test to chat instead (see <see cref="ChatOutput.ColourSamples"/>). Nothing about any channel changes.
+    /// "/lgdebug test" opens the self-test's window (see docs/self-test-plan.md).
     /// </summary>
     private void OnDebugCommand(string command, string arguments) {
         var words = arguments.Trim();
         var space = words.IndexOf(' ');
         var first = space < 0 ? words : words[..space];
+        if (first.Equals("test", StringComparison.OrdinalIgnoreCase)) {
+            this._openSelfTest();
+            return;
+        }
+
         if (!first.Equals("colours", StringComparison.OrdinalIgnoreCase) && !first.Equals("colors", StringComparison.OrdinalIgnoreCase)) {
             this._toggleDebug();
             return;
