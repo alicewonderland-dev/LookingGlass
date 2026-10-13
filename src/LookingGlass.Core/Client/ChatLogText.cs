@@ -447,6 +447,37 @@ internal sealed class ChatLogTextFiles {
         }
     }
 
+    /// <summary>
+    /// Removes one channel's text files: its lines still queued, and every folder of it (found by its ID's hash, whatever
+    /// it is called now). Nothing of another channel's changes.
+    /// </summary>
+    /// <exception cref="IOException">A folder couldn't be deleted (in use): what could be, was.</exception>
+    public void ForgetChannel(string channelId) {
+        var hash = ChatLogText.ChannelHash(channelId);
+        this._pendingBytes -= this._pending.Where(pending => pending.ChannelId == channelId).Sum(pending => (long) pending.Bytes.Length);
+        this._pending.RemoveAll(pending => pending.ChannelId == channelId);
+        this._folders.Remove(channelId);
+        foreach (var key in this._files.Keys.Where(key => key.StartsWith(hash + "/", StringComparison.Ordinal)).ToList()) {
+            this._files.Remove(key);
+        }
+
+        this._stuck.RemoveWhere(key => key.StartsWith(hash + "/", StringComparison.Ordinal));
+        Exception? failed = null;
+        foreach (var folder in this.ChannelFolders().Where(folder => ChatLogText.HashOf(folder.Name) == hash)) {
+            try {
+                folder.Delete(recursive: true);
+            } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) {
+                failed ??= ex;
+            }
+        }
+
+        if (failed != null) {
+            // Counted again as it is.
+            this.TryScan();
+            throw new IOException("A channel's text files couldn't all be deleted (they may be open in another program).", failed);
+        }
+    }
+
     /// <summary>Forgets everything: the folder was deleted. What is left of it, if anything, is counted afresh when next needed.</summary>
     public void Reset() {
         this._files.Clear();

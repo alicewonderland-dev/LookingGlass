@@ -790,6 +790,109 @@ internal sealed class ChatLogStore : IDisposable {
     }
 
     /// <summary>
+    /// Removes one channel's lines (the self-test's test channel, at its clean-up): from every segment holding any, which is
+    /// written again without them (each record sealed afresh at its new place, then put in the old file's place, so a
+    /// crash leaves one whole file or the other), and its text files' folder. Nothing of another channel's changes. Where
+    /// this session's lines start moves with the records. A log that can't be read here keeps its segments (which lines are
+    /// the channel's can't be told), and loses only the text folder.
+    /// </summary>
+    /// <returns>How many records were removed.</returns>
+    /// <exception cref="IOException">A file couldn't be written or replaced (what was done stays done).</exception>
+    public int ForgetChannel(string channelId) {
+        this.Open();
+        // The text files first, and a failure there kept until the segments are done too: neither stops the other.
+        IOException? textFailed = null;
+        try {
+            this._text.ForgetChannel(channelId);
+        } catch (IOException ex) {
+            textFailed = ex;
+        }
+
+        if (this._unreadable != null || this._key == null) {
+            return textFailed == null ? 0 : throw textFailed;
+        }
+
+        this.CloseActive();
+        var removed = 0;
+        foreach (var segment in this._segments.ToList()) {
+            byte[] bytes;
+            try {
+                bytes = this.ReadSegment(segment.Number, segment.Size);
+            } catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException) {
+                continue;
+            }
+
+            if (!ValidHeader(bytes)) {
+                continue;
+            }
+
+            var frames = this.Frames(segment.Number, bytes).ToList();
+            var kept = new List<(long Offset, byte[] Plaintext)>();
+            foreach (var (offset, _, plaintext) in frames) {
+                string? of;
+                try {
+                    of = ChatLogFormat.Decode(plaintext).ChannelId;
+                } catch (InvalidDataException) {
+                    // Not readable as a line: not the channel's, as far as can be told. Kept as it is.
+                    of = null;
+                }
+
+                if (of == channelId) {
+                    removed++;
+                } else {
+                    kept.Add((offset, plaintext));
+                }
+            }
+
+            if (kept.Count == frames.Count) {
+                continue;
+            }
+
+            // Written afresh: a record is bound to its place, so each one kept is sealed again at its new offset.
+            var output = new MemoryStream();
+            output.Write([.. SegmentMagic, FormatVersion, 0, 0, 0]);
+            long? sessionStart = null;
+            foreach (var (offset, plaintext) in kept) {
+                if (segment.Number == this.SessionStart.Segment && sessionStart == null && offset >= this.SessionStart.Offset) {
+                    sessionStart = output.Length;
+                }
+
+                var nonce = RandomNumberGenerator.GetBytes(Aead.NonceSize);
+                var frame = new byte[Overhead + plaintext.Length];
+                BinaryPrimitives.WriteInt32LittleEndian(frame, Aead.NonceSize + plaintext.Length + Aead.TagSize);
+                nonce.CopyTo(frame, LengthSize);
+                Aead.Encrypt(this._key, nonce, AssociatedData(segment.Number, output.Length), plaintext, frame.AsSpan(LengthSize + Aead.NonceSize));
+                output.Write(frame);
+            }
+
+            var path = this.PathOf(segment.Number);
+            var temporary = path + ".forget";
+            try {
+                using (var stream = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None)) {
+                    output.Position = 0;
+                    output.CopyTo(stream);
+                    stream.Flush(flushToDisk: true);
+                }
+
+                File.Move(temporary, path, overwrite: true);
+            } catch {
+                TryDelete(temporary);
+                throw;
+            }
+
+            if (segment.Number == this.SessionStart.Segment) {
+                this.SessionStart = new ChatLogPosition(segment.Number, sessionStart ?? output.Length);
+            }
+
+            segment.Size = output.Length;
+        }
+
+        this._channelsIn.Clear();
+        this._cached = null;
+        return textFailed == null ? removed : throw textFailed;
+    }
+
+    /// <summary>
     /// Deletes the whole log: every file in its folder, its text files too, and the folder. Logging goes on afterwards in a
     /// new log, with a new key, which shows nothing from before.
     /// </summary>
