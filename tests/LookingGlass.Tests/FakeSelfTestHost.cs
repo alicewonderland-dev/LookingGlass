@@ -99,14 +99,62 @@ internal sealed partial class FakeSelfTestHost : ISelfTestHost, IDisposable {
 
     public Task<int> OthersNearAsync(double yalms) => Task.FromResult(this.Others);
 
+    public bool HistoryOn { get; set; }
+
+    public bool HistoryEmpty { get; set; }
+
+    /// <summary>What the clean-up did, in order: "write:Setting", "delete-history", "forget", "connect".</summary>
+    public List<string> Ops { get; } = [];
+
+    public bool ConnectFails { get; set; }
+
+    public Exception? ForgetFails { get; set; }
+
     public Task<SelfTestEnvironment> ReadEnvironmentAsync() => Task.FromResult(new SelfTestEnvironment {
         PluginVersion = "0.2.17", ChatTwoLoaded = this.ChatTwo, Connected = this.Ready, ChannelCount = this.Channels.Count, CanType = true,
         LocalChatAvailable = true, ChatInputReadable = true,
+        HistoryOn = this.HistoryOn || this.Is(SelfTestSetting.KeepHistory), HistoryEmpty = this.HistoryEmpty,
     });
 
     public Task<bool> IsReadyAsync() => Task.FromResult(this.Ready);
 
-    public Task<IReadOnlyList<SelfTestChannel>> ChannelsAsync() => Task.FromResult<IReadOnlyList<SelfTestChannel>>(this.Channels.ToList());
+    /// <summary>The character logged in now; null: whoever the run is for.</summary>
+    public ulong? Character { get; set; }
+
+    public Task<bool> IsForAsync(ulong contentId, string serverUrl) => Task.FromResult(this.Character == null || this.Character == contentId);
+
+    /// <summary>ChatTwo's input channel (its own numbers).</summary>
+    public int? ChatTwoInput { get; set; } = SelfTestGameChannels.ChatTwoSay;
+
+    public Task<int?> ChatTwoInputAsync() => Task.FromResult(this.ChatTwoInput);
+
+    /// <summary>Whether the person looked up is registered.</summary>
+    public bool? Registered { get; set; } = false;
+
+    public int Lookups { get; private set; }
+
+    public Task<bool?> IsRegisteredAsync(string name, string world) {
+        this.Lookups++;
+        return Task.FromResult(this.Registered);
+    }
+
+    public List<string> Disbanded { get; } = [];
+
+    public Task DisbandChannelAsync(string channelId) {
+        this.Disbanded.Add(channelId);
+        this.Channels.RemoveAll(channel => channel.Id == channelId);
+        this.Slots.Remove(channelId);
+        return Task.CompletedTask;
+    }
+
+    public (ulong ContentId, string ServerUrl)? RanFor { get; private set; }
+
+    public void RunFor(ulong contentId, string serverUrl) => this.RanFor = (contentId, serverUrl);
+
+    public List<(string Channel, string Name)> Invited { get; } = [];
+
+    // Disconnected, the session lists no channels (as the plugin's snapshot is empty then).
+    public Task<IReadOnlyList<SelfTestChannel>> ChannelsAsync() => Task.FromResult<IReadOnlyList<SelfTestChannel>>(this.Ready ? this.Channels.ToList() : []);
 
     public Task<string> CreateChannelAsync(string name) {
         this.Creates++;
@@ -158,7 +206,8 @@ internal sealed partial class FakeSelfTestHost : ISelfTestHost, IDisposable {
     }
 
     public Task ConnectAsync() {
-        this.Ready = true;
+        this.Ops.Add("connect");
+        this.Ready = !this.ConnectFails;
         return Task.CompletedTask;
     }
 
@@ -192,11 +241,26 @@ internal sealed partial class FakeSelfTestHost : ISelfTestHost, IDisposable {
 
     public Task<int> InviteOffersForAsync(RightClickKind kind) => Task.FromResult(0);
 
-    public Task InviteAsync(string channelId, string name, string world) => Task.CompletedTask;
+    public Task InviteAsync(string channelId, string name, string world) {
+        this.Invited.Add((channelId, name));
+        if (this.Registered == true) {
+            // Registered: the invite goes, and the channel has someone else in it (invited).
+            var at = this.Channels.FindIndex(channel => channel.Id == channelId);
+            this.Channels[at] = this.Channels[at] with { Members = 2 };
+            this.Print(new TapLine(TapKind.Notice, NoticeTone.Info, $"Invited {name}@{world} to [LGC50]."));
+        } else {
+            this.Print(new TapLine(TapKind.Notice, NoticeTone.Info,
+                $"Couldn't invite {name}@{world} to [LGC50]: {name}@{world} isn't registered with LookingGlass on this server" +
+                (this.Is(SelfTestSetting.AdvancedMode) ? "." : ": they need to install it and register their character first.")));
+        }
+
+        return Task.CompletedTask;
+    }
 
     public Task<JsonElement> ReadSettingAsync(SelfTestSetting setting) => Task.FromResult(this.Settings[setting]);
 
     public Task WriteSettingAsync(SelfTestSetting setting, JsonElement value) {
+        this.Ops.Add($"write:{setting}");
         this.Settings[setting] = value.Clone();
         if (setting == SelfTestSetting.LocalPrivacyAccepted && !this.Is(setting) && this.Sticky == StickyChannel.LocalId) {
             // As sticky mode's frame check does: withdrawn while talking in local chat, it ends at once, and says so.
@@ -209,6 +273,10 @@ internal sealed partial class FakeSelfTestHost : ISelfTestHost, IDisposable {
     public Task<int?> GameChannelAsync() => Task.FromResult(this.GameChannel);
 
     public Task SetGameChannelAsync(int chatType) {
+        if (SelfTestGameChannels.IsTell(chatType)) {
+            throw new InvalidOperationException("A tell can't be set without a name.");
+        }
+
         this.GameChannel = chatType;
         this.Sticky = null;
         return Task.CompletedTask;
@@ -306,11 +374,17 @@ internal sealed partial class FakeSelfTestHost : ISelfTestHost, IDisposable {
     public Task<HistoryView> HistoryAsync() => Task.FromResult(new HistoryView(false, false, null, 0, 50));
 
     public Task ForgetHistoryAsync(IReadOnlyCollection<string> channelIds) {
+        this.Ops.Add("forget");
+        if (this.ForgetFails is { } fails) {
+            throw fails;
+        }
+
         this.Forgotten.Add(channelIds.ToList());
         return Task.CompletedTask;
     }
 
     public Task DeleteHistoryAsync() {
+        this.Ops.Add("delete-history");
         this.Deleted++;
         return Task.CompletedTask;
     }

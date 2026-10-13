@@ -97,7 +97,6 @@ public sealed class SelfTestRun {
     private string? _stopWhy;
     private TaskCompletionSource<(GuidedAnswer Answer, string? Note, string? Input)>? _answer;
     private TaskCompletionSource? _carryOn;
-    private int? _gameChannelBefore;
     private int _marker;
     private bool _abandoned;
 
@@ -110,6 +109,15 @@ public sealed class SelfTestRun {
         this._file = file;
         this._data = data;
         this._resumed = resume;
+        host.RunFor(data.ContentId, data.ServerUrl);
+        // Every action spent goes in the run file at once: a reload keeps the run's pace and its most.
+        pacer.OnSpend = spend => {
+            lock (this._lock) {
+                this._data.Spent.Add(spend);
+            }
+
+            this.Save();
+        };
         this._view = new SelfTestView {
             State = SelfTestState.Starting,
             Code = data.Code,
@@ -305,6 +313,7 @@ public sealed class SelfTestRun {
             this._data.Results.Add(record);
             this._data.NextCheck = null;
             this._data.NextStep = 0;
+            this._data.InProgress = [];
         }
 
         this.Save();
@@ -321,13 +330,39 @@ public sealed class SelfTestRun {
         var notes = new List<string>();
         var state = new Dictionary<string, object>();
         if (first > 0) {
-            // Carried on after a reload: the steps before were done before it, and the one it waited for is.
-            results.AddRange(check.StepList.Take(first).Select(step => (step, StepResult.Pass(), this._host.Now)));
+            // Carried on after a reload: the steps before, as the run file kept them (the one it waited for passed).
+            List<StepRecord> kept;
+            lock (this._lock) {
+                kept = this._data.InProgress.ToList();
+            }
+
+            results.AddRange(check.StepList.Take(first).Select((step, i) => i < kept.Count
+                ? (step, new StepResult(kept[i].Outcome, kept[i].Why, kept[i].NotRun, kept[i].Confirmed), kept[i].At)
+                : (step, StepResult.Pass(), this._host.Now)));
         }
 
         try {
             var environment = await this._host.ReadEnvironmentAsync().ConfigureAwait(false);
-            var lacks = environment.Lacks(check.Needs) ?? check.CantRun?.Invoke(environment);
+            var needs = check.Needs;
+            if (needs.HasFlag(SelfTestNeeds.HistoryOffAndEmpty)) {
+                bool already;
+                lock (this._lock) {
+                    already = this._data.HistoryWasOffAndEmpty;
+                }
+
+                if (already) {
+                    // Found so earlier in this run (and turned on by it since): everything in it is the test's.
+                    needs &= ~SelfTestNeeds.HistoryOffAndEmpty;
+                } else if (environment.Lacks(SelfTestNeeds.HistoryOffAndEmpty) == null) {
+                    lock (this._lock) {
+                        this._data.HistoryWasOffAndEmpty = true;
+                    }
+
+                    this.Save();
+                }
+            }
+
+            var lacks = environment.Lacks(needs) ?? check.CantRun?.Invoke(environment);
             if (check.Needs.HasFlag(SelfTestNeeds.TestChannel) && lacks == null && this._data.TestChannels.Count == 0
                 && environment.ChannelCount > SelfTestEnvironment.MostOwnChannels) {
                 lacks = SelfTestWords.NeedsChannelRoom;
@@ -343,6 +378,11 @@ public sealed class SelfTestRun {
                 var context = new StepContext(this, check, i, token, notes, state);
                 StepResult result;
                 if (step.Kind == StepKind.CarryOnAfter) {
+                    lock (this._lock) {
+                        this._data.InProgress = results.Select(entry => new StepRecord(entry.Result.Outcome, entry.Result.Why, entry.Result.NotRun, entry.Result.Confirmed, entry.At))
+                            .ToList();
+                    }
+
                     result = await this.CarryOnAsync(check, i, step, context, token).ConfigureAwait(false);
                 } else {
                     result = await this.RunStepAsync(step, context, token).ConfigureAwait(false);
@@ -382,6 +422,10 @@ public sealed class SelfTestRun {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
         if (step.Kind == StepKind.Automatic) {
             timeout.CancelAfter(step.Timeout);
+            lock (this._lock) {
+                this._stepTimeout = timeout;
+                this._stepTimeoutLength = step.Timeout;
+            }
         }
 
         context.Token = timeout.Token;
@@ -401,6 +445,12 @@ public sealed class SelfTestRun {
             // Never the message: it may hold a name, or what the server said.
             this._host.Log($"[selftest] a step failed: {ex.GetType().Name}");
             return StepResult.Fail(SelfTestWords.SomethingWentWrong);
+        } finally {
+            lock (this._lock) {
+                if (this._stepTimeout == timeout) {
+                    this._stepTimeout = null;
+                }
+            }
         }
     }
 
@@ -419,6 +469,11 @@ public sealed class SelfTestRun {
         }
 
         this.Save();
+        if (step.Types) {
+            // The tester types on the way (/lgl while LookingGlass is off): Say underneath, as for any typed line.
+            await this.EnsureSayAsync().ConfigureAwait(false);
+        }
+
         var logins = this._host.Logins;
         var since = this._host.Now;
         var prompt = new GuidedPrompt(step.Title) { Short = null };
@@ -498,42 +553,36 @@ public sealed class SelfTestRun {
     // ================================================================ the gate
 
     /// <summary>
-    /// Waits until the run may go on: in a private place (settled), connected, and, before a step that types in a house
-    /// or apartment, nobody else near. Shows why it waits meanwhile. Throws to stop (the tester stopped, or five minutes
-    /// without a connection).
+    /// Waits until the run may go on: in a private place (settled), connected with the run's own character on its own
+    /// server, and, before a step that types in a house or apartment, nobody else near. Shows why it waits meanwhile. A
+    /// step paused in its middle gets its whole time-out again. Throws to stop (the tester stopped, five minutes without
+    /// a connection, or another character for too long).
     /// </summary>
     /// <param name="whileDisconnected">A step that types while disconnected on purpose: the connection isn't waited for.</param>
     internal async Task GateAsync(bool typing, CancellationToken token, bool whileDisconnected = false) {
         DateTimeOffset? disconnectedSince = null;
+        DateTimeOffset? otherSince = null;
         var paused = false;
         while (true) {
             token.ThrowIfCancellationRequested();
             var now = this._host.Now;
-            PlaceFacts facts;
-            try {
-                facts = await this._host.ReadPlaceAsync().ConfigureAwait(false);
-            } catch (Exception ex) when (ex is not OperationCanceledException) {
-                facts = PlaceFacts.Unreadable;
-            }
-
-            var isPrivate = this._place.Observe(facts, now);
-            string? why = null;
-            if (!isPrivate) {
-                why = this._place.Last.Private || this._place.Last.Kind is PlaceKind.Loading ? SelfTestWords.WaitingPlace : SelfTestWords.PausedLeft;
-            } else if (!whileDisconnected && !await this.ReadyAsync().ConfigureAwait(false)) {
+            var why = await this.WhyWaitAsync(typing, whileDisconnected || this.DisconnectedByRun).ConfigureAwait(false);
+            if (why == SelfTestWords.PausedDisconnected) {
                 disconnectedSince ??= now;
                 if (now - disconnectedSince > MostDisconnected) {
                     throw new SelfTestStopException(SelfTestWords.Disconnected);
                 }
-
-                why = SelfTestWords.PausedDisconnected;
-            } else if (typing && this._place.Last.NeedsNobodyNear && await this.OthersNearAsync().ConfigureAwait(false) > 0) {
-                why = SelfTestWords.WaitingSomeoneNear;
+            } else if (why == SelfTestWords.PausedOtherCharacter) {
+                otherSince ??= now;
+                if (now - otherSince > MostWaitToCarryOn) {
+                    throw new SelfTestStopException(SelfTestWords.OtherCharacter);
+                }
             }
 
             if (why == null) {
                 if (paused) {
                     this.SetView(view => view with { State = SelfTestState.Running, Pause = null, Place = this._place.Last.Kind });
+                    this.RestartStepTimeout();
                 } else {
                     this.SetView(view => view with { Place = this._place.Last.Kind });
                 }
@@ -548,9 +597,48 @@ public sealed class SelfTestRun {
         }
     }
 
+    /// <summary>Why the run must wait now (the words to show), or null if it may go on. Reads the place once.</summary>
+    private async Task<string?> WhyWaitAsync(bool typing, bool whileDisconnected) {
+        PlaceFacts facts;
+        try {
+            facts = await this._host.ReadPlaceAsync().ConfigureAwait(false);
+        } catch (Exception ex) when (ex is not OperationCanceledException) {
+            facts = PlaceFacts.Unreadable;
+        }
+
+        if (!this._place.Observe(facts, this._host.Now)) {
+            return this._place.Last.Private || this._place.Last.Kind is PlaceKind.Loading ? SelfTestWords.WaitingPlace : SelfTestWords.PausedLeft;
+        }
+
+        if (!whileDisconnected) {
+            if (!await this.ReadyAsync().ConfigureAwait(false)) {
+                return SelfTestWords.PausedDisconnected;
+            }
+
+            if (!await this.IsForAsync().ConfigureAwait(false)) {
+                return SelfTestWords.PausedOtherCharacter;
+            }
+        }
+
+        if (typing && this._place.Last.NeedsNobodyNear && await this.OthersNearAsync().ConfigureAwait(false) > 0) {
+            return SelfTestWords.WaitingSomeoneNear;
+        }
+
+        return null;
+    }
+
     private async Task<bool> ReadyAsync() {
         try {
             return await this._host.IsReadyAsync().ConfigureAwait(false);
+        } catch (Exception ex) when (ex is not OperationCanceledException) {
+            return false;
+        }
+    }
+
+    /// <summary>The run's own character, on its own server, is logged in (never act on another).</summary>
+    private async Task<bool> IsForAsync() {
+        try {
+            return await this._host.IsForAsync(this._data.ContentId, this._data.ServerUrl).ConfigureAwait(false);
         } catch (Exception ex) when (ex is not OperationCanceledException) {
             return false;
         }
@@ -565,6 +653,40 @@ public sealed class SelfTestRun {
         }
     }
 
+    // The automatic step running now, and its time-out: started again after a pause in its middle.
+    private CancellationTokenSource? _stepTimeout;
+    private TimeSpan _stepTimeoutLength;
+
+    private void RestartStepTimeout() {
+        lock (this._lock) {
+            try {
+                if (this._stepTimeout is { IsCancellationRequested: false } timeout) {
+                    timeout.CancelAfter(this._stepTimeoutLength);
+                }
+            } catch (ObjectDisposedException) {
+                // The step has ended.
+            }
+        }
+    }
+
+    /// <summary>The run disconnected on purpose and hasn't connected again: its gates don't wait for a connection.</summary>
+    internal bool DisconnectedByRun {
+        get {
+            lock (this._lock) {
+                return this._data.DisconnectedByRun;
+            }
+        }
+    }
+
+    /// <summary>The run disconnects on purpose, or has connected again (kept in the run file, for the clean-up).</summary>
+    internal void MarkDisconnected(bool disconnected) {
+        lock (this._lock) {
+            this._data.DisconnectedByRun = disconnected;
+        }
+
+        this.Save();
+    }
+
     /// <summary>
     /// Types a line: the private-area check right before (and nobody near, in a house), the game's chat channel set to Say
     /// first (unless talking in a channel, when it must already be Say underneath), then through the host, which checks again.
@@ -577,15 +699,16 @@ public sealed class SelfTestRun {
                 await this._host.TypeAsync(line, link).ConfigureAwait(false);
                 return;
             } catch (SelfTestNotTypedException notTyped) when (notTyped.NotPrivate && attempt < 3) {
-                // The place changed between the two checks: nothing was typed. Wait for it again.
+                // The place (or who is near) changed between the two checks: nothing was typed. Wait for it again.
                 this._place.Observe(PlaceFacts.Unreadable, this._host.Now);
             }
         }
     }
 
     /// <summary>
-    /// Makes Say the game's chat channel, remembering the one before for the clean-up. While talking in a channel the
-    /// channel underneath isn't changed (that would end it): the host refuses to type unless it is Say.
+    /// Makes Say the game's chat channel, remembering the one before in the run file for the clean-up (also after a reload).
+    /// While talking in a channel the channel underneath isn't changed (that would end it): the host refuses to type unless
+    /// it is Say.
     /// </summary>
     private async Task EnsureSayAsync() {
         var sticky = await this._host.StickyAsync().ConfigureAwait(false);
@@ -599,8 +722,14 @@ public sealed class SelfTestRun {
         }
 
         if (channel is { } before) {
+            bool first;
             lock (this._lock) {
-                this._gameChannelBefore ??= before;
+                first = this._data.GameChannelBefore == null;
+                this._data.GameChannelBefore ??= before;
+            }
+
+            if (first) {
+                this.Save();
             }
         }
 
@@ -618,16 +747,37 @@ public sealed class SelfTestRun {
         return answer;
     }
 
-    /// <summary>Shows a guided step and waits for the tester's answer, or for the runner to see the expected change.</summary>
+    /// <summary>
+    /// Shows a guided step and waits for the tester's answer, or for the runner to see the expected change. A step where
+    /// the tester types in game chat (<see cref="GuidedPrompt.TesterTypes"/>) shows only through the typing gate, with Say
+    /// as the game's chat channel (and ChatTwo's input on Say, if asked); while that stops being so, the step is taken off
+    /// the screen (paused, with why), and shown again once it is.
+    /// </summary>
     internal async Task<(GuidedAnswer Answer, string? Note, string? Input)> AskAsync(SelfTestCheck check, int index, GuidedPrompt prompt, CancellationToken token) {
         var answer = this.NewAnswer();
+        if (prompt.TesterTypes && !await this.TypingReadyAsync(check, index, prompt, answer.Task, token).ConfigureAwait(false)) {
+            return answer.Task.Result;
+        }
+
         string? watching = null;
-        this.SetView(view => view with { State = SelfTestState.NeedsYou, Prompt = new PromptView(prompt, index + 1, check.StepList.Count, null) });
+        var shown = new PromptView(prompt, index + 1, check.StepList.Count, null);
+        this.SetView(view => view with { State = SelfTestState.NeedsYou, Prompt = shown, Pause = null });
         try {
             while (true) {
                 token.ThrowIfCancellationRequested();
                 if (answer.Task.IsCompleted) {
                     return answer.Task.Result;
+                }
+
+                if (prompt.TesterTypes && await this.WhyWaitAsync(typing: true, this.DisconnectedByRun).ConfigureAwait(false) != null) {
+                    // Off the screen until it may be typed again: no line asked for while not private, or someone is near.
+                    if (!await this.TypingReadyAsync(check, index, prompt, answer.Task, token).ConfigureAwait(false)) {
+                        return answer.Task.Result;
+                    }
+
+                    var again = shown with { Watching = watching };
+                    this.SetView(view => view with { State = SelfTestState.NeedsYou, Prompt = again, Pause = null });
+                    continue;
                 }
 
                 if (prompt.Watch != null) {
@@ -645,7 +795,7 @@ public sealed class SelfTestRun {
                     if (update.Seeing != watching) {
                         watching = update.Seeing;
                         var seeing = watching;
-                        this.SetView(view => view with { Prompt = view.Prompt is { } shown ? shown with { Watching = seeing } : null });
+                        this.SetView(view => view with { Prompt = view.Prompt is { } current ? current with { Watching = seeing } : null });
                     }
                 }
 
@@ -662,6 +812,36 @@ public sealed class SelfTestRun {
         }
     }
 
+    /// <summary>
+    /// Before the tester is asked to type: the typing gate, Say as the game's chat channel, and (if asked) ChatTwo's input on
+    /// Say, the tester asked to put it there and the step waiting until it is.
+    /// </summary>
+    /// <returns>False if the tester answered meanwhile (Skip, the only button of the "put ChatTwo on Say" request).</returns>
+    private async Task<bool> TypingReadyAsync(SelfTestCheck check, int index, GuidedPrompt prompt, Task answered, CancellationToken token) {
+        while (true) {
+            if (answered.IsCompleted) {
+                return false;
+            }
+
+            await this.GateAsync(typing: true, token).ConfigureAwait(false);
+            await this.EnsureSayAsync().ConfigureAwait(false);
+            if (!prompt.ChatTwoOnSay || await this.ChatTwoOnSayAsync().ConfigureAwait(false)) {
+                return true;
+            }
+
+            var ask = new PromptView(new GuidedPrompt(SelfTestWords.ChatTwoToSay, PromptKind.SkipOnly), index + 1, check.StepList.Count, "ChatTwo's input isn't on Say");
+            this.SetView(view => view with { State = SelfTestState.NeedsYou, Prompt = ask, Pause = null });
+            await this._host.Delay(Poll, token).ConfigureAwait(false);
+        }
+    }
+
+    private async Task<bool> ChatTwoOnSayAsync() {
+        try {
+            return await this._host.ChatTwoInputAsync().ConfigureAwait(false) == SelfTestGameChannels.ChatTwoSay;
+        } catch (Exception ex) when (ex is not OperationCanceledException) {
+            return false;
+        }
+    }
     // ================================================================ settings and channels
 
     /// <summary>Changes a setting for the run: snapshotted in the run file (saved) before its first change.</summary>
@@ -758,9 +938,11 @@ public sealed class SelfTestRun {
 
     /// <summary>
     /// The clean-up, always, each step on its own (one failing doesn't stop the rest), in this order: stop talking in any
-    /// channel; the tester's channel windows back as they were (the test channels' go with them); leave each test channel
-    /// (as its only member, that deletes it); remove the test channels' lines from the chat history (before the history
-    /// setting is put back, so the log is still open); put the settings back, and the game's chat channel; delete the run file.
+    /// channel; the tester's channel windows back as they were (the test channels' go with them); connect again if the run
+    /// had disconnected on purpose; then, only with the run's own character connected, leave each test channel (as its only
+    /// member, that deletes it; disbanded if anyone else is in it) and remove its lines from the tester's own chat history;
+    /// put the settings back; delete the whole history if it was off and empty before the run; the game's chat channel back
+    /// (never a tell: left on Say); delete the run file, unless something is left to do (then the next connection does it).
     /// </summary>
     private async Task CleanUpAsync() {
         this.SetView(view => view with { State = SelfTestState.CleaningUp, Prompt = null });
@@ -768,8 +950,10 @@ public sealed class SelfTestRun {
         var notLeft = 0;
         var windowsBack = false;
         var historyCleared = false;
+        var historyFailed = false;
         var restored = 0;
         var failed = 0;
+        var leftOnSay = false;
 
         await this.TryAsync("stop talking", () => this._host.StopTalkingAsync()).ConfigureAwait(false);
         await this.TryAsync("windows", async () => {
@@ -790,38 +974,57 @@ public sealed class SelfTestRun {
             }
         }).ConfigureAwait(false);
 
-        List<string> channels;
-        lock (this._lock) {
-            channels = this._data.TestChannels.ToList();
-        }
-
-        foreach (var channelId in channels) {
-            var ok = await this.TryAsync("leave", async () => {
-                var listed = await this._host.ChannelsAsync().ConfigureAwait(false);
-                if (listed.Any(channel => channel.Id == channelId)) {
-                    await this._host.LeaveChannelAsync(channelId).ConfigureAwait(false);
+        // Stopped while the run had disconnected on purpose: connect again first (the player didn't press Disconnect).
+        if (this.DisconnectedByRun) {
+            await this.TryAsync("connect", async () => {
+                await this._host.ConnectAsync().ConfigureAwait(false);
+                for (var waited = TimeSpan.Zero; waited < TimeSpan.FromMinutes(1) && !await this.ReadyAsync().ConfigureAwait(false); waited += Poll) {
+                    await this._host.Delay(Poll, CancellationToken.None).ConfigureAwait(false);
                 }
             }).ConfigureAwait(false);
-            if (ok) {
-                left++;
-            } else {
-                notLeft++;
+            if (await this.ReadyAsync().ConfigureAwait(false)) {
+                this.MarkDisconnected(false);
             }
         }
 
+        // Only with the run's own character, connected: otherwise its channels and its file stay, for the next connection.
+        var reachable = await this.ReadyAsync().ConfigureAwait(false) && await this.IsForAsync().ConfigureAwait(false);
+        List<string> channels;
         bool historyWasOffAndEmpty;
         lock (this._lock) {
+            channels = this._data.TestChannels.ToList();
             historyWasOffAndEmpty = this._data.HistoryWasOffAndEmpty;
         }
 
-        if (channels.Count > 0) {
-            historyCleared = await this.TryAsync("history", () => historyWasOffAndEmpty ? this._host.DeleteHistoryAsync() : this._host.ForgetHistoryAsync(channels))
-                .ConfigureAwait(false);
-        }
+        var channelsLater = channels.Count > 0 && !reachable;
+        if (reachable) {
+            foreach (var channelId in channels) {
+                var ok = await this.TryAsync("leave", async () => {
+                    var listed = (await this._host.ChannelsAsync().ConfigureAwait(false)).FirstOrDefault(channel => channel.Id == channelId);
+                    if (listed is { Members: > 1 }) {
+                        // Someone else is in it (or invited): leaving would leave them a channel. It goes for everyone.
+                        await this._host.DisbandChannelAsync(channelId).ConfigureAwait(false);
+                    } else if (listed != null) {
+                        await this._host.LeaveChannelAsync(channelId).ConfigureAwait(false);
+                    }
+                }).ConfigureAwait(false);
+                if (ok) {
+                    left++;
+                } else {
+                    notLeft++;
+                }
+            }
 
-        if (notLeft == 0) {
-            lock (this._lock) {
-                this._data.TestChannels.Clear();
+            // The tester's own history (on before the run): only the test channels' lines go, before any setting changes.
+            if (!historyWasOffAndEmpty && channels.Count > 0) {
+                historyCleared = await this.TryAsync("history", () => this._host.ForgetHistoryAsync(channels)).ConfigureAwait(false);
+                historyFailed = !historyCleared;
+            }
+
+            if (notLeft == 0 && !historyFailed) {
+                lock (this._lock) {
+                    this._data.TestChannels.Clear();
+                }
             }
         }
 
@@ -846,14 +1049,36 @@ public sealed class SelfTestRun {
             }
         }).ConfigureAwait(false);
 
+        // Off and empty before the run: everything in the history is the test's (real channels' lines recorded during the
+        // run too). Deleted once the setting is back off, so nothing more is recorded after it.
+        if (historyWasOffAndEmpty) {
+            historyFailed = !await this.TryAsync("history", () => this._host.DeleteHistoryAsync()).ConfigureAwait(false);
+            if (!historyFailed) {
+                lock (this._lock) {
+                    this._data.HistoryWasOffAndEmpty = false;
+                }
+            }
+        }
+
         await this.TryAsync("chat channel", async () => {
             int? before;
             lock (this._lock) {
-                before = this._gameChannelBefore;
+                before = this._data.GameChannelBefore;
             }
 
-            if (before is { } channel && (await this._host.StickyAsync().ConfigureAwait(false)).ChannelId == null) {
+            if (before is not { } channel) {
+                return;
+            }
+
+            // A tell needs the person's name, which the run never keeps: left on Say, and said so.
+            if (SelfTestGameChannels.IsTell(channel)) {
+                leftOnSay = true;
+            } else if ((await this._host.StickyAsync().ConfigureAwait(false)).ChannelId == null) {
                 await this._host.SetGameChannelAsync(channel).ConfigureAwait(false);
+            }
+
+            lock (this._lock) {
+                this._data.GameChannelBefore = null;
             }
         }).ConfigureAwait(false);
 
@@ -862,21 +1087,27 @@ public sealed class SelfTestRun {
             return Task.CompletedTask;
         }).ConfigureAwait(false);
 
-        // The file stays if a channel couldn't be left: the next start tries again.
-        if (notLeft == 0 && failed == 0) {
+        // The file stays if anything is left to do: the next connection (or start) finishes it.
+        if (!channelsLater && notLeft == 0 && failed == 0 && !historyFailed) {
             await this.TryAsync("run file", () => {
                 this._file.Delete();
                 return Task.CompletedTask;
             }).ConfigureAwait(false);
         } else {
+            lock (this._lock) {
+                this._data.Phase = SelfTestPhase.Running;
+            }
+
             this.Save();
         }
 
-        var summary = SelfTestWords.CleanUp(left, notLeft, restored, failed, windowsBack, historyCleared && !historyWasOffAndEmpty);
+        var summary = SelfTestWords.CleanUp(left, notLeft, restored, failed, windowsBack, historyCleared, channelsLater, leftOnSay);
         this._host.Log($"[selftest] {summary}");
         this.SetView(view => view with { State = SelfTestState.Done, CleanUp = summary, EndedAt = this._host.Now, Prompt = null, Pause = view.Pause });
     }
 
+    /// <summary>Whether a run file is left (an earlier clean-up didn't finish).</summary>
+    public bool FileLeft => this._file.Exists;
     /// <summary>One clean-up step: never throws; at most a minute.</summary>
     private async Task<bool> TryAsync(string what, Func<Task> action) {
         try {
@@ -1029,10 +1260,17 @@ public sealed class StepContext {
     /// <summary>Whether the chat history was off and empty before the run.</summary>
     public bool HistoryOffAndEmptyBefore => this._run.Data.HistoryWasOffAndEmpty;
 
-    /// <summary>Waits a while (paced against the fake clock in tests).</summary>
-    public Task DelayAsync(TimeSpan delay) => this.Host.Delay(delay, this.Token);
+    /// <summary>Waits a while, then for the gate (it pauses here if the tester left the private place meanwhile).</summary>
+    public async Task DelayAsync(TimeSpan delay) {
+        await this.Host.Delay(delay, this.Token).ConfigureAwait(false);
+        await this._run.GateAsync(typing: false, this.Token).ConfigureAwait(false);
+    }
 
-    /// <summary>Waits until <paramref name="condition"/> holds, checking twice a second, at most <paramref name="timeout"/>.</summary>
+    /// <summary>
+    /// Waits until <paramref name="condition"/> holds, checking four times a second, at most <paramref name="timeout"/>. It
+    /// pauses (the time paused not counted) while the tester is out of the private place, or disconnected when the run
+    /// didn't disconnect on purpose.
+    /// </summary>
     /// <returns>Whether it held.</returns>
     public async Task<bool> WaitUntilAsync(Func<Task<bool>> condition, TimeSpan? timeout = null) {
         var until = this.Host.Now + (timeout ?? TimeSpan.FromSeconds(5));
@@ -1045,9 +1283,15 @@ public sealed class StepContext {
                 return false;
             }
 
+            var before = this.Host.Now;
+            await this._run.GateAsync(typing: false, this.Token).ConfigureAwait(false);
+            until += this.Host.Now - before;
             await this.Host.Delay(TimeSpan.FromMilliseconds(250), this.Token).ConfigureAwait(false);
         }
     }
+
+    /// <summary>The run disconnects on purpose (its gates stop waiting for a connection), or has connected again.</summary>
+    internal void MarkDisconnected(bool disconnected) => this._run.MarkDisconnected(disconnected);
 
     /// <summary>Waits for the gate again: private, connected (and nobody near, before typing).</summary>
     public Task GateAsync(bool typing = false) => this._run.GateAsync(typing, this.Token);

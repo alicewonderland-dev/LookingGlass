@@ -57,7 +57,8 @@ internal sealed class LogTap(IPluginLog inner) : IPluginLog {
     public LogTapCounts Counts => new(Volatile.Read(ref this._errors), Volatile.Read(ref this._warnings), Volatile.Read(ref this._forbiddenHits),
         Volatile.Read(ref this._stickyLocal), Volatile.Read(ref this._sticky), Interlocked.Read(ref this._lastLinkKind) is >= 0 and var kind ? (uint) kind : null);
 
-    private void Count(LogEventLevel level, Exception? exception, string template) {
+    /// <summary>Counts a line (template, values and exception together): never copies it.</summary>
+    internal void Count(LogEventLevel level, Exception? exception, string template, object?[]? values = null) {
         if (this._forbidden is not { } forbidden) {
             return;
         }
@@ -82,7 +83,15 @@ internal sealed class LogTap(IPluginLog inner) : IPluginLog {
                 }
             }
 
-            var text = exception == null ? template : $"{template} {exception.Message}";
+            var text = template;
+            if (values is { Length: > 0 }) {
+                text += " " + string.Join(" ", values.Select(value => value?.ToString()));
+            }
+
+            if (exception != null) {
+                text += " " + exception.Message;
+            }
+
             if (forbidden.IsMatch(text)) {
                 Interlocked.Increment(ref this._forbiddenHits);
             }
@@ -91,7 +100,14 @@ internal sealed class LogTap(IPluginLog inner) : IPluginLog {
         }
     }
 
-    public ILogger Logger => inner.Logger;
+    private ILogger? _logger;
+
+    /// <summary>The Serilog logger, wrapped too: whatever is written to it is counted (while a run is on) and passed on.</summary>
+    public ILogger Logger => this._logger ??= new LoggerConfiguration().MinimumLevel.Verbose().WriteTo.Logger(inner.Logger).WriteTo.Sink(new Counting(this)).CreateLogger();
+
+    private sealed class Counting(LogTap tap) : Serilog.Core.ILogEventSink {
+        public void Emit(LogEvent logEvent) => tap.Count(logEvent.Level, logEvent.Exception, logEvent.RenderMessage());
+    }
 
     public LogEventLevel MinimumLogLevel {
         get => inner.MinimumLogLevel;
@@ -99,77 +115,77 @@ internal sealed class LogTap(IPluginLog inner) : IPluginLog {
     }
 
     public void Fatal(string messageTemplate, params object[] values) {
-        this.Count(LogEventLevel.Fatal, null, messageTemplate);
+        this.Count(LogEventLevel.Fatal, null, messageTemplate, values);
         inner.Fatal(messageTemplate, values);
     }
 
     public void Fatal(Exception? exception, string messageTemplate, params object[] values) {
-        this.Count(LogEventLevel.Fatal, exception, messageTemplate);
+        this.Count(LogEventLevel.Fatal, exception, messageTemplate, values);
         inner.Fatal(exception, messageTemplate, values);
     }
 
     public void Error(string messageTemplate, params object[] values) {
-        this.Count(LogEventLevel.Error, null, messageTemplate);
+        this.Count(LogEventLevel.Error, null, messageTemplate, values);
         inner.Error(messageTemplate, values);
     }
 
     public void Error(Exception? exception, string messageTemplate, params object[] values) {
-        this.Count(LogEventLevel.Error, exception, messageTemplate);
+        this.Count(LogEventLevel.Error, exception, messageTemplate, values);
         inner.Error(exception, messageTemplate, values);
     }
 
     public void Warning(string messageTemplate, params object[] values) {
-        this.Count(LogEventLevel.Warning, null, messageTemplate);
+        this.Count(LogEventLevel.Warning, null, messageTemplate, values);
         inner.Warning(messageTemplate, values);
     }
 
     public void Warning(Exception? exception, string messageTemplate, params object[] values) {
-        this.Count(LogEventLevel.Warning, exception, messageTemplate);
+        this.Count(LogEventLevel.Warning, exception, messageTemplate, values);
         inner.Warning(exception, messageTemplate, values);
     }
 
     public void Information(string messageTemplate, params object[] values) {
-        this.Count(LogEventLevel.Information, null, messageTemplate);
+        this.Count(LogEventLevel.Information, null, messageTemplate, values);
         inner.Information(messageTemplate, values);
     }
 
     public void Information(Exception? exception, string messageTemplate, params object[] values) {
-        this.Count(LogEventLevel.Information, exception, messageTemplate);
+        this.Count(LogEventLevel.Information, exception, messageTemplate, values);
         inner.Information(exception, messageTemplate, values);
     }
 
     public void Info(string messageTemplate, params object[] values) {
-        this.Count(LogEventLevel.Information, null, messageTemplate);
+        this.Count(LogEventLevel.Information, null, messageTemplate, values);
         inner.Info(messageTemplate, values);
     }
 
     public void Info(Exception? exception, string messageTemplate, params object[] values) {
-        this.Count(LogEventLevel.Information, exception, messageTemplate);
+        this.Count(LogEventLevel.Information, exception, messageTemplate, values);
         inner.Info(exception, messageTemplate, values);
     }
 
     public void Debug(string messageTemplate, params object[] values) {
-        this.Count(LogEventLevel.Debug, null, messageTemplate);
+        this.Count(LogEventLevel.Debug, null, messageTemplate, values);
         inner.Debug(messageTemplate, values);
     }
 
     public void Debug(Exception? exception, string messageTemplate, params object[] values) {
-        this.Count(LogEventLevel.Debug, exception, messageTemplate);
+        this.Count(LogEventLevel.Debug, exception, messageTemplate, values);
         inner.Debug(exception, messageTemplate, values);
     }
 
     public void Verbose(string messageTemplate, params object[] values) {
-        this.Count(LogEventLevel.Verbose, null, messageTemplate);
+        this.Count(LogEventLevel.Verbose, null, messageTemplate, values);
         inner.Verbose(messageTemplate, values);
     }
 
     public void Verbose(Exception? exception, string messageTemplate, params object[] values) {
-        this.Count(LogEventLevel.Verbose, exception, messageTemplate);
+        this.Count(LogEventLevel.Verbose, exception, messageTemplate, values);
         inner.Verbose(exception, messageTemplate, values);
     }
 
     public void Write(LogEventLevel level, Exception? exception, string messageTemplate, params object[] values) {
-        this.Count(level, exception, messageTemplate);
+        this.Count(level, exception, messageTemplate, values);
         inner.Write(level, exception, messageTemplate, values);
     }
 }

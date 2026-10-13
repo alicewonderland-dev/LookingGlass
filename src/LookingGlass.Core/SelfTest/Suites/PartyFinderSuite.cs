@@ -41,6 +41,7 @@ public static class PartyFinderSuite {
         ChatLink.PartyFinder? link = null;
         var result = await context.AskForResultAsync(new GuidedPrompt(instruction) {
             Short = shortName,
+            TesterTypes = true,
             Watch = StepContextExtensions.Until(() => {
                 link = context.Host.PrintedSince(mark).Where(line => line.Kind == TapKind.Message && line.Own && line.ChannelId == channel)
                     .SelectMany(line => line.Links).OfType<ChatLink.PartyFinder>().FirstOrDefault();
@@ -79,7 +80,7 @@ public static class PartyFinderSuite {
                 var before = context.Host.LogCounts().LastLinkKind;
                 var answer = await context.AskAsync(new GuidedPrompt(
                     "You're talking in the test channel now. Open your recruitment window and click its chat button (the speech bubble). Does <pfinder> appear in the chat input? " +
-                    "Don't press Enter yet.", PromptKind.YesNo) { Short = "<pfinder>" }).ConfigureAwait(false);
+                    "Don't press Enter: clear the chat input, then answer.", PromptKind.YesNo) { Short = "<pfinder>", TesterTypes = true }).ConfigureAwait(false);
                 var kind = context.Host.LogCounts().LastLinkKind;
                 var judged = StepContext.Judge(answer, "<pfinder>");
                 if (judged.Outcome != StepOutcome.Passed) {

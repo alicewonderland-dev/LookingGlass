@@ -225,16 +225,27 @@ internal sealed unsafe class ChatInterop : IDisposable {
     }
 
     /// <summary>
-    /// Sets the game's chat channel (as /s would; <see cref="GameChannel.ChatType"/>). For the self-test, which sets Say before
-    /// typing a line and puts the channel back at the end. Ends talking in a channel, if on. Game thread.
+    /// Sets the game's chat channel (as /s would; <see cref="GameChannel.ChatType"/>), as ChatTwo does: the channel's number
+    /// itself, a linkshell's index (0 to 7) beside it, and an empty name for the tell target. Never a tell (it needs the
+    /// person's name). For the self-test, which sets Say before typing a line and puts the channel back at the end. Ends
+    /// talking in a channel, if on. Game thread.
     /// </summary>
     public static void SetChannel(int chatType) {
+        if (Core.SelfTest.SelfTestGameChannels.IsTell(chatType)) {
+            throw new InvalidOperationException("A tell can't be set without a name.");
+        }
+
         var shell = RaptureShellModule.Instance();
         if (shell == null) {
             throw new InvalidOperationException("The game's chat box isn't there.");
         }
 
-        shell->ChangeChatChannel(chatType, 0, null, true);
+        var target = Utf8String.FromString("");
+        try {
+            shell->ChangeChatChannel(chatType, Core.SelfTest.SelfTestGameChannels.LinkshellIndex(chatType), target, true);
+        } finally {
+            target->Dtor(true);
+        }
     }
 
     /// <summary>

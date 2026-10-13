@@ -3797,8 +3797,23 @@ public sealed partial class ClientSession : IAsyncDisposable {
         return this.RequestAsync(this.RequireConnection(), frame, ct);
     }
 
+    /// <summary>
+    /// The server refused a request for a limit (rate limited, a limit reached, or blocked), whatever asked for it, retries
+    /// in the background included: the self-test stops at the first. Raised on the thread the answer came on; never the
+    /// server's words.
+    /// </summary>
+    public event Action<ErrorCode>? Refused;
+
     private async Task<Response> RequestAsync(Connection connection, ClientFrame frame, CancellationToken ct, TimeSpan? timeout = null) {
         var response = await connection.RequestAsync(frame, ct, timeout);
+        if (response.Error is { Code: ErrorCode.RateLimited or ErrorCode.LimitReached or ErrorCode.Blocked } refused) {
+            try {
+                this.Refused?.Invoke(refused.Code);
+            } catch {
+                // Telling must never change what the request does.
+            }
+        }
+
         if (response.Error != null) {
             // A block is noted as the answer arrives (see OnResponse).
             throw new ServerErrorException(response.Error.Code, response.Error.Message, this.ShownCode()) {

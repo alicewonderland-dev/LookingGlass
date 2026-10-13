@@ -103,6 +103,9 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
     /// <summary>ChatTwo is loaded (the self-test).</summary>
     internal bool ChatTwoLoaded => this._chatTwo.Loaded;
 
+    /// <summary>ChatTwo's input's channel, in its own numbers, or null (the self-test asks the tester to keep it on Say).</summary>
+    internal int? ChatTwoInput() => this._chatTwo.Loaded ? this._chatTwo.InputChannel() : null;
+
     /// <summary>The chat box gate's hooks are in place: lines can be typed through it (the self-test).</summary>
     internal bool InputHooked => this._interop.InputHooked;
 

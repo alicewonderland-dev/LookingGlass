@@ -22,9 +22,18 @@ public static class SelfTestReport {
     /// <summary>The report's text.</summary>
     /// <param name="checks">Each check run, with its record (in the order run).</param>
     /// <param name="cleanUp">The clean-up's line (<see cref="SelfTestWords.CleanUp"/>), or null if it hasn't run.</param>
-    /// <param name="forbidden">Names and texts that must never be in it: the tester's and the partner's names and worlds, every channel's name, the run's code and marker.</param>
+    /// <param name="forbidden">
+    /// Names and texts that must never be in it, taken out of the whole text: the tester's (and a partner's) name and world,
+    /// names typed in for a step, the run's code and marker.
+    /// </param>
+    /// <param name="inNotes">
+    /// Names taken out of the tester's notes only (every channel's name): the rest of the report is fixed words, where a
+    /// channel called "chat" mustn't turn "chat history" into nonsense.
+    /// </param>
     public static string Build(SelfTestReportSetup setup, DateTimeOffset started, DateTimeOffset? ended, TimeZoneInfo zone,
-        IEnumerable<(SelfTestCheck Check, CheckRecord Record)> checks, string? cleanUp, IEnumerable<string> forbidden) {
+        IEnumerable<(SelfTestCheck Check, CheckRecord Record)> checks, string? cleanUp, IEnumerable<string> forbidden, IEnumerable<string>? inNotes = null) {
+        var everywhere = forbidden.ToList();
+        var notes = everywhere.Concat(inNotes ?? []).ToList();
         var text = new StringBuilder();
         text.AppendLine(Heading);
         text.AppendLine($"Plugin {setup.PluginVersion}, ChatTwo {(setup.ChatTwo ? "on" : "off")}, {(setup.AdvancedMode ? "advanced" : "simple")} mode, " +
@@ -34,14 +43,14 @@ public static class SelfTestReport {
             : $"{Time(started, zone, withDate: true)} ({Offset(zone, started)})");
         text.AppendLine();
         foreach (var (check, record) in checks) {
-            text.AppendLine(Line(check.Steps, record, zone));
+            text.AppendLine(Line(check.Steps, record with { Notes = record.Notes.Select(note => Scrub(note, notes)).ToList() }, zone));
         }
 
         if (cleanUp != null) {
             text.AppendLine(cleanUp);
         }
 
-        return Scrub(text.ToString().TrimEnd() + Environment.NewLine, forbidden);
+        return Scrub(text.ToString().TrimEnd() + Environment.NewLine, everywhere);
     }
 
     /// <summary>One check's line: "local-chat 32-33: FAILED at 20:11: why (step 32)".</summary>

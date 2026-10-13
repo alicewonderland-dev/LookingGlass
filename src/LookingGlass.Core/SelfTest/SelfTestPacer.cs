@@ -54,8 +54,8 @@ public sealed class SelfTestPacer {
         [SelfTestAction.Disband] = new(TimeSpan.FromSeconds(20), 1, TimeSpan.FromSeconds(20), 3),
         // Server: 10 at once, then 1 every 10 seconds.
         [SelfTestAction.Rename] = new(TimeSpan.FromSeconds(20), 1, TimeSpan.FromSeconds(20), 2),
-        // Server: 60 at once, then 1 a second.
-        [SelfTestAction.Lookup] = new(TimeSpan.FromSeconds(2), 1, TimeSpan.FromSeconds(2), 2),
+        // Server: 60 at once, then 1 a second. The invite check looks its person up first, then each invite may again.
+        [SelfTestAction.Lookup] = new(TimeSpan.FromSeconds(2), 1, TimeSpan.FromSeconds(2), 3),
         // Server: to one person 20 at once, then 1 a minute.
         [SelfTestAction.Invite] = new(TimeSpan.FromSeconds(30), 1, TimeSpan.FromSeconds(30), 8),
         // Server: 60 new connections a minute per address, 4 not logged in.
@@ -78,11 +78,27 @@ public sealed class SelfTestPacer {
     /// <param name="now">The clock (a fake one in tests).</param>
     /// <param name="delay">How to wait (a fake one in tests).</param>
     /// <param name="spentBefore">What earlier runs spent, from the plugin's file: only the last hour counts.</param>
-    public SelfTestPacer(Func<DateTimeOffset> now, Func<TimeSpan, CancellationToken, Task> delay, IEnumerable<SelfTestSpend>? spentBefore = null) {
+    /// <param name="thisRun">What this run spent before a relog or reload (its run file): its pace and its most go on from there.</param>
+    public SelfTestPacer(Func<DateTimeOffset> now, Func<TimeSpan, CancellationToken, Task> delay, IEnumerable<SelfTestSpend>? spentBefore = null,
+        IEnumerable<SelfTestSpend>? thisRun = null) {
         this._now = now;
         this._delay = delay;
-        this._spent = (spentBefore ?? []).Where(spend => now() - spend.At < Hour).ToList();
+        var mine = (thisRun ?? []).ToList();
+        this._spent = (spentBefore ?? []).Concat(mine).Distinct().Where(spend => now() - spend.At < Hour).ToList();
+        foreach (var group in mine.GroupBy(spend => spend.Action)) {
+            var rule = Rules[group.Key];
+            var times = group.Select(spend => spend.At).Order().ToList();
+            var run = 1;
+            for (var i = 1; i < times.Count; i++) {
+                run = times[i] - times[i - 1] < rule.AfterARow && run < rule.InARow ? run + 1 : 1;
+            }
+
+            this._state[group.Key] = (times[^1], run, times.Count);
+        }
     }
+
+    /// <summary>Told of every action spent, as it is (the runner keeps it in the run file).</summary>
+    public Action<SelfTestSpend>? OnSpend { get; set; }
 
     /// <summary>The server refused something for a limit: nothing more is sent.</summary>
     public bool Refused {
@@ -189,6 +205,8 @@ public sealed class SelfTestPacer {
             this._state[action] = (now, run, count + 1);
             this._spent.Add(new SelfTestSpend(action, now));
         }
+
+        this.OnSpend?.Invoke(new SelfTestSpend(action, this._now()));
     }
 
     private void ThrowIfStopped(SelfTestAction action, PaceRule rule) {

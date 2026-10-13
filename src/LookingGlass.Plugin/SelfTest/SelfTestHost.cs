@@ -176,6 +176,28 @@ internal sealed class SelfTestHost : ISelfTestHost, IDisposable {
 
     public Task<bool> IsReadyAsync() => Task.FromResult(this.Sessions.Snapshot is { State: ConnectionState.Ready, ChannelsLoaded: true });
 
+    public Task<bool> IsForAsync(ulong contentId, string serverUrl) =>
+        Task.FromResult(this._parts.Player.Current?.ContentId == contentId && this.Sessions.ServerUrl == serverUrl
+                        && (this.Sessions.SessionPlayer == null || this.Sessions.SessionPlayer.ContentId == contentId));
+
+    public Task<int?> ChatTwoInputAsync() => OnFramework(() => this._parts.Sticky.ChatTwoInput());
+
+    public async Task<bool?> IsRegisteredAsync(string name, string world) {
+        try {
+            return await this.Session.FindPlayerAsync(name, world).ConfigureAwait(false) != null;
+        } catch (Exception ex) when (!SelfTestPacer.IsRefusal(ex)) {
+            Services.Log.Debug($"[selftest] a lookup failed: {ex.GetType().Name}");
+            return null;
+        }
+    }
+
+    public Task DisbandChannelAsync(string channelId) => this.Session.DisbandAsync(this.Own(channelId));
+
+    // The run's character and server: its settings are read and written for them, whoever is logged in now.
+    private (ulong ContentId, string ServerUrl)? _runFor;
+
+    public void RunFor(ulong contentId, string serverUrl) => this._runFor = (contentId, serverUrl);
+
     public Task<IReadOnlyList<SelfTestChannel>> ChannelsAsync() =>
         Task.FromResult<IReadOnlyList<SelfTestChannel>>(this.Sessions.Snapshot.Channels.Select(channel => new SelfTestChannel(channel.Id, channel.Name, channel.Members.Length)).ToList());
 
@@ -224,13 +246,13 @@ internal sealed class SelfTestHost : ISelfTestHost, IDisposable {
 
     public Task SetChannelColourAsync(string channelId, ChannelColour? colour) => OnFramework(() => this.Sessions.SetColour(this.Own(channelId), colour));
 
-    public Task<ChannelColour?> SavedChannelColourAsync(string channelId) => OnFramework<ChannelColour?>(() => {
-        // As saved: read back from the settings file, not from memory.
-        if (this.Sessions.SessionPlayer is not { } player || SavedSettings() is not { } saved) {
+    public Task<ChannelColour?> SavedChannelColourAsync(string channelId) => Task.Run<ChannelColour?>(() => {
+        // As saved: read back from the settings file, not from memory (off the framework thread, parsed when it changed).
+        if (this.Sessions.SessionPlayer is not { } player || this.SavedSettings() is not { } saved) {
             return null;
         }
 
-        using (saved) {
+        {
             if (!saved.RootElement.TryGetProperty(nameof(Configuration.Characters), out var characters)
                 || !characters.TryGetProperty(player.ContentId.ToString(System.Globalization.CultureInfo.InvariantCulture), out var character)) {
                 return null;
@@ -250,10 +272,25 @@ internal sealed class SelfTestHost : ISelfTestHost, IDisposable {
         }
     });
 
-    /// <summary>The settings file as saved, or null if it can't be read.</summary>
-    private static JsonDocument? SavedSettings() {
+    private (DateTime Written, JsonDocument Document)? _saved;
+
+    /// <summary>The settings file as saved, or null if it can't be read: parsed again only when it was written since.</summary>
+    private JsonDocument? SavedSettings() {
         try {
-            return JsonDocument.Parse(File.ReadAllBytes(Services.PluginInterface.ConfigFile.FullName));
+            var path = Services.PluginInterface.ConfigFile.FullName;
+            var written = File.GetLastWriteTimeUtc(path);
+            lock (this._lock) {
+                if (this._saved is { } cached && cached.Written == written) {
+                    return cached.Document;
+                }
+            }
+
+            var document = JsonDocument.Parse(File.ReadAllBytes(path));
+            lock (this._lock) {
+                this._saved = (written, document);
+            }
+
+            return document;
         } catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException) {
             return null;
         }
@@ -269,9 +306,9 @@ internal sealed class SelfTestHost : ISelfTestHost, IDisposable {
         }
     });
 
-    public Task<IReadOnlyDictionary<string, uint>> SavedNameColoursAsync() => OnFramework<IReadOnlyDictionary<string, uint>>(() => {
-        // As saved: read back from the settings file, not from memory.
-        using var document = SavedSettings();
+    public Task<IReadOnlyDictionary<string, uint>> SavedNameColoursAsync() => Task.Run<IReadOnlyDictionary<string, uint>>(() => {
+        // As saved: read back from the settings file, not from memory (off the framework thread).
+        var document = this.SavedSettings();
         if (document != null && document.RootElement.TryGetProperty(nameof(Configuration.NameColours), out var colours) && colours.ValueKind == JsonValueKind.Object) {
             return colours.EnumerateObject().Where(entry => entry.Value.ValueKind == JsonValueKind.Number && entry.Value.TryGetUInt32(out _))
                 .ToDictionary(entry => entry.Name, entry => entry.Value.GetUInt32());
@@ -293,22 +330,39 @@ internal sealed class SelfTestHost : ISelfTestHost, IDisposable {
         };
     });
 
-    public Task InviteAsync(string channelId, string name, string world) => OnFramework(() => {
-        this.Own(channelId);
+    public async Task InviteAsync(string channelId, string name, string world) {
         var target = new InviteTarget(name, world);
-        var offer = this._parts.Inviter.OffersFor(target).FirstOrDefault(offer => offer.ChannelId == channelId)
-                    ?? throw new InvalidOperationException("The test channel isn't offered for that player.");
-        this._parts.Inviter.Invite(target, offer);
-    });
+        var offer = await OnFramework(() => {
+            this.Own(channelId);
+            return this._parts.Inviter.OffersFor(target).FirstOrDefault(offer => offer.ChannelId == channelId)
+                   ?? throw new InvalidOperationException("The test channel isn't offered for that player.");
+        }).ConfigureAwait(false);
+        // Waited for: a refusal for a limit goes to the run, which stops.
+        if (await this._parts.Inviter.InviteAsync(target, offer).ConfigureAwait(false) is { } failed && SelfTestPacer.IsRefusal(failed)) {
+            throw failed;
+        }
+    }
 
     public Task<JsonElement> ReadSettingAsync(SelfTestSetting setting) => OnFramework(() => this.SettingsNow().Read(setting));
 
     public Task WriteSettingAsync(SelfTestSetting setting, JsonElement value) => OnFramework(() => this.SettingsNow().Write(setting, value));
 
-    /// <summary>The settings of the character and server the session is for now.</summary>
+    /// <summary>
+    /// The settings of the run's character and server, through the session manager only if its session is theirs (otherwise
+    /// straight into the settings): never another character's.
+    /// </summary>
     private PluginSettings SettingsNow() {
-        var player = this.Sessions.SessionPlayer ?? this._parts.Player.Current ?? throw new InvalidOperationException("Not logged in.");
-        return new PluginSettings(this.Config, player.ContentId, this.Sessions.ServerUrl, this.Sessions);
+        ulong contentId;
+        string serverUrl;
+        if (this._runFor is { } runFor) {
+            (contentId, serverUrl) = runFor;
+        } else {
+            var player = this.Sessions.SessionPlayer ?? this._parts.Player.Current ?? throw new InvalidOperationException("Not logged in.");
+            (contentId, serverUrl) = (player.ContentId, this.Sessions.ServerUrl);
+        }
+
+        var theirs = this.Sessions.SessionPlayer?.ContentId == contentId && this.Sessions.ServerUrl == serverUrl;
+        return new PluginSettings(this.Config, contentId, serverUrl, theirs ? this.Sessions : null);
     }
 
     public Task<int?> GameChannelAsync() => OnFramework(() => ChatInterop.CurrentChannel()?.ChatType);
@@ -316,8 +370,10 @@ internal sealed class SelfTestHost : ISelfTestHost, IDisposable {
     public Task SetGameChannelAsync(int chatType) => OnFramework(() => ChatInterop.SetChannel(chatType));
 
     public Task TypeAsync(string line, TestLink link) => OnFramework(() => {
-        // Right before it goes: the place, now (not settled: any doubt types nothing), and Say underneath.
-        if (!PrivateArea.Judge(PrivateAreaReader.Read()).Private) {
+        // Right before it goes: the place, now (not settled: any doubt types nothing), nobody else near in a house, and Say
+        // underneath.
+        var place = PrivateArea.Judge(PrivateAreaReader.Read());
+        if (!place.Private || (place.NeedsNobodyNear && PrivateAreaReader.OthersNear(PrivateArea.NearbyLimit) > 0)) {
             throw new SelfTestNotTypedException(notPrivate: true);
         }
 

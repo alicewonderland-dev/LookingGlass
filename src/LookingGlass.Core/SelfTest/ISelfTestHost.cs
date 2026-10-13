@@ -36,6 +36,18 @@ public interface ISelfTestHost {
     /// <summary>Connected, logged in, and the channel list is in.</summary>
     Task<bool> IsReadyAsync();
 
+    /// <summary>The character logged in now is the run's, on the run's server (never act on another).</summary>
+    Task<bool> IsForAsync(ulong contentId, string serverUrl);
+
+    /// <summary>ChatTwo's input's channel, in ChatTwo's own numbers (Say is <see cref="SelfTestGameChannels.ChatTwoSay"/>), or null.</summary>
+    Task<int?> ChatTwoInputAsync();
+
+    /// <summary>Whether a player is registered with LookingGlass on this server (one lookup), or null if it couldn't be told.</summary>
+    Task<bool?> IsRegisteredAsync(string name, string world);
+
+    /// <summary>Disbands a test channel (only when someone else is in it: leaving would leave them there).</summary>
+    Task DisbandChannelAsync(string channelId);
+
     /// <summary>The tester's channels now (the run's own too): ID, name, and the members' count.</summary>
     Task<IReadOnlyList<SelfTestChannel>> ChannelsAsync();
 
@@ -100,8 +112,14 @@ public interface ISelfTestHost {
     /// <summary>What invite submenu the right-click menus would offer for a kind of thing right-clicked (see ContextInvites).</summary>
     Task<int> InviteOffersForAsync(RightClickKind kind);
 
-    /// <summary>Invites a player to a channel, through the same path as the right-click menu; what it said in chat comes through the tap.</summary>
+    /// <summary>
+    /// Invites a player to a channel, through the same path as the right-click menu, and waits for the answer: what it said
+    /// in chat comes through the tap; a refusal for a limit is thrown (the run stops).
+    /// </summary>
     Task InviteAsync(string channelId, string name, string world);
+
+    /// <summary>The run's character and server: settings are read and written for them only, whoever is logged in.</summary>
+    void RunFor(ulong contentId, string serverUrl);
 
     // ---------------------------------------------------------------- settings (see SelfTestSetting)
 
@@ -221,10 +239,26 @@ public sealed class SelfTestNotTypedException(bool notPrivate) : Exception(notPr
     public bool NotPrivate { get; } = notPrivate;
 }
 
-/// <summary>The game's chat channel numbers the runner needs (<c>RaptureShellModule.ChatType</c>).</summary>
+/// <summary>
+/// The game's chat channel numbers the runner needs (<c>RaptureShellModule.ChatType</c>, as ChatTwo's <c>InputChannel</c>
+/// numbers them: Tell 0, Say 1, Party 2 ... cross-world linkshells 9 to 16, linkshells 19 to 26).
+/// </summary>
 public static class SelfTestGameChannels {
     /// <summary>Say.</summary>
     public const int Say = 1;
+
+    /// <summary>ChatTwo's own number for Say, as its input state reports it.</summary>
+    public const int ChatTwoSay = 10;
+
+    /// <summary>A tell (0, 17, 18): never set back by the self-test, which would need the person's name.</summary>
+    public static bool IsTell(int chatType) => chatType is 0 or 17 or 18;
+
+    /// <summary>The linkshell index the channel switch needs: 0 to 7 for linkshells and cross-world linkshells, else 0.</summary>
+    public static uint LinkshellIndex(int chatType) => chatType switch {
+        >= 19 and <= 26 => (uint) (chatType - 19),
+        >= 9 and <= 16 => (uint) (chatType - 9),
+        _ => 0,
+    };
 }
 
 /// <summary>A channel as the runner sees it.</summary>

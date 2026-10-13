@@ -22,8 +22,9 @@ public static class SelfTestSteps {
 
     /// <summary>A relog or a plugin reload: the run waits in its file, and carries on by itself afterwards.</summary>
     /// <param name="instruction">What the tester does, in full (the window shows it as the step's text).</param>
-    public static SelfTestStep CarryOn(string instruction, string? checklist) =>
-        new() { Title = instruction, Checklist = checklist, Kind = StepKind.CarryOnAfter, Run = _ => Task.FromResult(StepResult.Pass()) };
+    /// <param name="types">The tester types in game chat on the way (the typing gate runs before it shows).</param>
+    public static SelfTestStep CarryOn(string instruction, string? checklist, bool types = false) =>
+        new() { Title = instruction, Checklist = checklist, Kind = StepKind.CarryOnAfter, Types = types, Run = _ => Task.FromResult(StepResult.Pass()) };
 
     /// <summary>The instruction for a relog.</summary>
     public const string Relog = "Go to the title screen (Return to Title), then come back in with this character. The self-test carries on by itself.";
@@ -123,8 +124,12 @@ public static class StepContextExtensions {
     public static async Task<bool> SettingIsAsync(this StepContext context, SelfTestSetting setting) =>
         (await context.Host.ReadSettingAsync(setting).ConfigureAwait(false)).ValueKind == System.Text.Json.JsonValueKind.True;
 
-    /// <summary>Disconnects (paced: reconnects at least a minute apart), and says whether it is disconnected.</summary>
+    /// <summary>
+    /// Disconnects (paced: reconnects at least a minute apart). The run file says so first: until it connects again, its
+    /// gates don't wait for a connection, and if it stops meanwhile the clean-up connects first.
+    /// </summary>
     public static async Task DisconnectAsync(this StepContext context) {
+        context.MarkDisconnected(true);
         await context.ServerAsync(SelfTestAction.Reconnect, () => context.Host.DisconnectAsync()).ConfigureAwait(false);
         await context.WaitUntilAsync(async () => !await context.Host.IsReadyAsync().ConfigureAwait(false)).ConfigureAwait(false);
     }
@@ -132,7 +137,9 @@ public static class StepContextExtensions {
     /// <summary>Connects again, and waits until ready (up to two minutes).</summary>
     public static async Task<bool> ConnectAsync(this StepContext context) {
         await context.Host.ConnectAsync().ConfigureAwait(false);
-        return await context.WaitUntilAsync(() => context.Host.IsReadyAsync(), TimeSpan.FromMinutes(2)).ConfigureAwait(false);
+        var ready = await context.WaitUntilAsync(() => context.Host.IsReadyAsync(), TimeSpan.FromMinutes(2)).ConfigureAwait(false);
+        context.MarkDisconnected(false);
+        return ready;
     }
 
     /// <summary>A guided step's watch: done when <paramref name="seen"/> holds, saying <paramref name="before"/> until then.</summary>

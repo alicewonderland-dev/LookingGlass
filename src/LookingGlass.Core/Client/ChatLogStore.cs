@@ -120,7 +120,10 @@ public static partial class ChatLogFiles {
         long size = 0;
         try {
             foreach (var file in folder.EnumerateFiles()) {
-                size += SafeLength(file);
+                // A segment being written again (see ChatLogStore.ForgetChannel) is the same lines twice for a moment.
+                if (!file.Name.EndsWith(ChatLogStore.ForgetExtension, StringComparison.Ordinal)) {
+                    size += SafeLength(file);
+                }
             }
 
             foreach (var inner in folder.EnumerateDirectories()) {
@@ -418,6 +421,9 @@ internal sealed class ChatLogStore : IDisposable {
     public const string KeyFileName = "chatlog.key";
     public const string SegmentExtension = ".lgl";
 
+    /// <summary>A segment written again without a channel's lines, before it takes the old one's place (see <see cref="ForgetChannel"/>).</summary>
+    public const string ForgetExtension = ".forget";
+
     private const int HeaderSize = 8;
     private const int LengthSize = 4;
     private const int MaxPlaintext = 64 * 1024;
@@ -503,6 +509,11 @@ internal sealed class ChatLogStore : IDisposable {
         if (!Directory.Exists(this._folder)) {
             this.SessionStart = new ChatLogPosition(0, 0);
             return;
+        }
+
+        // A segment a crash left half written again (ForgetChannel): the old one is whole beside it.
+        foreach (var stale in Directory.EnumerateFiles(this._folder, "*" + SegmentExtension + ForgetExtension)) {
+            TryDelete(stale);
         }
 
         foreach (var file in Directory.EnumerateFiles(this._folder, "*" + SegmentExtension)) {
@@ -793,7 +804,9 @@ internal sealed class ChatLogStore : IDisposable {
     /// Removes one channel's lines (the self-test's test channel, at its clean-up): from every segment holding any, which is
     /// written again without them (each record sealed afresh at its new place, then put in the old file's place, so a
     /// crash leaves one whole file or the other), and its text files' folder. Nothing of another channel's changes. Where
-    /// this session's lines start moves with the records. A log that can't be read here keeps its segments (which lines are
+    /// this session's lines start moves with the records, and each segment keeps its time (the size limit goes by it). A
+    /// record that can't be read (damaged) is dropped from a segment written again, as reading skips it anyway; one that
+    /// opens but isn't a line this version knows is kept. A log that can't be read here keeps its segments (which lines are
     /// the channel's can't be told), and loses only the text folder.
     /// </summary>
     /// <returns>How many records were removed.</returns>
@@ -866,7 +879,8 @@ internal sealed class ChatLogStore : IDisposable {
             }
 
             var path = this.PathOf(segment.Number);
-            var temporary = path + ".forget";
+            var temporary = path + ForgetExtension;
+            var written = File.GetLastWriteTimeUtc(path);
             try {
                 using (var stream = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None)) {
                     output.Position = 0;
@@ -875,6 +889,7 @@ internal sealed class ChatLogStore : IDisposable {
                 }
 
                 File.Move(temporary, path, overwrite: true);
+                File.SetLastWriteTimeUtc(path, written);
             } catch {
                 TryDelete(temporary);
                 throw;

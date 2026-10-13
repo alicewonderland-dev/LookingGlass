@@ -143,8 +143,14 @@ internal sealed class SelfTestWindow : Window {
         ImGui.TextWrapped(SelfTestWords.TwoPlayersLater);
 
         this.DrawLeftovers();
-        if (this._service.CleanUpLeft) {
-            Widgets.WrappedColoured(Widgets.Warning, "The last test's clean-up didn't finish (a test channel may be left).");
+        if (this._service.FileUnknown) {
+            Widgets.WrappedColoured(Widgets.Warning, "The last test's file is damaged: it doesn't say which character it was for, so it can't finish by itself. " +
+                                                     "Its settings were put back. Clearing it forgets it; a test channel it left shows above, to remove yourself.");
+            if (UiActions.ConfirmButton("Clear it")) {
+                this._service.ClearUnknownFile();
+            }
+        } else if (this._service.CleanUpLeft) {
+            Widgets.WrappedColoured(Widgets.Warning, "The last test's clean-up didn't finish (a test channel may be left). It finishes once you're connected with that character.");
             if (ImGui.Button("Clean up again")) {
                 this._service.RetryCleanUp();
             }
@@ -312,7 +318,11 @@ internal sealed class SelfTestWindow : Window {
             ImGui.InputTextWithHint("##input", label, ref this._input, 100);
         }
 
-        if (waiting) {
+        if (prompt.Prompt.Kind == PromptKind.SkipOnly) {
+            if (ImGui.Button(SelfTestWords.SkipStep)) {
+                this.Answer(run, GuidedAnswer.Skip);
+            }
+        } else if (waiting) {
             if (ImGui.Button(SelfTestWords.CarryOn)) {
                 run.CarriedOn();
             }

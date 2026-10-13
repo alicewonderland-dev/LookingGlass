@@ -171,7 +171,7 @@ public sealed partial class ChatLog : IChannelHistoryRecorder, IAsyncDisposable 
     /// <summary>
     /// Removes one channel's lines from the log, and its text files, after what was queued before (see
     /// <see cref="ChatLogStore.ForgetChannel"/>): the self-test's test channel, at its clean-up. Nothing of another
-    /// channel's changes. A channel's older lines shown in a window go too.
+    /// channel's changes. The older lines windows show are read again (records moved in the segments written again).
     /// </summary>
     /// <returns>How many records were removed. Fails if a file couldn't be written or deleted (what could be, was).</returns>
     public Task<int> ForgetChannelAsync(string channelId) {
@@ -310,12 +310,15 @@ public sealed partial class ChatLog : IChannelHistoryRecorder, IAsyncDisposable 
                 this.Write();
                 try {
                     var removed = this._state == ChatLogState.Ready || this._state == ChatLogState.Unreadable ? this._store.ForgetChannel(forget.ChannelId) : 0;
-                    this._earlier.TryRemove(forget.ChannelId, out _);
                     forget.Done.TrySetResult(removed);
                 } catch (Exception ex) {
                     this.Warn("remove a channel from the chat log", ex);
-                    this._earlier.TryRemove(forget.ChannelId, out _);
                     forget.Done.TrySetException(ex);
+                } finally {
+                    // Records moved within the segments written again: every window's place in the older lines starts over,
+                    // as after a deletion.
+                    Interlocked.Increment(ref this._version);
+                    this._earlier.Clear();
                 }
 
                 break;

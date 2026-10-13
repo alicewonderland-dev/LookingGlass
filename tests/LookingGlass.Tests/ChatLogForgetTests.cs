@@ -156,6 +156,48 @@ public sealed class ChatLogForgetTests : IDisposable {
     }
 
     [Fact]
+    public async Task SegmentsKeepTheirTimeAndOtherWindowsReadTheirOlderLinesAgain() {
+        var first = this.Open();
+        first.Record(Line("sky", "s1"));
+        first.Record(Line("test", "t1"));
+        await this.Close(first);
+        var segment = Directory.GetFiles(this.Folder, "*.lgl").Single();
+        var old = new DateTime(2026, 9, 1, 12, 0, 0, DateTimeKind.Utc);
+        File.SetLastWriteTimeUtc(segment, old);
+
+        var log = this.Open();
+        var earlier = log.Earlier("sky");
+        await earlier.LoadMoreAsync();
+        var version = log.Version;
+        Assert.Equal(1, await log.ForgetChannelAsync("test"));
+
+        // The size limit goes by a segment's time: the oldest stays the oldest.
+        Assert.Equal(old, File.GetLastWriteTimeUtc(segment));
+        // Records moved: every window's place in the older lines starts over, and reads them right.
+        Assert.True(log.Version > version);
+        var again = log.Earlier("sky");
+        Assert.NotSame(earlier, again);
+        await again.LoadMoreAsync();
+        Assert.Equal(["s1"], again.Lines.Select(line => line.Message?.Text));
+    }
+
+    [Fact]
+    public async Task ASegmentHalfWrittenAgainIsClearedAndNeverCounted() {
+        var first = this.Open();
+        first.Record(Line("sky", "s1"));
+        await this.Close(first);
+        // A crash between writing the new segment and putting it in place.
+        var stale = Directory.GetFiles(this.Folder, "*.lgl").Single() + ChatLogStore.ForgetExtension;
+        await File.WriteAllBytesAsync(stale, new byte[100_000], TestContext.Current.CancellationToken);
+        var withStale = ChatLogFiles.FolderSize(this.Folder);
+        Assert.True(withStale < 100_000, "A segment half written again was counted.");
+
+        var log = this.Open();
+        Assert.Equal(["s1"], await All(log, "sky"));
+        Assert.False(File.Exists(stale));
+    }
+
+    [Fact]
     public async Task AClosedLogSaysSo() {
         var log = this.Open();
         await this.Close(log);

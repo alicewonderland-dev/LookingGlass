@@ -39,13 +39,14 @@ public static class ChatTwoSuite {
                 await context.StopTalkingAsync().ConfigureAwait(false);
                 await context.ChangeSettingAsync(SelfTestSetting.LocalPrivacyAccepted, true).ConfigureAwait(false);
                 await context.ChangeSettingAsync(SelfTestSetting.SayWhenTalking, true).ConfigureAwait(false);
-                return new GuidedPrompt("Put ChatTwo's input on Say, and type /lgl in it. Does ChatTwo's label read \"LookingGlass [Local]\" in local chat's colour (perhaps with ChatTwo's " +
-                                        "\"(Warning: Say)\" after it)?", PromptKind.YesNo) { Short = "the label" };
+                return new GuidedPrompt("Type /lgl in ChatTwo's input. Does ChatTwo's label read \"LookingGlass [Local]\" in local chat's colour (perhaps with ChatTwo's " +
+                                        "\"(Warning: Say)\" after it)?", PromptKind.YesNo) { Short = "the label", TesterTypes = true, ChatTwoOnSay = true };
             }),
             Guided("A line goes to local chat, not Say", "43", async context => {
                 var mark = context.Host.Mark();
                 var marker = context.NextMarker();
                 var answer = await context.AskAsync(new GuidedPrompt($"In ChatTwo's main input, type: {marker}") {
+                    TesterTypes = true, ChatTwoOnSay = true,
                     Watch = StepContextExtensions.Until(async () => await context.NoticeAsync(mark, LocalChatWords.Refusal(LocalChatWords.NobodyNear, LocalChat.Tag), TimeSpan.Zero)
                         .ConfigureAwait(false) != null, "nothing yet", "local chat said nobody is near"),
                 }).ConfigureAwait(false);
@@ -60,6 +61,7 @@ public static class ChatTwoSuite {
                 var mark = context.Host.Mark();
                 var marker = context.NextMarker();
                 var answer = await context.AskAsync(new GuidedPrompt($"In ChatTwo's main input, type: /s {marker}") {
+                    TesterTypes = true, ChatTwoOnSay = true,
                     Watch = StepContextExtensions.Until(async () => await context.InGameChatAsync(mark, line => StepContextExtensions.SaidInSay(line, marker), TimeSpan.Zero)
                         .ConfigureAwait(false) != null, "not in Say yet", "it reached Say"),
                 }).ConfigureAwait(false);
@@ -72,14 +74,15 @@ public static class ChatTwoSuite {
                 var result = StepResult.All((count == 1, "/s with text reached Say more than once"), (still, "local chat ended"));
                 return result.Outcome == StepOutcome.Passed ? StepResult.Pass("the Party parts (43, 44: need a partner as the whole party)") : result;
             }),
-            Ask("ChatTwo's picker ends it", "45", context => Task.FromResult(new GuidedPrompt(
-                "Pick another channel in ChatTwo's channel picker (or click a ChatTwo tab with another channel).") {
+            ThenBackToSay("ChatTwo's picker ends it", "45", context => context.AskForResultAsync(new GuidedPrompt(
+                "Pick Party in ChatTwo's channel picker (or click a ChatTwo tab with another channel). Don't type anything there.") {
                 Short = "the picker",
                 Watch = StepContextExtensions.Until(async () => (await context.Host.StickyAsync().ConfigureAwait(false)).ChannelId == null, "still talking in [Local]", "stopped"),
             })),
-            Guided("On a tell, /lgl is refused", "46", async context => {
+            ThenBackToSay("On a tell, /lgl is refused", "46", async context => {
                 var mark = context.Host.Mark();
-                var answer = await context.AskAsync(new GuidedPrompt("Put ChatTwo's input on a tell (to a friend), then type /lgl alone in it. Then put it back on Say.") {
+                var answer = await context.AskAsync(new GuidedPrompt("Put ChatTwo's input on a tell (to a friend), then type /lgl alone in it, nothing else.") {
+                    TesterTypes = true, ChatTwoOnSay = true,
                     Watch = StepContextExtensions.Until(async () => await context.PrintedAsync(mark,
                         line => line.Kind == TapKind.Notice && line.Text.StartsWith("Switch ChatTwo off the tell first", StringComparison.Ordinal), TimeSpan.Zero).ConfigureAwait(false) != null,
                         "nothing yet", "refused"),
@@ -91,20 +94,39 @@ public static class ChatTwoSuite {
         ],
     };
 
+    /// <summary>
+    /// A guided step that moves ChatTwo's input off Say (to Party, a tell, another channel), then, whatever its result (a
+    /// failure ends the check), asks for ChatTwo's input back on Say: never left there, where a slip of the keyboard would
+    /// reach other players.
+    /// </summary>
+    private static SelfTestStep ThenBackToSay(string title, string? checklist, Func<StepContext, Task<StepResult>> run) => Guided(title, checklist, async context => {
+        var result = await run(context).ConfigureAwait(false);
+        if (await context.Host.ChatTwoInputAsync().ConfigureAwait(false) != SelfTestGameChannels.ChatTwoSay) {
+            await context.AskAsync(new GuidedPrompt("Put ChatTwo's input back on Say (pick Say in its channel picker).") {
+                Watch = StepContextExtensions.Until(async () => await context.Host.ChatTwoInputAsync().ConfigureAwait(false) == SelfTestGameChannels.ChatTwoSay,
+                    "ChatTwo's input isn't on Say", "on Say"),
+            }).ConfigureAwait(false);
+        }
+
+        // Not a check of LookingGlass: whatever the answer there, the step keeps its own result (and the next line to type asks again).
+        return result;
+    });
+
     // ---------------------------------------------------------------- sticky-channel 28
 
     private static SelfTestCheck ChatTwoNote() => new() {
         Id = "sticky-channel-28", Title = "The ChatTwo note when you start talking in a channel", Steps = "sticky-channel 28", Mode = CheckMode.Guided,
         Needs = Needs | SelfTestNeeds.TestChannel,
         StepList = [
-            Guided("The note, once", "28", async context => {
+            ThenBackToSay("The note, once", "28", async context => {
                 var channel = await ShownChannelAsync(context).ConfigureAwait(false);
                 var command = await context.CommandOfAsync(channel).ConfigureAwait(false);
                 var tag = await context.TagOfAsync(channel).ConfigureAwait(false);
                 await context.StopTalkingAsync().ConfigureAwait(false);
                 await context.ChangeSettingAsync(SelfTestSetting.ChatTwoNoteShown, false).ConfigureAwait(false);
                 var mark = context.Host.Mark();
-                var answer = await context.AskAsync(new GuidedPrompt($"Switch ChatTwo's input to Party, then type {command} alone in it.") {
+                var answer = await context.AskAsync(new GuidedPrompt($"Switch ChatTwo's input to Party, then type {command} alone in it, nothing else.") {
+                    TesterTypes = true, ChatTwoOnSay = true,
                     Watch = StepContextExtensions.Until(() => context.TalkingInAsync(channel, TimeSpan.Zero), "not talking in the test channel yet", "talking in the test channel"),
                 }).ConfigureAwait(false);
                 if (answer != GuidedAnswer.Seen) {
@@ -193,6 +215,7 @@ public static class ChatTwoSuite {
                 var mark = context.Host.Mark();
                 var answer = await context.AskAsync(new GuidedPrompt(
                     $"Click into ChatTwo's input, type {command} join  (with a space after it), click your recruitment's chat button, and press Enter. Note what the button put in ChatTwo's input.") {
+                    TesterTypes = true, ChatTwoOnSay = true,
                     Watch = StepContextExtensions.Until(() => Task.FromResult(context.Host.PrintedSince(mark).Any(line => line.Kind == TapKind.Message && line.Own && line.ChannelId == channel
                         && line.Links.OfType<ChatLink.PartyFinder>().Any())), "no party finder link sent yet", "a party finder link was sent"),
                 }).ConfigureAwait(false);

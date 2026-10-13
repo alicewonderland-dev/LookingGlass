@@ -46,7 +46,8 @@ public static class TalkSuite {
             Ask("/xlhelp lists it", "1-2", new GuidedPrompt(
                 "Type /xlhelp. Is /lgl listed once, by LookingGlass, saying it talks to your friends near you who use LookingGlass (about 20 yalms), and that /lgl alone keeps talking there until /s?",
                 PromptKind.YesNo) { Short = "/xlhelp" }),
-            CarryOn("In /xlplugins, turn LookingGlass off. Type /lgl: the game should say there is no such command. Then turn LookingGlass on again. The self-test carries on by itself.", "1"),
+            CarryOn("In /xlplugins, turn LookingGlass off. Type /lgl: the game should say there is no such command. Then turn LookingGlass on again. The self-test carries on by itself.", "1",
+                types: true),
             Ask("The game had no /lgl", "1", new GuidedPrompt("While LookingGlass was off, did the game say /lgl isn't a command?", PromptKind.YesNo) { Short = "off and on" }),
             Ask("The Colour \"?\" in Settings", "3", async context => {
                 await context.Host.ShowSettingsAsync(true).ConfigureAwait(false);
@@ -319,7 +320,7 @@ public static class TalkSuite {
                 return StepResult.All((started, "/lgl alone didn't start it"), (during.InfoBar != null, "the info bar didn't show [Local]"), (stopped, "/s alone didn't end it"),
                     (after.InfoBar == null && after.ChatInputLabel != Local, "a label still says [Local]"), (lines == 0, "a start or stop line was said with it off"));
             }, types: true),
-            CarryOn("Type /lgl to talk in local chat, then in /xlplugins turn LookingGlass off, then on again. The self-test carries on by itself.", "35"),
+            CarryOn("Type /lgl to talk in local chat, then in /xlplugins turn LookingGlass off, then on again. The self-test carries on by itself.", "35", types: true),
             Ask("Turned off, it said so", "35", new GuidedPrompt(
                 "When LookingGlass was turned off, did game chat say \"Stopped talking in [Local]: LookingGlass was turned off.\", and the chat box name Say again?",
                 PromptKind.YesNo) { Short = "turned off" }),

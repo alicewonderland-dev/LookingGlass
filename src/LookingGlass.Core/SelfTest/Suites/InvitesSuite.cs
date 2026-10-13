@@ -13,7 +13,7 @@ public static class InvitesSuite {
 
     public static SelfTestSuite Create() => new(Id, "Right-click invites", [NotShown(), NoItem(), NotRegistered()]) {
         Changes = [SelfTestSetting.AdvancedMode],
-        Planned = new Dictionary<SelfTestAction, int> { [SelfTestAction.Lookup] = 2, [SelfTestAction.Invite] = 2, [SelfTestAction.Reconnect] = 1, [SelfTestAction.CreateChannel] = 1 },
+        Planned = new Dictionary<SelfTestAction, int> { [SelfTestAction.Lookup] = 3, [SelfTestAction.Invite] = 2, [SelfTestAction.Reconnect] = 1, [SelfTestAction.CreateChannel] = 1 },
     };
 
     // ---------------------------------------------------------------- context-invites 7-9a
@@ -71,19 +71,31 @@ public static class InvitesSuite {
             Guided("Who to try", "15", async context => {
                 var (answer, input) = await context.AskForInputAsync(new GuidedPrompt(
                     "Type the name@world of someone you know who doesn't use LookingGlass (for example: Alice Liddell@Twintania), then press Done. " +
-                    "LookingGlass looks them up once; nothing is sent to them, and their name stays out of the report.") { Input = "Name@World" }).ConfigureAwait(false);
-                if (answer == GuidedAnswer.Skip || input == null) {
-                    return StepResult.Skip(SelfTestWords.YouSkipped);
-                }
-
-                var at = input.IndexOf('@');
-                if (at <= 0 || at == input.Length - 1) {
-                    return StepResult.Skip("no name@world was given");
+                    "LookingGlass looks them up; nothing is ever sent to them, and their name stays out of the report.") { Input = "Name@World" }).ConfigureAwait(false);
+                var at = input?.IndexOf('@') ?? -1;
+                if (answer == GuidedAnswer.Skip || input == null || at <= 0 || at == input.Length - 1) {
+                    context.State["ended"] = true;
+                    return StepResult.Skip(answer == GuidedAnswer.Skip ? SelfTestWords.YouSkipped : "no name@world was given");
                 }
 
                 context.Host.Forbid(input);
                 context.State["name"] = input[..at].Trim();
                 context.State["world"] = input[(at + 1)..].Trim();
+                return StepResult.Pass();
+            }),
+            Auto("They aren't registered (looked up first)", "15", async context => {
+                if (Ended(context)) {
+                    return StepResult.Skip("no name@world was given");
+                }
+
+                // Never an invite to someone registered: a solo run sends nothing to anyone.
+                var registered = await context.ServerAsync(SelfTestAction.Lookup,
+                    () => context.Host.IsRegisteredAsync((string) context.State["name"], (string) context.State["world"])).ConfigureAwait(false);
+                if (registered != false) {
+                    context.State["ended"] = true;
+                    return StepResult.Skip(registered == true ? SelfTestWords.Registered : "they couldn't be looked up");
+                }
+
                 return StepResult.Pass();
             }),
             Auto("Simple mode: the whole line", "15", context => InviteAsync(context, advanced: false)),
@@ -92,20 +104,20 @@ public static class InvitesSuite {
         ],
     };
 
+    private static bool Ended(StepContext context) => context.State.TryGetValue("ended", out var ended) && (bool) ended;
+
     private static async Task<StepResult> InviteAsync(StepContext context, bool advanced) {
-        if (!context.State.TryGetValue("name", out var name) || !context.State.TryGetValue("world", out var world)) {
-            return StepResult.Skip("no name@world was given");
+        if (Ended(context)) {
+            return StepResult.Skip(SelfTestWords.Registered);
         }
 
         await context.ChangeSettingAsync(SelfTestSetting.AdvancedMode, advanced).ConfigureAwait(false);
         var channel = await context.TestChannelAsync().ConfigureAwait(false);
         var mark = context.Host.Mark();
-        // One lookup, then the invite: each paced (the plugin remembers a lookup for 10 minutes, so the second costs none).
+        // The invite looks them up again (a lookup that failed isn't remembered): both paced; a refusal stops the run.
         await context.ServerAsync(SelfTestAction.Lookup, () => Task.CompletedTask).ConfigureAwait(false);
-        await context.ServerAsync(SelfTestAction.Invite, async () => {
-            await context.Host.InviteAsync(channel, (string) name, (string) world).ConfigureAwait(false);
-            return true;
-        }).ConfigureAwait(false);
+        await context.ServerAsync(SelfTestAction.Invite, () => context.Host.InviteAsync(channel, (string) context.State["name"], (string) context.State["world"]))
+            .ConfigureAwait(false);
         var line = await context.PrintedAsync(mark, line => line.Kind == TapKind.Notice && line.Text.StartsWith("Couldn't invite", StringComparison.Ordinal)
             || line.Text.StartsWith("Invited", StringComparison.Ordinal), TimeSpan.FromSeconds(30)).ConfigureAwait(false);
         if (line == null) {
@@ -113,7 +125,9 @@ public static class InvitesSuite {
         }
 
         if (line.Text.StartsWith("Invited", StringComparison.Ordinal)) {
-            return StepResult.Skip("they are registered with LookingGlass (the invite was sent; it goes when the test channel goes)");
+            // Registered after all (since the lookup): no second invite; the clean-up disbands the channel, invite and all.
+            context.State["ended"] = true;
+            return StepResult.Skip(SelfTestWords.Registered);
         }
 
         return StepResult.All((line.Tone == NoticeTone.Info, "the line wasn't blue"),

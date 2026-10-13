@@ -153,7 +153,22 @@ public sealed class SelfTestRunData {
 
     /// <summary>The partner's name@world, for two players (while the run lasts only). Not used yet.</summary>
     public string? Partner { get; set; }
+
+    /// <summary>The game's chat channel before the run first set it to Say, to put back at the end (never a tell).</summary>
+    public int? GameChannelBefore { get; set; }
+
+    /// <summary>What this run asked the server for so far, and when: its pace and its most carry over a reload.</summary>
+    public List<SelfTestSpend> Spent { get; set; } = [];
+
+    /// <summary>The results of the steps before a relog or reload, for the check carried on (see <see cref="NextCheck"/>).</summary>
+    public List<StepRecord> InProgress { get; set; } = [];
+
+    /// <summary>The run disconnected on purpose and hasn't connected again yet: the clean-up connects first.</summary>
+    public bool DisconnectedByRun { get; set; }
 }
+
+/// <summary>A step's result as the run file keeps it over a relog or reload: fixed words only.</summary>
+public sealed record StepRecord(StepOutcome Outcome, string? Why, string? NotRun, string? Confirmed, DateTimeOffset At);
 
 /// <summary>
 /// Reads and writes the run file, atomically (see <see cref="AtomicFile"/>): a crash leaves the old file or the new one.
@@ -355,3 +370,41 @@ public static class SelfTestValues {
 
 /// <summary>The tester's own name colour, as the run file keeps it: the key it is saved under (a number) and the colour, or null.</summary>
 public sealed record OwnNameColourValue(string Key, uint? Rgb);
+
+/// <summary>
+/// What the plugin does at its start with a run file an interrupted run left (one not waiting for a relog or reload), before
+/// any session: the settings put back at once, and the whole chat history deleted if it was off and empty before the run
+/// (everything in it is the test's, the tester's real channels' lines recorded during the run too). Its test channels are
+/// left later, once connected.
+/// </summary>
+public static class SelfTestRecovery {
+    /// <summary>A run file that lost whose it was (damaged): it can't be finished by itself.</summary>
+    public static bool Unknown(SelfTestRunData data) => data.ContentId == 0 || string.IsNullOrEmpty(data.ServerUrl);
+
+    /// <summary>Puts back what it can now; the file is to be kept (and finished once connected) unless this returns true.</summary>
+    /// <param name="deleteAllHistory">Deletes every chat history on this computer (none was there before the run).</param>
+    /// <returns>Whether nothing is left to do (the file can go).</returns>
+    public static bool PutBack(SelfTestRunData data, ISelfTestSettings settings, Action deleteAllHistory, Action<string>? log = null) {
+        if (Unknown(data)) {
+            // The windows' layouts are a character's own: whose isn't known, so they can't be put back.
+            data.Settings.Remove(SelfTestSetting.ChannelWindows);
+        }
+
+        var (restored, failed) = SelfTestSettingsSnapshot.Restore(data, settings);
+        log?.Invoke($"[selftest] an interrupted run's settings were put back ({restored}, {failed} couldn't be)");
+        if (data.HistoryWasOffAndEmpty && !data.Settings.ContainsKey(SelfTestSetting.KeepHistory)) {
+            try {
+                deleteAllHistory();
+                data.HistoryWasOffAndEmpty = false;
+                log?.Invoke("[selftest] an interrupted run's chat history was deleted (it was off and empty before)");
+            } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) {
+                log?.Invoke($"[selftest] an interrupted run's chat history couldn't be deleted ({ex.GetType().Name})");
+            }
+        }
+
+        data.Phase = SelfTestPhase.Running;
+        data.WaitingSince = null;
+        data.NextCheck = null;
+        return data.TestChannels.Count == 0 && data.Settings.Count == 0 && !data.HistoryWasOffAndEmpty && data.GameChannelBefore == null;
+    }
+}

@@ -37,6 +37,12 @@ public enum SelfTestNeeds {
 
     /// <summary>The server offers local chat.</summary>
     LocalChat = 64,
+
+    /// <summary>
+    /// The chat history was off with nothing in it before the run (or this run found it so already): checks that record to
+    /// it, or would cost the tester history, run only then, and the whole history is deleted at the end.
+    /// </summary>
+    HistoryOffAndEmpty = 128,
 }
 
 /// <summary>What kind of step: the runner acts and judges, or it asks the tester, or it waits for a relog or reload.</summary>
@@ -55,6 +61,9 @@ public enum PromptKind {
 
     /// <summary>Yes, No, Skip this step: only the tester's eyes can judge (a colour, a menu, a flash).</summary>
     YesNo,
+
+    /// <summary>Skip this step only: the runner waits for something it sees by itself (ChatTwo's input on Say).</summary>
+    SkipOnly,
 }
 
 /// <summary>The tester's answer to a guided step.</summary>
@@ -113,6 +122,16 @@ public sealed record GuidedPrompt(string Text, PromptKind Kind = PromptKind.DoTh
     /// the notes, the report or the log.
     /// </summary>
     public string? Input { get; init; }
+
+    /// <summary>
+    /// The tester types a line in the game's chat (its chat box, or ChatTwo's input): the step gets the typing gate before it
+    /// shows (private, nobody near in a house, the game's chat channel Say), and it is taken off the screen whenever that
+    /// stops being so, until it is again.
+    /// </summary>
+    public bool TesterTypes { get; init; }
+
+    /// <summary>ChatTwo's input must be on Say before it shows (the tester is asked to put it there first).</summary>
+    public bool ChatTwoOnSay { get; init; }
 }
 
 /// <summary>What the runner sees while a guided step waits, and whether it is what the step expects.</summary>
@@ -237,6 +256,10 @@ public sealed record SelfTestEnvironment {
 
         if (needs.HasFlag(SelfTestNeeds.LocalChat) && !this.LocalChatAvailable) {
             return "the server doesn't offer local chat";
+        }
+
+        if (needs.HasFlag(SelfTestNeeds.HistoryOffAndEmpty) && (this.HistoryOn || !this.HistoryEmpty)) {
+            return SelfTestWords.HistoryWasYours;
         }
 
         return null;

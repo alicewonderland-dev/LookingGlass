@@ -77,6 +77,12 @@ public static partial class SelfTestWords {
     /// <summary>Waiting because someone else is near in a house or apartment.</summary>
     public const string WaitingSomeoneNear = "Waiting: someone else is nearby, and could see a test line in Say. It carries on when nobody else is near.";
 
+    /// <summary>Paused while another character, or another server, is logged in.</summary>
+    public const string PausedOtherCharacter = "Paused: another character is in. Come back with the character the test started with, and it carries on.";
+
+    /// <summary>A step that asks the tester to type waits until ChatTwo's input is on Say.</summary>
+    public const string ChatTwoToSay = "Put ChatTwo's input on Say first (pick Say in its channel picker).";
+
     /// <summary>Paused while disconnected.</summary>
     public const string PausedDisconnected = "Paused: not connected to LookingGlass. It carries on once connected again.";
 
@@ -142,7 +148,7 @@ public static partial class SelfTestWords {
     public const string NeedsConnection = "needs a connection to LookingGlass";
     public const string NeedsChannelRoom = "you have too many channels for a test channel (at most 47)";
     public const string NeedsGateHooks = "the game's chat box couldn't be watched in this game version";
-    public const string HistoryWasYours = "only runs when the chat history was off and empty before the test (it would cost you history)";
+    public const string HistoryWasYours = "only runs when the chat history was off and empty before the test (it would record or cost your own history)";
     public const string ServerSlowDown = "stopped: the server asked to slow down";
     public const string StoppedByYou = "stopped: you stopped the run";
     public const string StoppedLeft = "stopped: you left the private place";
@@ -153,13 +159,22 @@ public static partial class SelfTestWords {
     public const string NotPrivate = "you weren't in a private place, so nothing was typed";
     public const string Disconnected = "stopped: not connected for five minutes";
     public const string GaveUpWaiting = "stopped: the relog or reload didn't come";
+    public const string OtherCharacter = "stopped: another character was logged in for too long";
+    public const string Registered = "they use LookingGlass, so nothing was sent (try someone who doesn't)";
 
     // ---- Clean-up
     public const string CleanUpTitle = "Clean-up";
 
     /// <summary>The report's last line: what the clean-up did.</summary>
-    public static string CleanUp(int channelsLeft, int channelsNotLeft, int settings, int settingsFailed, bool windowsBack, bool historyCleared) {
+    /// <param name="channelsLater">Not connected (or another character): the test channels are left at the next connection.</param>
+    /// <param name="leftOnSay">The game's chat channel was a tell before the run: it was left on Say.</param>
+    public static string CleanUp(int channelsLeft, int channelsNotLeft, int settings, int settingsFailed, bool windowsBack, bool historyCleared,
+        bool channelsLater = false, bool leftOnSay = false) {
         var parts = new List<string>();
+        if (channelsLater) {
+            parts.Add("the test channels are left once you're connected again");
+        }
+
         if (channelsLeft > 0) {
             parts.Add(channelsLeft == 1 ? "test channel left (deleted)" : $"{channelsLeft} test channels left (deleted)");
         }
@@ -181,6 +196,10 @@ public static partial class SelfTestWords {
             parts.Add("the test's lines removed from the chat history");
         }
 
+        if (leftOnSay) {
+            parts.Add("the chat channel left on Say (it was a tell)");
+        }
+
         return $"{CleanUpTitle}: {string.Join("; ", parts)}.";
     }
 
@@ -189,16 +208,16 @@ public static partial class SelfTestWords {
         WindowTitle, ReportTitle, OpenButton, Start, StopAndCleanUp, NeedsYou, Done, DidntWork, SkipStep, Yes, No, CopyReport, RunFailedAgain,
         CheckAgain, CarryOn, Close, TwoPlayers, WhichOnes, Remove, Passed, Failed, Skipped, StoppedWord, NoteLabel, .. Consent, Intro,
         NoNamesInReport, StayHere, HouseVisitors, HandChanges, ClosingDoesntStop, TwoPlayersLater, NoteReminder, LeftoverHeading,
-        LeftoverExplained, .. PrivatePlaces, OnlyInPrivate, PausedLeft, WaitingSomeoneNear, PausedDisconnected, WaitingPlace,
+        LeftoverExplained, .. PrivatePlaces, OnlyInPrivate, PausedLeft, WaitingSomeoneNear, PausedDisconnected, PausedOtherCharacter, ChatTwoToSay, WaitingPlace,
         WaitingToCarryOn, InterruptedRun, InterruptedRunChannelLeft, WaitBeforeStart(TimeSpan.FromMinutes(20)),
-        .. Enum.GetValues<PlaceKind>().Select(Place), .. Enum.GetValues<SelfTestSetting>().Select(SettingName), .. Reasons(), CleanUp(1, 1, 7, 1, true, true), SimulatedWarning.Plain,
+        .. Enum.GetValues<PlaceKind>().Select(Place), .. Enum.GetValues<SelfTestSetting>().Select(SettingName), .. Reasons(), CleanUp(1, 1, 7, 1, true, true, true, true), SimulatedWarning.Plain,
     ];
 
     /// <summary>Every reason, for the tests (lengths).</summary>
     public static IReadOnlyList<string> Reasons() => [
         YouSkipped, YouSaidNo, NeedsChatTwo, NeedsChatTwoOff, NeedsPartner, NeedsStranger, NeedsAnotherCharacter, NeedsStrikingDummy,
         NeedsConnection, NeedsChannelRoom, NeedsGateHooks, HistoryWasYours, ServerSlowDown, StoppedByYou, StoppedLeft, RunSpent,
-        SomethingWentWrong, TimedOut, NotSay, NotPrivate, Disconnected, GaveUpWaiting,
+        SomethingWentWrong, TimedOut, NotSay, NotPrivate, Disconnected, GaveUpWaiting, OtherCharacter, Registered,
     ];
 
     /// <summary>The words simple mode never uses (the plain-language tests' list): to check what the plugin printed during a run.</summary>

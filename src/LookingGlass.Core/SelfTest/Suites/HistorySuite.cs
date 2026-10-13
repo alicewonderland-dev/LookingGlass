@@ -6,9 +6,10 @@ namespace LookingGlass.Core.SelfTest.Suites;
 
 /// <summary>
 /// "Chat history and text files" (one player): chat-log-checklist.md 8 and 9 (with simulated lines: owner, 2026-10-13), 24
-/// to 28 and 30 to 35, with the test channels' lines only. The runner reads the test channels' own text files (never
-/// another channel's) and the history's size. If the history was on before the run, only the test's lines are removed at
-/// the end; the checks that would cost the tester real history (deleting it) run only if it was off and empty before.
+/// to 28 and 30 to 35. Every check here runs only if the chat history was off with nothing in it before the run (the
+/// owner's rule after review, 2026-10-13): turning it on, or its text files, records every channel, the tester's real ones
+/// too, so only then is everything in it the test's, and the clean-up (or the next start, after a crash) deletes it whole.
+/// The runner reads only the test channels' own text files.
 /// </summary>
 public static partial class HistorySuite {
     public const string Id = "history";
@@ -16,20 +17,17 @@ public static partial class HistorySuite {
     public static SelfTestSuite Create() => new(Id, "Chat history and text files", [TheSetting(), NewLines(), RenamesOffDelete(), LotsOfHistory()]) {
         Changes = [SelfTestSetting.KeepHistory, SelfTestSetting.KeepHistoryUnencrypted, SelfTestSetting.ChannelWindows],
         Planned = new Dictionary<SelfTestAction, int> { [SelfTestAction.ChannelMessage] = 3, [SelfTestAction.CreateChannel] = 2, [SelfTestAction.Rename] = 1 },
-        Note = "1 relog",
+        Note = "1 relog; only if your chat history is off and empty",
     };
 
-    private const SelfTestNeeds Needs = SelfTestNeeds.Connection | SelfTestNeeds.TestChannel;
+    /// <summary>Every check here records to the history: only when it was off and empty before the run (the owner's rule, see Decisions).</summary>
+    private const SelfTestNeeds Needs = SelfTestNeeds.Connection | SelfTestNeeds.TestChannel | SelfTestNeeds.HistoryOffAndEmpty;
 
-    /// <summary>The history on, noting first whether it was off and empty before (then everything in it at the end is the test's).</summary>
+    /// <summary>
+    /// The history on (every check here runs only if it was off and empty before the run, so everything in it is the test's,
+    /// real channels' lines recorded meanwhile too, and the clean-up deletes it whole).
+    /// </summary>
     private static async Task HistoryOnAsync(StepContext context, bool unencrypted) {
-        if (!context.Snapshotted(SelfTestSetting.KeepHistory)) {
-            var environment = await context.EnvironmentAsync().ConfigureAwait(false);
-            if (!environment.HistoryOn && environment.HistoryEmpty) {
-                context.HistoryWasOffAndEmpty();
-            }
-        }
-
         await context.ChangeSettingAsync(SelfTestSetting.KeepHistory, true).ConfigureAwait(false);
         await context.ChangeSettingAsync(SelfTestSetting.KeepHistoryUnencrypted, unencrypted).ConfigureAwait(false);
     }
@@ -73,7 +71,7 @@ public static partial class HistorySuite {
     // ---------------------------------------------------------------- chat-log 24-25
 
     private static SelfTestCheck TheSetting() => new() {
-        Id = "chat-log-24-25", Title = "The setting, and the warning first", Steps = "chat-log 24-25", Mode = CheckMode.Guided, Needs = SelfTestNeeds.Connection,
+        Id = "chat-log-24-25", Title = "The setting, and the warning first", Steps = "chat-log 24-25", Mode = CheckMode.Guided, Needs = SelfTestNeeds.Connection | SelfTestNeeds.HistoryOffAndEmpty,
         StepList = [
             Auto("The history on, kept unencrypted off", "24", async context => {
                 await HistoryOnAsync(context, unencrypted: false).ConfigureAwait(false);
@@ -85,10 +83,6 @@ public static partial class HistorySuite {
                 "In Settings, under Chat history, after Size limit: is Keep my chat history unencrypted unticked, with a ? whose bubble says it also writes new messages to text files " +
                 "any program can open, one per channel per month, and that anything that can read your files can read them?", PromptKind.YesNo) { Short = "the setting" }),
             Guided("It disappears while the history is off", "24", async context => {
-                if (!context.HistoryOffAndEmptyBefore) {
-                    return StepResult.Skip(SelfTestWords.HistoryWasYours);
-                }
-
                 var seenOff = false;
                 return await context.AskForResultAsync(new GuidedPrompt(
                     "Untick Keep chat history on this computer: does Keep my chat history unencrypted disappear with the size slider? Press Cancel on the offer to delete, then tick it again.") {
@@ -224,10 +218,6 @@ public static partial class HistorySuite {
                 return StepResult.All((LinesOf(file).Length == before, "the text file changed after turning it off"), (File.Exists(file), "the text file was deleted"));
             }),
             Guided("Delete my chat history", "33", async context => {
-                if (!context.HistoryOffAndEmptyBefore) {
-                    return StepResult.Skip(SelfTestWords.HistoryWasYours);
-                }
-
                 var sky = await context.TestChannelAsync(0).ConfigureAwait(false);
                 await context.ChangeSettingAsync(SelfTestSetting.KeepHistoryUnencrypted, true).ConfigureAwait(false);
                 await context.Host.SimulateIncomingAsync(sky, context.NextMarker()).ConfigureAwait(false);
