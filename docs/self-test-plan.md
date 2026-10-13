@@ -996,6 +996,45 @@ already leave a partner out of "someone near", and the protocol's requests
 would be steps like any other. The two-player suites aren't listed on the start screen; it
 says they come later.
 
+**Step 5 as built (2026-10-13):** `src/LookingGlass.Core/SelfTest/Pairs`
+(`SelfTestProtocol`, the parser and writer; `PartnerLink`, the host's side;
+`PartnerSide`, the partner's runner), `Suites/PairingSuites.cs` (pairing, and
+being a partner) and `Suites/Pairs` (the eight two-player suites, 39 checks,
+and `PairSteps`), the plugin's `SelfTestHost.Pairs.cs` and a delivered-messages
+tap in `SessionManager`, the service's `StartHost` and `StartPartner`, and the
+window's **Two players...** screen; tests in `SelfTestProtocolTests`,
+`SelfTestPairsHostTests`, `SelfTestPairsPartnerTests`,
+`SelfTestPairsSuitesTests` and `SelfTestPacerTests`. Where it differs from the
+plan above (each in design.md's Decisions):
+
+- Protocol lines are their own action, paced with the test lines (one pace)
+  but counted apart: at most 150 each side, besides the host's 100 and the
+  partner's 80 test lines.
+- The host may invite the partner 16 times (each leave's invite back) and
+  look them up 12 times a run (once per ten minutes, as the session
+  remembers a lookup), not 8 and 2.
+- Suites are ticked before pairing (nothing happens before Start): pairing is
+  the run's first check, the partner's facts show in the run's window, and a
+  check needing what the pair hasn't got is skipped, saying why.
+- Requests may name a test channel (`in=b`) for `send`, `leave` and
+  `report check-code`; besides the list above, `send-away` (sent once the host
+  shows offline), `report windows`, `report log` (counts only), `ask <step>`
+  (one of nine fixed steps for the partner's player) and `invite-me` (the
+  partner's one channel, `LG self-test K7Q2 p`).
+- The partner's relog is a step it asks of its player; it answers once logged
+  in again (its run stays in memory). A plugin reload on its side ends its
+  run, cleaned up at its next start.
+- Not run, as parts of covered tasks: the exact local chat distances and
+  another zone (local-chat 10 to 11), a loading screen between private places
+  (windows-only 19).
+- After review: instead of a partner giving up after 15 minutes without a
+  request, the host sends `alive` (never answered, at most 30 a run) every 5
+  minutes while paired and quiet, from wherever the run waits (a gate, a guided
+  step, a relog while still connected); the partner counts a host online in
+  the test channel as alive, and gives up after 45 minutes offline, or an hour
+  online without a single line. Its player is told what it waits for. The
+  partner's player is asked at most 20 steps a run.
+
 ## How it is tested
 
 **Unit tests** (`tests/LookingGlass.Tests`, Core only, as today):

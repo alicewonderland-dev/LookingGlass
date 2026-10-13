@@ -85,6 +85,56 @@ public sealed class SelfTestPacerTests {
     }
 
     [Fact]
+    public async Task ProtocolLinesShareTheTestLinesPaceAndTheServerNeverRefuses() {
+        var pacer = new SelfTestPacer(() => this._now, (delay, _) => {
+            this._now += delay;
+            return Task.CompletedTask;
+        }, role: SelfTestRole.Host);
+        var server = new ServerBucket(5, TimeSpan.FromSeconds(1));
+        var start = this._now;
+        var times = new List<double>();
+        for (var i = 0; i < 200; i++) {
+            await pacer.WaitAsync(i % 3 == 0 ? SelfTestAction.ChannelMessage : SelfTestAction.PartnerMessage, TestContext.Current.CancellationToken);
+            Assert.True(server.Take(this._now), $"The server would refuse message {i + 1}.");
+            if (i < 7) {
+                times.Add((this._now - start).TotalSeconds);
+            }
+        }
+
+        // One pace for both: every two seconds, three in a row.
+        Assert.Equal([0, 2, 4, 10, 12, 14, 20], times);
+    }
+
+    [Fact]
+    public async Task EachRoleHasItsOwnMost() {
+        SelfTestPacer Pacer(SelfTestRole role) => new(() => this._now, (delay, _) => {
+            this._now += delay;
+            return Task.CompletedTask;
+        }, role: role);
+
+        // Alone, no protocol lines at all.
+        await Assert.ThrowsAsync<SelfTestSpentException>(() => Pacer(SelfTestRole.Solo).WaitAsync(SelfTestAction.PartnerMessage, TestContext.Current.CancellationToken));
+        Assert.Equal(100, Pacer(SelfTestRole.Host).MostOf(SelfTestAction.ChannelMessage));
+        Assert.Equal(150, Pacer(SelfTestRole.Host).MostOf(SelfTestAction.PartnerMessage));
+        var partner = Pacer(SelfTestRole.Partner);
+        Assert.Equal(80, partner.MostOf(SelfTestAction.ChannelMessage));
+        Assert.Equal(3, partner.MostOf(SelfTestAction.Reconnect));
+        Assert.Equal(1, partner.MostOf(SelfTestAction.Invite));
+        Assert.Equal(0, partner.MostOf(SelfTestAction.Rename));
+        for (var i = 0; i < 80; i++) {
+            await partner.WaitAsync(SelfTestAction.ChannelMessage, TestContext.Current.CancellationToken);
+        }
+
+        await Assert.ThrowsAsync<SelfTestSpentException>(() => partner.WaitAsync(SelfTestAction.ChannelMessage, TestContext.Current.CancellationToken));
+        // Its answers still go.
+        await partner.WaitAsync(SelfTestAction.PartnerMessage, TestContext.Current.CancellationToken);
+
+        // The hour's budget is the role's: a partner's 80 lines in the last hour leave no room for another partner run.
+        var next = new SelfTestPacer(() => this._now, (delay, _) => Task.CompletedTask, partner.Spent, role: SelfTestRole.Partner);
+        Assert.True(next.WaitBeforeStart(new Dictionary<SelfTestAction, int> { [SelfTestAction.ChannelMessage] = 80 }) > TimeSpan.Zero);
+    }
+
+    [Fact]
     public async Task ARunStopsAtItsMost() {
         var pacer = this.NewPacer();
         for (var i = 0; i < SelfTestPacer.Rules[SelfTestAction.CreateChannel].RunMost; i++) {

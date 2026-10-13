@@ -119,7 +119,7 @@ internal sealed partial class SelfTestService : IDisposable {
         data.HistoryNeedsAsking = false;
         this._askHistory = null;
         try {
-            if (data.TestChannels.Count == 0 && data.Settings.Count == 0 && data.GameChannelBefore == null) {
+            if (data.TestChannels.Count == 0 && data.Joined.Count == 0 && !data.BlockedOther && data.Settings.Count == 0 && data.GameChannelBefore == null) {
                 this._file.Delete();
                 if (this._recover == data) {
                     this._recover = null;
@@ -173,8 +173,20 @@ internal sealed partial class SelfTestService : IDisposable {
     /// <summary>A run is going (not done).</summary>
     public bool Running => this.Run is { View.State: not SelfTestState.Done };
 
-    /// <summary>Every suite, in the start screen's order.</summary>
+    /// <summary>Every one-player suite, in the start screen's order.</summary>
     public IReadOnlyList<SelfTestSuite> Suites { get; } = SelfTestSuites.All();
+
+    /// <summary>The two-player suites a host chooses from (pairing comes first by itself).</summary>
+    public IReadOnlyList<SelfTestSuite> PairSuites { get; } = SelfTestSuites.Pairs();
+
+    /// <summary>The code the two-player screen shows, before Start (the host tells it to the partner): a new one each time the screen opens.</summary>
+    public string HostCode { get; private set; } = SelfTestRun.NewCode();
+
+    /// <summary>A new code for the two-player screen.</summary>
+    public void NewHostCode() => this.HostCode = SelfTestRun.NewCode();
+
+    /// <summary>The player targeted now, as name, or null (the window's "Use my target"). Framework thread.</summary>
+    public static string? TargetName() => SelfTestHost.TargetName();
 
     /// <summary>Where the player is now, judged as the run would (not settled). Framework thread.</summary>
     public static PlaceVerdict PlaceNow(out string? name) {
@@ -187,7 +199,8 @@ internal sealed partial class SelfTestService : IDisposable {
     public Task<SelfTestEnvironment> EnvironmentAsync() => this._host.ReadEnvironmentAsync();
 
     /// <summary>Why a run can't start now, or null. Framework thread.</summary>
-    public string? CantStart(IReadOnlyCollection<SelfTestSuite> suites) {
+    /// <param name="role">Alone, the host of two players, or the partner: each has its own most (the hour's budget).</param>
+    public string? CantStart(IReadOnlyCollection<SelfTestSuite> suites, SelfTestRole role = SelfTestRole.Solo) {
         if (this.Running) {
             return "A run is going.";
         }
@@ -216,7 +229,7 @@ internal sealed partial class SelfTestService : IDisposable {
             return "Tick at least one.";
         }
 
-        var wait = new SelfTestPacer(() => DateTimeOffset.Now, Task.Delay, this.Spent()).WaitBeforeStart(Planned(suites));
+        var wait = new SelfTestPacer(() => DateTimeOffset.Now, Task.Delay, this.Spent(), role: role).WaitBeforeStart(Planned(suites));
         return wait > TimeSpan.Zero ? SelfTestWords.WaitBeforeStart(wait) : null;
     }
 
@@ -259,9 +272,55 @@ internal sealed partial class SelfTestService : IDisposable {
         this.Begin(data, suites, resume: false);
     }
 
+    /// <summary>Why a name@world typed in for two players won't do, or null.</summary>
+    public string? CantPair(string? other) {
+        if (!PartnerLink.SplitName(other, out var name, out var world)) {
+            return "Type their name and world, as Name Surname@World.";
+        }
+
+        return this._parts.Sessions.SessionPlayer is { } me && string.Equals(name, me.Name, StringComparison.OrdinalIgnoreCase)
+                                                             && string.Equals(world, me.HomeWorldName, StringComparison.OrdinalIgnoreCase)
+            ? "That's you: type your partner's name."
+            : null;
+    }
+
+    /// <summary>
+    /// Starts a two-player run as the host: pairing first (the test channel, one invite to the partner, their hello), then
+    /// the suites chosen. Framework thread.
+    /// </summary>
+    /// <param name="partner">The partner's name@world: held in the run file while the run lasts only.</param>
+    public void StartHost(IReadOnlyList<SelfTestSuite> chosen, string partner, IReadOnlyCollection<string>? onlyChecks = null) {
+        var suites = SelfTestSuites.ForHost(chosen);
+        if ((this.CantStart(suites, SelfTestRole.Host) ?? this.CantPair(partner)) is { } why) {
+            throw new InvalidOperationException(why);
+        }
+
+        var player = this._parts.Sessions.SessionPlayer!;
+        var data = SelfTestRun.NewData(this.HostCode, player.ContentId, this._parts.Sessions.ServerUrl, DateTimeOffset.Now, suites,
+            onlyChecks?.Append("pairing"), SelfTestRole.Host, partner);
+        this.NewHostCode();
+        this.Begin(data, suites, resume: false);
+    }
+
+    /// <summary>
+    /// Starts being a partner: waits for the host's invite to their test channel (only theirs, with this code), then answers
+    /// their requests until they say bye. Framework thread.
+    /// </summary>
+    public void StartPartner(string host, string code) {
+        var suites = new[] { PartnerSuite.Create() };
+        code = code.Trim().ToUpperInvariant();
+        if ((this.CantStart(suites, SelfTestRole.Partner) ?? this.CantPair(host) ?? (SelfTestRun.IsCode(code) ? null : "Type their four-letter code.")) is { } why) {
+            throw new InvalidOperationException(why);
+        }
+
+        var player = this._parts.Sessions.SessionPlayer!;
+        var data = SelfTestRun.NewData(code, player.ContentId, this._parts.Sessions.ServerUrl, DateTimeOffset.Now, suites, null, SelfTestRole.Partner, host);
+        this.Begin(data, suites, resume: false);
+    }
+
     private void Begin(SelfTestRunData data, IReadOnlyList<SelfTestSuite> suites, bool resume) {
         this._files = null;
-        var pacer = new SelfTestPacer(() => DateTimeOffset.Now, Task.Delay, this._file.ReadSpent(), data.Spent);
+        var pacer = new SelfTestPacer(() => DateTimeOffset.Now, Task.Delay, this._file.ReadSpent(), data.Spent, data.Role);
         var run = new SelfTestRun(this._host, suites, pacer, this._file, data, resume);
         var snapshot = this._parts.Sessions.Snapshot;
         var player = this._parts.Sessions.SessionPlayer;
@@ -275,6 +334,12 @@ internal sealed partial class SelfTestService : IDisposable {
             forbidden.AddRange([player.Name, player.HomeWorldName]);
         }
 
+        // The other tester (two players): their name and world, never in the log or the report.
+        if (data.Partner is { } other) {
+            forbidden.Add(other);
+            forbidden.AddRange(other.Split('@', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+        }
+
         // The log tap looks for the marker and the names; the report is scrubbed of every channel's name too (a channel's
         // name can be any word, which the plugin's own log lines may hold by chance).
         var logForbidden = forbidden.ToList();
@@ -283,7 +348,7 @@ internal sealed partial class SelfTestService : IDisposable {
             this._forbidden = forbidden;
             this._channelNames = snapshot.Channels.Select(channel => channel.Name).OfType<string>().ToList();
             this._setup = new SelfTestReportSetup(typeof(SelfTestService).Assembly.GetName().Version?.ToString(3) ?? "?", this._parts.Sticky.ChatTwoLoaded,
-                this._parts.Config.AdvancedMode, PlaceKind.Unknown);
+                this._parts.Config.AdvancedMode, PlaceKind.Unknown, Partner: data.Role != SelfTestRole.Solo);
         }
 
         this._host.StartTaps(run.MarkerPrefix, logForbidden);
@@ -395,7 +460,7 @@ internal sealed partial class SelfTestService : IDisposable {
     public IReadOnlyList<ChannelView> Leftovers() {
         var known = new HashSet<string>(this.Run?.TestChannelsNow() ?? []);
         if (this._recover is { } recover) {
-            known.UnionWith(recover.TestChannels);
+            known.UnionWith(recover.TestChannels.Concat(recover.Joined));
         }
 
         return this._parts.Sessions.Snapshot.Channels.Where(channel => SelfTestRun.IsTestChannelName(channel.Name) && !known.Contains(channel.Id)).ToList();
@@ -434,7 +499,7 @@ internal sealed partial class SelfTestService : IDisposable {
                     this._tellInterrupted = true;
                 } else if (ready && this.ForThis(resume) && !this.Running) {
                     this._resume = null;
-                    var suites = this.Suites.Where(suite => resume.Suites.Contains(suite.Id)).ToList();
+                    var suites = SelfTestSuites.Every().Where(suite => resume.Suites.Contains(suite.Id)).ToList();
                     this.Begin(resume, suites, resume: true);
                     this.WantsWindow?.Invoke();
                 }
@@ -458,7 +523,7 @@ internal sealed partial class SelfTestService : IDisposable {
     /// </summary>
     private async Task RecoverAsync(SelfTestRunData data) {
         var left = true;
-        var channels = data.TestChannels.ToList();
+        var channels = data.TestChannels.Concat(data.Joined).Distinct().ToList();
         try {
             await Services.Framework.RunOnFrameworkThread(() => {
                 // The run's own character (ForThis checked it): its settings back, through the session now.
@@ -494,6 +559,26 @@ internal sealed partial class SelfTestService : IDisposable {
                 }
             }
 
+            // Two players: the other tester's channels it joined, only ever left (never disbanded); and a block it made, undone.
+            foreach (var channelId in data.Joined.ToList()) {
+                try {
+                    if (session.Snapshot.FindChannel(channelId) != null) {
+                        await session.LeaveAsync(channelId);
+                    }
+
+                    data.Joined.Remove(channelId);
+                } catch (Exception ex) {
+                    left = false;
+                    Services.Log.Warning($"[selftest] an interrupted run's joined channel couldn't be left ({ex.GetType().Name})");
+                }
+            }
+
+            if (data.BlockedOther && data.OtherUserId != 0) {
+                session.UnblockUser(data.OtherUserId);
+                data.BlockedOther = false;
+                Services.Log.Information("[selftest] an interrupted run's block of the other tester was undone");
+            }
+
             if (data.HistoryWasOffAndEmpty) {
                 // Off and empty before the run: the test's history is deleted only while the history is still off and
                 // nothing in it is newer than the run; otherwise the window asks (see SelfTestRecovery).
@@ -506,7 +591,7 @@ internal sealed partial class SelfTestService : IDisposable {
                 }
             }
 
-            if (left && data.Settings.Count == 0 && !data.HistoryWasOffAndEmpty && !data.HistoryNeedsAsking) {
+            if (left && data.Settings.Count == 0 && !data.HistoryWasOffAndEmpty && !data.HistoryNeedsAsking && !data.BlockedOther) {
                 this._file.Delete();
             } else {
                 this._file.Write(data);

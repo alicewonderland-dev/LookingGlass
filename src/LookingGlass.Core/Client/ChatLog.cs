@@ -308,17 +308,23 @@ public sealed partial class ChatLog : IChannelHistoryRecorder, IAsyncDisposable 
             case Op.Forget forget:
                 // What was queued before it is written first, so its lines are among those removed.
                 this.Write();
+                var removed = 0;
+                Exception? forgetFailure = null;
                 try {
-                    var removed = this._state == ChatLogState.Ready || this._state == ChatLogState.Unreadable ? this._store.ForgetChannel(forget.ChannelId) : 0;
-                    forget.Done.TrySetResult(removed);
+                    removed = this._state == ChatLogState.Ready || this._state == ChatLogState.Unreadable ? this._store.ForgetChannel(forget.ChannelId) : 0;
                 } catch (Exception ex) {
                     this.Warn("remove a channel from the chat log", ex);
-                    forget.Done.TrySetException(ex);
-                } finally {
-                    // Records moved within the segments written again: every window's place in the older lines starts over,
-                    // as after a deletion.
-                    Interlocked.Increment(ref this._version);
-                    this._earlier.Clear();
+                    forgetFailure = ex;
+                }
+
+                // Records moved within the segments written again: every window's place in the older lines starts over, as after
+                // a deletion. Before the caller hears it is done, so what it reads next is already the new place.
+                Interlocked.Increment(ref this._version);
+                this._earlier.Clear();
+                if (forgetFailure != null) {
+                    forget.Done.TrySetException(forgetFailure);
+                } else {
+                    forget.Done.TrySetResult(removed);
                 }
 
                 break;

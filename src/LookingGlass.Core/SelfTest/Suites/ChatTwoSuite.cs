@@ -99,7 +99,7 @@ public static class ChatTwoSuite {
     /// failure ends the check), asks for ChatTwo's input back on Say: never left there, where a slip of the keyboard would
     /// reach other players.
     /// </summary>
-    private static SelfTestStep ThenBackToSay(string title, string? checklist, Func<StepContext, Task<StepResult>> run) => Guided(title, checklist, async context => {
+    internal static SelfTestStep ThenBackToSay(string title, string? checklist, Func<StepContext, Task<StepResult>> run) => Guided(title, checklist, async context => {
         var result = await run(context).ConfigureAwait(false);
         if (await context.Host.ChatTwoInputAsync().ConfigureAwait(false) != SelfTestGameChannels.ChatTwoSay) {
             await context.AskAsync(new GuidedPrompt("Put ChatTwo's input back on Say (pick Say in its channel picker).") {

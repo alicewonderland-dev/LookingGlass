@@ -74,11 +74,22 @@ internal sealed partial class FakeSelfTestHost : ISelfTestHost, IDisposable {
 
     public List<string> CreatedNames { get; } = [];
 
+    /// <summary>The channels the run made, by ID.</summary>
+    public List<string> Created { get; } = [];
+
     public FakeSelfTestHost() {
         foreach (var setting in Enum.GetValues<SelfTestSetting>()) {
             this.Settings[setting] = JsonSerializer.SerializeToElement(setting.ToString() + " before");
         }
+
+        // The name colours in their own shape: the key (a number) and the colour.
+        this.Settings[SelfTestSetting.OwnNameColour] = JsonSerializer.SerializeToElement(new OwnNameColourValue("1001", null));
+        this.Settings[SelfTestSetting.PartnerNameColour] = JsonSerializer.SerializeToElement(new OwnNameColourValue("42", null));
+        this.Before = this.Settings.ToDictionary(entry => entry.Key, entry => entry.Value.GetRawText());
     }
+
+    /// <summary>Every setting's value before the test (as JSON): the clean-up puts each back.</summary>
+    public IReadOnlyDictionary<SelfTestSetting, string> Before { get; }
 
     public string ConfigFolder => this._folder;
 
@@ -160,6 +171,7 @@ internal sealed partial class FakeSelfTestHost : ISelfTestHost, IDisposable {
         this.Creates++;
         this.CreatedNames.Add(name);
         var id = $"channel{Interlocked.Increment(ref this._ids)}";
+        this.Created.Add(id);
         this.Channels.Add(new SelfTestChannel(id, name, 1));
         this.Slots[id] = Enumerable.Range(1, 50).First(slot => !this.Slots.ContainsValue(slot));
         return Task.FromResult(id);
@@ -192,6 +204,8 @@ internal sealed partial class FakeSelfTestHost : ISelfTestHost, IDisposable {
         }
 
         this.Sent.Add((channelId, text));
+        this.Deliver(channelId, MyId, Me, text, own: true);
+        this.OnSent?.Invoke(channelId, text);
         return Task.CompletedTask;
     }
 
@@ -243,6 +257,11 @@ internal sealed partial class FakeSelfTestHost : ISelfTestHost, IDisposable {
 
     public Task InviteAsync(string channelId, string name, string world) {
         this.Invited.Add((channelId, name));
+        if (this.OnInvite is { } invite) {
+            invite(channelId, name, world);
+            return Task.CompletedTask;
+        }
+
         if (this.Registered == true) {
             // Registered: the invite goes, and the channel has someone else in it (invited).
             var at = this.Channels.FindIndex(channel => channel.Id == channelId);

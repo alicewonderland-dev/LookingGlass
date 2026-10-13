@@ -85,7 +85,7 @@ public sealed class SelfTestSuitesTests : IDisposable {
 
         // The clean-up: the test channels left, every setting back.
         Assert.False(this._host.File.Exists);
-        Assert.All(Enum.GetValues<SelfTestSetting>(), setting => Assert.Equal($"{setting} before", this._host.Settings[setting].GetString()));
+        Assert.All(Enum.GetValues<SelfTestSetting>(), setting => Assert.Equal(this._host.Before[setting], this._host.Settings[setting].GetRawText()));
         Assert.Empty(this._host.Channels);
 
         // The report has no name, even one typed in for a step.

@@ -93,7 +93,7 @@ internal static unsafe class PrivateAreaReader {
                     continue;
                 }
 
-                if (partner != null && $"{player.Name.TextValue}@{player.HomeWorld.ValueNullable?.Name.ExtractText()}" == partner) {
+                if (partner != null && string.Equals($"{player.Name.TextValue}@{player.HomeWorld.ValueNullable?.Name.ExtractText()}", partner, StringComparison.OrdinalIgnoreCase)) {
                     continue;
                 }
 
