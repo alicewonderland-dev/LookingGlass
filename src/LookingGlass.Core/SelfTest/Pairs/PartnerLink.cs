@@ -138,15 +138,39 @@ public sealed class PartnerLink {
             throw new InvalidOperationException("Only the partner, to the run's own test channel.");
         }
 
-        // The invite looks them up (as the right-click menu does): both paced, a refusal stops the run.
-        await context.ServerAsync(SelfTestAction.Lookup, () => Task.CompletedTask).ConfigureAwait(false);
+        // The invite looks them up (as the right-click menu does), and the session remembers it ten minutes: paced as one then.
+        if (this._lookedUp is not { } at || this.Host.Now - at >= LookupKept) {
+            await context.ServerAsync(SelfTestAction.Lookup, () => Task.CompletedTask).ConfigureAwait(false);
+            this._lookedUp = this.Host.Now;
+        }
+
         await context.ServerAsync(SelfTestAction.Invite, () => this.Host.InviteAsync(channelId, name, world)).ConfigureAwait(false);
     }
+
+    /// <summary>How long the session remembers a lookup (its invites reuse it).</summary>
+    public static readonly TimeSpan LookupKept = TimeSpan.FromMinutes(10);
+
+    private DateTimeOffset? _lookedUp;
+    private readonly HashSet<string> _left = [];
 
     /// <summary>Invites the partner to a channel and waits (a minute) for its plugin to accept: whether it did.</summary>
     public async Task<bool> InviteAndWaitAsync(StepContext context, string channelId) {
         await this.InviteAsync(context, channelId).ConfigureAwait(false);
-        return await this.WaitMemberAsync(context, channelId, member: true).ConfigureAwait(false);
+        var joined = await this.WaitMemberAsync(context, channelId, member: true).ConfigureAwait(false);
+        if (joined) {
+            this._left.Remove(channelId);
+        }
+
+        return joined;
+    }
+
+    /// <summary>Asks the partner to leave one of the run's test channels, and waits until it has: whether it did.</summary>
+    public async Task<bool> LeaveAsync(StepContext context, string channelId) {
+        var index = this.Data.TestChannels.IndexOf(channelId);
+        string[] args = channelId == this.ChannelId ? [] : [$"in={(char) ('a' + index)}"];
+        await this.AskAsync(context, PartnerVerb.Leave, args).ConfigureAwait(false);
+        this._left.Add(channelId);
+        return await this.WaitMemberAsync(context, channelId, member: false).ConfigureAwait(false);
     }
 
     /// <summary>Waits (a minute) until the partner is a member of a channel (joined, not invited), or isn't any more.</summary>
@@ -201,9 +225,12 @@ public sealed class PartnerLink {
         }
 
         if ((await this.Host.MembersAsync(channel).ConfigureAwait(false)).All(member => member.UserId != this.UserId)) {
-            // Neither in the test channel nor invited to it: their run has ended.
-            this.Gone = true;
-            throw new PartnerSilentException(gone: true);
+            // Out of the test channel, and not invited to it: asked to leave by a check that stopped before inviting them back
+            // (invited back now), or their run has ended.
+            if (!this._left.Contains(channel) || !await this.InviteAndWaitAsync(context, channel).ConfigureAwait(false)) {
+                this.Gone = true;
+                throw new PartnerSilentException(gone: true);
+            }
         }
 
         var number = ++this.Data.ProtocolNumber;

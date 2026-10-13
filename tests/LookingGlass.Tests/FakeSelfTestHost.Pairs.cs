@@ -258,9 +258,13 @@ internal sealed class ScriptedPartner {
         }
 
         if (request.Verb == PartnerVerb.Leave) {
-            this._host.Part(channelId, Id);
+            this._host.Part(request.Option("in") is { } letter ? this.ChannelOf(letter) ?? channelId : channelId, Id);
         }
     }
+
+    /// <summary>The host's test channel a letter names ("b": the run's second), by its name.</summary>
+    public string? ChannelOf(string letter) =>
+        this._host.Channels.FirstOrDefault(channel => channel.Name == SelfTestRun.ChannelName(this.Code, letter[0] - 'a'))?.Id;
 
     public static PartnerAnswer Default(PartnerRequest request, IReadOnlyDictionary<string, string> facts) =>
         new(request.Number, PartnerOutcome.Done, request.Verb is PartnerVerb.Hello or PartnerVerb.StillThere ? facts : new Dictionary<string, string>());

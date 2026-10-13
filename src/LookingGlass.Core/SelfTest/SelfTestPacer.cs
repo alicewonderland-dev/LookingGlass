@@ -71,11 +71,13 @@ public sealed class SelfTestPacer {
 
     /// <summary>
     /// The most a run may spend of each action for its role, where it differs from <see cref="PaceRule.RunMost"/>: a host's
-    /// protocol lines; a partner's 80 test lines, a few reconnects, one channel of its own and one invite (windows-only 10).
+    /// protocol lines, and its partner's invites back; a partner's 80 test lines, a few reconnects, one channel of its own and one invite (windows-only 10).
     /// </summary>
     private static readonly Dictionary<SelfTestRole, Dictionary<SelfTestAction, int>> RoleMost = new() {
         [SelfTestRole.Solo] = new() { [SelfTestAction.PartnerMessage] = 0 },
-        [SelfTestRole.Host] = new() { [SelfTestAction.PartnerMessage] = 150 },
+        // The partner is invited back after each of its leaves (a minute apart at least; the server allows 20 at once to one
+        // person), and looked up again only once the session forgot the last lookup (ten minutes).
+        [SelfTestRole.Host] = new() { [SelfTestAction.PartnerMessage] = 150, [SelfTestAction.Invite] = 16, [SelfTestAction.Lookup] = 12 },
         [SelfTestRole.Partner] = new() {
             [SelfTestAction.ChannelMessage] = 80, [SelfTestAction.PartnerMessage] = 150, [SelfTestAction.LocalMessage] = 20, [SelfTestAction.Reconnect] = 3,
             [SelfTestAction.CreateChannel] = 1, [SelfTestAction.Invite] = 1, [SelfTestAction.Lookup] = 1, [SelfTestAction.Rename] = 0, [SelfTestAction.Disband] = 1,

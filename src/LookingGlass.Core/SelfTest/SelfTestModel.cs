@@ -92,6 +92,12 @@ public sealed record StepResult(StepOutcome Outcome, string? Why = null, string?
     /// <summary>What the step did, in fixed words with numbers only (a partner's "answered 23 requests"), for the report.</summary>
     public string? Did { get; init; }
 
+    /// <summary>The rest of the check isn't run after this step (a skip that ends it: "needs both of you in the same house").</summary>
+    public bool EndsCheck { get; init; }
+
+    /// <summary>Skips this step and the rest of its check.</summary>
+    public static StepResult SkipCheck(string why) => new(StepOutcome.Skipped, why) { EndsCheck = true };
+
     public static StepResult Pass(string? notRun = null) => new(StepOutcome.Passed, NotRun: notRun);
 
     public static StepResult Fail(string why) => new(StepOutcome.Failed, why);

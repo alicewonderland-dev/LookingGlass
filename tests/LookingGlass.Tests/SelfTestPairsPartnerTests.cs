@@ -281,6 +281,26 @@ public sealed class SelfTestPairsPartnerTests : IDisposable {
     }
 
     [Fact]
+    public async Task ARequestNamesWhichOfTheHostsChannels() {
+        var host = new ScriptedHost(this._host, "report check-code in=b", "send 1 in=b", "leave in=b", "report check-code in=b", "send 1 in=c", "bye");
+        this._host.CheckCodes["b-channel"] = "#7 11111 22222 33333 44444 55555";
+        host.Invite();
+        host.Invite("b-channel", SelfTestRun.ChannelName("K7Q2", 1));
+        var run = this.NewRun();
+
+        await run.RunAsync();
+
+        Assert.Equal([ScriptedHost.Channel, "b-channel"], this._host.Accepted);
+        Assert.Equal("b-channel", this._host.Sent.First(sent => SelfTestProtocol.Parse("K7Q2", sent.Text) is ProtocolLine.TestLine).Channel);
+        // Left b only (answering first, in the channel the request came in); then neither b's check code nor a line to c: it isn't in them.
+        Assert.Equal("b-channel", this._host.Left[0]);
+        Assert.Equal("7:11111.22222.33333.44444.55555", Of(host, 1).Fields["check"]);
+        Assert.Equal(PartnerOutcome.Done, Of(host, 3).Outcome);
+        Assert.Equal(PartnerOutcome.Refused, Of(host, 4).Outcome);
+        Assert.Equal(PartnerOutcome.Refused, Of(host, 5).Outcome);
+    }
+
+    [Fact]
     public async Task ItsLocalChatAcceptanceIsPutBack() {
         var host = new ScriptedHost(this._host, "withdraw-local", "withdraw-local", "restore-local", "bye");
         host.Invite();

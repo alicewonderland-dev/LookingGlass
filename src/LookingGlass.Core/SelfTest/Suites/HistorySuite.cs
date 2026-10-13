@@ -27,13 +27,13 @@ public static partial class HistorySuite {
     /// The history on (every check here runs only if it was off and empty before the run, so everything in it is the test's,
     /// real channels' lines recorded meanwhile too, and the clean-up deletes it whole).
     /// </summary>
-    private static async Task HistoryOnAsync(StepContext context, bool unencrypted) {
+    internal static async Task HistoryOnAsync(StepContext context, bool unencrypted) {
         await context.ChangeSettingAsync(SelfTestSetting.KeepHistory, true).ConfigureAwait(false);
         await context.ChangeSettingAsync(SelfTestSetting.KeepHistoryUnencrypted, unencrypted).ConfigureAwait(false);
     }
 
     /// <summary>A test channel's text folder now (found by its ID's hash, whatever its name), or null.</summary>
-    private static async Task<string?> FolderOfAsync(StepContext context, string channelId) {
+    internal static async Task<string?> FolderOfAsync(StepContext context, string channelId) {
         var root = (await context.Host.HistoryAsync().ConfigureAwait(false)).TextFolder;
         if (root == null || !Directory.Exists(root)) {
             return null;
@@ -44,11 +44,11 @@ public static partial class HistorySuite {
     }
 
     /// <summary>This month's file of a test channel, or null.</summary>
-    private static async Task<string?> FileOfAsync(StepContext context, string channelId) =>
+    internal static async Task<string?> FileOfAsync(StepContext context, string channelId) =>
         await FolderOfAsync(context, channelId).ConfigureAwait(false) is { } folder ? Path.Combine(folder, ChatLogText.MonthOf(context.Host.Now, context.Host.TimeZone) + ".txt") : null;
 
     /// <summary>A file's lines, read as Notepad would (not in the way of the plugin writing it).</summary>
-    private static string[] LinesOf(string path) {
+    internal static string[] LinesOf(string path) {
         try {
             using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
             using var reader = new StreamReader(stream);
@@ -59,9 +59,9 @@ public static partial class HistorySuite {
     }
 
     [GeneratedRegex(@"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}(, arrived \d{2}:\d{2})?\] \[[^\]]+\] ")]
-    private static partial Regex LineFormat();
+    internal static partial Regex LineFormat();
 
-    private static async Task<string[]> WaitForLinesAsync(StepContext context, string channelId, Func<string[], bool> enough) {
+    internal static async Task<string[]> WaitForLinesAsync(StepContext context, string channelId, Func<string[], bool> enough) {
         string[] lines = [];
         await context.WaitUntilAsync(async () => await FileOfAsync(context, channelId).ConfigureAwait(false) is { } file && enough(lines = LinesOf(file)), TimeSpan.FromSeconds(10))
             .ConfigureAwait(false);

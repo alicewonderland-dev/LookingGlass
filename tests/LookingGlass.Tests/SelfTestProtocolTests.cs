@@ -24,6 +24,8 @@ public sealed class SelfTestProtocolTests {
             PartnerRequest.Of(10, PartnerVerb.ReportWindows),
             PartnerRequest.Of(11, PartnerVerb.ReportLog),
             PartnerRequest.Of(12, PartnerVerb.Leave),
+            PartnerRequest.Of(19, PartnerVerb.Leave, "in=b"),
+            PartnerRequest.Of(20, PartnerVerb.ReportCheckCode, "in=c"),
             PartnerRequest.Of(13, PartnerVerb.WithdrawLocal),
             PartnerRequest.Of(14, PartnerVerb.RestoreLocal),
             PartnerRequest.Of(15, PartnerVerb.Disconnect, "60"),
@@ -104,6 +106,9 @@ public sealed class SelfTestProtocolTests {
     [InlineData("LG self-test K7Q2 #1 done sent")]
     [InlineData("LG self-test K7Q2 #1 report")]
     [InlineData("LG self-test K7Q2 #1 report saw abc")]
+    [InlineData("LG self-test K7Q2 #1 leave in=d")]
+    [InlineData("LG self-test K7Q2 #1 leave in=b in=c")]
+    [InlineData("LG self-test K7Q2 #1 leave link=item")]
     public void AnythingElseIsRefused(string line) {
         var parsed = SelfTestProtocol.Parse(Code, line);
         Assert.True(parsed is ProtocolLine.NotOurs or ProtocolLine.Malformed, $"{line} parsed as {parsed}");

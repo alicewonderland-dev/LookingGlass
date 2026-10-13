@@ -78,7 +78,15 @@ internal sealed partial class FakeSelfTestHost : ISelfTestHost, IDisposable {
         foreach (var setting in Enum.GetValues<SelfTestSetting>()) {
             this.Settings[setting] = JsonSerializer.SerializeToElement(setting.ToString() + " before");
         }
+
+        // The name colours in their own shape: the key (a number) and the colour.
+        this.Settings[SelfTestSetting.OwnNameColour] = JsonSerializer.SerializeToElement(new OwnNameColourValue("1001", null));
+        this.Settings[SelfTestSetting.PartnerNameColour] = JsonSerializer.SerializeToElement(new OwnNameColourValue("42", null));
+        this.Before = this.Settings.ToDictionary(entry => entry.Key, entry => entry.Value.GetRawText());
     }
+
+    /// <summary>Every setting's value before the test (as JSON): the clean-up puts each back.</summary>
+    public IReadOnlyDictionary<SelfTestSetting, string> Before { get; }
 
     public string ConfigFolder => this._folder;
 

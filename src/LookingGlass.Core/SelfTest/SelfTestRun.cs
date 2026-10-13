@@ -473,8 +473,8 @@ public sealed partial class SelfTestRun {
                 // A step that failed, threw or timed out between its own disconnect and reconnect: connected again now, so
                 // the gates' connection and same-character checks are back for what comes next.
                 await this.ReconnectIfTheRunDisconnectedAsync().ConfigureAwait(false);
-                if (result.Outcome == StepOutcome.Failed) {
-                    // The rest of a check builds on what failed: it stops there.
+                if (result.Outcome == StepOutcome.Failed || result.EndsCheck) {
+                    // The rest of a check builds on what failed (or what it needs is missing): it stops there.
                     break;
                 }
             }

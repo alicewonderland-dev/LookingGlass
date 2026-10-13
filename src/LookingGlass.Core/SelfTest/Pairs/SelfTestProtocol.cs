@@ -24,7 +24,7 @@ public enum PartnerVerb {
     /// <summary>"report received": what it got since the last report.</summary>
     ReportReceived,
 
-    /// <summary>"report check-code": the test channel's check code.</summary>
+    /// <summary>"report check-code [in=a|b|c]": a test channel's check code.</summary>
     ReportCheckCode,
 
     /// <summary>"report saw n": whether the host's test line n showed in its game chat, and where.</summary>
@@ -36,7 +36,7 @@ public enum PartnerVerb {
     /// <summary>"report log": what its log tap and its words checks counted (numbers only).</summary>
     ReportLog,
 
-    /// <summary>"leave": leaves the test channel; the host invites it again.</summary>
+    /// <summary>"leave [in=a|b|c]": leaves a test channel (the one the request came in, by default); the host invites it again.</summary>
     Leave,
 
     /// <summary>"withdraw-local": its local chat privacy acceptance off (put back by restore-local, or at the end).</summary>
@@ -356,6 +356,8 @@ public static partial class SelfTestProtocol {
             PartnerVerb.ReportSaw => args.Count == 1 && args[0].Length <= 4 && args[0].All(char.IsAsciiDigit),
             PartnerVerb.Disconnect => args.Count == 1 && Count(MostDisconnectSeconds),
             PartnerVerb.Ask => args.Count == 1 && AskOf(args[0]) != null,
+            // Which of the host's test channels: the one the request came in, if none is named.
+            PartnerVerb.Leave or PartnerVerb.ReportCheckCode => args.Count <= 1 && Options(0, "in"),
             _ => args.Count == 0,
         };
     }

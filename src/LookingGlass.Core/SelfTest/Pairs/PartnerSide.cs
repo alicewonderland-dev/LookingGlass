@@ -29,7 +29,8 @@ public sealed class PartnerSide {
     private long _reportMark;
     private DateTimeOffset _heard;
     private int _answered, _marker, _lines, _locals, _reports, _leaves, _disconnects, _withdraws, _accepts, _asks;
-    private int _got, _own, _caught;
+    private int _got, _own, _caught, _named;
+    private string? _myName;
     private bool _invitedHost, _bye;
 
     public PartnerSide(StepContext context) {
@@ -183,6 +184,16 @@ public sealed class PartnerSide {
     /// <summary>Reads one delivered line: the run's lines from the host are acted on; with its prefix from anyone else, the run stops.</summary>
     private async Task ReadAsync(ReceivedLine line) {
         var parsed = SelfTestProtocol.Parse(this.Code, line.Text);
+        if (line.Own) {
+            // Its own name, to tell when the host's <t> named it (a count only goes back).
+            this._myName ??= line.Sender.Split('@')[0];
+        } else if (this.IsHost(line.Sender, line.SenderId) && (line.ChannelId == null || this._context.Data.Joined.Contains(line.ChannelId))) {
+            // The host's links, in any of its lines (one with only a link has no marker).
+            foreach (var link in line.Links) {
+                this._links.Add(LinkKind(link));
+            }
+        }
+
         if (parsed is ProtocolLine.NotOurs) {
             return;
         }
@@ -208,9 +219,7 @@ public sealed class PartnerSide {
             case ProtocolLine.TestLine:
                 this._got++;
                 this._caught += line.CaughtUp ? 1 : 0;
-                foreach (var link in line.Links) {
-                    this._links.Add(LinkKind(link));
-                }
+                this._named += this._myName is { Length: > 0 } me && line.Text.Contains(me, StringComparison.Ordinal) ? 1 : 0;
 
                 break;
             case ProtocolLine.Request { Value: var request } when line.ChannelId != null && request.Number > this._context.Data.ProtocolNumber:
@@ -306,7 +315,10 @@ public sealed class PartnerSide {
                 return (await this.ReportReceivedAsync(request).ConfigureAwait(false), null);
             case PartnerVerb.ReportCheckCode: {
                 this._reports++;
-                var target = await this.TargetAsync(request.Option("in"), channel).ConfigureAwait(false) ?? channel;
+                if (await this.TargetAsync(request.Option("in"), channel).ConfigureAwait(false) is not { } target) {
+                    return (Refused(request), null);
+                }
+
                 var code = SelfTestProtocol.CheckCodeField(await this.Host.CheckCodeAsync(target).ConfigureAwait(false));
                 return (code == null ? Done(request) : Done(request, ("check", code)), null);
             }
@@ -436,6 +448,7 @@ public sealed class PartnerSide {
         var warnings = printed.Count(line => line.Kind == TapKind.Notice && line.Tone is NoticeTone.Warning or NoticeTone.Critical);
         var fields = new List<(string, string)> {
             ("got", Number(this._got)), ("own", Number(this._own)), ("caught", Number(this._caught)), ("chat", Number(inChat.Count)), ("warn", Number(warnings)),
+            ("you", Number(this._named)),
         };
         if (SelfTestProtocol.Joined(this._links.Order()) is { } links) {
             fields.Add(("links", links));
@@ -445,7 +458,7 @@ public sealed class PartnerSide {
             fields.Add(("tag", tag));
         }
 
-        this._got = this._own = this._caught = 0;
+        this._got = this._own = this._caught = this._named = 0;
         this._links.Clear();
         this._reportMark = this.Host.Mark();
         return Task.FromResult(Done(request, [.. fields]));
