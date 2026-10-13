@@ -5005,9 +5005,10 @@ How to build, configure, deploy, back up and restore a server is in
   and the echo bot.
 - **`/lgdebug`.** Connection state, protocol trace, notices, and tools to ping,
   force a rekey, or simulate an incoming message.
-- **The self-test (`/lgdebug test`).** Runs the one-player in-game tests it can
-  by itself, guides the tester through the rest, and gives a report without
-  names, only in an inn room, an apartment or a house (see
+- **The self-test (`/lgdebug test`).** Runs the in-game tests it can by itself
+  (alone, or with a partner whose plugin answers its requests), guides the
+  tester through the rest, and gives a report without names, only in an inn
+  room, an apartment or a house (see
   [Self-test in the plugin](#self-test-in-the-plugin)). Checked itself with
   [self-test-checklist.md](testing/self-test-checklist.md).
 - **Automated tests.** Cryptography, the policy table, the membership log and
@@ -5058,9 +5059,9 @@ name and `/lgc` commands, so it can be installed beside ExtraChat.
 
 ### Self-test in the plugin
 
-Status: the one-player self-test is built (2026-10-13: the plan's steps 1 to
-4); two players (step 5: pairing, the protocol, the partner's runner and the
-group 2 suites) are planned. The plan was approved by the owner on 2026-10-13,
+Status: built (2026-10-13): the one-player self-test (the plan's steps 1 to
+4), and two players (step 5: pairing, the protocol, the partner's runner and
+the group 2 suites); two players wait for their first run in game. The plan was approved by the owner on 2026-10-13,
 with every open choice as recommended (see [Decisions](#decisions)). The full
 plan, with mockups, the coverage of every open task, pacing and the
 two-player protocol, is in [self-test-plan.md](self-test-plan.md); checking
@@ -5108,8 +5109,35 @@ virtual clock; the plugin's `SelfTest` folder and `SelfTestWindow`):
   that couldn't reach the server keeps them, and the file, for the next
   connection. A damaged file that lost whose it was can only be cleared, with
   a warning.
-- Eight suites cover the plan's 45 one-player tasks (`SelfTestSuites`).
-  Two-player checks aren't listed yet; the start screen says they come later.
+- Eight suites cover the plan's 45 one-player tasks (`SelfTestSuites.All`).
+- **Two players** (`SelfTest/Pairs`, `Suites/Pairs`): **Two players...** opens
+  a screen to invite a partner (their name@world, or **Use my target**, and a
+  four-letter code to tell them) or to be one (the host's name@world and
+  code). The host's run pairs first (`PairingSuite`: one lookup, the test
+  channel, one invite, the partner's hello within two minutes), then runs the
+  eight two-player suites (`SelfTestSuites.Pairs`, 39 checks). The partner's
+  run (`PartnerSuite`, `PartnerSide`) accepts only the host's invite to the
+  host's own test channels, says hello, and answers numbered requests
+  (`SelfTestProtocol`, a strict parser) from a fixed list, each capped: send
+  1 to 5 marked lines (with an item, map or status link), 1 to 3 to local
+  chat (after its own private-place check), report what it received, its
+  check code, where a host line showed, its windows and its log's counts,
+  leave (5 times), withdraw and restore its local chat acceptance (once),
+  disconnect up to 60 seconds (3 times), make one channel of its own and
+  invite the host (once), ask its player one of nine fixed steps (behind the
+  same typing gate), and bye. It never types in game chat by itself. The
+  host (`PartnerLink`) waits a minute for an answer (ten for one that waits
+  on the partner's player), asks "still-there" after a silence and takes the
+  partner as gone after a second, and stops the run if a line with the run's
+  prefix comes from anyone else. A partner hearing nothing for 15 minutes,
+  or seeing the host's channel go, stops. Clean-up on both sides: the host
+  leaves the partner's channel, asks bye, waits a minute for the partner to
+  leave, then leaves last (disbanding only a channel the partner is still
+  in), and undoes a block it made; the partner leaves every channel it
+  joined (never disbanding one) and its own. The partner's name is held in
+  the run file only while the run lasts, forbidden in the log tap and the
+  report, and goes from the file at the end; the report says "with a
+  partner".
 
 - **Where.** `/lgdebug test`, and a **Self-test...** button in `/lgdebug`,
   open a window of its own. No new top-level command.
@@ -5760,6 +5788,55 @@ The owner's decisions, and why.
   - The game's chat channel is set to Say only while not talking in a channel
     (setting it would end that); while talking in one, the host types only if
     Say is underneath, which the runner set before starting it.
+- **Two players built (2026-10-13)**, as the plan's step 5 says. Choices made
+  in building it, where the plan was silent or had to give:
+  - **Protocol lines are paced as channel messages, counted apart.** Requests
+    and answers share the test lines' pace (one every 2 seconds, three in a
+    row), so together they stay as far from the server's limit; but they are
+    counted on their own (at most 150 a run, each side), so the plan's 100
+    test lines for the host and 80 for the partner stay what the plan says. A
+    full two-player pass of all eight suites plans more than the hour's
+    budget allows in one go for some actions; the start screen says when to
+    wait, so run them over two or three sittings.
+  - **The host's invites and lookups.** The partner is invited back after each
+    of its leaves: a host may invite them 16 times a run (the plan said 8; the
+    server allows 20 at once to one person, then one a minute, and the run's
+    invites are minutes apart). A lookup is counted for the first invite and
+    again only after ten minutes, when the session has forgotten it: at most 12
+    a run (the server allows 60 at once). A partner asked to leave the first
+    test channel is invited back before the next request, if a check stopped
+    before doing it.
+  - **Suites are chosen before pairing.** The plan's mockup shows the
+    partner's facts (private place, how near, friends, party, ChatTwo) before
+    the suites are ticked; nothing may happen before **Start**, so pairing is
+    the run's first check instead, and its facts show in the run's window.
+    Each check that needs something the pair hasn't got (the same house,
+    friends, a party of two, ChatTwo, another data centre) is skipped, saying
+    why, instead of being unticked beforehand.
+  - **Requests may name a test channel** ("send 1 in=b", "leave in=b",
+    "report check-code in=b"), and the partner knows the host's channels by
+    their names (`LG self-test K7Q2`, `... b`, `... c`): the history check
+    renames the first and then names it back (two renames, the run's most).
+    The partner's own channel is `LG self-test K7Q2 p`, and the host accepts
+    only that invite, only from the partner.
+  - **The partner relogs, and is "back", without its run file.** A relog
+    keeps the plugin, so the partner's run waits in memory and answers the
+    relog request once it is logged in again; a plugin reload on its side ends
+    its run (the next start puts back what it changed), and the host takes it
+    as gone. The host's relogs carry on through the run file, as for one
+    player, with the partner's "send while away" sent before and its answer
+    read after.
+  - **What a partner reports has no names:** counts, link kinds, where a line
+    showed, its check code, its windows' counts and its log's counts. Whether
+    the host's `<t>` arrived as the partner's name is a count of lines holding
+    its own name, compared on the partner's side only.
+  - **Not run, as parts of covered tasks:** the exact local chat distances and
+    another zone (local-chat 10 to 11), a loading screen between private
+    places (windows-only 19), and the window's right-click offers for a name
+    colour (name-colours 15 is guided).
+  - The partner's name leaves the run file when the run ends: a file kept for
+    what is left to do (a test channel not yet left, a block not yet undone)
+    keeps only the partner's user number.
 
 ## Open questions
 
@@ -5826,4 +5903,4 @@ The owner's decisions, and why.
   as the party); a log tap; a report with no names; ticking pending-tests.md
   by hand; and "lots of history" with simulated lines. Answered (2026-10-13):
   the owner approved the plan and took every recommendation (see Decisions);
-  the one-player self-test is built, two players come next.
+  the one-player self-test is built, and two players too (2026-10-13).

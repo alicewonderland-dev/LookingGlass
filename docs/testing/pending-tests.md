@@ -13,8 +13,12 @@ which ones are yours before you start, and send your results to the owner.
 house, `/lgdebug test` runs many of group 1's tasks by itself and tells you
 what to do for others, then gives a report to copy (no names in it). Send that
 report as your results for the tasks it lists; it never ticks this list
-itself. Two-player tasks aren't in it yet. Before trusting its reports, the
-self-test itself has a checklist: [self-test](self-test-checklist.md).
+itself. For group 2's tasks, two testers run it together: one chooses **Two
+players...**, **Invite a partner** (the other's name@world, and a code to tell
+them), the other **Be a partner** (with the first's name@world and that code);
+the host's report covers both, and the partner's says what its plugin
+answered. Before trusting its reports, the self-test itself has a checklist:
+[self-test](self-test-checklist.md) (its "Two players" part for two testers).
 
 **Plugin version:** 0.2.12 is current. Each feature below says the oldest
 version it needs. Use 0.2.12 when you can.

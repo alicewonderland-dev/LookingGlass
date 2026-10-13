@@ -144,3 +144,70 @@ private) rather than doing something it shouldn't: report it.
       journal shows no refusal and no flag for the tester. A second full run
       within the hour is refused at the start ("Wait about ... minutes"), as
       the run's test channels count against the hour.
+
+## Two players
+
+Two characters on this build, A (the host) and B (the partner), registered on
+the same server, on different PCs or clients, each in a private place. For the
+local chat suite both inside the same house or apartment (either one's), on
+each other's friends list. Both keep `/xllog` open.
+
+- [ ] 28. **Two players...** on the start screen opens a screen with **Invite a
+      partner** and **Be a partner**. As the host: the partner's name@world
+      box, **Use my target** (target B: their name@world fills in), "Tell them
+      your name and this code: XXXX", what it does, and the eight two-player
+      suites (one unticked with why if it can't run here: ChatTwo off, say).
+      Typing your own name, or no world, keeps **Start** off, saying why.
+- [ ] 29. B chooses **Be a partner**, types A's name@world and the code, and
+      presses **Start**: "Waiting for their invite". A presses **Start**:
+      "Waiting for your partner to join... 1:58 left". Within a few seconds B
+      joins `LG self-test XXXX` by itself, and A's run shows "Partner joined.
+      In a private place: yes. Near you: ... Friends: ... In your party: ...
+      ChatTwo on their side: ...". B's window says how many requests it has
+      answered.
+- [ ] 30. **Only the host's invite.** Before A starts, a third character C
+      invites B to a channel named `LG self-test XXXX` (or A invites B to a
+      channel of another name): B's plugin doesn't accept it (it stays in B's
+      invites). A wrong code on B's side: B never joins, and A's pairing gives
+      up after two minutes ("your partner didn't join within two minutes"),
+      skipping every check that needs the partner, and cleans up.
+- [ ] 31. **Never typing for B.** Whenever a step needs B to type (`/s` a line
+      for A to right-click), B's window shows "Needs you" with the line, only
+      in a private place, nobody else near, and Say as B's chat channel; B's
+      plugin itself never types in game chat (watch B's Say). In a house, the
+      other tester standing next to B doesn't count as "someone near".
+- [ ] 32. **B goes silent.** Mid-run, B turns LookingGlass off. A's next
+      request waits a minute, asks "still-there", waits again, then the run
+      says "your partner has left the test" for every check left, and cleans
+      up (disbanding a test channel B may still be in). B turned back on and
+      logged in: its settings are back, and it has left A's channels.
+- [ ] 33. **A goes silent.** Mid-run, A turns LookingGlass off (or closes the
+      game). B's run stops by itself within 15 minutes ("no request from the
+      other tester for 15 minutes", or "the other tester's test channel is
+      gone" once A's next start cleans up), leaving A's channels.
+- [ ] 34. **Old and repeated requests.** While a run is on, A types
+      `/lgc50 LG self-test XXXX #1 send 5` by hand (an old number): B's plugin
+      ignores it and sends no test line for it (check B's `/xllog` and the
+      channel). Nobody but A and B is in the test channel, so the rule that a
+      line with the prefix from anyone else stops the run is left to the unit
+      tests.
+- [ ] 35. **Relogs.** When A's run asks A to relog, B's plugin sends its lines
+      only once A shows offline in the member list, and A's run, back, finds
+      them caught up. When B is asked to relog, B's window says so, and B's
+      answer reaches A once B is back.
+- [ ] 36. **`/p`.** The ChatTwo suite asks A to type `/p` only once the party is
+      exactly A and B; with a third member, the check is skipped ("needs a
+      party of just the two of you"). The runner itself never types `/p`.
+- [ ] 37. **Clean-up on both sides.** At the end: B leaves A's test channels
+      (and its own `LG self-test XXXX p` goes: A left it first); A leaves last,
+      and nothing is disbanded unless B didn't leave. A block A's run made (the
+      blocking checks) is undone; B, blocked before the run, stays blocked and
+      the blocking checks are skipped. The partner's name colour and every
+      other setting are as before on both sides.
+- [ ] 38. **Names.** Neither report has A's or B's name or world (A's says
+      "with a partner"; B's says what it answered, in numbers); `/xllog` on
+      both sides has no name, no channel name and no test line. A's
+      `selftest-run.json`, if one is left, has no name.
+- [ ] 39. **Pacing.** After a full two-player run on the public server, the
+      server's journal shows no refusal and no flag for either tester; the
+      start screens say when to wait before running the rest within the hour.
