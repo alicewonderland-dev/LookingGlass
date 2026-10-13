@@ -134,8 +134,8 @@ public sealed record SelfTestStep {
     /// <summary>The checklist's step number(s), for the report ("32").</summary>
     public string? Checklist { get; init; }
 
-    /// <summary>The longest it may take (automatic steps); guided steps wait for the tester.</summary>
-    public TimeSpan Timeout { get; init; } = TimeSpan.FromMinutes(3);
+    /// <summary>The longest it may take (automatic steps; a reconnect waits a minute for its turn); guided steps wait for the tester.</summary>
+    public TimeSpan Timeout { get; init; } = TimeSpan.FromMinutes(5);
 
     public required Func<StepContext, Task<StepResult>> Run { get; init; }
 }

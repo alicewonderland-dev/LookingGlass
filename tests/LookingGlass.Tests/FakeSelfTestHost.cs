@@ -10,7 +10,7 @@ namespace LookingGlass.Tests;
 /// what was typed and where. Typing checks the place and the chat channel itself, as the plugin's host does, and records
 /// any line that would have been typed outside a private place (there must never be one).
 /// </summary>
-internal sealed class FakeSelfTestHost : ISelfTestHost, IDisposable {
+internal sealed partial class FakeSelfTestHost : ISelfTestHost, IDisposable {
     private readonly Lock _lock = new();
     private readonly string _folder = Path.Combine(Path.GetTempPath(), "lgt-selftest-" + Guid.NewGuid().ToString("N"));
     private long _ids;
@@ -153,6 +153,7 @@ internal sealed class FakeSelfTestHost : ISelfTestHost, IDisposable {
 
     public Task DisconnectAsync() {
         this.Ready = false;
+        this.SimulateEnd(StickyEnd.Disconnected);
         return Task.CompletedTask;
     }
 
@@ -170,7 +171,8 @@ internal sealed class FakeSelfTestHost : ISelfTestHost, IDisposable {
 
     public Task<IReadOnlyCollection<int>> SlotsInUseAsync() => Task.FromResult<IReadOnlyCollection<int>>(this.Slots.Values.ToList());
 
-    public Task<string?> SetNicknameAsync(string channelId, string nickname) => Task.FromResult<string?>(null);
+    public Task<string?> SetNicknameAsync(string channelId, string nickname) =>
+        Task.FromResult<string?>(nickname.Equals("local", StringComparison.OrdinalIgnoreCase) ? "Local is used by local chat; choose another nickname." : null);
 
     public Task<string?> NicknameOfAsync(string channelId) => Task.FromResult<string?>(null);
 
@@ -196,6 +198,11 @@ internal sealed class FakeSelfTestHost : ISelfTestHost, IDisposable {
 
     public Task WriteSettingAsync(SelfTestSetting setting, JsonElement value) {
         this.Settings[setting] = value.Clone();
+        if (setting == SelfTestSetting.LocalPrivacyAccepted && !this.Is(setting) && this.Sticky == StickyChannel.LocalId) {
+            // As sticky mode's frame check does: withdrawn while talking in local chat, it ends at once, and says so.
+            this.SimulateEnd(StickyEnd.PrivacyWithdrawn);
+        }
+
         return Task.CompletedTask;
     }
 
@@ -219,6 +226,10 @@ internal sealed class FakeSelfTestHost : ISelfTestHost, IDisposable {
         }
 
         this.Typed.Add((line, place.Kind));
+        if (this.Simulate) {
+            this.Interpret(line, link);
+        }
+
         return Task.CompletedTask;
     }
 
@@ -229,28 +240,44 @@ internal sealed class FakeSelfTestHost : ISelfTestHost, IDisposable {
         }
     }
 
-    public long Mark() => 0;
+    public long Mark() {
+        lock (this._lock) {
+            return this._seq;
+        }
+    }
 
-    public IReadOnlyList<TapLine> PrintedSince(long mark) => [];
+    public IReadOnlyList<TapLine> PrintedSince(long mark) {
+        lock (this._lock) {
+            return this._printed.Where(entry => entry.Seq > mark).Select(entry => entry.Line).ToList();
+        }
+    }
 
-    public IReadOnlyList<GameChatLine> GameChatSince(long mark) => [];
+    public IReadOnlyList<GameChatLine> GameChatSince(long mark) {
+        lock (this._lock) {
+            return this._gameChat.Where(entry => entry.Seq > mark).Select(entry => entry.Line).ToList();
+        }
+    }
 
     public LogTapCounts LogCounts() => new(0, 0, 0, 0, 0);
 
-    public Task<StickyView> StickyAsync() => Task.FromResult(new StickyView(this.Sticky, null, null, null));
+    public Task<StickyView> StickyAsync() => Task.FromResult(this.Simulate ? this.SimulatedSticky() : new StickyView(this.Sticky, null, null, null));
 
     public Task StopTalkingAsync() {
+        this.SimulateEnd(StickyEnd.Stopped);
         this.Sticky = null;
         return Task.CompletedTask;
     }
 
-    public Task<bool> PrivacyWindowOpenAsync() => Task.FromResult(false);
+    public Task<bool> PrivacyWindowOpenAsync() => Task.FromResult(this.PrivacyOpen);
 
-    public Task OpenPrivacyWindowAsync() => Task.CompletedTask;
+    public Task OpenPrivacyWindowAsync() {
+        this.PrivacyOpen = true;
+        return Task.CompletedTask;
+    }
 
     public int LocalSends => 0;
 
-    public Task<CommandFacts> CommandAsync(string command) => Task.FromResult(new CommandFacts(true, true, true, "help"));
+    public Task<CommandFacts> CommandAsync(string command) => Task.FromResult(new CommandFacts(true, true, true, this.Simulate ? LocalChatWords.Usage.Plain : "help"));
 
     public Task RunPluginCommandAsync(string command, string arguments) => Task.CompletedTask;
 

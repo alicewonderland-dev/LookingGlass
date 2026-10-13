@@ -123,7 +123,7 @@ internal sealed partial class SelfTestService : IDisposable {
             return "A run is waiting to carry on.";
         }
 
-        if (this._recover != null || this._recovering || this._file.Exists) {
+        if (this._recover != null || this._recovering || this.FileLeft()) {
             return "The last test's clean-up isn't finished: it finishes once you're connected.";
         }
 
@@ -135,9 +135,25 @@ internal sealed partial class SelfTestService : IDisposable {
             return "Tick at least one.";
         }
 
-        var wait = new SelfTestPacer(() => DateTimeOffset.Now, Task.Delay, this._file.ReadSpent()).WaitBeforeStart(Planned(suites));
+        var wait = new SelfTestPacer(() => DateTimeOffset.Now, Task.Delay, this.Spent()).WaitBeforeStart(Planned(suites));
         return wait > TimeSpan.Zero ? SelfTestWords.WaitBeforeStart(wait) : null;
     }
+
+    // The window asks every frame: the files are read again at most every two seconds.
+    private (DateTimeOffset At, bool FileLeft, IReadOnlyList<SelfTestSpend> Spent)? _files;
+
+    private (bool FileLeft, IReadOnlyList<SelfTestSpend> Spent) Files() {
+        if (this._files is not { } files || DateTimeOffset.Now - files.At > TimeSpan.FromSeconds(2)) {
+            files = (DateTimeOffset.Now, this._file.Exists, this._file.ReadSpent());
+            this._files = files;
+        }
+
+        return (files.FileLeft, files.Spent);
+    }
+
+    private bool FileLeft() => this.Files().FileLeft;
+
+    private IReadOnlyList<SelfTestSpend> Spent() => this.Files().Spent;
 
     /// <summary>What the suites may ask the server for at most, together.</summary>
     public static IReadOnlyDictionary<SelfTestAction, int> Planned(IEnumerable<SelfTestSuite> suites) {
@@ -163,6 +179,7 @@ internal sealed partial class SelfTestService : IDisposable {
     }
 
     private void Begin(SelfTestRunData data, IReadOnlyList<SelfTestSuite> suites, bool resume) {
+        this._files = null;
         var pacer = new SelfTestPacer(() => DateTimeOffset.Now, Task.Delay, this._file.ReadSpent());
         var run = new SelfTestRun(this._host, suites, pacer, this._file, data, resume);
         var snapshot = this._parts.Sessions.Snapshot;
@@ -207,6 +224,7 @@ internal sealed partial class SelfTestService : IDisposable {
             return;
         }
 
+        this._files = null;
         this._host.StopTaps();
         this._parts.Sender.Failed = null;
         this._parts.Local.Failed = null;
@@ -366,7 +384,7 @@ internal sealed partial class SelfTestService : IDisposable {
     }
 
     /// <summary>A run file is left (an earlier clean-up couldn't finish).</summary>
-    public bool CleanUpLeft => !this.Running && this._resume == null && (this._recover != null || this._recovering || this._file.Exists);
+    public bool CleanUpLeft => !this.Running && this._resume == null && (this._recover != null || this._recovering || this.FileLeft());
 
     /// <summary>Tries again to finish what an earlier run's file says (the window's Clean up again). Framework thread.</summary>
     public void RetryCleanUp() {

@@ -23,6 +23,8 @@ internal sealed class SelfTestWindow : Window {
     private string _input = "";
     private string? _copied;
     private string? _error;
+    // The report, made again only when the run's view changes.
+    private (SelfTestView View, string Text)? _report;
 
     public SelfTestWindow(SelfTestService service) : base($"{SelfTestWords.WindowTitle}###lookingglass-selftest") {
         this._service = service;
@@ -368,7 +370,12 @@ internal sealed class SelfTestWindow : Window {
         ImGui.TextUnformatted($"Run {view.Code}: {results.Count(result => result.Outcome == CheckOutcome.Passed)} passed, " +
                               $"{results.Count(result => result.Outcome == CheckOutcome.Failed)} failed, {results.Count(result => result.Outcome == CheckOutcome.Skipped)} skipped." +
                               (view.CleanUp != null ? " Cleaned up." : ""));
-        var report = this._service.Report() ?? "";
+        if (this._report is not { } cached || !ReferenceEquals(cached.View, view)) {
+            cached = (view, this._service.Report() ?? "");
+            this._report = cached;
+        }
+
+        var report = cached.Text;
         if (ImGui.Button(SelfTestWords.CopyReport)) {
             ImGui.SetClipboardText(report);
             this._copied = "Copied.";

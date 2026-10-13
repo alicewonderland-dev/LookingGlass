@@ -7,7 +7,7 @@ public static class SelfTestSteps {
     /// <summary>An automatic step.</summary>
     /// <param name="types">It types a line (the private-area check, and nobody near, right before).</param>
     public static SelfTestStep Auto(string title, string? checklist, Func<StepContext, Task<StepResult>> run, bool types = false, TimeSpan? timeout = null) =>
-        new() { Title = title, Checklist = checklist, Kind = StepKind.Automatic, Types = types, Run = run, Timeout = timeout ?? TimeSpan.FromMinutes(3) };
+        new() { Title = title, Checklist = checklist, Kind = StepKind.Automatic, Types = types, Run = run, Timeout = timeout ?? TimeSpan.FromMinutes(5) };
 
     /// <summary>A guided step whose question is made when it runs (it may set something up first).</summary>
     public static SelfTestStep Ask(string title, string? checklist, Func<StepContext, Task<GuidedPrompt>> prompt) =>

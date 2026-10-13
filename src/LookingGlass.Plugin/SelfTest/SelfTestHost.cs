@@ -330,11 +330,12 @@ internal sealed class SelfTestHost : ISelfTestHost, IDisposable {
                 builder.AddItemLink(potion, false);
                 break;
             case TestLink.ItemInMiddle:
-                var half = line.LastIndexOf(' ', Math.Max(0, line.Length / 2));
-                half = half < 0 ? line.Length : half;
-                builder.AddText(line[..half] + " ");
+                // After the marker, before ", please ignore": the marker stays whole, and text follows the link.
+                var at = line.LastIndexOf(", please ignore", StringComparison.Ordinal);
+                at = at < 0 ? line.Length : at;
+                builder.AddText(line[..at] + " ");
                 builder.AddItemLink(potion, false);
-                builder.AddText(" " + line[half..].TrimStart());
+                builder.AddText(line[at..]);
                 break;
             default:
                 builder.AddText(line + " ");
