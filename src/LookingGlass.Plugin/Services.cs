@@ -24,4 +24,5 @@ internal sealed class Services {
     [PluginService] public static IObjectTable Objects { get; private set; } = null!;
     [PluginService] public static IPartyList Party { get; private set; } = null!;
     [PluginService] public static ITargetManager Targets { get; private set; } = null!;
+    [PluginService] public static ITextureProvider Textures { get; private set; } = null!;
 }
