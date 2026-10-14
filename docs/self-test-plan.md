@@ -158,7 +158,7 @@ where noted under [Words](#words).
 | [ ] With ChatTwo                          6 checks  ChatTwo is off|
 | [x] Right-click invites                   4 checks               |
 | [x] Party finder links                    5 checks               |
-| [x] Chat history and text files           4 checks               |
+| [x] Chat history and text files           2 checks               |
 | [x] Settings                              2 checks               |
 | About 35 minutes. About 60 test lines sent.                       |
 |                                                                   |
@@ -861,10 +861,11 @@ section and name, with its checklist steps. Modes:
 
 | Task | Steps | Mode | How |
 | --- | --- | --- | --- |
-| The setting, and the warning first | chat-log 24-25 | G | The runner turns the history on (snapshot); the tester checks the setting, its "?" and the warning, presses Cancel then Turn on. A: the words, in both modes; it disappears while the history is off. |
-| Only new lines, one file per channel per month | chat-log 26-28 | A | Two test channels; a sent line with an item link, a simulated line, one in the other channel; folders and files named as the checklist says; lines in the format, the item as `[Item name]`; appending while the runner holds the file open read-only (as Notepad does); the file deleted, a new one started. **Open folder** isn't pressed (the runner checks the folder it would open). |
+| The setting, and the warning first | chat-log 24-25 | passed | Passed in a tester's run (2026-10-13, plugin 0.2.18), no longer offered. |
+| Only new lines, one file per channel per month | chat-log 26-28 (all but pressing Open folder) | passed | Passed in a tester's run (2026-10-13, plugin 0.2.18), no longer offered. |
+| Only new lines: pressing Open folder | chat-log 26 (pressing Open folder) | G | The runner turns the history and its text files on (snapshot) and opens Settings; the tester presses **Open folder** and says whether the file manager opened the `text` folder. |
 | Renames, turning it off, deleting | chat-log 30-35, 31b | A+G | A: rename (the folder follows, same 16 characters); turning it off (files stop changing); the confirmation's words; the log tap (no channel, file or person named). Only when the history was off and empty before the run: the 5 MB limit (filled with simulated lines, local only) and **Delete my chat history...** (G: the tester presses it). Not run: the file held by Notepad++ or Excel (the runner holds it the way they do instead, A); another character. |
-| Lots of history, and new messages while reading | chat-log 8-9 (group 2) | G | Moved to one player: 250 simulated lines (local only, nothing sent) instead of the partner sending them. The tester scrolls as told; the runner checks what loaded and the end line; a simulated line while reading: the tester says whether it jumped, and clicks **New messages**. |
+| Lots of history, and new messages while reading | chat-log 8-9 (group 2) | passed | Passed in a tester's run (2026-10-13, plugin 0.2.18, the simulated one-player version), no longer offered. |
 
 **Not covered, group 1:**
 
@@ -990,7 +991,7 @@ local chat and device steps, which the report gives.
 
 ### Totals
 
-(As planned. Passed in the owner's first run, 2026-10-13, and no longer offered: chat-links 20, 21 to 23 and 30; settings 1 to 9; device-notices 1; context-invites 7 to 9 and 10. What was left of the last two, context-invites 9a and 11, are checks of their own.) (Passed in the owner's second run, 2026-10-13, plugin 0.2.18, and no longer offered: local-chat 3a to 3c, 30, 32 to 33 but `/p brb` (now a two-player check of its own), and 34 to 41.) (Passed in the owner's third run, 2026-10-13, plugin 0.2.18, and no longer offered: windows-only 1 to 2, 5, 7 to 9, 11, 13 to 16, 23, 24 and 26; channel-windows 17, 17b, 17c, 36 and 37 but a collapsed window, 33 to 33f, 6b and 37b but a channel shown in game chat. Windows-only 12's invite line is a two-player check of its own. No combat checks: no striking dummy can be placed in a private place, and the owner confirmed windows-only 17, 23b, 23c and channel-windows 33d, 33e from earlier testing.) (Passed in the owner's fourth run, 2026-10-13, plugin 0.2.18, and no longer offered: custom-colours 3, 4 to 8, 9 but the invite submenu and the caught-up message, 15 but another character, 17 but being invited back; name-colours 21 but another character, and 23's first part. Custom-colours 16 (a colour set before 0.2.8) can't be tested any more.)
+(As planned. Passed in the owner's first run, 2026-10-13, and no longer offered: chat-links 20, 21 to 23 and 30; settings 1 to 9; device-notices 1; context-invites 7 to 9 and 10. What was left of the last two, context-invites 9a and 11, are checks of their own.) (Passed in the owner's second run, 2026-10-13, plugin 0.2.18, and no longer offered: local-chat 3a to 3c, 30, 32 to 33 but `/p brb` (now a two-player check of its own), and 34 to 41.) (Passed in the owner's third run, 2026-10-13, plugin 0.2.18, and no longer offered: windows-only 1 to 2, 5, 7 to 9, 11, 13 to 16, 23, 24 and 26; channel-windows 17, 17b, 17c, 36 and 37 but a collapsed window, 33 to 33f, 6b and 37b but a channel shown in game chat. Windows-only 12's invite line is a two-player check of its own. No combat checks: no striking dummy can be placed in a private place, and the owner confirmed windows-only 17, 23b, 23c and channel-windows 33d, 33e from earlier testing.) (Passed in the owner's fourth run, 2026-10-13, plugin 0.2.18, and no longer offered: custom-colours 3, 4 to 8, 9 but the invite submenu and the caught-up message, 15 but another character, 17 but being invited back; name-colours 21 but another character, and 23's first part. Custom-colours 16 (a colour set before 0.2.8) can't be tested any more.) (Passed in a tester's run, 2026-10-13, plugin 0.2.18, and no longer offered: chat-log 24 to 25, 26 to 28 but pressing Open folder (now a small guided check of its own), and 8 to 9 (the simulated one-player version).)
 
 | | Tasks | A | A+G | G | 2P (A) | 2P (G or A+G) | Not covered |
 | --- | --- | --- | --- | --- | --- | --- | --- |

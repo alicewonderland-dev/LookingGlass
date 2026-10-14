@@ -5175,7 +5175,7 @@ virtual clock; the plugin's `SelfTest` folder and `SelfTestWindow`):
   that couldn't reach the server keeps them, and the file, for the next
   connection. A damaged file that lost whose it was can only be cleared, with
   a warning.
-- Seven suites cover the plan's one-player tasks still open (`SelfTestSuites.All`, 21 checks):
+- Seven suites cover the plan's one-player tasks still open (`SelfTestSuites.All`, 19 checks):
   those that passed in the owner's first run (2026-10-13) are no longer offered.
 - **Two players** (`SelfTest/Pairs`, `Suites/Pairs`): **Two players...** opens
   a screen to invite a partner (their name@world, or **Use my target**, and a
@@ -6064,6 +6064,14 @@ The owner's decisions, and why.
   three distinct blinks, the title bar mostly the channel's colour, a border a
   few pixels wide. The tab hover question (windows-only 20) says it shows even
   with a menu open.
+- **What passed in a tester's run leaves too (owner, 2026-10-13).** Plugin
+  0.2.18, one player, in an apartment: chat-log 24 to 25, 26 to 28 (but
+  pressing **Open folder**) and 8 to 9 (the simulated version with lots of
+  history) passed; they are ticked and no longer offered. Pressing **Open
+  folder** stays as a small guided check: the runner turns the history and
+  its text files on, and the tester presses it and says what opened.
+  Chat-log 30 to 35 failed at step 30 (the older lines weren't kept in the
+  renamed channel's file); it is being looked into, and its check stays.
 
 ## Open questions
 
