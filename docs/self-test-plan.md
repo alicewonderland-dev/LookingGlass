@@ -778,13 +778,14 @@ section and name, with its checklist steps. Modes:
 | Task | Steps | Mode | How |
 | --- | --- | --- | --- |
 | Is `/lgl` free, and what does it say | local-chat 1-3 | A+G | A: `/lgl` registered once, by LookingGlass (Dalamud's command list); its help text; the Colour "?" words. G: look at `/xlhelp`; turn LookingGlass off and on in `/xlplugins` (the run carries on after) and type `/lgl` while it's off. |
-| The "ask first" window | local-chat 3a-3c | A+G | A: privacy withdrawn (snapshot); `/lgl LG self-test` typed: nothing sent, the blue line, the window open; typed again after Not now: asks again; Settings' state. G: click **Not now**, then **Accept and use local chat**. |
+| The "ask first" window | local-chat 3a-3c | passed | Passed in the owner's second run (2026-10-13, plugin 0.2.18), no longer offered. |
 | Starting, and the once-only line | local-chat 29 | A | The once-only note reset (snapshot); `/lgl` typed: "Now talking in [Local].", the note once, the chat input's label `[Local]`, the info bar "LG [Local]" in local chat's colour (the colour asked for); typed again: only the first line. |
-| Typing never reaches Say | local-chat 30-31 | A | Alone: a marked line and a line with only an item link typed: "Not sent... nobody is near enough", nothing in Say (the game chat watcher). Not run: next to a stranger (a private place has none). |
-| Commands, one-offs and moving between channels | local-chat 32-33 | A | `/s`, `/em`, `/lgc<test>`, `/lgl` one-offs each land once where they should and local chat goes on; `/lgc<test>` alone, `/lgl` one-off, `/lgl` alone; nicknaming the test channel `Local` refused. `/p` only with the partner as the whole party, else not run. |
-| Ending it | local-chat 34-36 | A+G | A: `/s` alone; Disconnect ("...: disconnected."), with verbose off too; verbose off: labels still change. G: Tab; clicking the info bar; **Send Tell** from a right-click; turning the plugin off ("...: LookingGlass was turned off."), and a relog (nothing on after). |
-| Refused to start, and the privacy notice | local-chat 37-39 | A+G | A: disconnected, `/lgl` refused; withdrawn, `/lgl` asks and opens the window, nothing starts; withdrawn from Settings while talking: stops at once with its line, typing goes to Say again (the game chat watcher). G: accept in the window (told to type `/lgl` again); withdraw from the privacy window's own button. |
-| Log and plain words | local-chat 40-41 | A | Log tap: `[sticky]` lines say "talking in [Local]", never a marker or a name. Every line printed during the suite checked against the banned words in simple mode. |
+| Typing never reaches Say: alone | local-chat 30 | passed | Passed in the owner's second run (2026-10-13, plugin 0.2.18), no longer offered. |
+| Typing never reaches Say: next to a stranger | local-chat 31 | not covered | Needs a stranger next to the tester, where the self-test never types. |
+| Commands, one-offs and moving between channels | local-chat 32-33 (all but /p) | passed | Passed in the owner's second run (2026-10-13, plugin 0.2.18), no longer offered. |
+| Ending it | local-chat 34-36 | passed | Passed in the owner's second run (2026-10-13, plugin 0.2.18), no longer offered. |
+| Refused to start, and the privacy notice | local-chat 37-39 | passed | Passed in the owner's second run (2026-10-13, plugin 0.2.18), no longer offered. |
+| Log and plain words | local-chat 40-41 | passed | Passed in the owner's second run (2026-10-13, plugin 0.2.18), no longer offered. |
 
 **Suite: With ChatTwo** (one player; ChatTwo on)
 
@@ -890,6 +891,7 @@ group 2 tables below, since they need the partner.
 | Colours and where local lines go | local-chat 19-23 | 2P (G) | The runner sets local chat's colour (swatch, custom, default) and the partner's name colour, and windows only; the partner sends; the tester looks. A: lines still in game chat with windows only on; `/lgl` one-off while talking in the test channel. |
 | Logs keep names out (player side) | local-chat 25 (players) | 2P (A) | Log tap on both sides: counts only, no name, no marker. |
 | Talking to a friend near you | local-chat 47 | 2P (A+G) | Host `/lgl` alone, lines typed (one with an item link, one with `<t>`): the partner reports `[Local]` lines, none in Say; `/s` alone then a line: the partner reports it in Say. G: the partner walks past 20 yalms. |
+| /p while talking in local chat | local-chat 32 (/p brb) | 2P (A+G) | The partner is the whole party; while talking in local chat, the tester types `/p` and a test line (asked only while the party is just the two of them); the partner reports it in Party once, and local chat goes on. |
 
 **Suite: Messages and check codes**
 
@@ -980,7 +982,7 @@ local chat and device steps, which the report gives.
 
 ### Totals
 
-(As planned. Passed in the owner's first run, 2026-10-13, and no longer offered: chat-links 20, 21 to 23 and 30; settings 1 to 9; device-notices 1; context-invites 7 to 9 and 10. What was left of the last two, context-invites 9a and 11, are checks of their own.)
+(As planned. Passed in the owner's first run, 2026-10-13, and no longer offered: chat-links 20, 21 to 23 and 30; settings 1 to 9; device-notices 1; context-invites 7 to 9 and 10. What was left of the last two, context-invites 9a and 11, are checks of their own.) (Passed in the owner's second run, 2026-10-13, plugin 0.2.18, and no longer offered: local-chat 3a to 3c, 30, 32 to 33 but `/p brb` (now a two-player check of its own), and 34 to 41.)
 
 | | Tasks | A | A+G | G | 2P (A) | 2P (G or A+G) | Not covered |
 | --- | --- | --- | --- | --- | --- | --- | --- |

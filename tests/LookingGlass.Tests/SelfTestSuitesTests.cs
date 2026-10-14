@@ -16,7 +16,7 @@ public sealed class SelfTestSuitesTests : IDisposable {
 
     /// <summary>Every one-player task the plan covers, by its checklist steps, as the report names them.</summary>
     private static readonly string[] Covered = [
-        "local-chat 1-3", "local-chat 3a-3c", "local-chat 29", "local-chat 30-31", "local-chat 32-33", "local-chat 34-36", "local-chat 37-39", "local-chat 40-41",
+        "local-chat 1-3", "local-chat 29",
         "windows-only 1-2", "windows-only 5, 7, 8, 9, 12", "windows-only 11", "windows-only 13-16", "windows-only 17", "windows-only 20-21", "windows-only 23, 23b, 23c, 24",
         "channel-windows 17, 17b, 17c, 36, 37", "channel-windows 33, 33b, 33c, 33d, 33e, 33f", "channel-windows 37b; windows-only 6b", "channel-windows 37c-37f", "windows-only 26",
         "custom-colours 3", "custom-colours 4-8", "custom-colours 9", "name-colours 21", "name-colours 23 (first part)", "custom-colours 15-16", "custom-colours 17",
@@ -29,6 +29,8 @@ public sealed class SelfTestSuitesTests : IDisposable {
     /// <summary>Passed in the owner's first run (2026-10-13), and so no longer offered.</summary>
     private static readonly string[] Confirmed = [
         "chat-links 20", "chat-links 21-23", "chat-links 30", "settings 1-9", "device-notices 1", "context-invites 7-9a", "context-invites 10-11",
+        // The second run (2026-10-13, plugin 0.2.18).
+        "local-chat 3a-3c", "local-chat 30-31", "local-chat 32-33", "local-chat 34-36", "local-chat 37-39", "local-chat 40-41",
     ];
 
     [Fact]

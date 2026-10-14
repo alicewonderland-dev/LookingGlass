@@ -5128,7 +5128,7 @@ virtual clock; the plugin's `SelfTest` folder and `SelfTestWindow`):
   that couldn't reach the server keeps them, and the file, for the next
   connection. A damaged file that lost whose it was can only be cleared, with
   a warning.
-- Seven suites cover the plan's one-player tasks still open (`SelfTestSuites.All`, 40 checks):
+- Seven suites cover the plan's one-player tasks still open (`SelfTestSuites.All`, 34 checks):
   those that passed in the owner's first run (2026-10-13) are no longer offered.
 - **Two players** (`SelfTest/Pairs`, `Suites/Pairs`): **Two players...** opens
   a screen to invite a partner (their name@world, or **Use my target**, and a
@@ -5936,6 +5936,14 @@ The owner's decisions, and why.
   What was left of two of them is a check of its own: context-invites 9a (an
   FC login line in ChatTwo) and 11 (a character with no channels of its own).
   The party finder recruitment stays, for 24 and 25.
+- **What passed in the owner's second run leaves the self-test too (owner,
+  2026-10-13).** Plugin 0.2.18, one player, in a house: local-chat 3a to 3c,
+  30, 32 to 33 (all but `/p brb`), and 34 to 41 passed with nothing skipped.
+  They are ticked in pending-tests.md and no longer offered; the talking suite
+  keeps 1 to 3 and 29. What is left of the split tasks: 31 (a stranger near)
+  isn't covered (the self-test never types with anyone else near), and
+  `/p brb` while talking in local chat is a two-player check of its own (the
+  partner as the whole party), in the local chat suite.
 
 ## Open questions
 

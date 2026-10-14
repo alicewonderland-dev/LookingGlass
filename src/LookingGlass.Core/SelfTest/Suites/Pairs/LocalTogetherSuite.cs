@@ -15,6 +15,7 @@ public static class LocalTogetherSuite {
 
     public static SelfTestSuite Create() => new(Id, "Local chat together", [
         BeforeAccepting(), FriendsNotLoaded(), LongFriendsList(), RepliesAndRange(), NoLookingGlass(), Blocking(), PlainWords(), Colours(), TheLog(), TalkingToAFriend(),
+        PartyWhileTalking(),
     ]) {
         Changes = [SelfTestSetting.LocalPrivacyAccepted, SelfTestSetting.LocalChatColour, SelfTestSetting.PartnerNameColour, SelfTestSetting.WindowsOnly, SelfTestSetting.AdvancedMode],
         Planned = new Dictionary<SelfTestAction, int> { [SelfTestAction.LocalMessage] = 18, [SelfTestAction.PartnerMessage] = 50 },
@@ -313,6 +314,37 @@ public static class LocalTogetherSuite {
                     (theirs.Int("forbidden") == 0, "your partner's /xllog held a name or a test line"));
             }),
             Rest("25", "the server's side (the owner checks it)"),
+        ],
+    };
+
+    // -{64} local-chat 32 (/p brb)
+
+    private static SelfTestCheck PartyWhileTalking() => new() {
+        Id = "local-chat-32-party", Title = "/p while talking in local chat", Steps = "local-chat 32 (/p brb)", Mode = CheckMode.AutomaticAndGuided, Needs = Needs,
+        StepList = [
+            PartyOfTwo("32"),
+            SetupAuto("Talking in [Local]", "32", async context => StepResult.Expect(await context.TalkInLocalAsync().ConfigureAwait(false), "couldn't start talking in [Local]"),
+                types: true),
+            Guided("/p goes to Party once, and local chat goes on", "32", async context => {
+                var mark = context.Host.Mark();
+                var marker = context.NextMarker();
+                var answer = await context.AskAsync(new GuidedPrompt($"Type in the game's chat box: /p {marker}") {
+                    TesterTypes = true, Holds = () => PartyOfTwoAsync(context), HoldsWhy = SelfTestWords.WaitingPartyOfTwo, Short = "/p",
+                }).ConfigureAwait(false);
+                if (answer is not (GuidedAnswer.Done or GuidedAnswer.Seen)) {
+                    return StepContext.Judge(answer, null);
+                }
+
+                var saw = await PartnerSawAsync(context, marker).ConfigureAwait(false);
+                var inParty = context.Host.GameChatSince(mark).Count(line => line.Channel == GameChatKind.Party && line.FromTester && line.Text.Contains(marker, StringComparison.Ordinal));
+                var still = await context.TalkingInAsync(StickyChannel.LocalId).ConfigureAwait(false);
+                return StepResult.All((saw.Is("in", "party"), "your partner didn't see it in Party"), (inParty <= 1, "it went to Party more than once"),
+                    (still, "local chat ended after /p"));
+            }),
+            SetupAuto("Back to Say", "32", async context => {
+                await context.StopTalkingAsync().ConfigureAwait(false);
+                return StepResult.Pass();
+            }),
         ],
     };
 
