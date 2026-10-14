@@ -119,62 +119,119 @@ public sealed class WindowAttentionTests {
 
     private static DateTimeOffset At(double milliseconds) => Start.AddMilliseconds(milliseconds);
 
+    /// <summary>A window drawing frames at these times (milliseconds from <see cref="Start"/>): the flash's strength at each.</summary>
+    private static List<(double At, float Strength)> Draw(WindowFlash flash, IEnumerable<double> frames, bool reducedMotion = false) {
+        var seen = new List<(double, float)>();
+        foreach (var at in frames) {
+            flash.Frame(At(at));
+            seen.Add((at, flash.Strength(reducedMotion)));
+        }
+
+        return seen;
+    }
+
+    /// <summary>Frames every <paramref name="step"/> ms from <paramref name="from"/> for <paramref name="length"/> ms.</summary>
+    private static IEnumerable<double> Frames(double from, double length, double step = 1000.0 / 60) {
+        for (var at = from; at < from + length; at += step) {
+            yield return at;
+        }
+    }
+
+    /// <summary>The blinks seen: each run of frames at full strength, from fully dark to fully dark (start and end, in ms).</summary>
+    private static List<(double On, double Off)> Blinks(List<(double At, float Strength)> seen) {
+        var blinks = new List<(double, double)>();
+        double? on = null;
+        var dark = true;
+        foreach (var (at, strength) in seen) {
+            if (strength <= 0.001f) {
+                if (on is { } start) {
+                    blinks.Add((start, at));
+                    on = null;
+                }
+
+                dark = true;
+            } else if (strength >= 0.999f && dark && on == null) {
+                on = at;
+                dark = false;
+            }
+        }
+
+        if (on is { } last) {
+            blinks.Add((last, seen[^1].At));
+        }
+
+        return blinks;
+    }
+
     [Fact]
-    public void AWindowThatOpenedByItselfPulsesAFewTimesInAboutASecondAndAHalf() {
-        Assert.InRange(WindowFlash.OpenedPulses, 2, 3);
+    public void AWindowThatOpenedByItselfBlinksThreeTimesInAboutASecondAndAHalf() {
+        Assert.Equal(3, WindowFlash.OpenedPulses);
         Assert.InRange(WindowFlash.OpenedPulses * WindowFlash.PulseLength.TotalSeconds, 1.0, 1.6);
-        // A tab added by itself: briefer.
+        // A tab added by itself: one blink.
         Assert.Equal(1, WindowFlash.TabAddedPulses);
 
         var flash = new WindowFlash();
-        Assert.False(flash.IsRunning(Start));
-        Assert.Equal(0, flash.StrengthAt(Start, reducedMotion: false));
+        Assert.False(flash.IsRunning);
+        Assert.Equal(0, flash.Strength(reducedMotion: false));
 
-        flash.Start(Start, WindowFlash.OpenedPulses);
-        var pulse = WindowFlash.PulseLength.TotalMilliseconds;
-        for (var i = 0; i < WindowFlash.OpenedPulses; i++) {
-            // Each pulse rises from nothing to full and back.
-            Assert.Equal(0, flash.StrengthAt(At(i * pulse), false), 3);
-            Assert.Equal(1, flash.StrengthAt(At(i * pulse + pulse / 2), false), 3);
-        }
-
-        Assert.True(flash.IsRunning(At(WindowFlash.OpenedPulses * pulse - 1)));
-        Assert.False(flash.IsRunning(At(WindowFlash.OpenedPulses * pulse)));
-        Assert.Equal(0, flash.StrengthAt(At(WindowFlash.OpenedPulses * pulse + pulse / 2), false));
+        flash.Start(WindowFlash.OpenedPulses);
+        var seen = Draw(flash, Frames(0, 2000));
+        Assert.Equal(WindowFlash.OpenedPulses, Blinks(seen).Count);
+        Assert.All(seen, frame => Assert.InRange(frame.Strength, 0f, 1f));
+        Assert.False(flash.IsRunning);
+        Assert.Equal(0, seen[^1].Strength);
     }
 
-    /// <summary>The flash an owner didn't see (0.2.18): pulses that were full only for a moment, a tint and border too faint.</summary>
+    /// <summary>
+    /// The owner saw one flash where there were three (0.2.19): each blink was lit for most of its half second and dark for
+    /// about a tenth of one, with soft edges, and the three ran together. Now about half on, half clearly off.
+    /// </summary>
     [Fact]
-    public void EachPulseIsAtFullStrengthForMostOfItThenDarkBeforeTheNext() {
+    public void EachBlinkIsFullyOnForAQuarterOfASecondThenFullyOffForAsLong() {
         var flash = new WindowFlash();
-        flash.Start(Start, WindowFlash.OpenedPulses);
-        var pulse = WindowFlash.PulseLength.TotalMilliseconds;
-        const int samples = 1000;
-        for (var i = 0; i < WindowFlash.OpenedPulses; i++) {
-            var full = 0;
-            var dark = 0;
-            var last = -1f;
-            var rising = true;
-            for (var s = 0; s < samples; s++) {
-                var strength = flash.StrengthAt(At(i * pulse + pulse * s / samples), false);
-                Assert.InRange(strength, 0f, 1f);
-                full += strength >= 0.99f ? 1 : 0;
-                dark += strength <= 0.01f ? 1 : 0;
-                // Up once, then down once: one blink, not a flicker.
-                if (rising && strength < last) {
-                    rising = false;
-                }
-
-                Assert.True(rising || strength <= last + 1e-6f, $"pulse {i} rose again at {s}/{samples}");
-                last = strength;
+        flash.Start(WindowFlash.OpenedPulses);
+        var seen = Draw(flash, Frames(0, 2000));
+        var blinks = Blinks(seen);
+        Assert.Equal(3, blinks.Count);
+        for (var i = 0; i < blinks.Count; i++) {
+            var lit = seen.Where(frame => frame.At >= blinks[i].On && frame.At < blinks[i].Off && frame.Strength >= 0.999f).ToList();
+            // At full for about a fifth of a second or more, quickly on and off.
+            Assert.True(lit[^1].At - lit[0].At >= 180, $"blink {i} was at full for {lit[^1].At - lit[0].At} ms");
+            Assert.True(blinks[i].Off - blinks[i].On <= 280, $"blink {i} was lit for {blinks[i].Off - blinks[i].On} ms");
+            if (i > 0) {
+                // Fully dark between blinks, for about a quarter of a second: as the window looks without a flash.
+                var gap = seen.Where(frame => frame.At >= blinks[i - 1].Off && frame.At < blinks[i].On).ToList();
+                Assert.All(gap.Where(frame => frame.Strength > 0.001f), frame => Assert.True(frame.At > blinks[i].On - 40, $"not dark at {frame.At}"));
+                Assert.True(blinks[i].On - blinks[i - 1].Off >= 200, $"the gap before blink {i} was {blinks[i].On - blinks[i - 1].Off} ms");
             }
-
-            // Lit for most of the pulse, so it is seen; dark for a moment at its end, so three pulses read as three.
-            Assert.True(full >= samples * 0.4, $"pulse {i} was at full strength for only {full}/{samples}");
-            Assert.True(dark >= samples * 0.1, $"pulse {i} was dark for only {dark}/{samples}");
-            // It comes on quickly.
-            Assert.True(flash.StrengthAt(At(i * pulse + pulse / 5), false) >= 0.99f);
         }
+
+        // It comes on at once (no waiting before the first blink).
+        Assert.True(blinks[0].On <= 50);
+    }
+
+    /// <summary>
+    /// The flash's clock runs from the window's first drawn frame, and only as frames are drawn (a long one counts as at most
+    /// <see cref="WindowFlash.MaxFrameStep"/>): a window that takes a while to appear, or a frame that hitches, can't skip a blink.
+    /// </summary>
+    [Fact]
+    public void NoBlinkIsLostBeforeTheFirstFrameOrToAHitch() {
+        var late = new WindowFlash();
+        late.Start(WindowFlash.OpenedPulses);
+        // First drawn two seconds after it was asked for: still three blinks, from then.
+        Assert.Equal(3, Blinks(Draw(late, Frames(2000, 2000))).Count);
+
+        var hitch = new WindowFlash();
+        hitch.Start(WindowFlash.OpenedPulses);
+        // A frame that took a second, in the middle of the first blink: the others still show.
+        var frames = Frames(0, 100).Concat(Frames(1100, 2000));
+        Assert.Equal(3, Blinks(Draw(hitch, frames)).Count);
+
+        // Slow frames (12 a second) still show each blink and each gap.
+        var slow = new WindowFlash();
+        slow.Start(WindowFlash.OpenedPulses);
+        Assert.Equal(3, Blinks(Draw(slow, Frames(0, 3000, 1000.0 / 12))).Count);
+        Assert.InRange(WindowFlash.MaxFrameStep.TotalMilliseconds, 50, 120);
     }
 
     [Fact]
@@ -188,40 +245,38 @@ public sealed class WindowAttentionTests {
     [Fact]
     public void WithReducedMotionItIsASteadySofterHighlightForTheSameTime() {
         var flash = new WindowFlash();
-        flash.Start(Start, WindowFlash.OpenedPulses);
+        flash.Start(WindowFlash.OpenedPulses);
         var end = (WindowFlash.OpenedPulses * WindowFlash.PulseLength).TotalMilliseconds;
+        var seen = Draw(flash, Frames(0, end + 200), reducedMotion: true);
 
-        foreach (var at in new[] { 0, 1, end / 3, end / 2, end - 1 }) {
-            Assert.Equal(WindowFlash.ReducedMotionStrength, flash.StrengthAt(At(at), reducedMotion: true));
-        }
-
+        Assert.All(seen.Where(frame => frame.At < end - 20), frame => Assert.Equal(WindowFlash.ReducedMotionStrength, frame.Strength));
+        Assert.All(seen.Where(frame => frame.At > end + 20), frame => Assert.Equal(0, frame.Strength));
         Assert.InRange(WindowFlash.ReducedMotionStrength, 0.2f, 0.7f);
-        Assert.Equal(0, flash.StrengthAt(At(end), reducedMotion: true));
     }
 
     [Fact]
     public void ALongerFlashStillRunningIsntCutShortByABriefOne() {
         var flash = new WindowFlash();
         var pulse = WindowFlash.PulseLength.TotalMilliseconds;
-        flash.Start(Start, WindowFlash.OpenedPulses);
+        flash.Start(WindowFlash.OpenedPulses);
+        var seen = Draw(flash, Frames(0, pulse / 2));
 
         // A tab added by itself just after the window opened: the window's own flash goes on as it was.
-        Assert.False(flash.Start(At(pulse / 2), WindowFlash.TabAddedPulses));
-        Assert.Equal(1, flash.StrengthAt(At(pulse + pulse / 2), false), 3);
-        Assert.True(flash.IsRunning(At(WindowFlash.OpenedPulses * pulse - 1)));
+        Assert.False(flash.Start(WindowFlash.TabAddedPulses));
+        seen.AddRange(Draw(flash, Frames(pulse / 2, 2 * pulse)));
+        Assert.Equal(3, Blinks(seen).Count);
 
-        // Once it is nearly over, another tab flashes again in full.
-        var late = At(WindowFlash.OpenedPulses * pulse - 10);
-        Assert.True(flash.Start(late, WindowFlash.TabAddedPulses));
-        Assert.Equal(1, flash.StrengthAt(late.AddMilliseconds(pulse / 2), false), 3);
-        Assert.False(flash.IsRunning(late.Add(WindowFlash.PulseLength)));
+        // Once it is over, or nearly, another tab blinks again in full.
+        Assert.True(flash.Start(WindowFlash.TabAddedPulses));
+        Assert.Single(Blinks(Draw(flash, Frames(3 * pulse, 2 * pulse))));
+        Assert.False(flash.IsRunning);
     }
 
     [Fact]
     public void NoPulsesIsNoFlash() {
         var flash = new WindowFlash();
-        flash.Start(Start, 0);
-        Assert.False(flash.IsRunning(Start));
-        Assert.Equal(0, flash.StrengthAt(Start, false));
+        Assert.False(flash.Start(0));
+        Assert.Empty(Blinks(Draw(flash, Frames(0, 1000))));
+        Assert.False(flash.IsRunning);
     }
 }

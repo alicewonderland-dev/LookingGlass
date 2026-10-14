@@ -41,10 +41,16 @@ public sealed class TabUnread {
 /// A channel window's brief flash, to be noticed without taking the keyboard: its title bar and border pulse in a channel's
 /// colour. A window that opened by itself for a line that arrived (windows only, or a channel kept out of game chat that no
 /// window showed) pulses <see cref="OpenedPulses"/> times; one that got a tab by itself, <see cref="TabAddedPulses"/>.
-/// Each pulse is a blink: it comes on quickly, stays at full strength for most of the pulse, and is dark for a moment
-/// before the next, so three read as three (in 0.2.18 a smooth rise and fall, at full only for an instant, with a fainter
-/// tint and a thinner border, went unseen in the owner's test). With reduced motion (Dalamud's setting), a steady, softer highlight for as long instead. The
-/// numbers are here, in one place, to be tuned from what players say. Draw thread only.
+/// Each pulse is a blink: on at once, at full for about a fifth of a second, then fully off (the window as it usually
+/// looks) for a quarter of a second before the next, so three read as three. In 0.2.18 a smooth rise and fall, at full
+/// only for an instant, with a fainter tint and a thinner border, went unseen; in 0.2.19 each blink was lit for most of
+/// its half second and dark for about a tenth, with soft edges, and the owner saw one flash where there were three.
+/// <para>
+/// Its clock runs from the window's first drawn frame and only as frames are drawn (<see cref="Frame"/>), a long frame
+/// counting as at most <see cref="MaxFrameStep"/>: a window that takes a while to appear, or a hitch as it opens, can't
+/// skip a blink. With reduced motion (Dalamud's setting), a steady, softer highlight for as long instead. The numbers are
+/// here, in one place, to be tuned from what players say. Draw thread only.
+/// </para>
 /// </summary>
 public sealed class WindowFlash {
     /// <summary>How many times a window that opened by itself pulses.</summary>
@@ -53,8 +59,11 @@ public sealed class WindowFlash {
     /// <summary>How many times a window pulses when a tab was added to it by itself.</summary>
     public const int TabAddedPulses = 1;
 
-    /// <summary>One pulse: from nothing to full, a while at full, and back to nothing.</summary>
+    /// <summary>One pulse: a blink (on, at full, off), then dark until the next.</summary>
     public static readonly TimeSpan PulseLength = TimeSpan.FromMilliseconds(500);
+
+    /// <summary>The most a single frame moves the flash's clock on: a longer frame (a hitch) doesn't skip a blink.</summary>
+    public static readonly TimeSpan MaxFrameStep = TimeSpan.FromMilliseconds(100);
 
     /// <summary>With reduced motion, how strong the steady highlight is (full is 1).</summary>
     public const float ReducedMotionStrength = 0.5f;
@@ -65,36 +74,60 @@ public sealed class WindowFlash {
     /// <summary>The border drawn around the window while it flashes, in pixels before the global scale (at full strength, opaque).</summary>
     public const float BorderThickness = 3f;
 
-    // Within a pulse, as parts of it: it rises until RisenAt, stays at full until FallsAt, and is gone at DarkAt (then dark).
-    private const double RisenAt = 0.12;
-    private const double FallsAt = 0.6;
-    private const double DarkAt = 0.78;
+    // Within a pulse, as parts of it: on (a short ease, not a hard edge) until OnAt, full until OffFrom, off at DarkAt, then
+    // fully dark for the rest: about 25 ms up, 200 ms full, 25 ms down, 250 ms dark.
+    private const double OnAt = 0.05;
+    private const double OffFrom = 0.45;
+    private const double DarkAt = 0.5;
 
-    private DateTimeOffset _start;
-    private DateTimeOffset _end;
+    // How long the flash lasts, how far its clock has run (in drawn frames), and when the last frame was drawn (null: none yet).
+    private TimeSpan _length;
+    private TimeSpan _elapsed;
+    private DateTimeOffset? _lastFrame;
 
-    /// <summary>Starts flashing <paramref name="pulses"/> times; a flash still running that would end later goes on as it was.</summary>
+    /// <summary>Whether it is flashing (or waiting for the window's first frame to start).</summary>
+    public bool IsRunning => this._elapsed < this._length;
+
+    /// <summary>
+    /// Starts flashing <paramref name="pulses"/> times, from the window's next drawn frame; a flash still running with more
+    /// left than that goes on as it was.
+    /// </summary>
     /// <returns>True if it started (else nothing changed).</returns>
-    public bool Start(DateTimeOffset now, int pulses) {
-        var end = now + pulses * PulseLength;
-        if (pulses <= 0 || end <= this._end) {
+    public bool Start(int pulses) {
+        var length = pulses * PulseLength;
+        if (pulses <= 0 || length <= this._length - this._elapsed) {
             return false;
         }
 
-        this._start = now;
-        this._end = end;
+        this._length = length;
+        this._elapsed = TimeSpan.Zero;
+        this._lastFrame = null;
         return true;
     }
 
-    /// <summary>Whether it is flashing now.</summary>
-    public bool IsRunning(DateTimeOffset now) => now >= this._start && now < this._end;
+    /// <summary>
+    /// The window draws a frame at <paramref name="now"/> (call once per frame, before <see cref="Strength"/>): the clock moves
+    /// on by the time since the last frame, at most <see cref="MaxFrameStep"/>; the first frame after <see cref="Start"/> is its 0.
+    /// </summary>
+    public void Frame(DateTimeOffset now) {
+        if (!this.IsRunning) {
+            return;
+        }
+
+        if (this._lastFrame is { } last) {
+            var step = now - last;
+            this._elapsed += step < TimeSpan.Zero ? TimeSpan.Zero : step > MaxFrameStep ? MaxFrameStep : step;
+        }
+
+        this._lastFrame = now;
+    }
 
     /// <summary>
-    /// How strong the flash is now, from 0 (none) to 1: each pulse rises quickly, stays at full, falls, and is dark for a
-    /// moment before the next (the rise and fall are eased, not steps).
+    /// How strong the flash is at this frame, from 0 (none: the window as it usually looks) to 1: each pulse comes on at once,
+    /// stays at full, goes off, and stays fully off until the next.
     /// </summary>
-    public float StrengthAt(DateTimeOffset now, bool reducedMotion) {
-        if (!this.IsRunning(now)) {
+    public float Strength(bool reducedMotion) {
+        if (!this.IsRunning || this._lastFrame == null) {
             return 0;
         }
 
@@ -102,14 +135,14 @@ public sealed class WindowFlash {
             return ReducedMotionStrength;
         }
 
-        var phase = (now - this._start).Ticks % PulseLength.Ticks / (double) PulseLength.Ticks;
-        var strength = phase < RisenAt ? Ease(phase / RisenAt)
-            : phase < FallsAt ? 1
-            : phase < DarkAt ? 1 - Ease((phase - FallsAt) / (DarkAt - FallsAt))
+        var phase = this._elapsed.Ticks % PulseLength.Ticks / (double) PulseLength.Ticks;
+        var strength = phase < OnAt ? Ease(phase / OnAt)
+            : phase < OffFrom ? 1
+            : phase < DarkAt ? 1 - Ease((phase - OffFrom) / (DarkAt - OffFrom))
             : 0;
         return (float) strength;
     }
 
-    /// <summary>From 0 to 1 smoothly (smoothstep): gentle at both ends, so the blink has no hard edge.</summary>
+    /// <summary>From 0 to 1 smoothly (smoothstep), so a blink's edges aren't a hard jump.</summary>
     private static double Ease(double t) => t * t * (3 - 2 * t);
 }
