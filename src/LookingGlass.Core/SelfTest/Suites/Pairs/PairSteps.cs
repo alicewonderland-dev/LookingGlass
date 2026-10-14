@@ -199,7 +199,7 @@ internal static class PairSteps {
 
             return StepResult.Pass();
         }),
-        CarryOn(Relog, checklist),
+        CarryOn(Relog, checklist, relog: true),
         SetupAuto("What your partner sent while you were away", checklist, async context => {
             var mark = (long) context.State["away-mark"];
             var answer = await context.Partner.AnswerOfAsync(context, mark, (int) context.State["away-number"], PartnerVerb.SendWhileAway).ConfigureAwait(false);

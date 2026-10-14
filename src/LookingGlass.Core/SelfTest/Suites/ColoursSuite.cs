@@ -44,7 +44,7 @@ public static class ColoursSuite {
                 return await context.SettledAsync(async () => StepResult.Expect(await context.Host.OwnNameColourAsync().ConfigureAwait(false) == Orange, "your name colour wasn't set"))
                     .ConfigureAwait(false);
             }),
-            Ask("Seen from the other character", "21", new GuidedPrompt(
+            AskAcrossRelog("Seen from the other character", "21", new GuidedPrompt(
                 "Come in with that other character (the self-test waits, and does nothing meanwhile), and open a channel both share: is this character's name in this orange? " +
                 "Then come back in with this character, and answer.", PromptKind.YesNo) { Swatch = Orange, Short = "another character" }),
         ],
@@ -63,7 +63,7 @@ public static class ColoursSuite {
                 await context.Host.SetChannelColourAsync(second, ChannelColour.Custom(Pink)).ConfigureAwait(false);
                 return StepResult.Pass();
             }),
-            Ask("The other character's own colours", "15", new GuidedPrompt(
+            AskAcrossRelog("The other character's own colours", "15", new GuidedPrompt(
                 "Come in with that other character (the self-test waits, and does nothing meanwhile): are its channels' colours its own, as you left them, not this one's? " +
                 "Then come back in with this character, and answer.", PromptKind.YesNo) { Short = "its own colours" }),
         ],

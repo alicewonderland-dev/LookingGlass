@@ -60,7 +60,9 @@ public sealed class SelfTestProtocolTests {
         Assert.Null(parsed.Int("missing"));
 
         foreach (var outcome in Enum.GetValues<PartnerOutcome>()) {
-            var written = SelfTestProtocol.Write(Code, new PartnerAnswer(5, outcome, new Dictionary<string, string>()));
+            // "away" and "back" are a tester's own lines: numbered 0 only.
+            var number = outcome is PartnerOutcome.Away or PartnerOutcome.Back ? 0 : 5;
+            var written = SelfTestProtocol.Write(Code, new PartnerAnswer(number, outcome, new Dictionary<string, string>()));
             Assert.Equal(outcome, Assert.IsType<ProtocolLine.Answer>(SelfTestProtocol.Parse(Code, written)).Value.Outcome);
         }
 
@@ -70,12 +72,39 @@ public sealed class SelfTestProtocolTests {
     }
 
     [Fact]
-    public void ThePartnersOwnLinesAreHelloAndBack() {
+    public void ATestersOwnLinesAreHelloAwayAndBack() {
         var hello = SelfTestProtocol.Write(Code, new PartnerAnswer(0, PartnerOutcome.Hello, new Dictionary<string, string> { ["v"] = "0.2.17", ["private"] = "yes" }));
         Assert.Equal(PartnerOutcome.Hello, Assert.IsType<ProtocolLine.Answer>(SelfTestProtocol.Parse(Code, hello)).Value.Outcome);
+
+        // Out of the private place (or about to relog), and back inside (owner, 2026-10-13): exactly these, nothing more.
+        var away = SelfTestProtocol.Write(Code, new PartnerAnswer(0, PartnerOutcome.Away, new Dictionary<string, string>()));
         var back = SelfTestProtocol.Write(Code, new PartnerAnswer(0, PartnerOutcome.Back, new Dictionary<string, string>()));
-        Assert.Equal(PartnerOutcome.Back, Assert.IsType<ProtocolLine.Answer>(SelfTestProtocol.Parse(Code, back)).Value.Outcome);
+        Assert.Equal("LG self-test K7Q2 #0 away", away);
+        Assert.Equal("LG self-test K7Q2 #0 back", back);
+        Assert.Equal(PartnerOutcome.Away, Assert.IsType<ProtocolLine.Answer>(SelfTestProtocol.Parse(Code, away)).Value.Outcome);
+        var parsed = Assert.IsType<ProtocolLine.Answer>(SelfTestProtocol.Parse(Code, back)).Value;
+        Assert.Equal((0, PartnerOutcome.Back, 0), (parsed.Number, parsed.Outcome, parsed.Fields.Count));
     }
+
+    [Theory]
+    [InlineData("LG self-test K7Q2 #1 away")]
+    [InlineData("LG self-test K7Q2 #12 back")]
+    [InlineData("LG self-test K7Q2 #0 away for=5")]
+    [InlineData("LG self-test K7Q2 #0 back place=house")]
+    [InlineData("LG self-test K7Q2 #0 away now")]
+    [InlineData("LG self-test K7Q2 #0 back ")]
+    [InlineData("LG self-test K7Q2 #00 away")]
+    [InlineData("LG self-test K7Q2 #00 back x")]
+    [InlineData("LG self-test K7Q2 #0 Away")]
+    [InlineData("LG self-test K7Q2 #0 away, please ignore")]
+    [InlineData("LG self-test K7Q2 # away")]
+    public void AwayAndBackAreReadStrictly(string line) {
+        var parsed = SelfTestProtocol.Parse(Code, line);
+        Assert.True(parsed is ProtocolLine.Malformed, $"{line} parsed as {parsed}");
+    }
+
+    [Fact]
+    public void AwayAndBackAreCapped() => Assert.Equal(20, SelfTestProtocol.MostPresenceLines);
 
     [Fact]
     public void TestLinesAreToldApartFromControlLines() {
