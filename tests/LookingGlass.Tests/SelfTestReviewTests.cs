@@ -151,6 +151,12 @@ public sealed class SelfTestReviewTests : IDisposable {
                 typedOffSay++;
             }
 
+            // The lines to type in local chat (43) are skipped, so the steps that move ChatTwo's input (45, 46) are reached.
+            if (text.StartsWith("In ChatTwo's main input, type", StringComparison.Ordinal)) {
+                run.Answer(GuidedAnswer.Skip);
+                return;
+            }
+
             // The tester does as asked: Party, a tell, or another channel in the picker.
             if (text.Contains("to Party", StringComparison.Ordinal) || text.StartsWith("Pick Party", StringComparison.Ordinal)) {
                 this._host.ChatTwoInput = 14;
@@ -379,16 +385,31 @@ public sealed class SelfTestReviewTests : IDisposable {
         Assert.Single(this._host.File.Read(out _)!.TestChannels);
     }
 
-    // ---------------------------------------------------------------- M4: invites
+    // ---------------------------------------------------------------- M4: invites (now from ChatTwo's menu, context-invites 18)
 
-    private async Task<SelfTestRun> InviteRunAsync() {
+    /// <summary>
+    /// The ChatTwo-menu invite check, with a tester who types the name asked for and, when asked, invites that person from
+    /// ChatTwo's menu (the plugin's own invite path, as the menu does).
+    /// </summary>
+    private async Task<SelfTestRun> InviteRunAsync(Action? eachTick = null) {
+        this._host.ChatTwo = true;
         this._host.Settings[SelfTestSetting.AdvancedMode] = JsonSerializer.SerializeToElement(false);
-        var suite = new SelfTestSuite("invites", "Invites", [InvitesSuite.Create().Checks.Single(check => check.Id == "context-invites-15-18")]);
+        var suite = new SelfTestSuite("chattwo", "ChatTwo", [ChatTwoSuite.Create().Checks.Single(check => check.Id == "context-invites-18-chattwo")]);
         var run = this.NewRun(null, suite);
+        var invited = false;
         this._host.OnTick = () => {
             if (run.View is { State: SelfTestState.NeedsYou, Prompt: { } waiting }) {
-                run.Answer(GuidedAnswer.Done, input: waiting.Prompt.Input != null ? "Alice Liddell@Twintania" : null);
+                if (waiting.Prompt.Text.StartsWith("In ChatTwo, right-click", StringComparison.Ordinal)) {
+                    if (!invited) {
+                        invited = true;
+                        _ = this._host.InviteAsync(this._host.Created[0], "Alice Liddell", "Twintania");
+                    }
+                } else {
+                    run.Answer(GuidedAnswer.Done, input: waiting.Prompt.Input != null ? "Alice Liddell@Twintania" : null);
+                }
             }
+
+            eachTick?.Invoke();
         };
         await run.RunAsync();
         return run;
@@ -400,41 +421,37 @@ public sealed class SelfTestReviewTests : IDisposable {
 
         var run = await this.InviteRunAsync();
 
+        // Never asked to invite them: looked up first, and registered.
         Assert.Empty(this._host.Invited);
         Assert.Equal(1, this._host.Lookups);
         Assert.Contains(run.Data.Results.Single().NotRun, part => part.EndsWith(SelfTestWords.Registered, StringComparison.Ordinal));
     }
 
     [Fact]
-    public async Task SomeoneNotRegisteredGetsTheLineInBothModes() {
+    public async Task SomeoneNotRegisteredGetsTheLineFromChatTwosMenu() {
         var run = await this.InviteRunAsync();
 
-        Assert.Equal(2, this._host.Invited.Count);
-        Assert.Equal(CheckOutcome.Passed, run.Data.Results.Single().Outcome);
+        Assert.Single(this._host.Invited);
+        var result = run.Data.Results.Single();
+        Assert.True(result.Outcome == CheckOutcome.Passed, $"{result.Outcome}: {result.Why}");
         Assert.Empty(this._host.Disbanded);
+        // The name typed in stays out of the report and the log.
+        Assert.Contains("Alice Liddell@Twintania", this._host.Forbidden);
     }
 
     [Fact]
     public async Task AnInviteThatWentAnywayIsNotRepeatedAndTheChannelIsDisbanded() {
-        // Registered between the lookup and the invite.
-        this._host.Settings[SelfTestSetting.AdvancedMode] = JsonSerializer.SerializeToElement(false);
-        var suite = new SelfTestSuite("invites", "Invites", [InvitesSuite.Create().Checks.Single(check => check.Id == "context-invites-15-18")]);
-        var run = this.NewRun(null, suite);
-        this._host.OnTick = () => {
-            if (run.View is { State: SelfTestState.NeedsYou, Prompt: { } waiting }) {
-                run.Answer(GuidedAnswer.Done, input: "Alice Liddell@Twintania");
-            }
-
+        // Registered between the lookup and the invite from ChatTwo's menu.
+        var run = await this.InviteRunAsync(() => {
             if (this._host.Lookups == 1) {
                 this._host.Registered = true;
             }
-        };
-
-        await run.RunAsync();
+        });
 
         Assert.Single(this._host.Invited);
         Assert.Single(this._host.Disbanded);
         Assert.Empty(this._host.Left);
+        Assert.Equal(CheckOutcome.NotRun, run.Data.Results.Single().Outcome);
     }
 
     // ---------------------------------------------------------------- M5: another character

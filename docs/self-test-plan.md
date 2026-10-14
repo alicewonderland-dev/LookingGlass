@@ -805,13 +805,13 @@ section and name, with its checklist steps. Modes:
 
 ### Group 1: one player (54 tasks)
 
-**Suite: Talking in a channel and local chat** (one player)
+**Suite: Talking in a channel and local chat** (one player; what was left passed in the owner's fifth run, 2026-10-13, plugin 0.2.19: no longer offered)
 
 | Task | Steps | Mode | How |
 | --- | --- | --- | --- |
-| Is `/lgl` free, and what does it say | local-chat 1-3 | A+G | A: `/lgl` registered once, by LookingGlass (Dalamud's command list); its help text; the Colour "?" words. G: look at `/xlhelp`; turn LookingGlass off and on in `/xlplugins` (the run carries on after) and type `/lgl` while it's off. |
+| Is `/lgl` free, and what does it say | local-chat 1-3 | passed | Passed in the owner's fifth run (2026-10-13, plugin 0.2.19), no longer offered. |
 | The "ask first" window | local-chat 3a-3c | passed | Passed in the owner's second run (2026-10-13, plugin 0.2.18), no longer offered. |
-| Starting, and the once-only line | local-chat 29 | A | The once-only note reset (snapshot); `/lgl` typed: "Now talking in [Local].", the note once, the chat input's label `[Local]`, the info bar "LG [Local]" in local chat's colour (the colour asked for); typed again: only the first line. |
+| Starting, and the once-only line | local-chat 29 | passed | Passed in the owner's fifth run (2026-10-13, plugin 0.2.19), no longer offered. |
 | Typing never reaches Say: alone | local-chat 30 | passed | Passed in the owner's second run (2026-10-13, plugin 0.2.18), no longer offered. |
 | Typing never reaches Say: next to a stranger | local-chat 31 | not covered | Needs a stranger next to the tester, where the self-test never types. |
 | Commands, one-offs and moving between channels | local-chat 32-33 (all but /p) | passed | Passed in the owner's second run (2026-10-13, plugin 0.2.18), no longer offered. |
@@ -824,10 +824,12 @@ section and name, with its checklist steps. Modes:
 | Task | Steps | Mode | How |
 | --- | --- | --- | --- |
 | Local chat with ChatTwo | local-chat 42-46 | G | The tester types in ChatTwo's input and pop-out as told; the runner watches where each line went (local chat, Say, Party) and that local chat ends on ChatTwo's picker or a tab; refusal on a tell. The label's look: the tester. Party parts only with the partner as the party. |
-| The ChatTwo note when you start talking in a channel | sticky-channel 28 | G | The note reset (snapshot); the tester switches ChatTwo to Party and types `/lgc<test>`; the runner checks the line and the note once, and the info bar. ChatTwo's label: the tester. |
+| The ChatTwo note when you start talking in a channel | sticky-channel 28 | passed | Passed in the owner's fifth run (2026-10-13, plugin 0.2.19), no longer offered. |
 | Pink everywhere, ChatTwo | custom-colours 11-14 | G | The runner sends a line with an item link in the pink test channel and starts talking in it; the tester says what ChatTwo shows. The invite submenu part needs a partner's name in ChatTwo. |
-| ChatTwo turned off and on | context-invites 19-21 | G | The tester turns ChatTwo and LookingGlass off and on as told (the run carries on after a reload); the runner checks the menu registration count (one, not two) itself; the menu's look: the tester. |
-| Party finder: with ChatTwo | chat-links 26 | G | As the party finder suite, with ChatTwo's input. |
+| Inviting someone who isn't registered, from ChatTwo's menu | context-invites 18 (from ChatTwo's menu) | A+G | The tester types the name@world of someone they know who doesn't use LookingGlass and whose name is in a ChatTwo line; the runner looks them up first (someone registered is never invited); the tester invites them from ChatTwo's menu; the runner checks the line (simple mode). |
+| ChatTwo turned off and on | context-invites 19 (ChatTwo off and on) | G | The tester turns ChatTwo off and on in `/xlplugins` and right-clicks a player's name in ChatTwo: one Invite to LookingGlass, not two. |
+| LookingGlass turned off and on, with ChatTwo | context-invites 20-21 | passed | Passed in the owner's fifth run (2026-10-13, plugin 0.2.19), no longer offered. |
+| Party finder: with ChatTwo | chat-links 26 | passed | Passed in the owner's fifth run (2026-10-13, plugin 0.2.19), no longer offered. |
 
 **Suite: Windows and counts** (one player)
 
@@ -838,14 +840,14 @@ section and name, with its checklist steps. Modes:
 | Warnings still show in game chat | windows-only 11 | passed | Passed in the owner's third run (2026-10-13, plugin 0.2.18), no longer offered. |
 | Which window a new channel lands in | windows-only 13-16 | passed | Passed in the owner's third run (2026-10-13, plugin 0.2.18), no longer offered. |
 | Nothing pops up during combat | windows-only 17 | confirmed | Confirmed by the owner from earlier testing (2026-10-13). The self-test does no combat checks: no striking dummy can be placed in a private place. |
-| Show in game chat is locked while the setting is on | windows-only 20-21 | A+G | A: the state stays off; no "shows in game chat again" line on closing. G: the greyed red cross, its tooltip, the tab's hover. |
+| Show in game chat is locked while the setting is on | windows-only 20-21 | passed | Passed in the owner's fifth run (2026-10-13, plugin 0.2.19), no longer offered. |
 | Turning the setting off | windows-only 23, 23b, 23c, 24 | passed | 23 and 24 passed in the owner's third run (2026-10-13, plugin 0.2.18); the combat parts (23b, 23c) confirmed by the owner from earlier testing. No longer offered. |
 | No errors in the log | windows-only 26 | passed | Passed in the owner's third run (2026-10-13, plugin 0.2.18), no longer offered. |
 | Counts on every tab not selected | channel-windows 17, 17b, 17c, 36, 37 (all but a collapsed window) | passed | Passed in the owner's third run (2026-10-13, plugin 0.2.18), no longer offered. |
-| A collapsed window counts again | channel-windows 36 (collapsing a window) | A+G | The test channel in a window of its own; the tester collapses it; a simulated line: the channel list counts it. |
+| A collapsed window counts again | channel-windows 36 (collapsing a window) | passed | Passed in the owner's fifth run (2026-10-13, plugin 0.2.19), no longer offered. |
 | A channel off game chat opens a window again | channel-windows 33, 33b, 33c, 33d, 33e, 33f | passed | Passed in the owner's third run (2026-10-13, plugin 0.2.18), the partner's parts of 33c and 33f in group 2; the combat parts (33d, 33e) confirmed by the owner from earlier testing. No longer offered. |
 | Channel list counts for channels seen only in windows | channel-windows 37b (all but a channel shown in game chat); windows-only 6b | passed | Passed in the owner's third run (2026-10-13, plugin 0.2.18), no longer offered. |
-| A channel shown in game chat loses its count | channel-windows 37b (that part) | G | The tester selects one of their own channels shown in game chat with a count, if any, and says whether the count goes. |
+| A channel shown in game chat loses its count | channel-windows 37b (that part) | passed | Passed in the owner's fifth run (2026-10-13, plugin 0.2.19), no longer offered. |
 | The flash | channel-windows 37c-37f | G | A: the flash starts with 3 pulses for a window that opened by itself, 1 for an added tab, none for one opened by the tester or at login. G: is it noticeable, or too much; reduced motion (the tester turns it on in Dalamud's settings, if they want to). |
 
 **Suite: Colours** (one player)
@@ -868,10 +870,10 @@ section and name, with its checklist steps. Modes:
 | Task | Steps | Mode | How |
 | --- | --- | --- | --- |
 | Where it must not show | context-invites 7-9 | passed | Passed in the owner's first run (2026-10-13), no longer offered. |
-| Where it must not show: an FC login line in ChatTwo | context-invites 9a | G | Needs ChatTwo and a Free Company member's login or logout line; the tester right-clicks it, and the same player's name in an ordinary line. |
+| Where it must not show: an FC login line in ChatTwo | context-invites 9a | passed | Passed in the owner's fifth run (2026-10-13, plugin 0.2.19), no longer offered. |
 | No item when it can't work: disconnected | context-invites 10 | passed | Passed in the owner's first run (2026-10-13), no longer offered. |
 | No item when it can't work: no channels of your own | context-invites 11 | G | Needs another character that isn't admin or moderator of any channel: the tester comes in with it (the run waits), right-clicks a player, and comes back. |
-| Inviting someone who isn't registered | context-invites 15, 18 (that part) | A+G | The tester types the name@world of someone they know who doesn't use LookingGlass (one lookup; nothing is sent to that person); the runner invites through the same path as the menu and checks the line, in both modes. G: the same from ChatTwo's menu, if on. |
+| Inviting someone who isn't registered | context-invites 15, 18 (all but ChatTwo's menu) | passed | Passed in the owner's fifth run (2026-10-13, plugin 0.2.19), no longer offered; ChatTwo's menu's part is in the ChatTwo suite. |
 
 **Suite: Settings** (one player; both passed in the owner's first run, 2026-10-13: no longer offered)
 
@@ -1023,7 +1025,7 @@ local chat and device steps, which the report gives.
 
 ### Totals
 
-(As planned. Passed in the owner's first run, 2026-10-13, and no longer offered: chat-links 20, 21 to 23 and 30; settings 1 to 9; device-notices 1; context-invites 7 to 9 and 10. What was left of the last two, context-invites 9a and 11, are checks of their own.) (Passed in the owner's second run, 2026-10-13, plugin 0.2.18, and no longer offered: local-chat 3a to 3c, 30, 32 to 33 but `/p brb` (now a two-player check of its own), and 34 to 41.) (Passed in the owner's third run, 2026-10-13, plugin 0.2.18, and no longer offered: windows-only 1 to 2, 5, 7 to 9, 11, 13 to 16, 23, 24 and 26; channel-windows 17, 17b, 17c, 36 and 37 but a collapsed window, 33 to 33f, 6b and 37b but a channel shown in game chat. Windows-only 12's invite line is a two-player check of its own. No combat checks: no striking dummy can be placed in a private place, and the owner confirmed windows-only 17, 23b, 23c and channel-windows 33d, 33e from earlier testing.) (Passed in the owner's fourth run, 2026-10-13, plugin 0.2.18, and no longer offered: custom-colours 3, 4 to 8, 9 but the invite submenu and the caught-up message, 15 but another character, 17 but being invited back; name-colours 21 but another character, and 23's first part. Custom-colours 16 (a colour set before 0.2.8) can't be tested any more.) (Passed in a tester's run, 2026-10-13, plugin 0.2.18, and no longer offered: chat-log 24 to 25, 26 to 28 but pressing Open folder (now a small guided check of its own), and 8 to 9 (the simulated one-player version).)
+(As planned. Passed in the owner's first run, 2026-10-13, and no longer offered: chat-links 20, 21 to 23 and 30; settings 1 to 9; device-notices 1; context-invites 7 to 9 and 10. What was left of the last two, context-invites 9a and 11, are checks of their own.) (Passed in the owner's second run, 2026-10-13, plugin 0.2.18, and no longer offered: local-chat 3a to 3c, 30, 32 to 33 but `/p brb` (now a two-player check of its own), and 34 to 41.) (Passed in the owner's third run, 2026-10-13, plugin 0.2.18, and no longer offered: windows-only 1 to 2, 5, 7 to 9, 11, 13 to 16, 23, 24 and 26; channel-windows 17, 17b, 17c, 36 and 37 but a collapsed window, 33 to 33f, 6b and 37b but a channel shown in game chat. Windows-only 12's invite line is a two-player check of its own. No combat checks: no striking dummy can be placed in a private place, and the owner confirmed windows-only 17, 23b, 23c and channel-windows 33d, 33e from earlier testing.) (Passed in the owner's fourth run, 2026-10-13, plugin 0.2.18, and no longer offered: custom-colours 3, 4 to 8, 9 but the invite submenu and the caught-up message, 15 but another character, 17 but being invited back; name-colours 21 but another character, and 23's first part. Custom-colours 16 (a colour set before 0.2.8) can't be tested any more.) (Passed in a tester's run, 2026-10-13, plugin 0.2.18, and no longer offered: chat-log 24 to 25, 26 to 28 but pressing Open folder (now a small guided check of its own), and 8 to 9 (the simulated one-player version).) (Passed in the owner's fifth run, 2026-10-13, plugin 0.2.19, and no longer offered: local-chat 1 to 3 and 29 (the talking suite is gone); windows-only 20 to 21; channel-windows 36 (a collapsed window) and 37b (a channel shown in game chat); context-invites 9a, 15 and 18 but ChatTwo's menu, and 20 to 21; sticky-channel 28; chat-links 26. What was left is a check of its own in the ChatTwo suite: inviting someone not registered from ChatTwo's menu (18), and ChatTwo off and on (19).)
 
 | | Tasks | A | A+G | G | 2P (A) | 2P (G or A+G) | Not covered |
 | --- | --- | --- | --- | --- | --- | --- | --- |

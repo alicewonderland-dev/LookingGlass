@@ -261,7 +261,7 @@ public static partial class SelfTestWords {
     public static IReadOnlyList<string> Reasons() => [
         YouSkipped, YouSaidNo, NeedsChatTwo, NeedsChatTwoOff, NeedsPartner, NeedsStranger, NeedsAnotherCharacter, NeedsStrikingDummy,
         NeedsConnection, NeedsChannelRoom, NeedsGateHooks, HistoryWasYours, ServerSlowDown, StoppedByYou, StoppedLeft, RunSpent,
-        SomethingWentWrong, TimedOut, NothingRan, YouSaidNoTo("the greyed cross"), YouSaidDidntWork("the window's box"), Suites.TalkSuite.RegisteredButNotSeen, NotSay, NotPrivate, Disconnected, GaveUpWaiting, OtherCharacter, Registered, .. PairReasons(),
+        SomethingWentWrong, TimedOut, NothingRan, YouSaidNoTo("the greyed cross"), YouSaidDidntWork("the window's box"), NotSay, NotPrivate, Disconnected, GaveUpWaiting, OtherCharacter, Registered, .. PairReasons(),
     ];
 
     /// <summary>The words simple mode never uses (the plain-language tests' list): to check what the plugin printed during a run.</summary>

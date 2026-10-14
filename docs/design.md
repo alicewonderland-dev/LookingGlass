@@ -5212,8 +5212,8 @@ virtual clock; the plugin's `SelfTest` folder and `SelfTestWindow`):
   that couldn't reach the server keeps them, and the file, for the next
   connection. A damaged file that lost whose it was can only be cleared, with
   a warning.
-- Seven suites cover the plan's one-player tasks still open (`SelfTestSuites.All`, 19 checks):
-  those that passed in the owner's first run (2026-10-13) are no longer offered.
+- Six suites cover the plan's one-player tasks still open (`SelfTestSuites.All`, 11 checks):
+  what passed in the owner's and testers' runs (2026-10-13) is no longer offered.
 - **Two players** (`SelfTest/Pairs`, `Suites/Pairs`): **Two players...** opens
   a screen to invite a partner (their name@world, or **Use my target**, and a
   four-letter code to tell them) or to be one (the host's name@world and
@@ -6155,6 +6155,26 @@ The owner's decisions, and why.
     `bye`). Each window says who it waits for ("Waiting for your partner to
     get back inside"). A partner away and offline for 45 minutes has left the
     test, as the partner already takes a host offline that long.
+- **What passed in the owner's fifth run leaves too (owner, 2026-10-13).**
+  Plugin 0.2.19, one player, in an apartment, ChatTwo on, advanced mode:
+  local-chat 1 to 3 and 29, windows-only 20 to 21, channel-windows 36 (a
+  collapsed window) and 37b (a channel shown in game chat), context-invites
+  9a, sticky-channel 28 and chat-links 26 passed with nothing skipped; they
+  are ticked in pending-tests.md and no longer offered. The talking suite is
+  gone (nothing left in it), and the windows suite keeps only the flash.
+  Context-invites 15 and 18 passed but for the same invite from ChatTwo's
+  menu, and 19 to 21 but for ChatTwo off and on (the tester skipped it):
+  each part left is a small check of its own in the ChatTwo suite. The
+  ChatTwo-menu invite asks for someone's name@world, looks them up first
+  (someone registered is never invited, as before), then has the tester
+  invite them from ChatTwo's menu and checks the line; the lookup is a setup
+  step, so only the line makes it pass. Context-invites 11 now also says the
+  tester may come back outside after coming in with another character, and
+  waits until they're inside, like the colours checks with another
+  character. Not run (another character): name-colours 21, custom-colours 15,
+  context-invites 11; failed and being fixed (the flash, ChatTwo's label):
+  channel-windows 37c to 37f, local-chat 42 to 46, custom-colours 11 to 14.
+  Those checks stay as they are.
 
 ## Open questions
 

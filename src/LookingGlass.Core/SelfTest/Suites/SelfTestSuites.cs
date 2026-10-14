@@ -6,12 +6,12 @@ namespace LookingGlass.Core.SelfTest.Suites;
 /// </summary>
 public static class SelfTestSuites {
     /// <summary>
-    /// The one-player suites, made afresh (their checks hold no state between runs). Talking in a channel first (it needs the
-    /// least set up), Colours after Windows (its last check leaves the run's third test channel), the history after both (it
-    /// may turn the history on), ChatTwo last. (Settings 1-9 and device-notices 1 passed in the owner's first run, 2026-10-13.)
+    /// The one-player suites, made afresh (their checks hold no state between runs). Colours after Windows (its last check
+    /// leaves the run's third test channel), the history after both (it may turn the history on), ChatTwo last. (Settings 1-9
+    /// and device-notices 1 passed in the owner's first run, 2026-10-13; talking in a channel, local-chat 1-3 and 29, in the
+    /// owner's fifth run, plugin 0.2.19: those suites are gone.)
     /// </summary>
     public static IReadOnlyList<SelfTestSuite> All() => [
-        TalkSuite.Create(),
         WindowsSuite.Create(),
         ColoursSuite.Create(),
         InvitesSuite.Create(),
