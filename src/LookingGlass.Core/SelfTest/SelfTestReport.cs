@@ -86,6 +86,10 @@ public static class SelfTestReport {
                     line.Append(" (step ").Append(record.Step).Append(')');
                 }
 
+                if (record.NotReached.Count > 0) {
+                    line.Append("; not asked: ").Append(string.Join(", ", record.NotReached));
+                }
+
                 break;
             case CheckOutcome.Skipped:
                 line.Append(SelfTestWords.Skipped).Append(": ").Append(record.Why ?? SelfTestWords.YouSkipped);
@@ -119,7 +123,7 @@ public static class SelfTestReport {
             _ => SelfTestWords.StoppedWord,
         };
         return record.Step != null && record.Outcome == CheckOutcome.Failed
-            ? $"[selftest] {steps}: {outcome} (step {record.Step})"
+            ? $"[selftest] {steps}: {outcome} (step {record.Step}{(record.FailedOn is { } asked ? $": {asked}" : "")})"
             : $"[selftest] {steps}: {outcome}";
     }
 

@@ -175,6 +175,9 @@ public static partial class SelfTestProtocol {
     /// <summary>The most fixed steps a partner's player is asked for in a run (a full pass asks about a dozen).</summary>
     public const int MostAsks = 20;
 
+    /// <summary>The most invites a partner sends the host to its one channel in a run (windows-only 10, and custom-colours 17's leave and invite back).</summary>
+    public const int MostInvitesToHost = 3;
+
     /// <summary>How long the host waits for an answer (a loading screen included), or for one that waits on the partner's player.</summary>
     public static readonly TimeSpan AnswerWithin = TimeSpan.FromSeconds(60);
 

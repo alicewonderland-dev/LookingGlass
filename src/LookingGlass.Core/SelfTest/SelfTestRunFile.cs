@@ -100,6 +100,12 @@ public sealed record CheckRecord {
     /// <summary>The tester's own notes, as typed (the window asks for no names).</summary>
     public List<string> Notes { get; init; } = [];
 
+    /// <summary>A failure: the steps after it, never reached (their titles, in fixed words).</summary>
+    public List<string> NotReached { get; init; } = [];
+
+    /// <summary>A failure at a guided question: its short name ("tab hover"), for the log line.</summary>
+    public string? FailedOn { get; init; }
+
     /// <summary>What its steps did, in fixed words with numbers only (a partner's "answered 23 requests").</summary>
     public List<string> Did { get; init; } = [];
 }

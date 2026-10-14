@@ -34,7 +34,9 @@ public sealed class PartnerSide {
     private int _answered, _marker, _lines, _locals, _reports, _leaves, _disconnects, _withdraws, _accepts, _asks;
     private int _got, _own, _caught, _named;
     private string? _myName;
-    private bool _invitedHost, _bye;
+    private bool _bye;
+    private int _invitesToHost;
+    private string? _ownChannel;
     private DateTimeOffset _seenOnline;
     private string? _waitingLine;
 
@@ -428,15 +430,20 @@ public sealed class PartnerSide {
             case PartnerVerb.Ask:
                 return this._asks >= SelfTestProtocol.MostAsks ? (Refused(request), null) : (await this.AskPlayerAsync(request).ConfigureAwait(false), null);
             case PartnerVerb.InviteMe: {
-                if (this._invitedHost || !PartnerLink.SplitName(this.HostName, out var name, out var world)) {
+                if (this._invitesToHost >= SelfTestProtocol.MostInvitesToHost || !PartnerLink.SplitName(this.HostName, out var name, out var world)) {
                     return (Refused(request), null);
                 }
 
-                this._invitedHost = true;
-                // Its one channel of its own, in the file before anything else, and its one invite: to the host only.
-                var own = await this._context.ServerAsync(SelfTestAction.CreateChannel, () => this.Host.CreateChannelAsync(OwnChannelName(this.Code))).ConfigureAwait(false);
-                this._context.AddTestChannel(own);
-                await this._context.ServerAsync(SelfTestAction.Lookup, () => Task.CompletedTask).ConfigureAwait(false);
+                this._invitesToHost++;
+                // Its one channel of its own, made the first time (in the file before anything else), and its invites: to the host only,
+                // again after the host left it (custom-colours 17). The session remembers the lookup.
+                if (this._ownChannel is not { } own) {
+                    own = await this._context.ServerAsync(SelfTestAction.CreateChannel, () => this.Host.CreateChannelAsync(OwnChannelName(this.Code))).ConfigureAwait(false);
+                    this._ownChannel = own;
+                    this._context.AddTestChannel(own);
+                    await this._context.ServerAsync(SelfTestAction.Lookup, () => Task.CompletedTask).ConfigureAwait(false);
+                }
+
                 await this._context.ServerAsync(SelfTestAction.Invite, () => this.Host.InviteAsync(own, name, world)).ConfigureAwait(false);
                 return (Done(request), null);
             }

@@ -63,7 +63,7 @@ public static class PartnerSuite {
         Changes = [SelfTestSetting.LocalPrivacyAccepted],
         Planned = new Dictionary<SelfTestAction, int> {
             [SelfTestAction.ChannelMessage] = 80, [SelfTestAction.PartnerMessage] = 150, [SelfTestAction.LocalMessage] = 20, [SelfTestAction.Reconnect] = 3,
-            [SelfTestAction.CreateChannel] = 1, [SelfTestAction.Lookup] = 1, [SelfTestAction.Invite] = 1,
+            [SelfTestAction.CreateChannel] = 1, [SelfTestAction.Lookup] = 1, [SelfTestAction.Invite] = SelfTestProtocol.MostInvitesToHost,
         },
     };
 

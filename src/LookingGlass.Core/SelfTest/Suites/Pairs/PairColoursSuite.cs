@@ -17,7 +17,7 @@ public static class PairColoursSuite {
     private const uint Pink = 0xFF66CC;
     private const uint Orange = 0xFFAA00;
 
-    public static SelfTestSuite Create() => new(Id, "Colours, with a partner", [Setting(), InGameChat(), InChatTwo(), BackToDefault(), Rejoining(), CaughtUpPink()]) {
+    public static SelfTestSuite Create() => new(Id, "Colours, with a partner", [Setting(), InGameChat(), InChatTwo(), BackToDefault(), Rejoining(), CaughtUpPink(), InviteSubmenuPink(), InvitedBack()]) {
         Changes = [SelfTestSetting.PartnerNameColour, SelfTestSetting.OwnNameColour, SelfTestSetting.ColourWholeLine],
         Planned = new Dictionary<SelfTestAction, int> { [SelfTestAction.CreateChannel] = 1, [SelfTestAction.Invite] = 2, [SelfTestAction.Lookup] = 1, [SelfTestAction.PartnerMessage] = 30 },
         Note = "2 relogs",
@@ -205,6 +205,74 @@ public static class PairColoursSuite {
             }),
         ],
     };
+
+    // -{64} custom-colours 9 (the invite submenu)
+
+    private static SelfTestCheck InviteSubmenuPink() => new() {
+        Id = "custom-colours-9-submenu", Title = "Pink in the invite submenu", Steps = "custom-colours 9 (the invite submenu)", Mode = CheckMode.Guided, Needs = Needs,
+        StepList = [
+            SetupAuto("A pink test channel your partner isn't in", "9", async context => {
+                var channel = await context.TestChannelAsync(1).ConfigureAwait(false);
+                if ((await context.Host.MembersAsync(channel).ConfigureAwait(false)).Any(member => member.UserId == context.Partner.UserId)) {
+                    await PartnerLeavesAsync(context, channel).ConfigureAwait(false);
+                }
+
+                await context.Host.SetChannelColourAsync(channel, ChannelColour.Custom(Pink)).ConfigureAwait(false);
+                context.State["tag"] = await context.TagOfAsync(channel).ConfigureAwait(false);
+                return StepResult.Pass();
+            }),
+            Ask("The submenu", "9", context => Task.FromResult(new GuidedPrompt(
+                $"Right-click your partner (their name, or their character) and hover Invite to LookingGlass: is {context.State["tag"]} in this pink in the submenu? (Don't pick it.)",
+                PromptKind.YesNo) { Swatch = Pink, Short = "the invite submenu" })),
+        ],
+    };
+
+    // -{64} custom-colours 17 (invited back)
+
+    private static SelfTestCheck InvitedBack() => new() {
+        Id = "custom-colours-17-back", Title = "Invited back, the colour doesn't come back", Steps = "custom-colours 17 (invited back)", Mode = CheckMode.Automatic, Needs = Needs,
+        StepList = [
+            SetupAuto("In your partner's channel, a custom colour on it", "17", async context => {
+                var channel = await OwnChannelOfThePartnerAsync(context).ConfigureAwait(false);
+                if (channel == null) {
+                    return StepResult.SkipCheck("your partner's invite didn't come");
+                }
+
+                context.State["theirs"] = channel;
+                await context.Host.SetChannelColourAsync(channel, ChannelColour.Custom(Pink)).ConfigureAwait(false);
+                return await context.SettledAsync(async () => StepResult.Expect(await context.Host.SavedChannelColourAsync(channel).ConfigureAwait(false) != null,
+                    "the colour wasn't saved")).ConfigureAwait(false);
+            }),
+            SetupAuto("You leave it: the colour goes", "17", async context => {
+                var channel = (string) context.State["theirs"];
+                await context.Host.LeaveChannelAsync(channel).ConfigureAwait(false);
+                return StepResult.Expect(await context.WaitUntilAsync(async () => await context.Host.SavedChannelColourAsync(channel).ConfigureAwait(false) == null,
+                    TimeSpan.FromSeconds(30)).ConfigureAwait(false), "the colour stayed after leaving");
+            }),
+            Auto("Invited back: it doesn't come back", "17", async context => {
+                var channel = (string) context.State["theirs"];
+                await context.Partner.AskAsync(context, PartnerVerb.InviteMe).ConfigureAwait(false);
+                if (await context.Partner.AcceptOwnChannelAsync(context).ConfigureAwait(false) != channel) {
+                    return StepResult.Skip("your partner's invite back didn't come");
+                }
+
+                await context.DelayAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
+                return StepResult.Expect(await context.Host.SavedChannelColourAsync(channel).ConfigureAwait(false) == null, "the colour came back when you were invited again");
+            }),
+        ],
+    };
+
+    /// <summary>The partner's one channel, with the host in it: invited to it (its invite accepted, only it) if not in it yet; null if no invite came.</summary>
+    private static async Task<string?> OwnChannelOfThePartnerAsync(StepContext context) {
+        foreach (var joined in context.Data.Joined) {
+            if ((await context.Host.ChannelsAsync().ConfigureAwait(false)).Any(channel => channel.Id == joined)) {
+                return joined;
+            }
+        }
+
+        await context.Partner.AskAsync(context, PartnerVerb.InviteMe).ConfigureAwait(false);
+        return await context.Partner.AcceptOwnChannelAsync(context).ConfigureAwait(false);
+    }
 
     // ---------------------------------------------------------------- custom-colours 9 (caught up)
 

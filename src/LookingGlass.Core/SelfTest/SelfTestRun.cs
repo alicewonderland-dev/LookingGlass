@@ -645,7 +645,8 @@ public sealed partial class SelfTestRun {
         var did = results.Where(entry => entry.Result.Did != null).Select(entry => entry.Result.Did!).ToList();
         if (failed.Result != null) {
             return new CheckRecord {
-                Check = check.Id, Outcome = CheckOutcome.Failed, Why = failed.Result.Why, Step = failed.Step.Checklist, At = failed.At,
+                Check = check.Id, Outcome = CheckOutcome.Failed, Why = failed.Result.Why, Step = failed.Step.Checklist, At = failed.At, FailedOn = failed.Result.Asked,
+                NotReached = check.StepList.Skip(results.Count).Where(step => step.Real).Select(step => Lower(step.Title)).ToList(),
                 NotRun = notRun, Confirmed = confirmed, Notes = notes.ToList(), Did = did,
             };
         }
@@ -1484,6 +1485,9 @@ public sealed class StepContext {
     public static StepResult Judge(GuidedAnswer answer, string? confirmed) => answer switch {
         GuidedAnswer.Done or GuidedAnswer.Yes or GuidedAnswer.Seen => new StepResult(StepOutcome.Passed, Confirmed: confirmed),
         GuidedAnswer.Skip => StepResult.Skip(SelfTestWords.YouSkipped),
+        // Named by the question's short name, so a step with several questions says which (owner's third run, 2026-10-13).
+        GuidedAnswer.No when confirmed != null => StepResult.Fail(SelfTestWords.YouSaidNoTo(confirmed)) with { Asked = confirmed },
+        _ when confirmed != null => StepResult.Fail(SelfTestWords.YouSaidDidntWork(confirmed)) with { Asked = confirmed },
         _ => StepResult.Fail(SelfTestWords.YouSaidNo),
     };
 

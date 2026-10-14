@@ -106,7 +106,7 @@ public sealed class SelfTestPacer {
         [SelfTestRole.Host] = new() { [SelfTestAction.PartnerMessage] = 150, [SelfTestAction.Invite] = 16, [SelfTestAction.Lookup] = 12 },
         [SelfTestRole.Partner] = new() {
             [SelfTestAction.ChannelMessage] = 80, [SelfTestAction.PartnerMessage] = 150, [SelfTestAction.LocalMessage] = 20, [SelfTestAction.Reconnect] = 3,
-            [SelfTestAction.CreateChannel] = 1, [SelfTestAction.Invite] = 1, [SelfTestAction.Lookup] = 1, [SelfTestAction.Rename] = 0, [SelfTestAction.Disband] = 1,
+            [SelfTestAction.CreateChannel] = 1, [SelfTestAction.Invite] = SelfTestProtocol.MostInvitesToHost, [SelfTestAction.Lookup] = 1, [SelfTestAction.Rename] = 0, [SelfTestAction.Disband] = 1,
             [SelfTestAction.DeviceList] = 0,
         },
     };

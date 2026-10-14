@@ -5153,7 +5153,7 @@ virtual clock; the plugin's `SelfTest` folder and `SelfTestWindow`):
   that couldn't reach the server keeps them, and the file, for the next
   connection. A damaged file that lost whose it was can only be cleared, with
   a warning.
-- Seven suites cover the plan's one-player tasks still open (`SelfTestSuites.All`, 40 checks):
+- Seven suites cover the plan's one-player tasks still open (`SelfTestSuites.All`, 21 checks):
   those that passed in the owner's first run (2026-10-13) are no longer offered.
 - **Two players** (`SelfTest/Pairs`, `Suites/Pairs`): **Two players...** opens
   a screen to invite a partner (their name@world, or **Use my target**, and a
@@ -5972,6 +5972,66 @@ The owner's decisions, and why.
   you have a Discord server, digitally, without implying Discord's
   endorsement; the README says the logo is Discord's trademark and outside
   LookingGlass's license.
+- **What passed in the owner's second run leaves the self-test too (owner,
+  2026-10-13).** Plugin 0.2.18, one player, in a house: local-chat 3a to 3c,
+  30, 32 to 33 (all but `/p brb`), and 34 to 41 passed with nothing skipped.
+  They are ticked in pending-tests.md and no longer offered; the talking suite
+  keeps 1 to 3 and 29. What is left of the split tasks: 31 (a stranger near)
+  isn't covered (the self-test never types with anyone else near), and
+  `/p brb` while talking in local chat is a two-player check of its own (the
+  partner as the whole party), in the local chat suite.
+- **What the game shows a frame later is waited for (owner's second run,
+  2026-10-13).** "local-chat 29" failed because it read the chat box's channel
+  name 30 ms after `/lgl`; the game renames it a frame or more later. Every
+  check that reads what the game (or the plugin's windows) applies after an
+  action, the chat box's name, the info bar, the labels' colour, a window's
+  tabs, a colour as saved, now checks again until it holds, a few seconds at
+  most (`SettledAsync`), instead of reading once. Reads of the plugin's own
+  state (talking in a channel or not) and of "nothing happened" stay as they
+  were.
+- **/xlhelp: a missed line told from a plugin bug (owner's second run,
+  2026-10-13).** The owner didn't see `/lgl` in `/xlhelp`, though the
+  automatic part had found it registered. That part reads Dalamud's own
+  command list (what `/xlhelp` prints): `/lgl` registered, by LookingGlass
+  (its handler's assembly; Dalamud keeps one registration per command), shown
+  in help, with its words, and the report says so. The question that follows
+  says where to look (sorted by name, after `/lgdebug` and before
+  `/lookingglass`); a "no" then fails with "/lgl is registered and shown in
+  help, with its words, but you didn't see it in /xlhelp", so a missed line is
+  told from a plugin bug.
+- **A "no" names its question (owner's third run, 2026-10-13).** "windows-only
+  20-21: FAILED: you said it didn't work (step 20)" didn't say which of step
+  20's two questions was answered no. A failure at a guided question now names
+  it by its short name, "you said no to: tab hover" (or "you said it didn't
+  work: ..."), in the report, the window and the `[selftest]` line ("failed
+  (step 20: tab hover)"); the steps after it, never reached, follow as "not
+  asked: ...", and the tester's note as before.
+- **What passed in the owner's third run leaves too, and no combat checks
+  (owner, 2026-10-13).** Plugin 0.2.18, one player, in a house: windows-only
+  1 to 2, 5, 7 to 9, 11, 13 to 16, 23, 24 and 26, and channel-windows 17,
+  17b, 17c, 36 and 37 (but a collapsed window), 33 to 33f (the partner's parts
+  are group 2's), 6b and 37b (but a channel shown in game chat) passed; they
+  are ticked and no longer offered. What was left of them is a check of its
+  own: a collapsed window counting again (36), a channel shown in game chat
+  losing its count (37b), and windows-only 12's invite line, now a two-player
+  check (the partner invited with windows only on). The self-test does no
+  combat checks: no striking dummy can be placed inside a house, so its
+  private places can never run them; the owner confirmed the combat block
+  from earlier testing (windows-only 17, 23b, 23c; channel-windows 33d, 33e).
+  Windows-only 20's tab hover and 37c's flash failed in that run and are
+  being fixed in the plugin; their checks stay as they are.
+- **What passed in the owner's fourth run leaves too (owner, 2026-10-13).**
+  Plugin 0.2.18, one player, in a house: custom-colours 3, 4 to 8, 9 (but the
+  invite submenu and the caught-up message), 15 (but another character), 17
+  (but being invited back), and name-colours 21 (but another character) and
+  23's first part passed; they are ticked and no longer offered. What was
+  left of them is a check of its own: another of the tester's characters
+  (name-colours 21, custom-colours 15; the tester comes in with it while the
+  run waits), and, with a partner, the invite submenu's pink and being invited
+  back to a channel left (the partner's plugin may now invite the host to its
+  one channel up to three times a run, for that). Custom-colours 16 (a colour
+  set before 0.2.8) is marked not testable: such a colour can't be produced
+  any more on current builds.
 
 ## Open questions
 

@@ -6,9 +6,8 @@ using LookingGlass.Core.SelfTest.Suites;
 namespace LookingGlass.Tests;
 
 /// <summary>
-/// The talking suite (local-chat-checklist.md 1 to 41) against the fake host's stand-in for the plugin: its automatic
-/// checks pass when the plugin behaves as the checklist says, and a one-off that goes to the wrong place fails with the
-/// step and why. The "tester" here does what each question asks.
+/// The talking suite (local-chat-checklist.md 1 to 3 and 29, what is left of it) against the fake host's stand-in for the
+/// plugin: its checks pass when the plugin behaves as the checklist says. The "tester" here does what each question asks.
 /// </summary>
 public sealed class SelfTestTalkSuiteTests : IDisposable {
     private readonly FakeSelfTestHost _host = new() { Simulate = true };
@@ -22,6 +21,11 @@ public sealed class SelfTestTalkSuiteTests : IDisposable {
     }
 
     public void Dispose() => this._host.Dispose();
+
+    /// <summary>The tester doesn't see /lgl in /xlhelp (the owner's second run).</summary>
+    private bool MissesXlhelp { get; set; }
+
+    private string? XlhelpAsked { get; set; }
 
     /// <summary>A tester who does what is asked: clicks, presses Tab, relogs, and answers yes.</summary>
     private void Tester(SelfTestRun run) {
@@ -57,6 +61,9 @@ public sealed class SelfTestTalkSuiteTests : IDisposable {
         } else if (text.Contains("click Withdraw", StringComparison.Ordinal)) {
             this._host.Settings[SelfTestSetting.LocalPrivacyAccepted] = JsonSerializer.SerializeToElement(false);
             this._host.Sticky = null;
+        } else if (this.MissesXlhelp && text.Contains("/xlhelp", StringComparison.Ordinal)) {
+            this.XlhelpAsked = text;
+            run.Answer(GuidedAnswer.No, "lgl is not listed");
         } else {
             run.Answer(prompt.Prompt.Kind == PromptKind.YesNo ? GuidedAnswer.Yes : GuidedAnswer.Done);
         }
@@ -76,32 +83,51 @@ public sealed class SelfTestTalkSuiteTests : IDisposable {
         var run = await this.RunAsync();
 
         var results = run.Data.Results.ToDictionary(result => result.Check);
-        foreach (var id in new[] { "local-chat-1-3", "local-chat-3a-3c", "local-chat-29", "local-chat-30-31", "local-chat-32-33", "local-chat-34-36", "local-chat-37-39" }) {
-            Assert.True(results[id].Outcome == CheckOutcome.Passed, $"{id}: {results[id].Outcome} {results[id].Why} (step {results[id].Step})");
+        Assert.Equal(["local-chat-1-3", "local-chat-29"], results.Keys.Order());
+        foreach (var (id, result) in results) {
+            Assert.True(result.Outcome == CheckOutcome.Passed, $"{id}: {result.Outcome} {result.Why} (step {result.Step})");
         }
 
-        Assert.Contains("the part next to a stranger (step 31)", results["local-chat-30-31"].NotRun);
-        Assert.Contains("Tab", results["local-chat-34-36"].Confirmed);
-        // The log tap is the plugin's: the fake counts nothing, so that step isn't run; the plain words step is.
-        Assert.Equal(CheckOutcome.Passed, results["local-chat-40-41"].Outcome);
-        Assert.Contains(results["local-chat-40-41"].NotRun, part => part.EndsWith("needs the local chat checks above", StringComparison.Ordinal));
-        // Nothing reached Say but the one-offs and the line typed after withdrawing.
-        Assert.All(this._host.GameChatSince(0).Where(line => line.Channel == GameChatKind.Say),
-            line => Assert.StartsWith(run.MarkerPrefix, line.Text, StringComparison.Ordinal));
-        Assert.Equal(2, this._host.GameChatSince(0).Count(line => line.Channel == GameChatKind.Say));
+        // Alone, nothing reached Say.
+        Assert.DoesNotContain(this._host.GameChatSince(0), line => line.Channel == GameChatKind.Say);
     }
 
     [Fact]
-    public async Task AOneOffThatGoesToTheWrongPlaceFailsWithItsStep() {
-        this._host.OneOffsBroken = true;
+    public async Task LabelsTheGameShowsAFewFramesLaterAreWaitedFor() {
+        // The owner's second run: the chat box named [Local] 30 ms after the check had read it. Here, the labels follow
+        // half a second late: the check waits for them (a few seconds at most) instead of reading once.
+        this._host.LabelLag = TimeSpan.FromMilliseconds(500);
 
         var run = await this.RunAsync();
 
-        var failed = run.Data.Results.Single(result => result.Check == "local-chat-32-33");
-        Assert.Equal(CheckOutcome.Failed, failed.Outcome);
-        Assert.Equal("32", failed.Step);
-        Assert.Equal("/s with text didn't arrive where it should", failed.Why);
-        // The run goes on.
-        Assert.Equal(CheckOutcome.Passed, run.Data.Results.Single(result => result.Check == "local-chat-37-39").Outcome);
+        var started = run.Data.Results.Single(result => result.Check == "local-chat-29");
+        Assert.True(started.Outcome == CheckOutcome.Passed, $"{started.Outcome} {started.Why}");
+    }
+
+    [Fact]
+    public async Task NotSeenInXlhelpWhileRegisteredSaysSo() {
+        // The owner's second run: /lgl registered, shown in help, with its words, but the tester didn't see it in /xlhelp.
+        this.MissesXlhelp = true;
+
+        var run = await this.RunAsync();
+
+        var free = run.Data.Results.Single(result => result.Check == "local-chat-1-3");
+        Assert.Equal(CheckOutcome.Failed, free.Outcome);
+        Assert.Equal(TalkSuite.RegisteredButNotSeen, free.Why);
+        Assert.Equal(["lgl is not listed"], free.Notes);
+        // Told exactly where to look.
+        Assert.Contains("/lgdebug", this.XlhelpAsked, StringComparison.Ordinal);
+        Assert.Contains("/lookingglass", this.XlhelpAsked, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task LabelsThatNeverFollowStillFail() {
+        this._host.LabelLag = TimeSpan.FromMinutes(10);
+
+        var run = await this.RunAsync();
+
+        var started = run.Data.Results.Single(result => result.Check == "local-chat-29");
+        Assert.Equal(CheckOutcome.Failed, started.Outcome);
+        Assert.Equal("the chat input doesn't name its channel [Local]", started.Why);
     }
 }

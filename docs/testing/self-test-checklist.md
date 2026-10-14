@@ -62,8 +62,8 @@ private) rather than doing something it shouldn't: report it.
 - [ ] 10. **(confirm)** The lines it types are judged as typed in the game's
       chat box: in `/xllog` the `[sticky]` lines for them say the line came
       from the game (as your own typing would), never "from a plugin".
-- [ ] 11. **(confirm)** A line it types with an item link (local-chat 30, the
-      chat history checks) carries a working item link (a Potion).
+- [ ] 11. **(confirm)** A line it types with an item link (the colours and chat
+      history checks) carries a working item link (a Potion).
 - [ ] 12. Every test line in Say reads "LG self-test XXXX n, please ignore".
 
 ## A run
@@ -113,7 +113,7 @@ private) rather than doing something it shouldn't: report it.
       it**). Delete removes only folders nothing has written to since the test,
       never your own newer lines.
 - [ ] 20b. Press **Stop and clean up** while a step has LookingGlass
-      disconnected (local-chat 35 or 37): it connects again and cleans up.
+      disconnected (two players: chat-log 10-11 or 29): it connects again and cleans up.
       Relog onto another character in the middle of a run: it pauses ("another
       character is in") and does nothing until you come back.
 - [ ] 21. Close the game (or turn LookingGlass off in `/xlplugins`) in the
@@ -137,7 +137,9 @@ private) rather than doing something it shouldn't: report it.
 - [ ] 24. A name@world typed for "Inviting someone who isn't registered" is in
       neither the report nor `/xllog`.
 - [ ] 25. `/xllog`'s `[selftest]` lines have the checklist steps and passed,
-      failed, not run, skipped or stopped, nothing else.
+      failed, not run, skipped or stopped, nothing else. A failure at a question
+      names it ("failed (step 20: tab hover)"), and the report adds "you said no
+      to: tab hover" and the steps not asked after it.
 - [ ] 26. **Run the failed ones again** runs only the checks that failed or
       stopped, and those not run where another try could help (you skipped,
       the name given uses LookingGlass; not "needs ChatTwo" and the like), with

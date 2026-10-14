@@ -16,10 +16,9 @@ public sealed class SelfTestSuitesTests : IDisposable {
 
     /// <summary>Every one-player task the plan covers, by its checklist steps, as the report names them.</summary>
     private static readonly string[] Covered = [
-        "local-chat 1-3", "local-chat 3a-3c", "local-chat 29", "local-chat 30-31", "local-chat 32-33", "local-chat 34-36", "local-chat 37-39", "local-chat 40-41",
-        "windows-only 1-2", "windows-only 5, 7, 8, 9, 12", "windows-only 11", "windows-only 13-16", "windows-only 17", "windows-only 20-21", "windows-only 23, 23b, 23c, 24",
-        "channel-windows 17, 17b, 17c, 36, 37", "channel-windows 33, 33b, 33c, 33d, 33e, 33f", "channel-windows 37b; windows-only 6b", "channel-windows 37c-37f", "windows-only 26",
-        "custom-colours 3", "custom-colours 4-8", "custom-colours 9", "name-colours 21", "name-colours 23 (first part)", "custom-colours 15-16", "custom-colours 17",
+        "local-chat 1-3", "local-chat 29",
+        "windows-only 20-21", "channel-windows 36 (collapsing a window)", "channel-windows 37b (that part)", "channel-windows 37c-37f",
+        "name-colours 21 (another character)", "custom-colours 15 (another character)",
         "context-invites 9a", "context-invites 11", "context-invites 15, 18 (that part)",
         "chat-links 24-25",
         "chat-log 24-25", "chat-log 26-28", "chat-log 30-35, 31b", "chat-log 8-9 (group 2)",
@@ -29,12 +28,24 @@ public sealed class SelfTestSuitesTests : IDisposable {
     /// <summary>Passed in the owner's first run (2026-10-13), and so no longer offered.</summary>
     private static readonly string[] Confirmed = [
         "chat-links 20", "chat-links 21-23", "chat-links 30", "settings 1-9", "device-notices 1", "context-invites 7-9a", "context-invites 10-11",
+        // The second run (2026-10-13, plugin 0.2.18).
+        "local-chat 3a-3c", "local-chat 30-31", "local-chat 32-33", "local-chat 34-36", "local-chat 37-39", "local-chat 40-41",
+        // The third run (2026-10-13, plugin 0.2.18), and the combat checks, which no private place can run (owner, 2026-10-13).
+        "windows-only 1-2", "windows-only 5, 7, 8, 9, 12", "windows-only 11", "windows-only 13-16", "windows-only 17", "windows-only 23, 23b, 23c, 24",
+        "channel-windows 17, 17b, 17c, 36, 37", "channel-windows 33, 33b, 33c, 33d, 33e, 33f", "channel-windows 37b; windows-only 6b", "windows-only 26",
+        // The fourth run (2026-10-13, plugin 0.2.18).
+        "custom-colours 3", "custom-colours 4-8", "custom-colours 9", "name-colours 21", "name-colours 23 (first part)", "custom-colours 15-16", "custom-colours 17",
     ];
 
     [Fact]
     public void WhatPassedInTheOwnersFirstRunIsNoLongerOffered() {
         var steps = SelfTestSuites.Every().SelectMany(suite => suite.Checks).Select(check => check.Steps).ToList();
         Assert.All(Confirmed, confirmed => Assert.DoesNotContain(confirmed, steps));
+        // No combat checks: no striking dummy can be placed in a private place (owner, 2026-10-13).
+        Assert.DoesNotContain(SelfTestSuites.Every().SelectMany(suite => suite.Checks).SelectMany(check => check.StepList),
+            step => step.Title.Contains("striking dummy", StringComparison.OrdinalIgnoreCase) || step.Title.Contains("combat", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains("channel-windows 36 (collapsing a window)", steps);
+        Assert.Contains("channel-windows 37b (that part)", steps);
         // What was left of them is a check of its own.
         Assert.Contains("context-invites 9a", steps);
         Assert.Contains("context-invites 11", steps);
@@ -136,12 +147,18 @@ public sealed class SelfTestSuitesTests : IDisposable {
     [Fact]
     public async Task OnlyTheFailedOnesRunAgain() {
         var suites = new[] { ColoursSuite.Create() };
-        var data = SelfTestRun.NewData("ABCD", 1, "x", this._host.Now, suites, ["custom-colours-3"]);
+        var data = SelfTestRun.NewData("ABCD", 1, "x", this._host.Now, suites, ["custom-colours-15-other"]);
         var run = new SelfTestRun(this._host, suites, new SelfTestPacer(() => this._host.Now, this._host.Delay), this._host.File, data);
+        // A tester who has no other character: the check ends at its first question.
+        this._host.OnTick = () => {
+            if (run.View.Prompt != null) {
+                run.Answer(GuidedAnswer.No);
+            }
+        };
 
         await run.RunAsync();
 
-        Assert.Equal(["custom-colours-3"], run.Data.Results.Select(result => result.Check));
+        Assert.Equal(["custom-colours-15-other"], run.Data.Results.Select(result => result.Check));
         Assert.Single(run.View.Checks);
     }
 }

@@ -11,7 +11,8 @@ namespace LookingGlass.Core.SelfTest.Suites;
 public static class PairInvitesSuite {
     public const string Id = "pair-invites";
 
-    public static SelfTestSuite Create() => new(Id, "Right-click invites, with a partner", [ChatTargetLists(), PartyAndFriends(), InChatTwo(), Inviting()]) {
+    public static SelfTestSuite Create() => new(Id, "Right-click invites, with a partner", [ChatTargetLists(), PartyAndFriends(), InChatTwo(), Inviting(), InviteLineWindowsOnly()]) {
+        Changes = [SelfTestSetting.WindowsOnly],
         Planned = new Dictionary<SelfTestAction, int> { [SelfTestAction.CreateChannel] = 2, [SelfTestAction.PartnerMessage] = 14 },
         Note = "a party with your partner for one check",
     };
@@ -124,6 +125,24 @@ public static class PairInvitesSuite {
                     "Ask your partner to say something in Say. In ChatTwo, right-click their name: Integrations, Invite to LookingGlass: are the channels they're in greyed out and can't be clicked?",
                     PromptKind.YesNo) { Short = "ChatTwo" }).ConfigureAwait(false)
                 : StepResult.Skip(SelfTestWords.NeedsChatTwo)),
+        ],
+    };
+
+    // -{64} windows-only 12 (the invite line)
+
+    private static SelfTestCheck InviteLineWindowsOnly() => new() {
+        Id = "windows-only-12", Title = "The invite line shows in game chat with windows only on", Steps = "windows-only 12 (the invite line)", Mode = CheckMode.Guided, Needs = Needs,
+        StepList = [
+            SetupAuto("Windows only on, and a test channel they aren't in", "12", async context => {
+                await context.ChangeSettingAsync(SelfTestSetting.WindowsOnly, true).ConfigureAwait(false);
+                var channel = await context.TestChannelAsync(1).ConfigureAwait(false);
+                if ((await context.Host.MembersAsync(channel).ConfigureAwait(false)).Any(member => member.UserId == context.Partner.UserId)) {
+                    await PartnerLeavesAsync(context, channel).ConfigureAwait(false);
+                }
+
+                return StepResult.Pass();
+            }),
+            InviteStep("Invite them: the line shows in game chat", "12", 1),
         ],
     };
 

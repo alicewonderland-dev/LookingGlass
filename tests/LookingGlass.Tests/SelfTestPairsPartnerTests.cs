@@ -448,17 +448,19 @@ public sealed class SelfTestPairsPartnerTests : IDisposable {
 
     [Fact]
     public async Task ItsOneChannelInvitesOnlyTheHostAndGoesAtTheEnd() {
-        var host = new ScriptedHost(this._host, "invite-me", "invite-me", "bye");
+        var host = new ScriptedHost(this._host, [.. Enumerable.Repeat("invite-me", SelfTestProtocol.MostInvitesToHost + 1), "bye"]);
         host.Invite();
         var run = this.NewRun();
 
         await run.RunAsync();
 
-        Assert.Equal(PartnerOutcome.Done, Of(host, 1).Outcome);
-        Assert.Equal(PartnerOutcome.Refused, Of(host, 2).Outcome);
+        Assert.Equal(PartnerOutcome.Done, Of(host, SelfTestProtocol.MostInvitesToHost).Outcome);
+        Assert.Equal(PartnerOutcome.Refused, Of(host, SelfTestProtocol.MostInvitesToHost + 1).Outcome);
+        // One channel of its own, invited to again (custom-colours 17's invite back), always the host only.
         Assert.Equal([PartnerSide.OwnChannelName("K7Q2")], this._host.CreatedNames);
-        var invited = Assert.Single(this._host.Invited);
-        Assert.Equal("Hal Host", invited.Name);
+        Assert.Equal(SelfTestProtocol.MostInvitesToHost, this._host.Invited.Count);
+        Assert.All(this._host.Invited, invite => Assert.Equal(("Hal Host", this._host.Invited[0].Channel), (invite.Name, invite.Channel)));
+        var invited = this._host.Invited[0];
         // Its own channel is the run's to remove: left (nobody else in it) at the clean-up, with the host's.
         Assert.Contains(invited.Channel, this._host.Left);
     }

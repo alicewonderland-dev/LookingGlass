@@ -134,8 +134,10 @@ public static class ChatTwoSuite {
                 }
 
                 var note = await context.CountPrintedAsync(mark, line => line.Text == StickyMessages.ChatTwoNote(tag)).ConfigureAwait(false);
-                var sticky = await context.Host.StickyAsync().ConfigureAwait(false);
-                return StepResult.All((note == 1, "the ChatTwo line didn't follow once"), (sticky.InfoBar?.Contains(tag, StringComparison.Ordinal) == true, "the info bar doesn't name the channel"));
+                // The info bar follows a frame or more later: waited for.
+                return await context.SettledAsync(async () => StepResult.All((note == 1, "the ChatTwo line didn't follow once"),
+                    ((await context.Host.StickyAsync().ConfigureAwait(false)).InfoBar?.Contains(tag, StringComparison.Ordinal) == true, "the info bar doesn't name the channel")))
+                    .ConfigureAwait(false);
             }),
             Ask("ChatTwo's label", "28", new GuidedPrompt("Does ChatTwo's input label read \"LookingGlass [...]\" with the test channel's tag?", PromptKind.YesNo) { Short = "the label" }),
             SetupAuto("Back to Say", null, async context => {
