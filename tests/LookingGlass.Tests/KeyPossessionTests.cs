@@ -64,6 +64,9 @@ public sealed class KeyPossessionTests : IAsyncLifetime {
         using var ownKeys = IdentityKeys.Generate();
         Assert.NotNull((await this.RegisterRawAsync(again, mallory, ownKeys)).RegistrationComplete);
 
+        // Alice's login, key login and registration. (Her session closed first: the login replaces it, one connection per
+        // user, and it reconnecting before the login is answered would replace that unanswered.)
+        await alice.Session.DisposeAsync();
         await using var check = await this._server.ConnectRawAsync();
         Assert.NotNull((await check.SendAsync(new ClientFrame { Authenticate = new Authenticate { DeviceToken = token } })).AuthenticateOk);
         await using var keyLogin = await this._server.ConnectRawAsync();
