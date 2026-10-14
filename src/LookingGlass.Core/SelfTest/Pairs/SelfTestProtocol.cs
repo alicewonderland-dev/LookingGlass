@@ -109,8 +109,18 @@ public enum PartnerOutcome {
     /// <summary>The partner's own line: it joined (with its facts).</summary>
     Hello,
 
-    /// <summary>The partner's own line: back from a relog or reload.</summary>
+    /// <summary>
+    /// Either tester's own line, exactly "#0 back": back inside a private place, settled, after an "away" (owner, 2026-10-13).
+    /// </summary>
     Back,
+
+    /// <summary>
+    /// Either tester's own line, exactly "#0 away": about to relog (the game may put them back outside a house or apartment),
+    /// or out of the private place. Until its "back", the host sends no requests, its time-outs wait, and each side says who
+    /// it waits for. Read only from the other tester, in a test channel; at most <see cref="SelfTestProtocol.MostPresenceLines"/>
+    /// a run each way.
+    /// </summary>
+    Away,
 }
 
 /// <summary>A request from the host, numbered.</summary>
@@ -128,7 +138,7 @@ public sealed record PartnerRequest(int Number, PartnerVerb Verb, IReadOnlyList<
     public override int GetHashCode() => HashCode.Combine(this.Number, this.Verb, this.Args.Count);
 }
 
-/// <summary>An answer from the partner (or its own hello and back, numbered 0), with fixed fields: short keys, plain values.</summary>
+/// <summary>An answer from the partner (or a tester's own hello, away and back, numbered 0), with fixed fields: short keys, plain values.</summary>
 public sealed record PartnerAnswer(int Number, PartnerOutcome Outcome, IReadOnlyDictionary<string, string> Fields) {
     public int? Int(string key) => this.Fields.TryGetValue(key, out var value) && int.TryParse(value, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var number)
         ? number
@@ -190,6 +200,14 @@ public static partial class SelfTestProtocol {
     public const int MostKeepAlives = 30;
 
     /// <summary>
+    /// The most "away" and "back" lines either side sends in a run (an "away" goes only with room left for its "back"), and
+    /// reads from the other: past it, the other's lines are ignored (its requests and answers then keep their time-outs).
+    /// Twenty relogs or walk-outs: a full two-player pass has about nine of the host's relogs, the partner's, and walk-outs.
+    /// Within each side's 150 protocol lines (the host plans them, with its "alive" lines, in pairing's budget).
+    /// </summary>
+    public const int MostPresenceLines = 40;
+
+    /// <summary>
     /// A partner whose host shows offline in the test channel this long (since its last line, or since it was last seen
     /// online: a relog, or the game closed) leaves the test channel and stops by itself.
     /// </summary>
@@ -230,6 +248,7 @@ public static partial class SelfTestProtocol {
         [PartnerOutcome.Refused] = "refused",
         [PartnerOutcome.Hello] = "hello-from-partner",
         [PartnerOutcome.Back] = "back",
+        [PartnerOutcome.Away] = "away",
     };
 
     private static readonly Dictionary<PartnerAsk, string> Asks = new() {
@@ -338,6 +357,11 @@ public static partial class SelfTestProtocol {
 
         var tail = words.Skip(1).ToList();
         if (Outcomes.FirstOrDefault(entry => entry.Value == tail[0]) is { Value: not null } outcome) {
+            // "away" and "back" are a tester's own lines, exactly "#0 away" and "#0 back": no request's number, no fields.
+            if (outcome.Key is PartnerOutcome.Away or PartnerOutcome.Back && (words[0] != "0" || tail.Count != 1)) {
+                return new ProtocolLine.Malformed();
+            }
+
             return ParseAnswer(number, outcome.Key, tail.Skip(1).ToList());
         }
 

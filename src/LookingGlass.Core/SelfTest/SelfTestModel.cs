@@ -184,6 +184,13 @@ public sealed record SelfTestStep {
     /// </summary>
     public bool Setup { get; init; }
 
+    /// <summary>
+    /// A relog (a <see cref="StepKind.CarryOnAfter"/> step, or a question answered across one: another character and back),
+    /// not a plugin reload: the game may put the character back outside a house or apartment (owner, 2026-10-13), so the
+    /// tester is told before, and the step ends only once they are back inside.
+    /// </summary>
+    public bool Relogs { get; init; }
+
     /// <summary>A real step: one whose passing makes its check pass.</summary>
     public bool Real => !this.Setup && this.Kind != StepKind.CarryOnAfter;
 

@@ -600,7 +600,14 @@ public sealed partial class SelfTestRun {
 
         var logins = this._host.Logins;
         var since = this._host.Now;
-        var prompt = new GuidedPrompt(step.Title) { Short = null };
+        // A relog: the game may put the character back outside a house or apartment (owner, 2026-10-13). The tester is told
+        // before, and, with two players, the partner first ("away"): it waits for the host's "back", showing why.
+        var text = step.Relogs ? $"{step.Title} {SelfTestWords.ComeBackInside(this._place.Last.Kind)}" : step.Title;
+        if (step.Relogs) {
+            await this.TellWhereAsync(away: true, token).ConfigureAwait(false);
+        }
+
+        var prompt = new GuidedPrompt(text) { Short = null };
         var answer = this.NewAnswer();
         this.SetView(view => view with { State = SelfTestState.WaitingToCarryOn, Prompt = new PromptView(prompt, index + 1, check.StepList.Count, SelfTestWords.WaitingToCarryOn) });
         var result = new StepResult(StepOutcome.Passed);
@@ -628,6 +635,11 @@ public sealed partial class SelfTestRun {
 
                 await Task.WhenAny(carryOn.Task, answer.Task, this._host.Delay(Poll, token)).ConfigureAwait(false);
             }
+
+            // The step ends once the tester is back in a private place, settled: walking back in from the ward has no time limit
+            // (Stop still works). The file still says to carry on from the next step, should the plugin go away meanwhile.
+            this.SetView(view => view with { State = SelfTestState.Running, Prompt = null });
+            await this.GateAsync(typing: false, token, outsideWhy: SelfTestWords.WalkBackInside).ConfigureAwait(false);
         } finally {
             lock (this._lock) {
                 this._carryOn = null;
@@ -693,7 +705,8 @@ public sealed partial class SelfTestRun {
     /// a connection, or another character for too long).
     /// </summary>
     /// <param name="whileDisconnected">A step that types while disconnected on purpose: the connection isn't waited for.</param>
-    internal async Task GateAsync(bool typing, CancellationToken token, bool whileDisconnected = false) {
+    /// <param name="outsideWhy">What to show while out of the private place, if not <see cref="SelfTestWords.PausedLeft"/> (after a relog).</param>
+    internal async Task GateAsync(bool typing, CancellationToken token, bool whileDisconnected = false, string? outsideWhy = null) {
         DateTimeOffset? disconnectedSince = null;
         DateTimeOffset? otherSince = null;
         var paused = false;
@@ -701,7 +714,15 @@ public sealed partial class SelfTestRun {
             token.ThrowIfCancellationRequested();
             await this.KeepPartnerAsync(token).ConfigureAwait(false);
             var now = this._host.Now;
-            var why = await this.WhyWaitAsync(typing, whileDisconnected || this.DisconnectedByRun).ConfigureAwait(false);
+            var why = await this.WhyWaitAsync(typing, whileDisconnected || this.DisconnectedByRun, outsideWhy).ConfigureAwait(false);
+            // Two players: the other side is told when this tester is out of the private place (steadily: not a loading screen,
+            // nor a moment's unreadable facts at a zone change), and when back inside, settled.
+            if (this._settledPrivate) {
+                await this.TellWhereAsync(away: false, token).ConfigureAwait(false);
+            } else if (!this._place.Last.Private && this._place.Last.Kind is not PlaceKind.Loading && this._place.Steady(now)) {
+                await this.TellWhereAsync(away: true, token).ConfigureAwait(false);
+            }
+
             if (why == SelfTestWords.PausedDisconnected) {
                 disconnectedSince ??= now;
                 if (now - disconnectedSince > MostDisconnected) {
@@ -733,7 +754,7 @@ public sealed partial class SelfTestRun {
     }
 
     /// <summary>Why the run must wait now (the words to show), or null if it may go on. Reads the place once.</summary>
-    private async Task<string?> WhyWaitAsync(bool typing, bool whileDisconnected) {
+    private async Task<string?> WhyWaitAsync(bool typing, bool whileDisconnected, string? outsideWhy = null) {
         PlaceFacts facts;
         try {
             facts = await this._host.ReadPlaceAsync().ConfigureAwait(false);
@@ -741,8 +762,9 @@ public sealed partial class SelfTestRun {
             facts = PlaceFacts.Unreadable;
         }
 
-        if (!this._place.Observe(facts, this._host.Now)) {
-            return this._place.Last.Private || this._place.Last.Kind is PlaceKind.Loading ? SelfTestWords.WaitingPlace : SelfTestWords.PausedLeft;
+        this._settledPrivate = this._place.Observe(facts, this._host.Now);
+        if (!this._settledPrivate) {
+            return this._place.Last.Private || this._place.Last.Kind is PlaceKind.Loading ? SelfTestWords.WaitingPlace : outsideWhy ?? SelfTestWords.PausedLeft;
         }
 
         if (!whileDisconnected) {
@@ -753,6 +775,11 @@ public sealed partial class SelfTestRun {
             if (!await this.IsForAsync().ConfigureAwait(false)) {
                 return SelfTestWords.PausedOtherCharacter;
             }
+        }
+
+        // The host: while the partner is out of a private place (their "away"), nothing is asked of them, and nothing typed.
+        if (this.Link is { } link && await link.AwayAsync().ConfigureAwait(false)) {
+            return SelfTestWords.WaitingPartnerInside;
         }
 
         if (typing && this._place.Last.NeedsNobodyNear && await this.OthersNearAsync().ConfigureAwait(false) > 0) {
@@ -794,6 +821,73 @@ public sealed partial class SelfTestRun {
         } finally {
             Interlocked.Exchange(ref this._keepingPartner, 0);
         }
+    }
+
+    // The place as last read: private, and settled.
+    private bool _settledPrivate;
+    private int _telling;
+
+    /// <summary>
+    /// Two players: tells the other side "away" (this tester is out of the private place, or about to relog) or "back" (inside
+    /// again, settled), once each time it changes (owner, 2026-10-13). Paced as a protocol line, at most
+    /// <see cref="SelfTestProtocol.MostPresenceLines"/> a run, and an "away" only with room left for its "back". Only while
+    /// connected with the run's own character (after a relog, once logged in again). A refusal stops the run.
+    /// </summary>
+    internal async Task TellWhereAsync(bool away, CancellationToken token) {
+        bool told;
+        int lines;
+        lock (this._lock) {
+            (told, lines) = (this._data.ToldAway, this._data.PresenceLines);
+        }
+
+        if (this._data.Role == SelfTestRole.Solo || told == away || this.Pacer.Refused
+            || (this._data.Role == SelfTestRole.Host ? this.Link is not { Paired: true, Gone: false } : this._data.Joined.Count == 0)) {
+            return;
+        }
+
+        if (away && (lines + 2 > SelfTestProtocol.MostPresenceLines
+                     || this.Pacer.CountThisRun(SelfTestAction.PartnerMessage) + 2 > this.Pacer.MostOf(SelfTestAction.PartnerMessage))) {
+            return;
+        }
+
+        if (Interlocked.Exchange(ref this._telling, 1) == 1) {
+            return;
+        }
+
+        try {
+            if (!await this.ReadyAsync().ConfigureAwait(false) || !await this.IsForAsync().ConfigureAwait(false) || await this.PresenceChannelAsync().ConfigureAwait(false) is not { } channel) {
+                return;
+            }
+
+            await this.Pacer.WaitAsync(SelfTestAction.PartnerMessage, token).ConfigureAwait(false);
+            var line = SelfTestProtocol.Write(this.Code, new PartnerAnswer(0, away ? PartnerOutcome.Away : PartnerOutcome.Back, new Dictionary<string, string>()));
+            await this._host.SendAsync(channel, line).ConfigureAwait(false);
+            lock (this._lock) {
+                this._data.ToldAway = away;
+                this._data.PresenceLines++;
+            }
+
+            this.Save();
+        } catch (SelfTestSpentException) {
+            // Its most reached: the other side isn't told (an "away" is only sent with room for its "back").
+        } catch (Exception ex) when (SelfTestPacer.IsRefusal(ex)) {
+            this.Pacer.Refuse();
+            throw new SelfTestRefusedException();
+        } catch (Exception ex) when (ex is not (OperationCanceledException or SelfTestRefusedException)) {
+            this._host.Log($"[selftest] the other tester couldn't be told where this one is ({ex.GetType().Name})");
+        } finally {
+            Interlocked.Exchange(ref this._telling, 0);
+        }
+    }
+
+    /// <summary>Where "away" and "back" go: the host's first test channel (the host), or the first of the host's it is in (the partner).</summary>
+    private async Task<string?> PresenceChannelAsync() {
+        if (this._data.Role == SelfTestRole.Host) {
+            return this.Link?.ChannelId;
+        }
+
+        var listed = (await this._host.ChannelsAsync().ConfigureAwait(false)).Select(channel => channel.Id).ToHashSet();
+        return this._data.Joined.FirstOrDefault(listed.Contains);
     }
 
     /// <summary>The run's own character, on its own server, is logged in (never act on another).</summary>
@@ -1566,6 +1660,12 @@ public sealed class StepContext {
 
     /// <summary>Waits for the gate again: private, connected (and nobody near, before typing).</summary>
     public Task GateAsync(bool typing = false) => this._run.GateAsync(typing, this.Token);
+
+    /// <summary>After a relog: the gate, saying meanwhile to walk back in (the game puts the character outside a house or apartment).</summary>
+    internal Task GateAfterRelogAsync() => this._run.GateAsync(typing: false, this.Token, outsideWhy: SelfTestWords.WalkBackInside);
+
+    /// <summary>Two players: tells the other side this tester is about to relog ("away"); the gate says "back" once inside again.</summary>
+    internal Task TellAwayAsync() => this._run.TellWhereAsync(away: true, this.Token);
 
     /// <summary>The environment as read at the start of the run (the plugin's version, ChatTwo, the mode).</summary>
     public Task<SelfTestEnvironment> EnvironmentAsync() => this.Host.ReadEnvironmentAsync();

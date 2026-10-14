@@ -105,6 +105,21 @@ public static partial class SelfTestWords {
     /// <summary>Waiting for the tester to log out and in, or turn the plugin off and on.</summary>
     public const string WaitingToCarryOn = "Waiting for you. The self-test carries on by itself afterwards.";
 
+    /// <summary>
+    /// Before a relog, added to its instruction: the game may put the character back outside a house or apartment, in the ward
+    /// (owner, 2026-10-13). Whether an inn room keeps them in isn't known for sure, so it says only what to do if not. The run
+    /// waits until they're back inside, with no time limit.
+    /// </summary>
+    public static string ComeBackInside(PlaceKind place) => place switch {
+        PlaceKind.Apartment => "When you come back in, you may be outside, in the ward: walk back into your apartment. The self-test waits until you're inside, however long that takes.",
+        PlaceKind.House or PlaceKind.Chambers or PlaceKind.Workshop =>
+            "When you come back in, you may be outside the house, in the ward: walk back in. The self-test waits until you're inside, however long that takes.",
+        _ => "If you come back in outside, walk back in. The self-test waits until you're inside, however long that takes.",
+    };
+
+    /// <summary>After a relog, while the tester is outside a private place (no time limit).</summary>
+    public const string WalkBackInside = "You're back, but outside: walk back in. The self-test carries on once you're inside. No hurry.";
+
     /// <summary>The blue line after a run that didn't finish, at the next start.</summary>
     public const string InterruptedRun = "A LookingGlass self-test didn't finish. Your settings are as they were, and its test channel was removed.";
 
@@ -238,7 +253,7 @@ public static partial class SelfTestWords {
         CheckAgain, CarryOn, ShowItAgain, Close, TwoPlayers, WhichOnes, Remove, Passed, Failed, Skipped, StoppedWord, NotRunWord, NoteLabel, .. Consent, Intro,
         NoNamesInReport, HistoryAsk, HistoryDelete, HistoryKeep, StayHere, HouseVisitors, HandChanges, ClosingDoesntStop, TwoPlayersLater, NoteReminder, LeftoverHeading,
         LeftoverExplained, .. PrivatePlaces, OnlyInPrivate, PausedLeft, WaitingSomeoneNear, PausedDisconnected, PausedOtherCharacter, ChatTwoToSay, WaitingSay, WaitingPlace,
-        WaitingToCarryOn, InterruptedRun, InterruptedRunChannelLeft, .. SelfTestPacer.HourMost.Keys.Select(action => WaitBeforeStart(TimeSpan.FromMinutes(20), action)),
+        WaitingToCarryOn, .. Enum.GetValues<PlaceKind>().Select(ComeBackInside).Distinct(), WalkBackInside, InterruptedRun, InterruptedRunChannelLeft, .. SelfTestPacer.HourMost.Keys.Select(action => WaitBeforeStart(TimeSpan.FromMinutes(20), action)),
         .. Enum.GetValues<PlaceKind>().Select(Place), .. Enum.GetValues<SelfTestSetting>().Select(SettingName), .. Reasons(), CleanUp(1, 1, 7, 1, true, true, true, true), SimulatedWarning.Plain, .. PairWords(),
     ];
 

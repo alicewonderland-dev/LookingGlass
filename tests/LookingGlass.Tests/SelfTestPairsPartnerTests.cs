@@ -53,7 +53,10 @@ internal sealed class ScriptedHost {
 
         this.Answers.Add(answer);
         this.AfterAnswer?.Invoke(answer);
-        this.Next();
+        if (answer.Outcome is not (PartnerOutcome.Away or PartnerOutcome.Back)) {
+            // Its own "away" and "back" answer nothing: a host sends its next request only after an answer.
+            this.Next();
+        }
     }
 }
 

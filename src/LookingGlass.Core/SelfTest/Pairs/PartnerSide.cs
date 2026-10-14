@@ -39,6 +39,8 @@ public sealed class PartnerSide {
     private string? _ownChannel;
     private DateTimeOffset _seenOnline;
     private string? _waitingLine;
+    private bool _hostAway;
+    private int _presenceHeard;
 
     public PartnerSide(StepContext context) {
         this._context = context;
@@ -132,8 +134,20 @@ public sealed class PartnerSide {
         };
     }
 
-    private Task AnswerAsync(string channel, PartnerAnswer answer) =>
-        this._context.ServerAsync(SelfTestAction.PartnerMessage, () => this.Host.SendAsync(channel, SelfTestProtocol.Write(this.Code, answer)));
+    /// <param name="inside">Only once its player is inside a private place again (the gate, before and after the pace's wait).</param>
+    private async Task AnswerAsync(string channel, PartnerAnswer answer, bool inside = false) {
+        if (inside) {
+            await this._context.GateAsync().ConfigureAwait(false);
+        }
+
+        await this._context.ServerAsync(SelfTestAction.PartnerMessage, async () => {
+            if (inside) {
+                await this._context.GateAsync().ConfigureAwait(false);
+            }
+
+            await this.Host.SendAsync(channel, SelfTestProtocol.Write(this.Code, answer)).ConfigureAwait(false);
+        }).ConfigureAwait(false);
+    }
 
     // ================================================================ answering
 
@@ -144,6 +158,9 @@ public sealed class PartnerSide {
     public async Task<StepResult> AnswerAllAsync() {
         while (true) {
             this._context.Token.ThrowIfCancellationRequested();
+            // Nothing is read, so nothing answered, while its player is out of the private place: the gate says "away" to the
+            // host meanwhile (its requests wait, with no time-out), and "back" once inside again.
+            await this._context.GateAsync().ConfigureAwait(false);
             await this.AcceptInvitesAsync().ConfigureAwait(false);
             foreach (var line in this.Host.ReceivedSince(this._mark).OrderBy(line => line.Seq)) {
                 this._mark = Math.Max(this._mark, line.Seq);
@@ -170,7 +187,7 @@ public sealed class PartnerSide {
             }
 
             // Its player is told what it waits for, once the host has been quiet a while.
-            var waiting = quiet > TimeSpan.FromMinutes(1) ? SelfTestWords.PartnerWaitingOnHost(online) : null;
+            var waiting = this._hostAway ? SelfTestWords.WaitingPartnerInside : quiet > TimeSpan.FromMinutes(1) ? SelfTestWords.PartnerWaitingOnHost(online) : null;
             if (waiting != this._waitingLine) {
                 this._waitingLine = waiting;
                 this._context.ShowPairLine(waiting ?? $"{SelfTestWords.PartnerJoined} {SelfTestWords.PartnerAnswered(this._answered)}");
@@ -269,6 +286,12 @@ public sealed class PartnerSide {
             case ProtocolLine.Request { Value: var request } when line.ChannelId != null && request.Number > this._context.Data.ProtocolNumber:
                 await this.HandleAsync(request, line.ChannelId).ConfigureAwait(false);
                 break;
+            case ProtocolLine.Answer { Value.Outcome: PartnerOutcome.Away or PartnerOutcome.Back } presence when line.ChannelId != null:
+                // The host out of its private place (relogging, say), or back inside: its window says who it waits for. Only in
+                // the host's test channel, and at most its most a run (then it's no longer said).
+                this._hostAway = presence.Value.Outcome == PartnerOutcome.Away && this._presenceHeard < SelfTestProtocol.MostPresenceLines;
+                this._presenceHeard++;
+                break;
         }
     }
 
@@ -296,7 +319,9 @@ public sealed class PartnerSide {
             answer = Refused(request);
         }
 
-        await this.AnswerAsync(channel, answer).ConfigureAwait(false);
+        // No answer while its player is out of the private place (walked out during a step that waits on them, say): the gate
+        // says "away" to the host meanwhile, then "back", then the answer goes. Never held for "bye": the host is cleaning up.
+        await this.AnswerAsync(channel, answer, inside: request.Verb != PartnerVerb.Bye).ConfigureAwait(false);
         if (after != null) {
             await after().ConfigureAwait(false);
         }
@@ -558,12 +583,17 @@ public sealed class PartnerSide {
         GuidedAnswer given;
         if (ask == PartnerAsk.Relog) {
             var logins = this.Host.Logins;
-            given = await this._context.AskAsync(new GuidedPrompt(SelfTestWords.PartnerAskText(ask, marker)) {
+            // The game may put the character back outside a house or apartment (owner, 2026-10-13): its player is told, and the
+            // host first ("away"), so it waits for "back" with no time-out meanwhile.
+            var place = PrivateArea.Judge(await this.Host.ReadPlaceAsync().ConfigureAwait(false)).Kind;
+            await this._context.TellAwayAsync().ConfigureAwait(false);
+            given = await this._context.AskAsync(new GuidedPrompt($"{SelfTestWords.PartnerAskText(ask, marker)} {SelfTestWords.ComeBackInside(place)}") {
                 Short = SelfTestProtocol.NameOf(ask),
                 Watch = StepContextExtensions.Until(() => Task.FromResult(this.Host.Logins != logins), "not logged in again yet", "logged in again"),
             }).ConfigureAwait(false);
-            // Back: connected again, in the private place, before answering.
-            await this._context.GateAsync().ConfigureAwait(false);
+            // Back: connected again, inside the private place (walked back in from the ward, however long that takes), before
+            // answering; the gate says "back" first.
+            await this._context.GateAfterRelogAsync().ConfigureAwait(false);
         } else {
             given = await this._context.AskAsync(new GuidedPrompt(SelfTestWords.PartnerAskText(ask, marker), ask == PartnerAsk.ClickLink ? PromptKind.YesNo : PromptKind.DoThis) {
                 Short = SelfTestProtocol.NameOf(ask),

@@ -13,8 +13,8 @@ public static class PairingSuite {
     public static SelfTestSuite Create() => new(Id, "Pairing with your partner", [Pairing()]) {
         Planned = new Dictionary<SelfTestAction, int> {
             [SelfTestAction.Lookup] = 2, [SelfTestAction.Invite] = 1, [SelfTestAction.CreateChannel] = 1,
-            // Its hello, and the "alive" lines a run may send while its tester is busy.
-            [SelfTestAction.PartnerMessage] = 3 + SelfTestProtocol.MostKeepAlives,
+            // Its hello, the "alive" lines a run may send while its tester is busy, and its "away" and "back" lines.
+            [SelfTestAction.PartnerMessage] = 3 + SelfTestProtocol.MostKeepAlives + SelfTestProtocol.MostPresenceLines,
         },
     };
 

@@ -632,16 +632,48 @@ box; the answer goes back as `done yes`, `done no` or `done skipped`.
 
 **Time-outs.** A request is answered within 60 seconds (a loading screen
 included), or 10 minutes for one that waits on the partner's own guided step
-or relog. Past that, the host marks that check "skipped: your partner didn't
+or relog; the time either tester spends outside a private place doesn't
+count (see "Coming back outside"). Past that, the host marks that check "skipped: your partner didn't
 answer", asks `still-there`, and after a second silence skips every check
 left that needs the partner and cleans up. A partner hearing nothing for 15
 minutes leaves the test channel and stops by itself.
 
-**Relogs.** Both keep their run file; either side's runner, back from a relog,
-says `back` and carries on. A check like "missed messages" uses it: the host
-logs out, the partner's plugin sees the host go offline in the member list and
-sends when asked before, then the host logs in and the runner checks what
-caught up.
+**Relogs.** Both keep their run file. A check like "missed messages" uses
+them: the host logs out, the partner's plugin sees the host go offline in the
+member list and sends when asked before, then the host logs in and the runner
+checks what caught up.
+
+**Coming back outside (owner, 2026-10-13).** Relogging inside a house or
+apartment puts the character back outside, in the ward: a public place. So:
+
+- Before every relog (the host's own, the partner's `ask relog`, and the
+  one-player questions answered with another character and back), the window
+  says they may come back outside, and to walk back in. Nothing claims an inn
+  room keeps them in (not known for sure): it says what to do if not.
+- A relog step ends only once the tester is back inside a private place,
+  settled. Walking back in has no time limit; Stop still works, and the
+  30-minute wait for the relog itself is as before. Meanwhile the window says
+  "You're back, but outside: walk back in."
+- Each side tells the other where it is with two fixed lines of its own:
+  `LG self-test K7Q2 #0 away` (about to relog, or steadily outside a private
+  place: not a loading screen, nor a moment's unreadable place at a zone
+  change) and `LG self-test K7Q2 #0 back` (inside again, settled). They are
+  read strictly (exactly `#0`, no fields; anything else with the prefix is
+  malformed), only from the other tester, only in a test channel (never local
+  chat), paced as protocol lines, and at most 40 a run each way (twenty
+  relogs or walk-outs; a full pass has about nine of the host's relogs, plus
+  the partner's and walk-outs; within each side's 150 protocol lines, and the
+  host plans them in pairing's budget): an `away`
+  goes only with room left for its `back`, and past 40 the other side's lines
+  are ignored (its time-outs then run as before). They hold no names.
+- While **either** tester is outside: the host sends no requests (it checks
+  again after each request's pace wait, so a walk-out in those seconds holds
+  it too), and its time-outs for answers (60 seconds, 10 minutes) are paused;
+  the partner reads no requests and sends no answer (one it was working on
+  goes once it is back inside; never held: `bye`). "Alive" goes on as before.
+  The host's window says "Waiting for your partner to get back inside", and so
+  does the partner's while the host is out. A partner away and offline for 45
+  minutes has left the test, as before.
 
 **Both sides' results.** The partner's answers are part of the host's
 results, so the host's report covers the task. The partner gets a short

@@ -56,7 +56,7 @@ public static class LocalTogetherSuite {
         Id = "local-chat-4-7", Title = "Friends list not loaded yet", Steps = "local-chat 4-7", Mode = CheckMode.Guided, Needs = Needs,
         StepList = [
             Together(),
-            CarryOn("Go to the title screen, then come back in with this character. Don't open your friends list afterwards.", "4"),
+            CarryOn("Go to the title screen, then come back in with this character. Don't open your friends list afterwards.", "4", relog: true),
             SetupGuided("Your partner relogs too", "4", context => context.Partner.AskPlayerAsync(context, PartnerAsk.Relog, "partner relogged")),
             Auto("Before either friends list is open", "4", async context => {
                 var mark = context.Host.Mark();
@@ -106,7 +106,7 @@ public static class LocalTogetherSuite {
                     "Does your friends list have more than one page, with your partner near its end?", PromptKind.YesNo)).ConfigureAwait(false) is GuidedAnswer.Yes
                 ? StepResult.Pass()
                 : StepResult.SkipCheck("needs a friends list longer than one page, with your partner near its end")),
-            CarryOn("Go to the title screen, then come back in with this character. Then open your friends list and close it at once, before it scrolls.", "7a"),
+            CarryOn("Go to the title screen, then come back in with this character. Then open your friends list and close it at once, before it scrolls.", "7a", relog: true),
             Auto("Right after opening it", "7a", async context => {
                 var marker = await SayLocalAsync(context).ConfigureAwait(false);
                 var reached = Arrived(await PartnerSawAsync(context, marker).ConfigureAwait(false));

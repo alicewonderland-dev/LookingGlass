@@ -228,6 +228,8 @@ public sealed class PartnerLink {
 
     /// <summary>Sends a request to the partner, paced as a channel message: its number.</summary>
     public async Task<int> SendAsync(StepContext context, PartnerVerb verb, params string[] args) {
+        // Nothing is asked while either tester is out of a private place (the gate waits for both: owner, 2026-10-13).
+        await context.GateAsync().ConfigureAwait(false);
         if (this.Gone || !this.Paired || this.ChannelId is not { } channel) {
             throw new PartnerSilentException(gone: true);
         }
@@ -243,7 +245,11 @@ public sealed class PartnerLink {
 
         var number = ++this.Data.ProtocolNumber;
         var line = SelfTestProtocol.Write(this._run.Code, new PartnerRequest(number, verb, args));
-        await context.ServerAsync(SelfTestAction.PartnerMessage, () => this.Host.SendAsync(channel, line)).ConfigureAwait(false);
+        await context.ServerAsync(SelfTestAction.PartnerMessage, async () => {
+            // Again after the pace's wait: either tester may have walked out meanwhile (it then counts as spent a little early).
+            await context.GateAsync().ConfigureAwait(false);
+            await this.Host.SendAsync(channel, line).ConfigureAwait(false);
+        }).ConfigureAwait(false);
         this.LastSent = this.Host.Now;
         return number;
     }
@@ -309,6 +315,62 @@ public sealed class PartnerLink {
             PartnerOutcome.Skipped => StepResult.Skip("your partner skipped it"),
             _ => StepResult.Fail("your partner said it didn't work"),
         };
+    }
+
+    // ================================================================ the partner away
+
+    private long _presenceMark;
+    private DateTimeOffset? _offlineSince;
+
+    /// <summary>
+    /// Whether the partner is out of a private place now: its last own line was "away" (relogging, or walked out), not yet
+    /// "back" (owner, 2026-10-13). The host's gate waits meanwhile (no requests, its time-outs paused, "alive" still sent).
+    /// Only the partner's exact "#0 away" and "#0 back", in one of the run's test channels, count, and at most
+    /// <see cref="SelfTestProtocol.MostPresenceLines"/> of them a run (past that the host no longer waits, and its requests keep
+    /// their time-outs). A partner away and offline for <see cref="SelfTestProtocol.PartnerGivesUpOffline"/> has left the test
+    /// (its game closed, say). Lines with the prefix from anyone else are left to the requests' own reading, which stops the run.
+    /// </summary>
+    internal async Task<bool> AwayAsync() {
+        if (!this.Paired || this.Gone) {
+            return false;
+        }
+
+        foreach (var line in this.Host.ReceivedSince(this._presenceMark)) {
+            this._presenceMark = Math.Max(this._presenceMark, line.Seq);
+            if (line.Own || line.ChannelId is not { } channel || !this.Data.TestChannels.Contains(channel)
+                || !(this.IsPartner(line.Sender) || (this.UserId != 0 && line.SenderId == this.UserId))) {
+                continue;
+            }
+
+            if (SelfTestProtocol.Parse(this._run.Code, line.Text) is not ProtocolLine.Answer { Value.Outcome: PartnerOutcome.Away or PartnerOutcome.Back } presence) {
+                continue;
+            }
+
+            if (this.Data.PartnerPresenceLines >= SelfTestProtocol.MostPresenceLines) {
+                // Past its most: ignored, and never left waiting on an "away" whose "back" won't be read.
+                this.Data.PartnerAway = false;
+                continue;
+            }
+
+            this.Data.PartnerPresenceLines++;
+            this.Data.PartnerAway = presence.Value.Outcome == PartnerOutcome.Away;
+            this._offlineSince = null;
+            this._run.SaveNow();
+        }
+
+        if (!this.Data.PartnerAway || this.ChannelId is not { } test) {
+            return false;
+        }
+
+        if ((await this.Host.MembersAsync(test).ConfigureAwait(false)).Any(member => member.UserId == this.UserId && member.Online)) {
+            this._offlineSince = null;
+        } else if (this.Host.Now - (this._offlineSince ??= this.Host.Now) > SelfTestProtocol.PartnerGivesUpOffline) {
+            this.Data.PartnerAway = false;
+            this.MarkGone();
+            return false;
+        }
+
+        return true;
     }
 
     // ================================================================ keeping the partner

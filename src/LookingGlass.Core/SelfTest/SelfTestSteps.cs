@@ -23,8 +23,23 @@ public static class SelfTestSteps {
     /// <summary>A relog or a plugin reload: the run waits in its file, and carries on by itself afterwards.</summary>
     /// <param name="instruction">What the tester does, in full (the window shows it as the step's text).</param>
     /// <param name="types">The tester types in game chat on the way (the typing gate runs before it shows).</param>
-    public static SelfTestStep CarryOn(string instruction, string? checklist, bool types = false) =>
-        new() { Title = instruction, Checklist = checklist, Kind = StepKind.CarryOnAfter, Types = types, Run = _ => Task.FromResult(StepResult.Pass()) };
+    /// <param name="relog">A relog (not a reload): the window adds that they may come back outside, and to walk back in.</param>
+    public static SelfTestStep CarryOn(string instruction, string? checklist, bool types = false, bool relog = false) =>
+        new() { Title = instruction, Checklist = checklist, Kind = StepKind.CarryOnAfter, Types = types, Relogs = relog, Run = _ => Task.FromResult(StepResult.Pass()) };
+
+    /// <summary>
+    /// A guided question answered across a relog (another of the tester's characters, then back with this one): the window
+    /// adds that they may come back outside, and the step ends only once they're back inside, settled, with no time limit
+    /// (owner, 2026-10-13).
+    /// </summary>
+    public static SelfTestStep AskAcrossRelog(string title, string? checklist, GuidedPrompt prompt) => new() {
+        Title = title, Checklist = checklist, Kind = StepKind.Guided, Relogs = true, Run = async context => {
+            var place = PrivateArea.Judge(await context.Host.ReadPlaceAsync().ConfigureAwait(false)).Kind;
+            var result = await context.AskForResultAsync(prompt with { Text = $"{prompt.Text} {SelfTestWords.ComeBackInside(place)}" }).ConfigureAwait(false);
+            await context.GateAfterRelogAsync().ConfigureAwait(false);
+            return result;
+        },
+    };
 
     /// <summary>The parts of a task a check doesn't run, as a note in the report: a setup step, never a pass by itself.</summary>
     public static SelfTestStep Rest(string? checklist, string notRun) =>

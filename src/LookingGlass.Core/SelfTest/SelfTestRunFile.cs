@@ -208,6 +208,18 @@ public sealed class SelfTestRunData {
     /// <summary>The run disconnected on purpose and hasn't connected again yet: the clean-up connects first.</summary>
     public bool DisconnectedByRun { get; set; }
 
+    /// <summary>Two players: this side said "away" (relogging, or out of the private place) and not yet "back".</summary>
+    public bool ToldAway { get; set; }
+
+    /// <summary>Two players: how many "away" and "back" lines this side sent (at most <see cref="SelfTestProtocol.MostPresenceLines"/>).</summary>
+    public int PresenceLines { get; set; }
+
+    /// <summary>The host: the partner said "away" and not yet "back" (the host waits, sending no requests).</summary>
+    public bool PartnerAway { get; set; }
+
+    /// <summary>The host: how many of the partner's "away" and "back" lines it took (past <see cref="SelfTestProtocol.MostPresenceLines"/>, none).</summary>
+    public int PartnerPresenceLines { get; set; }
+
     /// <summary>When the run last saved this file: nothing of a history newer than this (and a little) is the test's.</summary>
     public DateTimeOffset LastActive { get; set; }
 

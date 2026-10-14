@@ -5208,7 +5208,12 @@ virtual clock; the plugin's `SelfTest` folder and `SelfTestWindow`):
   minutes (never answered; at most 30). The partner counts a host online in
   the test channel as alive, and stops once the host has been offline for 45
   minutes, online but without a single line for an hour, or its channel goes;
-  meanwhile its window says what it waits for. The run taps keep only the
+  meanwhile its window says what it waits for. A relog inside a house or
+  apartment may put the tester back outside, in the ward: every relog says so
+  before, and ends only once they're back inside, with no time limit. With two
+  players each side says `#0 away` and `#0 back` (strict, at most 40 a run each
+  way), and while either is outside the host sends no requests, the partner
+  answers none, and the time-outs for answers wait. The run taps keep only the
   run's own lines (its test channels and local chat, from the other tester
   or with the run's prefix), never a real channel's, and drop their oldest
   first. Clean-up on both sides: the host
@@ -6088,6 +6093,38 @@ The owner's decisions, and why.
   its text files on, and the tester presses it and says what opened.
   Chat-log 30 to 35 failed at step 30 (the older lines weren't kept in the
   renamed channel's file); it is being looked into, and its check stays.
+- **Relogs put you outside: the self-test waits for you to walk back in
+  (owner, 2026-10-13).** In FFXIV, relogging inside a house or apartment
+  logs you back in outside, in the ward, a public place; a two-player check
+  failed because the tester came back outside and the partner's answer timed
+  out. Now:
+  - Every relog says so before: the host's and one player's relog steps, the
+    partner's `ask relog`, and the questions answered with another of the
+    tester's characters and back (name-colours 21, custom-colours 15). In a
+    house or apartment it says they may be outside, in the ward, and to walk
+    back in; in an inn room only what to do if they come back outside (that
+    an inn room keeps you in isn't known for sure, so it isn't claimed). A
+    plugin reload doesn't move the character, so it says nothing of this.
+  - A relog step ends only once the tester is back inside a private place and
+    settled. Walking back in has no time limit; Stop works, and the
+    30-minute wait for the relog itself stays.
+  - Two players: each side tells the other with two fixed lines of its own,
+    `#0 away` (about to relog, or steadily outside: not a loading screen, nor
+    a moment's unreadable place at a zone change) and `#0 back` (inside and
+    settled). They are read strictly (exactly that, no fields), only from the
+    other tester and only in a test channel, paced as protocol lines, and at
+    most 40 a run each way: an `away` goes only with room for its `back`, and
+    past 40 the other's lines are ignored, so a side is never left waiting
+    for a `back` that won't be read. Forty is twenty relogs or walk-outs (a
+    full pass has about nine of the host's relogs, plus the partner's and
+    walk-outs), within each side's 150 protocol lines: the host plans them in
+    pairing's budget, with its hello and "alive" lines (73 in all). While either tester is outside, the host
+    sends no requests (checked again after each request's pace wait), its
+    time-outs for answers are paused, and "alive" goes on; the partner reads
+    no request and sends no answer until it is back inside (never held:
+    `bye`). Each window says who it waits for ("Waiting for your partner to
+    get back inside"). A partner away and offline for 45 minutes has left the
+    test, as the partner already takes a host offline that long.
 
 ## Open questions
 

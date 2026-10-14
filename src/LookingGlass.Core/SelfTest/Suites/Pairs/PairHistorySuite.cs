@@ -65,7 +65,7 @@ public static class PairHistorySuite {
                 var history = await context.Host.HistoryAsync().ConfigureAwait(false);
                 return StepResult.All((arrived == 2, "your partner's lines didn't arrive"), (rejoined, "your partner didn't leave and join again"), (history.Size > 0, "nothing was kept"));
             }, types: true),
-            CarryOn(Relog, "6"),
+            CarryOn(Relog, "6", relog: true),
             Guided("Show older messages", "6-7", async context => {
                 await WindowLinesAsync(context, context.Partner.ChannelId!).ConfigureAwait(false);
                 return await context.AskForResultAsync(new GuidedPrompt(
@@ -105,7 +105,7 @@ public static class PairHistorySuite {
                 return StepResult.All((lines <= 3, "the other test channel's window showed the first one's lines"),
                     (counts.ListCounts.GetValueOrDefault(other) == 0, "an unread count counted older lines"));
             }),
-            CarryOn(Relog, "10"),
+            CarryOn(Relog, "10", relog: true),
             Ask("Not again among the older ones", "10", new GuidedPrompt(
                 "In the test channel's window, click Show older messages: are your partner's two missed lines there only once (not again among the older ones)?", PromptKind.YesNo) {
                 Short = "once",

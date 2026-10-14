@@ -82,8 +82,17 @@ private) rather than doing something it shouldn't: report it.
 - [ ] 15. **Stop and clean up** mid-step (during a guided step, and during an
       automatic one): the run stops, the clean-up runs, and the report says
       "stopped: you stopped the run".
-- [ ] 16. A step that asks you to relog: go to the title screen and back in;
-      the run carries on by itself with the next step.
+- [ ] 16. A step that asks you to relog: before you go, its words say you may
+      come back outside the house or apartment, in the ward, and to walk back in
+      (in an inn room: what to do if you come back outside). Go to the title
+      screen and back in. If you're outside, the window says "You're back, but
+      outside: walk back in."; nothing is typed (watch Say). Take a few minutes
+      walking back in: the run waits (no time-out), and carries on by itself
+      with the next step once you're inside. Note whether the inn room kept you
+      in the room.
+- [ ] 16b. The colours checks with another of your characters (name-colours 21,
+      custom-colours 15): the question says you may come back outside; answer
+      it from the ward, and the run carries on only once you're back inside.
 - [ ] 17. A step that asks you to turn LookingGlass off and on: do it; once
       you're back in and connected, the self-test window opens by itself and
       the run carries on with the next step.
@@ -207,6 +216,20 @@ each other's friends list. Both keep `/xllog` open.
       only once A shows offline in the member list, and A's run, back, finds
       them caught up. When B is asked to relog, B's window says so, and B's
       answer reaches A once B is back.
+- [ ] 35b. **Coming back outside (in a house or apartment).** B is asked to
+      relog: B's window says B may come back outside and to walk back in. B
+      relogs, comes back in the ward, and takes 3 minutes or more to walk back
+      in: A's window says "Waiting for your partner to get back inside" the
+      whole time (from before B leaves), A sends nothing meanwhile (watch the
+      test channel: only `#0 away`, A's "alive" lines, then `#0 back`), and
+      the check passes, with no "your partner didn't answer". Then the same
+      the other way round: A relogs, walks back in slowly; B's window says it
+      waits for A to get back inside, and the run carries on once A is in.
+- [ ] 35c. **Walking out mid-run.** While a two-player check runs, B walks out
+      of the private place (no relog) and back after a minute or two: A's next
+      request waits (A's window says why), B answers nothing while outside,
+      and the check carries on. The same with A walking out. Nothing is typed
+      by either while outside.
 - [ ] 36. **`/p`.** The ChatTwo suite asks A to type `/p` only once the party is
       exactly A and B; with a third member, the check is skipped ("needs a
       party of just the two of you"). The runner itself never types `/p`.

@@ -199,6 +199,12 @@ public sealed class PrivateAreaWatch {
         return verdict.Private && now - this._since >= PrivateArea.SettleTime;
     }
 
+    /// <summary>
+    /// The last answer, whatever it is, has stayed the same for <see cref="PrivateArea.SettleTime"/>: "outside" only once it is
+    /// steady, not for a moment while the housing facts catch up with a zone change.
+    /// </summary>
+    public bool Steady(DateTimeOffset now) => this._kind != null && now - this._since >= PrivateArea.SettleTime;
+
     /// <summary>How long until the answer has settled, if it is private but not settled yet.</summary>
     public TimeSpan UntilSettled(DateTimeOffset now) {
         var left = PrivateArea.SettleTime - (now - this._since);

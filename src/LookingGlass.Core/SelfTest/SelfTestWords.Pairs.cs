@@ -47,6 +47,9 @@ public static partial class SelfTestWords {
         ? "Waiting for your partner's next request: they may be doing a step of their own. Nothing to do here meanwhile."
         : "Waiting for your partner: they show offline (relogging, perhaps). This stops by itself if they stay offline for 45 minutes.";
 
+    /// <summary>Either side, while the other tester is outside a private place (their "away", until their "back").</summary>
+    public const string WaitingPartnerInside = "Waiting for your partner to get back inside. It carries on once they are; nothing to do here meanwhile.";
+
     /// <summary>The partner's run line: how many requests it answered.</summary>
     public static string PartnerAnswered(int answered) => answered == 1 ? "Answered 1 request." : $"Answered {answered} requests.";
 
@@ -99,7 +102,7 @@ public static partial class SelfTestWords {
 
     private static IReadOnlyList<string> PairWords() => [
         TwoPlayersTitle, BeAPartner, InviteAPartner, UseMyTarget, PartnerLabel, HostIntro, HostStarts, TellThemCode("K7Q2"), WaitingForPartner(TimeSpan.FromSeconds(102)),
-        HostLabel, CodeLabel, .. PartnerConsent, PartnerWaiting, WaitingPartyOfTwo, PartnerJoined, PartnerWaitingOnHost(true), PartnerWaitingOnHost(false), PartnerAnswered(1), PartnerAnswered(23),
+        HostLabel, CodeLabel, .. PartnerConsent, PartnerWaiting, WaitingPartyOfTwo, PartnerJoined, PartnerWaitingOnHost(true), PartnerWaitingOnHost(false), WaitingPartnerInside, PartnerAnswered(1), PartnerAnswered(23),
         PartnerFacts(false, null, null, null, null, null), PartnerFacts(true, true, 12, true, false, false), PartnerFacts(true, null, null, null, null, null),
         .. Enum.GetValues<PartnerAsk>().Select(ask => PartnerAskText(ask, "LG self-test K7Q2 p4, please ignore")),
     ];
