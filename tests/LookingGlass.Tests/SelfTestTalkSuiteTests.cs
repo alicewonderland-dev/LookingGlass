@@ -22,6 +22,11 @@ public sealed class SelfTestTalkSuiteTests : IDisposable {
 
     public void Dispose() => this._host.Dispose();
 
+    /// <summary>The tester doesn't see /lgl in /xlhelp (the owner's second run).</summary>
+    private bool MissesXlhelp { get; set; }
+
+    private string? XlhelpAsked { get; set; }
+
     /// <summary>A tester who does what is asked: clicks, presses Tab, relogs, and answers yes.</summary>
     private void Tester(SelfTestRun run) {
         var view = run.View;
@@ -56,6 +61,9 @@ public sealed class SelfTestTalkSuiteTests : IDisposable {
         } else if (text.Contains("click Withdraw", StringComparison.Ordinal)) {
             this._host.Settings[SelfTestSetting.LocalPrivacyAccepted] = JsonSerializer.SerializeToElement(false);
             this._host.Sticky = null;
+        } else if (this.MissesXlhelp && text.Contains("/xlhelp", StringComparison.Ordinal)) {
+            this.XlhelpAsked = text;
+            run.Answer(GuidedAnswer.No, "lgl is not listed");
         } else {
             run.Answer(prompt.Prompt.Kind == PromptKind.YesNo ? GuidedAnswer.Yes : GuidedAnswer.Done);
         }
@@ -94,6 +102,22 @@ public sealed class SelfTestTalkSuiteTests : IDisposable {
 
         var started = run.Data.Results.Single(result => result.Check == "local-chat-29");
         Assert.True(started.Outcome == CheckOutcome.Passed, $"{started.Outcome} {started.Why}");
+    }
+
+    [Fact]
+    public async Task NotSeenInXlhelpWhileRegisteredSaysSo() {
+        // The owner's second run: /lgl registered, shown in help, with its words, but the tester didn't see it in /xlhelp.
+        this.MissesXlhelp = true;
+
+        var run = await this.RunAsync();
+
+        var free = run.Data.Results.Single(result => result.Check == "local-chat-1-3");
+        Assert.Equal(CheckOutcome.Failed, free.Outcome);
+        Assert.Equal(TalkSuite.RegisteredButNotSeen, free.Why);
+        Assert.Equal(["lgl is not listed"], free.Notes);
+        // Told exactly where to look.
+        Assert.Contains("/lgdebug", this.XlhelpAsked, StringComparison.Ordinal);
+        Assert.Contains("/lookingglass", this.XlhelpAsked, StringComparison.Ordinal);
     }
 
     [Fact]

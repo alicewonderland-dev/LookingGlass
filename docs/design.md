@@ -5953,6 +5953,16 @@ The owner's decisions, and why.
   most (`SettledAsync`), instead of reading once. Reads of the plugin's own
   state (talking in a channel or not) and of "nothing happened" stay as they
   were.
+- **/xlhelp: a missed line told from a plugin bug (owner's second run,
+  2026-10-13).** The owner didn't see `/lgl` in `/xlhelp`, though the
+  automatic part had found it registered. That part reads Dalamud's own
+  command list (what `/xlhelp` prints): `/lgl` registered, by LookingGlass
+  (its handler's assembly; Dalamud keeps one registration per command), shown
+  in help, with its words, and the report says so. The question that follows
+  says where to look (sorted by name, after `/lgdebug` and before
+  `/lookingglass`); a "no" then fails with "/lgl is registered and shown in
+  help, with its words, but you didn't see it in /xlhelp", so a missed line is
+  told from a plugin bug.
 
 ## Open questions
 

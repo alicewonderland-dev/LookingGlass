@@ -20,6 +20,12 @@ public static class TalkSuite {
         Note = "1 reload",
     };
 
+    /// <summary>
+    /// Why "/xlhelp lists it" failed when the plugin's own read of Dalamud's command list found /lgl registered by
+    /// LookingGlass, shown in help, with its words: the line wasn't seen, not a plugin bug as far as it can tell.
+    /// </summary>
+    public const string RegisteredButNotSeen = "/lgl is registered and shown in help, with its words, but you didn't see it in /xlhelp";
+
     private const SelfTestNeeds Typing = SelfTestNeeds.Connection | SelfTestNeeds.Typing | SelfTestNeeds.LocalChat;
 
     // ---------------------------------------------------------------- local-chat 1-3
@@ -28,17 +34,25 @@ public static class TalkSuite {
         Id = "local-chat-1-3", Title = "Is /lgl free, and what does it say", Steps = "local-chat 1-3", Mode = CheckMode.AutomaticAndGuided,
         StepList = [
             Auto("/lgl is LookingGlass's, once, and explains itself", "1-2", async context => {
+                // Dalamud's own command list, as /xlhelp reads it: registered, by LookingGlass, shown in help, with its words.
                 var command = await context.Host.CommandAsync(LocalChat.Command).ConfigureAwait(false);
-                return StepResult.All(
+                var result = StepResult.All(
                     (command.Registered, "/lgl isn't registered"),
                     (command.Ours, "/lgl is registered by another plugin"),
-                    (command.ShownInHelp, "/lgl isn't listed in /xlhelp"),
+                    (command.ShownInHelp, "/lgl isn't set to show in /xlhelp"),
                     (command.Help == LocalChatWords.Usage.Plain, "/lgl's line in /xlhelp isn't the expected words"),
                     (SettingsWords.Help(SettingHelp.LocalChat, "").Plain.Contains(LocalChat.Command, StringComparison.Ordinal), "the Colour \"?\" doesn't explain /lgl"));
+                return result.Outcome == StepOutcome.Passed ? result with { Did = "Dalamud lists /lgl as LookingGlass's, shown in help, with its words" } : result;
             }),
-            Ask("/xlhelp lists it", "1-2", new GuidedPrompt(
-                "Type /xlhelp. Is /lgl listed once, by LookingGlass, saying it talks to your friends near you who use LookingGlass (about 20 yalms), and that /lgl alone keeps talking there until /s?",
-                PromptKind.YesNo) { Short = "/xlhelp" }),
+            // Only reached when the step above found it registered, by LookingGlass, shown in help, with its words: a "no" here
+            // says so, to tell a plugin bug from a line missed in a long list.
+            Guided("/xlhelp lists it", "1-2", async context => {
+                var answer = await context.AskAsync(new GuidedPrompt(
+                    "Type /xlhelp. It lists every plugin's commands, one line each, sorted by name: /lgl comes after /lgdebug and before /lookingglass " +
+                    "(scroll up in the chat log if the list is long). Is /lgl there once, saying it talks to your friends near you who use LookingGlass " +
+                    "(about 20 yalms), and that /lgl alone keeps talking there until /s?", PromptKind.YesNo) { Short = "/xlhelp" }).ConfigureAwait(false);
+                return answer is GuidedAnswer.No or GuidedAnswer.DidntWork ? StepResult.Fail(RegisteredButNotSeen) : StepContext.Judge(answer, "/xlhelp");
+            }),
             CarryOn("In /xlplugins, turn LookingGlass off. Type /lgl: the game should say there is no such command. Then turn LookingGlass on again. The self-test carries on by itself.", "1",
                 types: true),
             Ask("The game had no /lgl", "1", new GuidedPrompt("While LookingGlass was off, did the game say /lgl isn't a command?", PromptKind.YesNo) { Short = "off and on" }),
