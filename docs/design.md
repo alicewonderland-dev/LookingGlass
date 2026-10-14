@@ -5873,6 +5873,26 @@ The owner's decisions, and why.
     - Removing a channel from the chat history moved its windows' place in the
       older lines on only after telling the caller it was done; it does so
       first now, as a deletion does (a test caught the race under load).
+- **The self-test's hourly budget, only where the server's limit refills slowly
+  (owner, 2026-10-13).** After the owner's first run, the budget across runs
+  was too strict (a second run waited for messages it could never have spent
+  too fast). Only the actions whose server limit refills slower than the
+  self-test's own pace could spend it over back-to-back runs keep one, each
+  under what the server allows at once (so even with no refill, an hour of
+  runs can't empty its bucket): making a test channel (server: 10 at once,
+  then 1 a minute; budget 8 an hour), disbanding one (5, then 1 a minute;
+  budget 4) and invites to one person (20, then 1 a minute; budget 16).
+  Checked against the server's defaults, the rest refill at least as fast as
+  the self-test spends them and keep only their pace and their most per run:
+  channel messages and protocol lines (1 a second; the self-test sends 3 in 10
+  seconds), local messages (1 a second, 1 every 2 to one person; it sends 1
+  every 4), lookups (1 a second; 1 every 2), renames (per user, 1 every 10
+  seconds, not per channel; 1 every 20), reconnects (60 new connections a
+  minute per address, counted each minute, with the device's saved login,
+  not a key login; 1 a minute) and the device list (1 every 6 seconds; 1
+  every 10). The owner had listed renames and reconnects among the slow ones
+  to check: both turned out to refill faster than the self-test's pace. The
+  start screen's wait names what waits ("for making test channels").
 
 ## Open questions
 

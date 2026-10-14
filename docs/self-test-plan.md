@@ -679,8 +679,29 @@ household sharing one address with two testers.
 
 **Between runs.** The runner keeps what it spent in the last hour (in the
 plugin's config folder) and won't start a run that would take the hour past
-the "most" column above; it says when it can ("Wait about 20 minutes: the
-last run used most of the hour's test channels").
+an hourly budget; it says when it can, and what waits ("Wait about 20
+minutes: the self-test's runs in the last hour used most of what it may use
+in an hour for making test channels").
+
+Only the actions whose server limit refills slower than the runner's own pace
+could spend it over back-to-back runs have an hourly budget (owner,
+2026-10-13), each under what the server allows at once:
+
+| Action | Server limit (default) | The runner's pace | Hourly budget |
+| --- | --- | --- | --- |
+| Create a channel | 10 at once, then 1 a minute | 1 every 10 seconds | 8 |
+| Disband | 5 at once, then 1 a minute | 1 every 20 seconds | 4 |
+| Invites to one person | 20 at once, then 1 a minute | 1 every 30 seconds | 16 |
+
+Everything else has only its pace and its most per run, since its server
+limit refills at least as fast as the runner can spend it: channel messages
+and protocol lines (1 a second; the runner sends 3 in 10 seconds at most),
+local messages (1 a second, 1 every 2 seconds to one person; the runner, 1
+every 4), lookups (1 a second; the runner, 1 every 2), renames (per user, 1
+every 10 seconds; the runner, 1 every 20), reconnects (60 new connections a
+minute per address, counted each minute, and a saved login, not a key login;
+the runner, 1 a minute) and the device list (1 every 6 seconds; the runner,
+1 every 10).
 
 Other things the runner never does: register, reset an identity, sign out
 other computers, forget an account, change the server address, ban, or send

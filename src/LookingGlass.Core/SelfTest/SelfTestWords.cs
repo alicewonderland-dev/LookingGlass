@@ -110,9 +110,17 @@ public static partial class SelfTestWords {
     public const string InterruptedRunChannelLeft =
         "A LookingGlass self-test didn't finish. Your settings are as they were. Its test channel couldn't be removed: see /lgdebug test.";
 
-    /// <summary>Why a run can't start for a while: the last hour's runs used most of what a run may use.</summary>
-    public static string WaitBeforeStart(TimeSpan wait) =>
-        $"Wait about {Math.Max(1, (int) Math.Ceiling(wait.TotalMinutes))} minutes: the last run used most of what the self-test may use in an hour.";
+    /// <summary>Why a run can't start for a while: the last hour's runs used most of what the self-test may of something (see <see cref="SelfTestPacer.HourMost"/>).</summary>
+    public static string WaitBeforeStart(TimeSpan wait, SelfTestAction action) =>
+        $"Wait about {Math.Max(1, (int) Math.Ceiling(wait.TotalMinutes))} minutes: the self-test's runs in the last hour used most of what it may use in an hour for {HourlyName(action)}.";
+
+    /// <summary>What an hourly budget is of, in plain words.</summary>
+    public static string HourlyName(SelfTestAction action) => action switch {
+        SelfTestAction.CreateChannel => "making test channels",
+        SelfTestAction.Disband => "closing test channels for everyone",
+        SelfTestAction.Invite => "invites",
+        _ => "requests",
+    };
 
     /// <summary>A setting's name for the start screen's "Which ones?" list, as Settings names it.</summary>
     public static string SettingName(SelfTestSetting setting) => setting switch {
@@ -221,7 +229,7 @@ public static partial class SelfTestWords {
         CheckAgain, CarryOn, Close, TwoPlayers, WhichOnes, Remove, Passed, Failed, Skipped, StoppedWord, NoteLabel, .. Consent, Intro,
         NoNamesInReport, HistoryAsk, HistoryDelete, HistoryKeep, StayHere, HouseVisitors, HandChanges, ClosingDoesntStop, TwoPlayersLater, NoteReminder, LeftoverHeading,
         LeftoverExplained, .. PrivatePlaces, OnlyInPrivate, PausedLeft, WaitingSomeoneNear, PausedDisconnected, PausedOtherCharacter, ChatTwoToSay, WaitingSay, WaitingPlace,
-        WaitingToCarryOn, InterruptedRun, InterruptedRunChannelLeft, WaitBeforeStart(TimeSpan.FromMinutes(20)),
+        WaitingToCarryOn, InterruptedRun, InterruptedRunChannelLeft, .. SelfTestPacer.HourMost.Keys.Select(action => WaitBeforeStart(TimeSpan.FromMinutes(20), action)),
         .. Enum.GetValues<PlaceKind>().Select(Place), .. Enum.GetValues<SelfTestSetting>().Select(SettingName), .. Reasons(), CleanUp(1, 1, 7, 1, true, true, true, true), SimulatedWarning.Plain, .. PairWords(),
     ];
 

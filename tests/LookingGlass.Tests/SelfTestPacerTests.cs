@@ -129,9 +129,9 @@ public sealed class SelfTestPacerTests {
         // Its answers still go.
         await partner.WaitAsync(SelfTestAction.PartnerMessage, TestContext.Current.CancellationToken);
 
-        // The hour's budget is the role's: a partner's 80 lines in the last hour leave no room for another partner run.
+        // Messages have no hourly budget (owner, 2026-10-13): another partner run may start at once.
         var next = new SelfTestPacer(() => this._now, (delay, _) => Task.CompletedTask, partner.Spent, role: SelfTestRole.Partner);
-        Assert.True(next.WaitBeforeStart(new Dictionary<SelfTestAction, int> { [SelfTestAction.ChannelMessage] = 80 }) > TimeSpan.Zero);
+        Assert.Equal(TimeSpan.Zero, next.WaitBeforeStart(new Dictionary<SelfTestAction, int> { [SelfTestAction.ChannelMessage] = 80 }).Wait);
     }
 
     [Fact]
@@ -180,16 +180,56 @@ public sealed class SelfTestPacerTests {
         this._now += TimeSpan.FromMinutes(40);
         var second = this.NewPacer(spent);
 
-        var wait = second.WaitBeforeStart(new Dictionary<SelfTestAction, int> { [SelfTestAction.CreateChannel] = 1 });
-        // Once the first create is an hour old (in about 20 minutes).
-        Assert.Equal(spent[0].At + TimeSpan.FromHours(1) - this._now, wait);
-        Assert.InRange(wait, TimeSpan.FromMinutes(19), TimeSpan.FromMinutes(20));
-        Assert.Equal(TimeSpan.Zero, second.WaitBeforeStart(new Dictionary<SelfTestAction, int> { [SelfTestAction.ChannelMessage] = 100 }));
+        // Two runs' worth fit in the hour (eight test channels); a third's three would take it past, until the first create is an
+        // hour old (in about 20 minutes).
+        Assert.Equal(TimeSpan.Zero, second.WaitBeforeStart(new Dictionary<SelfTestAction, int> { [SelfTestAction.CreateChannel] = 3 }).Wait);
+        var busier = this.NewPacer([.. spent, .. spent.Select(spend => spend with { At = spend.At + TimeSpan.FromSeconds(1) })]);
+        var (wait, waitingFor) = busier.WaitBeforeStart(new Dictionary<SelfTestAction, int> { [SelfTestAction.CreateChannel] = 3 });
+        Assert.Equal(SelfTestAction.CreateChannel, waitingFor);
+        Assert.InRange(wait, TimeSpan.FromMinutes(19), TimeSpan.FromMinutes(21));
+        Assert.Equal(TimeSpan.Zero, second.WaitBeforeStart(new Dictionary<SelfTestAction, int> { [SelfTestAction.ChannelMessage] = 100 }).Wait);
 
         this._now += TimeSpan.FromMinutes(21);
         var third = this.NewPacer(spent);
-        Assert.Equal(TimeSpan.Zero, third.WaitBeforeStart(new Dictionary<SelfTestAction, int> { [SelfTestAction.CreateChannel] = 1 }));
+        Assert.Equal(TimeSpan.Zero, third.WaitBeforeStart(new Dictionary<SelfTestAction, int> { [SelfTestAction.CreateChannel] = 3 }).Wait);
         // Older than an hour, it isn't kept.
         Assert.True(third.Spent.Count < spent.Count);
+    }
+
+    [Fact]
+    public void BackToBackRunsOfMessagesNeverWait() {
+        // A full host run's messages, lookups, reconnects, renames and device lists, a minute ago: none of their server
+        // limits refills slower than the self-test's pace, so none has an hourly budget (owner, 2026-10-13).
+        SelfTestAction[] fast = [SelfTestAction.ChannelMessage, SelfTestAction.PartnerMessage, SelfTestAction.LocalMessage, SelfTestAction.Lookup,
+            SelfTestAction.Reconnect, SelfTestAction.Rename, SelfTestAction.DeviceList];
+        var spent = fast.SelectMany(action => Enumerable.Repeat(new SelfTestSpend(action, this._now - TimeSpan.FromMinutes(1)), 150)).ToList();
+        var planned = fast.ToDictionary(action => action, action => SelfTestPacer.Rules[action].RunMost);
+        foreach (var role in Enum.GetValues<SelfTestRole>()) {
+            var pacer = new SelfTestPacer(() => this._now, (_, _) => Task.CompletedTask, spent, role: role);
+            Assert.Equal((TimeSpan.Zero, null), pacer.WaitBeforeStart(planned));
+        }
+
+        Assert.All(fast, action => Assert.False(SelfTestPacer.HourMost.ContainsKey(action), action.ToString()));
+    }
+
+    [Fact]
+    public void OnlyTheSlowRefillingActionsHaveAnHourlyBudgetUnderTheServersBurst() {
+        // The server's defaults (RequestHandler, LimitOptions): creates 10 at once then 1 a minute; disbands 5 then 1 a
+        // minute; invites to one person 20 then 1 a minute.
+        Assert.Equal([SelfTestAction.CreateChannel, SelfTestAction.Disband, SelfTestAction.Invite], SelfTestPacer.HourMost.Keys.Order());
+        Assert.True(SelfTestPacer.HourMost[SelfTestAction.CreateChannel] < 10);
+        Assert.True(SelfTestPacer.HourMost[SelfTestAction.Disband] < 5);
+        Assert.True(SelfTestPacer.HourMost[SelfTestAction.Invite] < 20);
+        // Each still lets at least one run's most through.
+        Assert.All(SelfTestPacer.HourMost, entry => Assert.True(entry.Value >= SelfTestPacer.Rules[entry.Key].RunMost));
+    }
+
+    [Fact]
+    public void TheWaitSaysWhatIsWaiting() {
+        var words = SelfTestWords.WaitBeforeStart(TimeSpan.FromMinutes(19.5), SelfTestAction.CreateChannel);
+        Assert.StartsWith("Wait about 20 minutes", words, StringComparison.Ordinal);
+        Assert.Contains("test channels", words, StringComparison.Ordinal);
+        Assert.Contains("invites", SelfTestWords.WaitBeforeStart(TimeSpan.FromMinutes(3), SelfTestAction.Invite), StringComparison.Ordinal);
+        PlainLanguage.AssertPlain(words);
     }
 }
