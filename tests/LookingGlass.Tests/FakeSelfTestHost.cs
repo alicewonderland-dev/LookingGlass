@@ -215,7 +215,7 @@ internal sealed partial class FakeSelfTestHost : ISelfTestHost, IDisposable {
             this.Channels[at] = this.Channels[at] with { Name = name };
         }
 
-        return Task.CompletedTask;
+        return this.NoteRenameAsync();
     }
 
     public Task SendAsync(string channelId, string text) {
@@ -230,7 +230,7 @@ internal sealed partial class FakeSelfTestHost : ISelfTestHost, IDisposable {
         return Task.CompletedTask;
     }
 
-    public Task SimulateIncomingAsync(string channelId, string text) => Task.CompletedTask;
+    public Task SimulateIncomingAsync(string channelId, string text) => this._history != null ? this.SimulateIncomingRealAsync(channelId, text) : Task.CompletedTask;
 
     public Task SimulateWarningAsync(string channelId) => Task.CompletedTask;
 
@@ -309,6 +309,7 @@ internal sealed partial class FakeSelfTestHost : ISelfTestHost, IDisposable {
 
         this.Ops.Add($"write:{setting}");
         this.Settings[setting] = value.Clone();
+        this.HistorySettingChanged();
         if (setting == SelfTestSetting.LocalPrivacyAccepted && !this.Is(setting) && this.Sticky == StickyChannel.LocalId) {
             // As sticky mode's frame check does: withdrawn while talking in local chat, it ends at once, and says so.
             this.SimulateEnd(StickyEnd.PrivacyWithdrawn);
@@ -429,7 +430,7 @@ internal sealed partial class FakeSelfTestHost : ISelfTestHost, IDisposable {
 
     public Task<bool> InCombatAsync() => Task.FromResult(false);
 
-    public Task<HistoryView> HistoryAsync() => Task.FromResult(new HistoryView(false, false, null, 0, 50));
+    public Task<HistoryView> HistoryAsync() => Task.FromResult(this._chatLog != null ? this.RealHistoryView() : new HistoryView(false, false, null, 0, 50));
 
     public Task ForgetHistoryAsync(IReadOnlyCollection<string> channelIds) {
         this.Ops.Add("forget");
@@ -458,6 +459,7 @@ internal sealed partial class FakeSelfTestHost : ISelfTestHost, IDisposable {
     }
 
     public void Dispose() {
+        this.DisposeRealHistory();
         try {
             if (Directory.Exists(this._folder)) {
                 Directory.Delete(TestFolders.CheckDeletable(this._folder), true);

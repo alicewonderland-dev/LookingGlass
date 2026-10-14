@@ -183,7 +183,12 @@ arrives as a message from "Simulated Sender"). Step 29 needs B.
 - [ ] 30. Rename `sky` (or move it to another number in the channel list) and
       send a line: the folder is renamed to the new name or number, with the
       same 16 characters at the end, and the older lines are still in its
-      file. Create a second channel with the same name as `sky`, send in it:
+      file, unchanged, followed by a line saying the channel's new name (for
+      a rename) and then yours. With a file in the folder open in a program
+      that keeps it open (Excel, say), rename it again and send: the folder
+      keeps its old name and the line goes in it (no second folder); close
+      the program and send another line: now it is renamed, every line still
+      in it. Create a second channel with the same name as `sky`, send in it:
       it gets a folder of its own, with other characters at the end.
 - [ ] 31. Settings' "Your chat history uses ..." grows as the text files do
       (compare with the files' sizes in the file manager: the `chatlog-…`

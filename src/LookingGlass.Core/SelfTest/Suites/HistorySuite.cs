@@ -33,14 +33,22 @@ public static partial class HistorySuite {
     }
 
     /// <summary>A test channel's text folder now (found by its ID's hash, whatever its name), or null.</summary>
-    internal static async Task<string?> FolderOfAsync(StepContext context, string channelId) {
+    internal static async Task<string?> FolderOfAsync(StepContext context, string channelId) =>
+        (await FoldersOfAsync(context, channelId).ConfigureAwait(false)).FirstOrDefault();
+
+    /// <summary>Every text folder of a test channel now (one, if all is well), by its ID's hash.</summary>
+    internal static async Task<List<string>> FoldersOfAsync(StepContext context, string channelId) {
         var root = (await context.Host.HistoryAsync().ConfigureAwait(false)).TextFolder;
         if (root == null || !Directory.Exists(root)) {
-            return null;
+            return [];
         }
 
         var hash = ChatLogText.ChannelHash(channelId);
-        return Directory.EnumerateDirectories(root).FirstOrDefault(folder => Path.GetFileName(folder).EndsWith(" " + hash, StringComparison.Ordinal));
+        try {
+            return Directory.EnumerateDirectories(root).Where(folder => Path.GetFileName(folder).EndsWith(" " + hash, StringComparison.Ordinal)).Order(StringComparer.Ordinal).ToList();
+        } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) {
+            return [];
+        }
     }
 
     /// <summary>This month's file of a test channel, or null.</summary>
@@ -90,24 +98,7 @@ public static partial class HistorySuite {
     private static SelfTestCheck RenamesOffDelete() => new() {
         Id = "chat-log-30-35", Title = "Renames, turning it off, deleting", Steps = "chat-log 30-35, 31b", Mode = CheckMode.AutomaticAndGuided, Needs = Needs,
         StepList = [
-            Auto("A rename: the folder follows, same code at the end", "30", async context => {
-                var sky = await context.TestChannelAsync(0).ConfigureAwait(false);
-                await HistoryOnAsync(context, unencrypted: true).ConfigureAwait(false);
-                await context.Host.SimulateIncomingAsync(sky, context.NextMarker()).ConfigureAwait(false);
-                await WaitForLinesAsync(context, sky, lines => lines.Length >= 1).ConfigureAwait(false);
-                var before = LinesOf((await FileOfAsync(context, sky).ConfigureAwait(false))!).Length;
-                var renamed = $"{SelfTestRun.ChannelName(context.Code, 0)} r";
-                await context.ServerAsync(SelfTestAction.Rename, () => context.Host.RenameChannelAsync(sky, renamed)).ConfigureAwait(false);
-                await context.WaitUntilAsync(async () => (await context.Host.ChannelsAsync().ConfigureAwait(false)).Any(channel => channel.Id == sky && channel.Name == renamed))
-                    .ConfigureAwait(false);
-                await context.Host.SimulateIncomingAsync(sky, context.NextMarker()).ConfigureAwait(false);
-                await WaitForLinesAsync(context, sky, lines => lines.Length >= before + 1).ConfigureAwait(false);
-                var folder = await FolderOfAsync(context, sky).ConfigureAwait(false);
-                var lines = folder == null ? [] : LinesOf((await FileOfAsync(context, sky).ConfigureAwait(false))!);
-                var result = StepResult.All((folder != null && Path.GetFileName(folder).StartsWith(renamed, StringComparison.Ordinal), "the folder wasn't renamed"),
-                    (lines.Length == before + 1, "the older lines weren't kept in its file"));
-                return result.Outcome == StepOutcome.Passed ? StepResult.Pass("a second channel with the same name (30)") : result;
-            }),
+            Auto("A rename: the folder follows, same code at the end", "30", RenameAsync),
             Auto("Its size grows with the files", "31", async context => {
                 var sky = await context.TestChannelAsync(0).ConfigureAwait(false);
                 var before = (await context.Host.HistoryAsync().ConfigureAwait(false)).Size;
@@ -157,4 +148,65 @@ public static partial class HistorySuite {
         ],
     };
 
+    /// <summary>
+    /// chat-log 30: a line, a rename, a line. Its folder (found by the code at its end) is renamed, and is its only one; its
+    /// month file still starts with the lines it had, word for word (each keeps the tag it had then), and after them has
+    /// the new line once and the rename's own information line once ("The channel is now called ...", kept as information
+    /// lines are), nothing else. Not a count of lines: the rename's line made one more than the first build expected
+    /// (tester's run, 0.2.18, 2026-10-13), and a count can't see lines lost and others added. Windows can't rename a folder
+    /// while a file in it is open in a program; the plugin then goes on writing to it as it is and tries again with each
+    /// line, so the check sends one more line, and if the folder still has its old name with every line in it, says so.
+    /// </summary>
+    private static async Task<StepResult> RenameAsync(StepContext context) {
+        var sky = await context.TestChannelAsync(0).ConfigureAwait(false);
+        await HistoryOnAsync(context, unencrypted: true).ConfigureAwait(false);
+        var first = context.NextMarker();
+        await context.Host.SimulateIncomingAsync(sky, first).ConfigureAwait(false);
+        var older = await WaitForLinesAsync(context, sky, lines => lines.Any(line => line.Contains(first, StringComparison.Ordinal))).ConfigureAwait(false);
+        if (!older.Any(line => line.Contains(first, StringComparison.Ordinal))) {
+            return StepResult.Fail("the line before the rename didn't reach its file");
+        }
+
+        var renamed = $"{SelfTestRun.ChannelName(context.Code, 0)} r";
+        await context.ServerAsync(SelfTestAction.Rename, () => context.Host.RenameChannelAsync(sky, renamed)).ConfigureAwait(false);
+        await context.WaitUntilAsync(async () => (await context.Host.ChannelsAsync().ConfigureAwait(false)).Any(channel => channel.Id == sky && channel.Name == renamed))
+            .ConfigureAwait(false);
+        var after = new List<string> { context.NextMarker() };
+        await context.Host.SimulateIncomingAsync(sky, after[0]).ConfigureAwait(false);
+        var result = await AfterRenameAsync(context, sky, renamed, older, after).ConfigureAwait(false);
+        if (result.Why == RenamePutOff) {
+            // Put off while a file in it was open: tried again with its next line.
+            after.Add(context.NextMarker());
+            await context.Host.SimulateIncomingAsync(sky, after[^1]).ConfigureAwait(false);
+            result = await AfterRenameAsync(context, sky, renamed, older, after).ConfigureAwait(false);
+        }
+
+        return result.Outcome == StepOutcome.Passed ? StepResult.Pass("a second channel with the same name (30)") : result;
+    }
+
+    internal const string RenamePutOff = "the folder couldn't be renamed yet (in use)";
+
+    /// <summary>What a rename left in a channel's text files, as <see cref="RenameAsync"/> checks it, waiting up to 10 seconds for it all to be there.</summary>
+    private static async Task<StepResult> AfterRenameAsync(StepContext context, string channelId, string renamed, string[] older, List<string> after) {
+        var notice = " " + ChannelHistory.Renamed(renamed);
+        var result = StepResult.Fail(SelfTestWords.TimedOut);
+        await context.WaitUntilAsync(async () => {
+            var folders = await FoldersOfAsync(context, channelId).ConfigureAwait(false);
+            var lines = folders.Count == 1 ? LinesOf(Path.Combine(folders[0], ChatLogText.MonthOf(context.Host.Now, context.Host.TimeZone) + ".txt")) : [];
+            var kept = lines.Length >= older.Length && lines.AsSpan(0, older.Length).SequenceEqual(older);
+            var added = kept ? lines[older.Length..] : [];
+            var allThere = kept && after.All(marker => added.Count(line => line.Contains(marker, StringComparison.Ordinal)) == 1);
+            var isRenamed = folders.Count == 1 && Path.GetFileName(folders[0]).StartsWith(renamed + " ", StringComparison.Ordinal);
+            result = StepResult.All(
+                (folders.Count == 1, folders.Count == 0 ? "the channel's folder is gone" : "its lines went to two folders"),
+                (isRenamed, allThere ? RenamePutOff : "the folder wasn't renamed"),
+                (kept, "the older lines weren't kept in its file"),
+                (allThere, "the line sent after the rename isn't in its file once"),
+                (added.Count(line => line.EndsWith(notice, StringComparison.Ordinal)) == 1, "the line saying the channel's new name isn't in its file once"),
+                (added.All(line => line.EndsWith(notice, StringComparison.Ordinal) || after.Any(marker => line.Contains(marker, StringComparison.Ordinal))),
+                    "its file has lines that aren't the test's"));
+            return result.Outcome == StepOutcome.Passed;
+        }, TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+        return result;
+    }
 }

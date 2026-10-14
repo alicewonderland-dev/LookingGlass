@@ -82,6 +82,12 @@ public sealed class ChatLogTextTests : IDisposable {
         Message = LinkedText.Plain(text),
     };
 
+    private static SessionSnapshot Named(params (string Id, string? Name)[] channels) => SessionSnapshot.Empty with {
+        State = ConnectionState.Ready,
+        ChannelsLoaded = true,
+        Channels = [.. channels.Select(channel => new ChannelView(channel.Id, channel.Name, 0, 0, true, false, Rank.Member, []))],
+    };
+
     private static HistoryLine Notice(string channelId, string technical, string plain, DateTimeOffset at, NoticeLevel level = NoticeLevel.Info) =>
         new(1, channelId, HistoryLineKind.Notice, at) {
             Notice = new SessionNotice(level, technical, channelId) { Plain = plain },
@@ -316,6 +322,127 @@ public sealed class ChatLogTextTests : IDisposable {
         await next.FlushAsync();
         Assert.Single(Directory.GetDirectories(this.TextRoot()));
         Assert.Equal(4, this.LinesOf("aaa", "2026-10").Length);
+        Assert.Empty(this._diagnostics);
+    }
+
+    [Fact]
+    public async Task ARenameKeepsTheOlderLinesThenSaysTheNewNameThenGoesOn() {
+        // The self-test's chat-log 30 as the plugin does it: a line, a rename (which the channel's history says, as an
+        // information line, kept like any other), then a line. The older lines stay as they were, old tag and all.
+        var clock = new StoppedClock();
+        var log = this.Open();
+        var history = new ChannelHistory(time: clock);
+        history.Clear(log);
+        history.NoteNames(Named(("aaa", "Sky Pirates")));
+        history.Add(new IncomingMessage("aaa", "Sky Pirates", Bob, false, "before the rename", false, clock.GetUtcNow()));
+        await log.FlushAsync();
+        var month = ChatLogText.MonthOf(clock.GetUtcNow(), TimeZoneInfo.Utc);
+        var before = this.LinesOf("aaa", month);
+        var oldFolder = this.ChannelFolder("aaa");
+
+        this._labels["aaa"] = new ChannelLabel("[LGC5]", "Mad Sky", 5);
+        Assert.True(history.NoteNames(Named(("aaa", "Mad Sky"))));
+        history.Add(new IncomingMessage("aaa", "Mad Sky", Bob, false, "after the rename", false, clock.GetUtcNow()));
+        await log.FlushAsync();
+
+        Assert.False(Directory.Exists(oldFolder));
+        Assert.Equal($"Mad Sky (LGC5) {ChatLogText.ChannelHash("aaa")}", Path.GetFileName(Assert.Single(Directory.GetDirectories(this.TextRoot()))));
+        var lines = this.LinesOf("aaa", month);
+        Assert.Equal(before.Length + 2, lines.Length);
+        Assert.Equal(before, lines[..before.Length]);
+        Assert.EndsWith("[sky] Bob Hatter@Lich: before the rename", lines[0]);
+        Assert.EndsWith("[LGC5] " + ChannelHistory.Renamed("Mad Sky"), lines[^2]);
+        Assert.EndsWith("[LGC5] Bob Hatter@Lich: after the rename", lines[^1]);
+        Assert.Empty(this._diagnostics);
+    }
+
+    [Fact]
+    public async Task AFolderInUseKeepsItsLinesAndIsRenamedWithTheFirstLineOnceItIsFree() {
+        var log = this.Open();
+        log.Record(Message("aaa", Bob, "one", Evening));
+        await log.FlushAsync();
+        var oldFolder = this.ChannelFolder("aaa");
+
+        // A file in it held open (as a program that keeps a file open does, sharing it with writers): Windows can't rename
+        // a folder with a file open in it, whatever that file shares.
+        string[] whileOpen;
+        using (new FileStream(Path.Combine(oldFolder, "2026-10.txt"), FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete)) {
+            this._labels["aaa"] = new ChannelLabel("[sky]", "Mad Sky", 3);
+            log.Record(Message("aaa", Bob, "two", Evening.AddMinutes(1)));
+            await log.FlushAsync();
+            log.Record(Message("aaa", Bob, "three", Evening.AddMinutes(2)));
+            await log.FlushAsync();
+            // Nothing lost, nothing in a second folder: it goes on in the folder it has.
+            Assert.Equal(oldFolder, Assert.Single(Directory.GetDirectories(this.TextRoot())));
+            whileOpen = File.ReadAllText(Path.Combine(oldFolder, "2026-10.txt"), Encoding.UTF8).Split("\r\n")[..^1];
+        }
+
+        Assert.Equal(3, whileOpen.Length);
+
+        // Let go of: the next line renames it (tried again with each line, not only at the next change of name).
+        log.Record(Message("aaa", Bob, "four", Evening.AddMinutes(3)));
+        await log.FlushAsync();
+        Assert.Equal(this.ChannelFolder("aaa"), Assert.Single(Directory.GetDirectories(this.TextRoot())));
+        Assert.Equal($"Mad Sky (LGC3) {ChatLogText.ChannelHash("aaa")}", Path.GetFileName(this.ChannelFolder("aaa")));
+        var lines = this.LinesOf("aaa", "2026-10");
+        Assert.Equal(whileOpen, lines[..3]);
+        Assert.EndsWith("four", lines[3]);
+        Assert.Equal(4, lines.Length);
+        Assert.Empty(this._diagnostics);
+    }
+
+    [Fact]
+    public async Task RenamesOneAfterAnotherAndANewNumberAllRenameTheSameFolder() {
+        var log = this.Open();
+        log.Record(Message("aaa", Bob, "as Sky Pirates", Evening));
+        await log.FlushAsync();
+
+        this._labels["aaa"] = new ChannelLabel("[sky]", "Mad Sky", 3);
+        log.Record(Message("aaa", Bob, "as Mad Sky", Evening.AddMinutes(1)));
+        // Renamed twice and moved to another number before its next line: straight to the last name.
+        this._labels["aaa"] = new ChannelLabel("[sky]", "Madder Sky", 3);
+        this._labels["aaa"] = new ChannelLabel("[LGC7]", "Maddest Sky", 7);
+        log.Record(Message("aaa", Bob, "as Maddest Sky", Evening.AddMinutes(2)));
+        await log.FlushAsync();
+        this._labels["aaa"] = new ChannelLabel("[LGC8]", "Maddest Sky", 8);
+        log.Record(Message("aaa", Bob, "at number 8", Evening.AddMinutes(3)));
+        await log.FlushAsync();
+
+        Assert.Equal($"Maddest Sky (LGC8) {ChatLogText.ChannelHash("aaa")}", Path.GetFileName(Assert.Single(Directory.GetDirectories(this.TextRoot()))));
+        Assert.Equal(["[2026-10-10 21:03] [sky] Bob Hatter@Lich: as Sky Pirates", "[2026-10-10 21:04] [sky] Bob Hatter@Lich: as Mad Sky",
+            "[2026-10-10 21:05] [LGC7] Bob Hatter@Lich: as Maddest Sky", "[2026-10-10 21:06] [LGC8] Bob Hatter@Lich: at number 8"], this.LinesOf("aaa", "2026-10"));
+        Assert.Empty(this._diagnostics);
+    }
+
+    [Fact]
+    public async Task ANewChannelsFolderTakesItsNameOnceItIsKnown() {
+        // Its first line before its name is known (just created, still being read): "Channel", then renamed.
+        this._labels["ccc"] = new ChannelLabel(ChannelTag.Fallback);
+        var log = this.Open();
+        log.Record(Notice("ccc", "You created the channel.", "You created the channel.", Evening));
+        await log.FlushAsync();
+        Assert.Equal($"Channel {ChatLogText.ChannelHash("ccc")}", Path.GetFileName(Assert.Single(Directory.GetDirectories(this.TextRoot()))));
+
+        this._labels["ccc"] = new ChannelLabel("[LGC6]", "Tea Party", 6);
+        log.Record(Message("ccc", Bob, "first message", Evening.AddMinutes(1)));
+        await log.FlushAsync();
+        Assert.Equal(this.ChannelFolder("ccc"), Assert.Single(Directory.GetDirectories(this.TextRoot())));
+        Assert.Equal(2, this.LinesOf("ccc", "2026-10").Length);
+    }
+
+    [Fact]
+    public async Task ARenameThatOnlyChangesCapitalsRenamesTheFolder() {
+        var log = this.Open();
+        log.Record(Message("aaa", Bob, "as Sky Pirates", Evening));
+        await log.FlushAsync();
+
+        // Windows sees the same name: renamed all the same, never a second folder or a lost file.
+        this._labels["aaa"] = new ChannelLabel("[sky]", "SKY PIRATES", 3);
+        log.Record(Message("aaa", Bob, "as SKY PIRATES", Evening.AddMinutes(1)));
+        await log.FlushAsync();
+
+        Assert.Equal($"SKY PIRATES (LGC3) {ChatLogText.ChannelHash("aaa")}", Path.GetFileName(Assert.Single(Directory.GetDirectories(this.TextRoot()))));
+        Assert.Equal(2, this.LinesOf("aaa", "2026-10").Length);
         Assert.Empty(this._diagnostics);
     }
 

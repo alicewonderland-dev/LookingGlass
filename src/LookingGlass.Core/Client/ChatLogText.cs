@@ -230,8 +230,8 @@ internal sealed class ChatLogTextFiles {
     private Dictionary<string, long> _files = new(StringComparer.Ordinal);
     private readonly List<Pending> _pending = [];
     private long _pendingBytes;
-    // Each channel's folder this session, and the name it was last given (or tried): renamed only when that changes.
-    private readonly Dictionary<string, (string Path, string Tried)> _folders = new(StringComparer.Ordinal);
+    // Each channel's folder this session (its path), so it is looked for only once.
+    private readonly Dictionary<string, string> _folders = new(StringComparer.Ordinal);
     // Files that couldn't be trimmed (open in a program that locks them): counted, never picked again this session.
     private readonly HashSet<string> _stuck = new(StringComparer.Ordinal);
     private Exception? _problem;
@@ -619,38 +619,39 @@ internal sealed class ChatLogTextFiles {
 
     /// <summary>
     /// A channel's folder: the one it has (found by its ID's hash, whatever it is called), renamed if its name or number
-    /// changed, or a new one. A rename that fails (the folder in use) leaves it as it is, and isn't tried again until the
-    /// name changes again. While its name isn't known, the folder keeps the name it has.
+    /// changed, or a new one. A rename that fails (Windows can't rename a folder while a file in it is open in a program)
+    /// leaves it as it is: its lines go on in it, never in a second folder, and the rename is tried again with each of its
+    /// next lines until it works. While its name isn't known, the folder keeps the name it has.
     /// </summary>
     private string FolderFor(string channelId, ChannelLabel label) {
         var wanted = ChatLogText.ChannelFolderName(channelId, label.Name, label.Slot);
         if (!this._folders.TryGetValue(channelId, out var known)) {
             var hash = ChatLogText.ChannelHash(channelId);
-            var found = this.ChannelFolders().Select(folder => folder.FullName)
-                .Where(path => ChatLogText.HashOf(Path.GetFileName(path)) == hash).Order(StringComparer.Ordinal).FirstOrDefault();
-            known = (found ?? Path.Combine(this._root, wanted), found == null ? wanted : Path.GetFileName(found));
+            known = this.ChannelFolders().Select(folder => folder.FullName)
+                .Where(path => ChatLogText.HashOf(Path.GetFileName(path)) == hash).Order(StringComparer.Ordinal).FirstOrDefault() ?? Path.Combine(this._root, wanted);
         }
 
-        if (label.Name != null && known.Tried != wanted && Path.GetFileName(known.Path) != wanted) {
+        // Ordinal: a change of capitals alone is a rename too.
+        if (label.Name != null && Path.GetFileName(known) != wanted) {
             var target = Path.Combine(this._root, wanted);
             try {
-                if (!Directory.Exists(known.Path)) {
+                if (!Directory.Exists(known)) {
                     // Gone (deleted by hand, or by the size limit once empty): a new one, named as it is now.
-                    known = (target, wanted);
-                } else if (!Directory.Exists(target) || string.Equals(known.Path, target, StringComparison.OrdinalIgnoreCase)) {
-                    Directory.Move(known.Path, target);
-                    known = (target, wanted);
+                    known = target;
+                } else if (!Directory.Exists(target) || string.Equals(known, target, StringComparison.OrdinalIgnoreCase)) {
+                    Directory.Move(known, target);
+                    known = target;
                 }
-            } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) {
-                // In use: it keeps its name for now.
-            }
 
-            known.Tried = wanted;
+                // Otherwise another folder has its new name (a copy of the channel's, made by hand): it keeps the one it has.
+            } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) {
+                // In use: it keeps its name for now, and is tried again with the next line.
+            }
         }
 
         this._folders[channelId] = known;
-        Directory.CreateDirectory(known.Path);
-        return known.Path;
+        Directory.CreateDirectory(known);
+        return known;
     }
 
     /// <summary>The channel folders in the text folder (never a link to somewhere else).</summary>

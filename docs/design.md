@@ -3651,10 +3651,17 @@ messages**.
   channel's name and command number as they are now, then 16 hex digits (64
   bits) of the SHA-256 of its ID, which never change. The channel is found by those
   digits, whatever its folder is called, so a rename or a new number renames
-  the folder (at its next line, if the folder isn't in use; otherwise it keeps
-  its name, and the rename is tried again at the next change of name or the
-  next session), and its history stays together; two channels with the same
-  name never share one. A clash needs two of a character's channels to share
+  the folder at its next line (a change of capitals alone too), and its
+  history stays together. Windows can't rename a folder while a file in it is
+  open in a program (Excel, a virus scanner for a moment), whatever that
+  program shares: the folder then keeps its name, its lines go on in it, never
+  in a second folder, and the rename is tried again with each of its next
+  lines until it works (first built to wait for the next change of name or
+  the next session, changed on 2026-10-13: a file held for only a moment
+  would have kept the old name all session). The rename itself is an
+  information line in the file, in between ("The channel is now called
+  ..."), and older lines keep the tag they had when kept. Two channels with
+  the same name never share one. A clash needs two of a character's channels to share
   64 bits of hash: by chance, about one in 10^16 with 50 channels; on purpose
   (channel IDs are chosen by whoever creates a channel, so someone could try
   to make one clash with another channel the player is in), about 2^64 tries,
@@ -5815,6 +5822,15 @@ The owner's decisions, and why.
     (31b) are reported as not run: filling 5 MB in a run is too slow, and the
     unit tests cover both. A second channel with the same name (chat-log 30)
     isn't run either: it would need a fourth test channel.
+  - The rename (chat-log 30) compares the test channel's file line by line,
+    not by count: after the rename it must still start with the lines it had,
+    word for word, then hold the line sent after it once and the rename's own
+    information line once, nothing else, in one folder with the new name (a
+    tester's run, 0.2.18, 2026-10-13, failed the first build, which expected
+    one line more, not two; a count would also miss lines lost while others
+    were added). A folder still under its old name with every line in it is
+    reported as "the folder couldn't be renamed yet (in use)", after one more
+    line to try again with, never as lost lines.
   - "Where it must not show" (context-invites 7 to 9a) checks the menus' rules
     for the tester, a one-word name, an item's menu and another player,
     rather than each game object kind (the game's own menus decide those).
