@@ -126,7 +126,8 @@ public sealed class ChannelWindow : Window {
     /// got a tab, by itself (see <see cref="WindowFlash"/>).
     /// </summary>
     public void Flash(int pulses, string channelId) {
-        if (this._flash.Start(DateTimeOffset.UtcNow, pulses)) {
+        // From the window's next drawn frame (a window opened this frame isn't drawn yet), timed by the frames it draws.
+        if (this._flash.Start(pulses)) {
             this._flashChannel = channelId;
             this.LastFlashPulses = pulses;
         }
@@ -161,11 +162,12 @@ public sealed class ChannelWindow : Window {
         // in Draw. ImGui draws the title bar in Begin, between this and Draw. Dalamud pushes title bar colours of its own after
         // PreDraw (its focus fade, a blend of these) and pops them after Draw, so these are popped in PostDraw, after
         // Dalamud's: popping them in Draw took Dalamud's off the stack instead, and left these for Dalamud to pop.
+        // Between blinks nothing is pushed or drawn: the window looks as usual.
         this._flashPushed = 0;
-        this._flashStrength = this._flashChannel == null ? 0
-            : this._flash.StrengthAt(DateTimeOffset.UtcNow, Services.PluginInterface.UiBuilder.ShouldUseReducedMotion);
+        this._flash.Frame(DateTimeOffset.UtcNow);
+        this._flashStrength = this._flashChannel == null ? 0 : this._flash.Strength(Services.PluginInterface.UiBuilder.ShouldUseReducedMotion);
         if (this._flashStrength <= 0) {
-            this._flashChannel = this._flash.IsRunning(DateTimeOffset.UtcNow) ? this._flashChannel : null;
+            this._flashChannel = this._flash.IsRunning ? this._flashChannel : null;
             return;
         }
 

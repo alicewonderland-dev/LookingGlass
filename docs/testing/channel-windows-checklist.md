@@ -189,17 +189,20 @@ any linkshell, for A or B.
 
 ## Flash
 
-- [ ] 37c. **(new, after 0.2.13; stronger after 0.2.18)** A window that opens
-      by itself (step 33) flashes: its title bar and border pulse three times in
-      the channel's colour (LookingGlass blue for a channel with none) over
-      about a second and a half, then look as usual. Each pulse is a clear
-      blink: the title bar turns mostly the channel's colour and a border a few
-      pixels wide lights up, then both go dark before the next. Watch where the
+- [ ] 37c. **(new, after 0.2.13; stronger after 0.2.18; three clear blinks
+      after 0.2.19)** A window that opens by itself (step 33) flashes: its
+      title bar and border blink three times in the channel's colour
+      (LookingGlass blue for a channel with none) over about a second and a
+      half, then look as usual. Each blink: the title bar turns mostly the
+      channel's colour and a border a few pixels wide lights up for about a
+      fifth of a second, then both are fully back to normal for about a quarter
+      of a second before the next. Three separate blinks, not one long flash.
+      Watch where the
       window will open before the line arrives: the flash starts as it appears.
       It doesn't come to the front over a window you're using, and the game
       keeps the keyboard.
 - [ ] 37d. **(new, after 0.2.13)** With **As a tab**, a tab added by itself to
-      an open window: that window flashes once, in the new channel's colour.
+      an open window: that window blinks once, in the new channel's colour.
 - [ ] 37e. **(new, after 0.2.13)** Windows you open yourself (**Open in new
       window**, **Add to window**, the **+**), and windows reopened at login,
       don't flash.

@@ -3272,9 +3272,14 @@ the plugin's `ChannelWindows` opens and remembers the windows and
   that no window showed) flashes briefly: its title bar is tinted most of the
   way toward the channel's colour (85%; LookingGlass blue for a channel with
   none) and a 3-pixel border in that colour is drawn around it, three pulses
-  of half a second each. Each pulse is a blink: it comes on within about 60
-  ms, stays at full for about a quarter of a second, fades, and is dark for
-  about a tenth of a second before the next, so three read as three. A
+  of half a second each. Each pulse is a blink, about half on and half off:
+  on at once (a 25 ms ease), at full for a fifth of a second, off (25 ms),
+  then fully off, the window as it usually looks, for a quarter of a second
+  before the next, so three read as three. The flash's clock runs from the
+  window's first drawn frame and only as frames are drawn, a long frame
+  counting as at most a tenth of a second (`WindowFlash.Frame`,
+  `MaxFrameStep`), so a window that is slow to appear, or a hitch as it
+  opens, can't skip a blink. A
   window that gets a tab added by itself flashes once (one pulse), in the new
   tab's colour, so the player sees where the channel went; a flash still
   running isn't cut short by a shorter one. Neither brings the window to the
@@ -3289,7 +3294,12 @@ the plugin's `ChannelWindows` opens and remembers the windows and
   after 0.2.18, where the owner didn't see the flash: each pulse was a smooth
   rise and fall (full only for an instant), the tint went 60% of the way and
   the border was 2 pixels at the pulse's strength, all while the window was
-  just appearing.
+  just appearing. Fixed again after 0.2.19, where the owner saw "precisely
+  one" flash where there were three: each blink was lit for most of its half
+  second (over 300 ms above half strength) and dark for only about a tenth of
+  a second, with soft edges, so the three ran together; and the clock ran on
+  the computer's time from when the flash was asked for, so frames not drawn
+  (the window's first, or a hitch) used up blinks unseen.
 - **Unread.** One rule for the tabs' counts and the channel list's (review
   fix, 2026-10-09): a channel is read while it is the selected tab of an open
   channel window that is drawn, whether that window has the focus or not, as
