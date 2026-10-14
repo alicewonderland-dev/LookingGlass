@@ -5076,6 +5076,31 @@ name and `/lgc` commands, so it can be installed beside ExtraChat.
 
 ## Planned features
 
+### Clicking a channel in the list brings its window up
+
+Status: planned, not started (owner, 2026-10-13). In the main window's channel
+list today, a click selects the channel (its pane shows on the right), and
+windows are opened from the right-click menu (MainWindow's channel rows).
+
+- **A click** on a channel that has a channel window open (its own, or a tab
+  in one) also brings that window to the front and selects the channel's tab,
+  as well as selecting it in the list as now. A channel with no window open
+  works as today.
+- **A double-click** opens a window for it, or brings up the one it has.
+
+To settle when it's built:
+
+- **Where a double-click opens it**: as a tab of the window used last, or a
+  window of its own; recommended, the same choice as **New channels open**
+  (Settings, Chat), so there is one rule.
+- **Keyboard focus**: bringing a window to the front would normally give it
+  the keyboard; recommended, it does (the player clicked to go there), unlike
+  a window opening by itself, which never takes it.
+- **Unread counts**: the tab shown is read, as with any tab a window shows
+  (the one "read" rule), so the click clears its count.
+- A double-click's first click already brings an open window up; the second
+  then does nothing more for it.
+
 ### Self-test in the plugin
 
 Status: built (2026-10-13): the one-player self-test (the plan's steps 1 to
