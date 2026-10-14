@@ -33,6 +33,9 @@ public sealed class ChannelWindow : Window {
 
     private const string IdPrefix = "###lookingglass-channel-";
 
+    /// <summary>A tab's right-click menu, under the tab's ID.</summary>
+    private const string TabMenuId = "##tab-menu";
+
     private readonly ChannelWindows _windows;
     private readonly Dictionary<string, TabState> _tabs = new();
     // A sender's name colour, from a right-click on one of their lines.
@@ -50,6 +53,9 @@ public sealed class ChannelWindow : Window {
     private float _flashStrength;
     private Vector4 _flashColour;
     private int _flashPushed;
+    // The tab whose right-click menu is open, and whether the mouse has left the tab since it opened (see TabTooltip).
+    private string? _tabMenuOf;
+    private bool _tabMenuLeft;
 
     /// <param name="opened">Opened by the player just now (else reopened at login): it appears by the mouse, and may take the focus.</param>
     public ChannelWindow(ChannelWindows windows, ChannelWindowLayout layout, bool opened) : base("LookingGlass" + IdPrefix + layout.Id) {
@@ -152,8 +158,9 @@ public sealed class ChannelWindow : Window {
         }
 
         // Flashing: the title bar (open, focused or not, or collapsed) tinted toward the channel's colour; the border is drawn
-        // in Draw. ImGui draws the title bar in Begin, so they are popped first thing in Draw (before anything there could
-        // throw), or in PostDraw when Begin drew no body (collapsed).
+        // in Draw. ImGui draws the title bar in Begin, between this and Draw. Dalamud pushes title bar colours of its own after
+        // PreDraw (its focus fade, a blend of these) and pops them after Draw, so these are popped in PostDraw, after
+        // Dalamud's: popping them in Draw took Dalamud's off the stack instead, and left these for Dalamud to pop.
         this._flashPushed = 0;
         this._flashStrength = this._flashChannel == null ? 0
             : this._flash.StrengthAt(DateTimeOffset.UtcNow, Services.PluginInterface.UiBuilder.ShouldUseReducedMotion);
@@ -171,10 +178,8 @@ public sealed class ChannelWindow : Window {
         }
     }
 
-    public override void PostDraw() => this.PopFlashColours();
-
-    /// <summary>The title bar colours PreDraw pushed, if they are still pushed.</summary>
-    private void PopFlashColours() {
+    /// <summary>Pops the title bar colours PreDraw pushed (Dalamud calls this after the window ends, Draw throwing or not).</summary>
+    public override void PostDraw() {
         if (this._flashPushed > 0) {
             ImGui.PopStyleColor(this._flashPushed);
             this._flashPushed = 0;
@@ -189,7 +194,7 @@ public sealed class ChannelWindow : Window {
 
         var min = ImGui.GetWindowPos();
         var max = min + ImGui.GetWindowSize();
-        var thickness = 2 * Widgets.Scale;
+        var thickness = MathF.Round(WindowFlash.BorderThickness * Widgets.Scale);
         var drawList = ImGui.GetWindowDrawList();
         // The whole window, not only its inside, so the border sits on its edge.
         drawList.PushClipRect(min, max, false);
@@ -207,8 +212,6 @@ public sealed class ChannelWindow : Window {
     }
 
     public override void Draw() {
-        // The title bar is drawn by now: its flash colours go before anything else, so nothing that throws below leaves them pushed.
-        this.PopFlashColours();
         var snapshot = this.Sessions.Snapshot;
         var advanced = this.Sessions.AdvancedMode;
         var history = this.Sessions.History;
@@ -247,7 +250,7 @@ public sealed class ChannelWindow : Window {
 
                 order.Add((ImGui.GetItemRectMin().X, channelId));
                 this.TabTooltip(channelId, channel, unread, advanced);
-                if (ImGui.BeginPopupContextItem("##tab-menu")) {
+                if (ImGui.BeginPopupContextItem(TabMenuId)) {
                     var inGameChat = this.Sessions.ShowsInGameChat(channelId);
                     // While only windows show messages, no channel shows in game chat: a red cross, greyed out, as it can't
                     // change then (the channel's own choice is kept for when that is turned off).
@@ -329,6 +332,11 @@ public sealed class ChannelWindow : Window {
 
         foreach (var channelId in closing.Distinct()) {
             this._tabs.Remove(channelId);
+            if (this._tabMenuOf == channelId) {
+                // Closed from its own menu: a menu it gets if added again starts afresh.
+                this._tabMenuOf = null;
+            }
+
             if (ChannelWindowLayouts.CloseTab(this.Layout, channelId)) {
                 // The last tab: the window goes with it.
                 this._windows.Forget(this);
@@ -384,8 +392,32 @@ public sealed class ChannelWindow : Window {
         ImGui.EndPopup();
     }
 
+    /// <summary>
+    /// The hover of the tab just drawn: the channel's full name, its commands, how many are new, and, if its messages don't go
+    /// to game chat, that they don't, why and where to change it (<see cref="WindowsOnly.TabHoverLine"/>). Call right after
+    /// BeginTabItem, before the tab's right-click menu.
+    /// </summary>
     private void TabTooltip(string channelId, ChannelView? channel, int unread, bool advanced) {
-        if (!ImGui.IsItemHovered()) {
+        // Shown while a menu is open too: ImGui's plain hover is blocked by any open popup, such as the main window's ⋮ menu or
+        // this tab's right-click menu, both just looked at for "Show in game chat", and the tab then said nothing (0.2.18).
+        var hovered = ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenBlockedByPopup);
+        if (ImGui.IsPopupOpen(TabMenuId)) {
+            // The tab's own menu opens under the mouse, over where the hover would be: it waits until the mouse has left the
+            // tab once (to the menu, say) and comes back.
+            if (this._tabMenuOf != channelId) {
+                this._tabMenuOf = channelId;
+                this._tabMenuLeft = false;
+            }
+
+            this._tabMenuLeft |= !hovered;
+            if (!this._tabMenuLeft) {
+                return;
+            }
+        } else if (this._tabMenuOf == channelId) {
+            this._tabMenuOf = null;
+        }
+
+        if (!hovered) {
             return;
         }
 
@@ -404,10 +436,8 @@ public sealed class ChannelWindow : Window {
             ImGui.TextUnformatted(unread == 1 ? "1 new message" : $"{unread} new messages");
         }
 
-        if (this.Sessions.MessagesOnlyInWindows) {
-            ImGui.TextColored(Widgets.Muted, "Not shown in game chat: only windows show messages (change it in Settings).");
-        } else if (!this.Sessions.ShowsInGameChat(channelId)) {
-            ImGui.TextColored(Widgets.Muted, "Not shown in game chat: right-click to change.");
+        if (WindowsOnly.TabHoverLine(this.Sessions.MessagesOnlyInWindows, this.Sessions.ShowsInGameChat(channelId)) is { } gameChat) {
+            ImGui.TextColored(Widgets.Muted, gameChat.For(advanced));
         }
 
         ImGui.PopTextWrapPos();

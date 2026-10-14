@@ -115,7 +115,12 @@ channel window open.
       (even one whose own setting is on), and can't be clicked. Hover it: one
       tooltip, saying "Show LookingGlass only in windows" is on and
       to change it in Settings, under Chat. Hover a tab: "Not shown in game
-      chat: only windows show messages (change it in Settings)."
+      chat: only windows show messages (change it in Settings, under Chat)."
+      (advanced mode: "Not shown in game chat: "Show LookingGlass only in
+      windows" is on. Change it in Settings, under Chat."). **(changed, after
+      0.2.18)** It shows with a menu still open too: with `sky`'s ⋮ menu open,
+      and with the tab's right-click menu open once the mouse has been on the
+      menu and comes back to the tab.
 - [ ] 21. Close every window that has a channel turned off game chat on its
       own (turn one off before step 2 to try this): no "shows in game chat
       again" line, and it stays off.
