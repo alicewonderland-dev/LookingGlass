@@ -660,8 +660,11 @@ apartment puts the character back outside, in the ward: a public place. So:
   change) and `LG self-test K7Q2 #0 back` (inside again, settled). They are
   read strictly (exactly `#0`, no fields; anything else with the prefix is
   malformed), only from the other tester, only in a test channel (never local
-  chat), paced as protocol lines, and at most 20 a run each way: an `away`
-  goes only with room left for its `back`, and past 20 the other side's lines
+  chat), paced as protocol lines, and at most 40 a run each way (twenty
+  relogs or walk-outs; a full pass has about nine of the host's relogs, plus
+  the partner's and walk-outs; within each side's 150 protocol lines, and the
+  host plans them in pairing's budget): an `away`
+  goes only with room left for its `back`, and past 40 the other side's lines
   are ignored (its time-outs then run as before). They hold no names.
 - While **either** tester is outside: the host sends no requests (it checks
   again after each request's pace wait, so a walk-out in those seconds holds

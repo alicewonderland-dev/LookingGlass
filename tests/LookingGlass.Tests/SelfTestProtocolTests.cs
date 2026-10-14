@@ -1,4 +1,5 @@
 using LookingGlass.Core.SelfTest;
+using LookingGlass.Core.SelfTest.Suites;
 
 namespace LookingGlass.Tests;
 
@@ -104,7 +105,13 @@ public sealed class SelfTestProtocolTests {
     }
 
     [Fact]
-    public void AwayAndBackAreCapped() => Assert.Equal(20, SelfTestProtocol.MostPresenceLines);
+    public void AwayAndBackAreCapped() {
+        Assert.Equal(40, SelfTestProtocol.MostPresenceLines);
+        // The host plans them, with its hello and "alive" lines, in pairing's budget, within its 150 protocol lines.
+        var planned = PairingSuite.Create().Planned[SelfTestAction.PartnerMessage];
+        Assert.Equal(3 + SelfTestProtocol.MostKeepAlives + SelfTestProtocol.MostPresenceLines, planned);
+        Assert.True(planned <= new SelfTestPacer(() => DateTimeOffset.UnixEpoch, (_, _) => Task.CompletedTask, role: SelfTestRole.Host).MostOf(SelfTestAction.PartnerMessage));
+    }
 
     [Fact]
     public void TestLinesAreToldApartFromControlLines() {

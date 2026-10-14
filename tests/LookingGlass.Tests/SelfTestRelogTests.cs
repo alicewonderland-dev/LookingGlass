@@ -291,21 +291,22 @@ public sealed class SelfTestRelogTests : IDisposable {
     }
 
     [Fact]
-    public async Task AwayAndBackAreSaidAtMostTwentyTimesARunEndingBack() {
+    public async Task AwayAndBackAreSaidAtMostTheirMostARunEndingBack() {
         var partner = new ScriptedPartner(this._host);
         this.RecordSent();
         var toggles = 0;
         var last = this._host.Now;
+        // In and out of the inn room every ten seconds, five times more than its most allows.
+        var most = SelfTestProtocol.MostPresenceLines + 10;
         this._host.OnTick = () => {
-            // In and out of the inn room every ten seconds, fifteen times.
-            if (toggles < 30 && this._host.Now - last >= TimeSpan.FromSeconds(10)) {
+            if (toggles < most && this._host.Now - last >= TimeSpan.FromSeconds(10)) {
                 last = this._host.Now;
                 toggles++;
                 this._host.Place = toggles % 2 == 1 ? FakeSelfTestHost.Ward : FakeSelfTestHost.InnRoom;
             }
         };
         var run = this.HostRun(Check("busy", Pair, AskWindows(), Auto("waits", async context => {
-            await context.WaitUntilAsync(() => Task.FromResult(toggles >= 30), TimeSpan.FromHours(1));
+            await context.WaitUntilAsync(() => Task.FromResult(toggles >= most), TimeSpan.FromHours(1));
             return StepResult.Pass();
         }), AskWindows()));
 

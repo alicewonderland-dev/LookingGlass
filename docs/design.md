@@ -5204,7 +5204,7 @@ virtual clock; the plugin's `SelfTest` folder and `SelfTestWindow`):
   meanwhile its window says what it waits for. A relog inside a house or
   apartment may put the tester back outside, in the ward: every relog says so
   before, and ends only once they're back inside, with no time limit. With two
-  players each side says `#0 away` and `#0 back` (strict, at most 20 a run each
+  players each side says `#0 away` and `#0 back` (strict, at most 40 a run each
   way), and while either is outside the host sends no requests, the partner
   answers none, and the time-outs for answers wait. The run taps keep only the
   run's own lines (its test channels and local chat, from the other tester
@@ -6097,9 +6097,12 @@ The owner's decisions, and why.
     a moment's unreadable place at a zone change) and `#0 back` (inside and
     settled). They are read strictly (exactly that, no fields), only from the
     other tester and only in a test channel, paced as protocol lines, and at
-    most 20 a run each way: an `away` goes only with room for its `back`, and
-    past 20 the other's lines are ignored, so a side is never left waiting
-    for a `back` that won't be read. While either tester is outside, the host
+    most 40 a run each way: an `away` goes only with room for its `back`, and
+    past 40 the other's lines are ignored, so a side is never left waiting
+    for a `back` that won't be read. Forty is twenty relogs or walk-outs (a
+    full pass has about nine of the host's relogs, plus the partner's and
+    walk-outs), within each side's 150 protocol lines: the host plans them in
+    pairing's budget, with its hello and "alive" lines (73 in all). While either tester is outside, the host
     sends no requests (checked again after each request's pace wait), its
     time-outs for answers are paused, and "alive" goes on; the partner reads
     no request and sends no answer until it is back inside (never held:

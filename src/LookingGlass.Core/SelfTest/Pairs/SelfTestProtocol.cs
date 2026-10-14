@@ -202,8 +202,10 @@ public static partial class SelfTestProtocol {
     /// <summary>
     /// The most "away" and "back" lines either side sends in a run (an "away" goes only with room left for its "back"), and
     /// reads from the other: past it, the other's lines are ignored (its requests and answers then keep their time-outs).
+    /// Twenty relogs or walk-outs: a full two-player pass has about nine of the host's relogs, the partner's, and walk-outs.
+    /// Within each side's 150 protocol lines (the host plans them, with its "alive" lines, in pairing's budget).
     /// </summary>
-    public const int MostPresenceLines = 20;
+    public const int MostPresenceLines = 40;
 
     /// <summary>
     /// A partner whose host shows offline in the test channel this long (since its last line, or since it was last seen
