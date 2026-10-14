@@ -85,8 +85,10 @@ With `sky` on `#FF66CC`:
       game's chat log; with the whole-line setting off, the text after the
       tag in the chat channel's colour. A message with an item link: the text
       after it still pink.
-- [ ] 12. `/lgc1` with no message: ChatTwo's input shows "LookingGlass
-      [sky]" in exact pink.
+- [ ] 12. **(changed)** `/lgc1` with no message: ChatTwo's input label reads
+      "LookingGlass [sky]", in ChatTwo's own text colour (ChatTwo never
+      colours that label). Type a few letters in ChatTwo's input without
+      pressing Enter: they are in exact pink. Delete them.
 - [ ] 13. Right-click B's name in ChatTwo > Integrations > **Invite to
       LookingGlass**: `[sky] ...` in pink.
 - [ ] 14. Note anything ChatTwo shows differently from the game's chat log.

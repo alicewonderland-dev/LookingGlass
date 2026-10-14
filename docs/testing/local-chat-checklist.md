@@ -256,9 +256,12 @@ need only A, standing away from everyone unless a step says otherwise; 42 to
 
 ### With ChatTwo (on A)
 
-- [ ] 42. Turn ChatTwo on, its input on Say. `/lgl` alone: ChatTwo's input
-      label reads "LookingGlass [Local]" in local chat's colour (perhaps with
-      ChatTwo's "(Warning: Say)" after it). If you never started talking in a
+- [ ] 42. **(changed)** Turn ChatTwo on, its input on Say. `/lgl` alone:
+      ChatTwo's input label reads "LookingGlass [Local]" (perhaps with
+      ChatTwo's "(Warning: Say)" after it), in ChatTwo's own text colour
+      (ChatTwo never colours that label). Letters typed in ChatTwo's input
+      (don't press Enter; delete them) are in local chat's colour: blue by
+      default, its swatch or custom colour if set. If you never started talking in a
       channel with ChatTwo on before, the ChatTwo line follows once, naming
       `[Local]`.
 - [ ] 43. In ChatTwo's main input on Say, type `hello`: local chat (the

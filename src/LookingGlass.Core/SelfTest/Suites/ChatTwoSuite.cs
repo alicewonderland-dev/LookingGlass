@@ -39,8 +39,12 @@ public static class ChatTwoSuite {
                 await context.StopTalkingAsync().ConfigureAwait(false);
                 await context.ChangeSettingAsync(SelfTestSetting.LocalPrivacyAccepted, true).ConfigureAwait(false);
                 await context.ChangeSettingAsync(SelfTestSetting.SayWhenTalking, true).ConfigureAwait(false);
-                return new GuidedPrompt("Type /lgl in ChatTwo's input. Does ChatTwo's label read \"LookingGlass [Local]\" in local chat's colour (perhaps with ChatTwo's " +
-                                        "\"(Warning: Say)\" after it)?", PromptKind.YesNo) { Short = "the label", TesterTypes = true, ChatTwoOnSay = true };
+                // ChatTwo draws the label in its own text colour whatever it's sent; the colour goes on what is typed (ChatTwoOverrideColour).
+                return new GuidedPrompt("Type /lgl in ChatTwo's input. Does ChatTwo's label read \"LookingGlass [Local]\" (perhaps with ChatTwo's \"(Warning: Say)\" " +
+                                        "after it; ChatTwo draws the label in its own text colour)? Then type a few letters in ChatTwo's input without pressing Enter: are " +
+                                        "they in local chat's colour (LookingGlass blue, unless you changed it)? Delete them before answering.", PromptKind.YesNo) {
+                    Short = "the label and typed text", TesterTypes = true, ChatTwoOnSay = true,
+                };
             }),
             Guided("A line goes to local chat, not Say", "43", async context => {
                 var mark = context.Host.Mark();
@@ -169,7 +173,10 @@ public static class ChatTwoSuite {
                 var channel = await context.TestChannelAsync().ConfigureAwait(false);
                 await context.TypeAsync(await context.CommandOfAsync(channel).ConfigureAwait(false)).ConfigureAwait(false);
                 await context.TalkingInAsync(channel).ConfigureAwait(false);
-                return new GuidedPrompt("Does ChatTwo's input show \"LookingGlass [...]\" in this pink?", PromptKind.YesNo) { Swatch = Pink, Short = "the label" };
+                return new GuidedPrompt("Does ChatTwo's input label read \"LookingGlass [...]\" (in ChatTwo's own text colour)? Then type a few letters in ChatTwo's input " +
+                                        "without pressing Enter: are they in this pink? Delete them before answering.", PromptKind.YesNo) {
+                    Swatch = Pink, Short = "the label and typed text",
+                };
             }),
             Ask("Anything different", "14", async context => {
                 await context.StopTalkingAsync().ConfigureAwait(false);

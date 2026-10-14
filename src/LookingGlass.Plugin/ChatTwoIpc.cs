@@ -15,7 +15,8 @@ namespace LookingGlass.Plugin;
 /// <item><c>ExtraChat.OverrideChannelColour</c>: ChatTwo's only way for another plugin to name the channel its input
 /// box shows. ChatTwo subscribes to it by that name (it was made for ExtraChat); LookingGlass sends its own channel's tag
 /// on it while talking in a channel (again every second, in case ChatTwo missed it), and null as soon as it stops, checked
-/// once a frame (see <c>StickyMode.SyncIndicators</c>). It changes what ChatTwo shows, not where ChatTwo sends.</item>
+/// once a frame (see <c>StickyMode.SyncIndicators</c>). It changes what ChatTwo shows, not where ChatTwo sends. The
+/// channel's colour goes on the text typed in ChatTwo's input, not on the label (see <see cref="ChatTwoOverrideColour"/>).</item>
 /// <item><c>ChatTwo.Available</c>: ChatTwo (re)loaded, so the override is sent again.</item>
 /// </list>
 /// Game thread only.
@@ -71,11 +72,12 @@ internal sealed class ChatTwoIpc : IDisposable {
     }
 
     /// <summary>
-    /// Shows <paramref name="label"/> as ChatTwo's input channel, or with null, its own again. ChatTwo draws it in
-    /// <paramref name="rgba"/> exactly (0xRRGGBBAA, as UIColor rows are packed), so a custom colour needs no fallback here.
+    /// Shows <paramref name="label"/> as ChatTwo's input channel, or with null, its own again. ChatTwo draws the label in its
+    /// plain text colour whatever is sent, and paints <paramref name="colour"/>'s Rgba (exactly, a custom colour too) on the
+    /// text typed in its input while that isn't a command; it ignores the row (see <see cref="ChatTwoOverrideColour"/>).
     /// </summary>
-    public void SetChannelLabel(string? label, uint rgba) {
-        this._current = new OverrideInfo { Channel = label, UiColour = 0, Rgba = rgba };
+    public void SetChannelLabel(string? label, ChatTwoOverrideColour colour) {
+        this._current = new OverrideInfo { Channel = label, UiColour = colour.UiColour, Rgba = colour.Rgba };
         this.Send();
     }
 
@@ -96,7 +98,7 @@ internal sealed class ChatTwoIpc : IDisposable {
     public void Dispose() {
         this._available.Unsubscribe(this.OnAvailable);
         if (this._current.Channel != null) {
-            this.SetChannelLabel(null, 0);
+            this.SetChannelLabel(null, ChatTwoOverrideColour.None);
         }
     }
 

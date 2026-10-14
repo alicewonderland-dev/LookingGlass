@@ -81,19 +81,18 @@ internal static class ChannelPalette {
     /// <summary>The UIColor row closest to a custom colour (0xRRGGBB), or null if the sheet couldn't be read. Any thread.</summary>
     public static ushort? Nearest(uint rgb) => Table.Value?.Nearest(rgb);
 
-    /// <summary>The colour a channel's colour is packed as in UIColor rows, 0xRRGGBBAA (for ChatTwo), or null if unknown.</summary>
-    public static uint? RgbaOf(ChannelColour colour) {
-        if (colour.IsCustom) {
-            return (colour.Rgb << 8) | 0xFF;
-        }
-
+    /// <summary>A UIColor row's colour as the sheet packs it, 0xRRGGBBAA (its Dark column), or null if unknown.</summary>
+    public static uint? RowRgba(ushort row) {
         try {
-            return Services.Data.GetExcelSheet<UIColor>().GetRowOrDefault(colour.Row) is { } row && row.Dark != 0 ? row.Dark : null;
+            return Services.Data.GetExcelSheet<UIColor>().GetRowOrDefault(row) is { } sheetRow && sheetRow.Dark != 0 ? sheetRow.Dark : null;
         } catch (Exception ex) {
-            Services.Log.Warning(ex, $"Couldn't read UIColor row {colour.Row}");
+            Services.Log.Warning(ex, $"Couldn't read UIColor row {row}");
             return null;
         }
     }
+
+    /// <summary>What ChatTwo is sent for a channel's colour (null: the default), see <see cref="ChatTwoOverrideColour"/>. Any thread.</summary>
+    public static ChatTwoOverrideColour ChatTwoColourOf(ChannelColour? colour) => ChatTwoOverrideColour.Of(colour, RowRgba, Nearest);
 
     private static uint Byte(float channel) => (uint) Math.Clamp(MathF.Round(channel * 255), 0, 255);
 
