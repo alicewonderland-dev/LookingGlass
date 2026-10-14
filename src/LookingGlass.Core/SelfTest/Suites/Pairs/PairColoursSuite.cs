@@ -59,7 +59,7 @@ public static class PairColoursSuite {
     private static SelfTestCheck Setting() => new() {
         Id = "name-colours-1-6", Title = "Setting a colour", Steps = "name-colours 1-6 (group 1)", Mode = CheckMode.Guided, Needs = Needs,
         StepList = [
-            Auto("Your partner in two test channels, one teal", "1", async context => {
+            SetupAuto("Your partner in two test channels, one teal", "1", async context => {
                 await SetUpAsync(context).ConfigureAwait(false);
                 return StepResult.Pass();
             }),
@@ -145,7 +145,7 @@ public static class PairColoursSuite {
     private static SelfTestCheck InChatTwo() => new() {
         Id = "name-colours-16-19", Title = "Name colours in ChatTwo", Steps = "name-colours 16-19", Mode = CheckMode.Guided, Needs = Needs | SelfTestNeeds.ChatTwo,
         StepList = [
-            Auto("Your partner's colour", "16", async context => {
+            SetupAuto("Your partner's colour", "16", async context => {
                 await SetUpAsync(context).ConfigureAwait(false);
                 await SetPartnerColourAsync(context, Pink).ConfigureAwait(false);
                 return StepResult.Pass();
@@ -168,7 +168,7 @@ public static class PairColoursSuite {
     private static SelfTestCheck BackToDefault() => new() {
         Id = "name-colours-20", Title = "Back to default", Steps = "name-colours 20", Mode = CheckMode.Guided, Needs = Needs,
         StepList = [
-            Auto("Your partner pink", "20", async context => {
+            SetupAuto("Your partner pink", "20", async context => {
                 await SetUpAsync(context).ConfigureAwait(false);
                 await SetPartnerColourAsync(context, Pink).ConfigureAwait(false);
                 return StepResult.Pass();
@@ -211,7 +211,7 @@ public static class PairColoursSuite {
     private static SelfTestCheck CaughtUpPink() => new() {
         Id = "custom-colours-9-caught-up", Title = "Missed messages are pink too", Steps = "custom-colours 9 (caught-up part)", Mode = CheckMode.Guided, Needs = Needs,
         StepList = [
-            Auto("The test channel pink", "9", async context => {
+            SetupAuto("The test channel pink", "9", async context => {
                 await context.Host.SetChannelColourAsync(context.Partner.ChannelId!, ChannelColour.Custom(Pink)).ConfigureAwait(false);
                 await context.ChangeSettingAsync(SelfTestSetting.ColourWholeLine, true).ConfigureAwait(false);
                 return StepResult.Pass();

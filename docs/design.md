@@ -5174,8 +5174,8 @@ virtual clock; the plugin's `SelfTest` folder and `SelfTestWindow`):
   seconds at most, at most three test channels, reconnects a minute apart),
   and it stops at the first refusal, so a run can't flag or block anyone.
 - **Report.** Copyable text in pending-tests.md's "How to report" shape:
-  checklist steps, passed, failed or skipped, and why. No names, no message
-  text.
+  checklist steps, passed, failed, not run or skipped, and why. No names, no
+  message text.
 - **Coverage** of the 121 open tasks: 13 automatic, 11 automatic with a
   guided step, 21 guided, 39 with a partner, 37 not covered (27 of them the
   owner's server-side tasks; the rest need a second install, three players,
@@ -5893,6 +5893,21 @@ The owner's decisions, and why.
   every 10). The owner had listed renames and reconnects among the slow ones
   to check: both turned out to refill faster than the self-test's pace. The
   start screen's wait names what waits ("for making test channels").
+- **A self-test check passes only if a real step of it passed (owner,
+  2026-10-13).** The owner's first report said "context-invites 15, 18 (that
+  part): passed" though the name given used LookingGlass and nothing was sent.
+  Each step is now a real step or a setup step: setting up (a test channel or
+  a setting made ready, a recruitment, the partner in place or targeted, a
+  line sent only to be looked at, a party, back to Say), relogs and reloads,
+  and "the rest" notes of what isn't run. A check passes only if one of its
+  real steps passed; if none did (each skipped, or a setup step ended it), it
+  is "not run", with the reasons (the real steps' first), in the window, the
+  report and the `[selftest]` line. "Skipped" stays for a check that never
+  started (it needs ChatTwo, a partner, room for a channel). **Run the failed
+  ones again** offers the failed and stopped checks, and the not-run ones
+  unless every reason is one a second run doesn't change (ChatTwo on or off,
+  the tester's own history, the game's version, another data centre, a
+  partner blocked before).
 
 ## Open questions
 

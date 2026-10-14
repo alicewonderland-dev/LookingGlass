@@ -37,7 +37,7 @@ public static class InvitesSuite {
                 "Is there no Invite to LookingGlass on any of them? (Skip if none are at hand.)", PromptKind.YesNo) { Short = "not players" }),
             Ask("Items", "9", new GuidedPrompt(
                 "Right-click an item in your inventory, and an item link in chat: is there no Invite to LookingGlass?", PromptKind.YesNo) { Short = "items" }),
-            Auto("The rest", "9a", _ => Task.FromResult(StepResult.Pass("the Free Company login line in ChatTwo (9a)"))),
+            Rest("9a", "the Free Company login line in ChatTwo (9a)"),
         ],
     };
 
@@ -58,7 +58,7 @@ public static class InvitesSuite {
                 }
             }),
             Ask("Connected: it is back", "10", new GuidedPrompt("Connected again. Right-click the same player: is Invite to LookingGlass back?", PromptKind.YesNo) { Short = "connected" }),
-            Auto("The rest", "11", _ => Task.FromResult(StepResult.Pass("a character with no channels of its own (11)"))),
+            Rest("11", "a character with no channels of its own (11)"),
         ],
     };
 
@@ -68,7 +68,7 @@ public static class InvitesSuite {
         Id = "context-invites-15-18", Title = "Inviting someone who isn't registered", Steps = "context-invites 15, 18 (that part)", Mode = CheckMode.AutomaticAndGuided,
         Needs = SelfTestNeeds.Connection | SelfTestNeeds.TestChannel,
         StepList = [
-            Guided("Who to try", "15", async context => {
+            SetupGuided("Who to try", "15", async context => {
                 var (answer, input) = await context.AskForInputAsync(new GuidedPrompt(
                     "Type the name@world of someone you know who doesn't use LookingGlass (for example: Alice Liddell@Twintania), then press Done. " +
                     "LookingGlass looks them up; nothing is ever sent to them, and their name stays out of the report.") { Input = "Name@World" }).ConfigureAwait(false);
@@ -100,7 +100,7 @@ public static class InvitesSuite {
             }),
             Auto("Simple mode: the whole line", "15", context => InviteAsync(context, advanced: false)),
             Auto("Advanced mode: it ends at \"on this server.\"", "15", context => InviteAsync(context, advanced: true)),
-            Auto("The rest", "18", _ => Task.FromResult(StepResult.Pass("the same from ChatTwo's menu (18, see With ChatTwo)"))),
+            Rest("18", "the same from ChatTwo's menu (18, see With ChatTwo)"),
         ],
     };
 

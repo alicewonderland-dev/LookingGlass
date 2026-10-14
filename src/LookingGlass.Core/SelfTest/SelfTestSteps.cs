@@ -26,6 +26,23 @@ public static class SelfTestSteps {
     public static SelfTestStep CarryOn(string instruction, string? checklist, bool types = false) =>
         new() { Title = instruction, Checklist = checklist, Kind = StepKind.CarryOnAfter, Types = types, Run = _ => Task.FromResult(StepResult.Pass()) };
 
+    /// <summary>The parts of a task a check doesn't run, as a note in the report: a setup step, never a pass by itself.</summary>
+    public static SelfTestStep Rest(string? checklist, string notRun) =>
+        Auto("The rest", checklist, _ => Task.FromResult(StepResult.Pass(notRun))) with { Setup = true };
+
+    /// <summary>An automatic step that only sets up for the check (see <see cref="SelfTestStep.Setup"/>).</summary>
+    public static SelfTestStep SetupAuto(string title, string? checklist, Func<StepContext, Task<StepResult>> run, bool types = false, TimeSpan? timeout = null) =>
+        Auto(title, checklist, run, types, timeout) with { Setup = true };
+
+    /// <summary>A guided step that only sets up for the check (a recruitment, the partner in place).</summary>
+    public static SelfTestStep SetupGuided(string title, string? checklist, Func<StepContext, Task<StepResult>> run) => Guided(title, checklist, run) with { Setup = true };
+
+    /// <summary>A guided question that only sets up for the check (target someone, end a recruitment).</summary>
+    public static SelfTestStep SetupAsk(string title, string? checklist, GuidedPrompt prompt) => Ask(title, checklist, prompt) with { Setup = true };
+
+    /// <summary>A step that sets up for the check (see <see cref="SelfTestStep.Setup"/>).</summary>
+    public static SelfTestStep AsSetup(this SelfTestStep step) => step with { Setup = true };
+
     /// <summary>The instruction for a relog.</summary>
     public const string Relog = "Go to the title screen (Return to Title), then come back in with this character. The self-test carries on by itself.";
 

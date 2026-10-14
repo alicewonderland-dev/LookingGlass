@@ -21,7 +21,7 @@ public static class PartyFinderSuite {
     private const SelfTestNeeds Needs = SelfTestNeeds.Connection | SelfTestNeeds.TestChannel | SelfTestNeeds.Typing | SelfTestNeeds.ChatTwoOff;
 
     /// <summary>A recruitment of the tester's own, asked once per check: without one the check is skipped.</summary>
-    private static SelfTestStep Recruitment() => Guided("A recruitment of your own", null, async context => {
+    private static SelfTestStep Recruitment() => SetupGuided("A recruitment of your own", null, async context => {
         // The test channel's lines in game chat, where the runner sees them.
         await context.ChangeSettingAsync(SelfTestSetting.WindowsOnly, false).ConfigureAwait(false);
         await context.Host.SetShowInGameChatAsync(await context.TestChannelAsync().ConfigureAwait(false), true).ConfigureAwait(false);
@@ -172,7 +172,7 @@ public static class PartyFinderSuite {
 
                 return (await SentAsync(context, "Still talking in the test channel: click the chat button alone, and press Enter.", "button alone").ConfigureAwait(false)).Result;
             }),
-            Auto("Back to Say", "25", async context => {
+            SetupAuto("Back to Say", "25", async context => {
                 await context.StopTalkingAsync().ConfigureAwait(false);
                 return StepResult.Pass("checking the mark after looking at another player's listing (24), and /lgc with the nickname (25)");
             }),

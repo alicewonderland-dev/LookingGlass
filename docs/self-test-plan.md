@@ -329,6 +329,8 @@ Running:
 |   test channel, not to Say (step 32)                              |
 | local-chat 34-36: passed (Tab, info bar, Send Tell: you said yes) |
 | windows-only 17: skipped: needs a striking dummy                  |
+| context-invites 15, 18 (that part): not run: they use LookingGlass, |
+|   so nothing was sent (try someone who doesn't)                   |
 | channel-windows 37c-37f: passed; your note: "flash is subtle"     |
 | ...                                                               |
 | Clean-up: test channel left (deleted); 7 settings put back;       |

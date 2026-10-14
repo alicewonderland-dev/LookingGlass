@@ -138,7 +138,7 @@ public static class ChatTwoSuite {
                 return StepResult.All((note == 1, "the ChatTwo line didn't follow once"), (sticky.InfoBar?.Contains(tag, StringComparison.Ordinal) == true, "the info bar doesn't name the channel"));
             }),
             Ask("ChatTwo's label", "28", new GuidedPrompt("Does ChatTwo's input label read \"LookingGlass [...]\" with the test channel's tag?", PromptKind.YesNo) { Short = "the label" }),
-            Auto("Back to Say", null, async context => {
+            SetupAuto("Back to Say", null, async context => {
                 await context.StopTalkingAsync().ConfigureAwait(false);
                 return StepResult.Pass();
             }),
@@ -150,7 +150,7 @@ public static class ChatTwoSuite {
     private static SelfTestCheck PinkInChatTwo() => new() {
         Id = "custom-colours-11-14", Title = "Pink everywhere, ChatTwo", Steps = "custom-colours 11-14", Mode = CheckMode.Guided, Needs = Needs | SelfTestNeeds.TestChannel,
         StepList = [
-            Auto("The test channel pink, a line with an item link", "11", async context => {
+            SetupAuto("The test channel pink, a line with an item link", "11", async context => {
                 var channel = await ShownChannelAsync(context).ConfigureAwait(false);
                 await context.Host.SetChannelColourAsync(channel, ChannelColour.Custom(Pink)).ConfigureAwait(false);
                 await context.StopTalkingAsync().ConfigureAwait(false);
@@ -175,7 +175,7 @@ public static class ChatTwoSuite {
                     Short = "the same as game chat",
                 };
             }),
-            Auto("The rest", "13", _ => Task.FromResult(StepResult.Pass("the invite submenu in ChatTwo (13: needs another player's name)"))),
+            Rest("13", "the invite submenu in ChatTwo (13: needs another player's name)"),
         ],
     };
 
@@ -199,7 +199,7 @@ public static class ChatTwoSuite {
     private static SelfTestCheck PartyFinderInChatTwo() => new() {
         Id = "chat-links-26", Title = "Party finder: with ChatTwo", Steps = "chat-links 26", Mode = CheckMode.Guided, Needs = Needs | SelfTestNeeds.TestChannel,
         StepList = [
-            Guided("A recruitment of your own", null, async context => {
+            SetupGuided("A recruitment of your own", null, async context => {
                 await ShownChannelAsync(context).ConfigureAwait(false);
                 var answer = await context.AskAsync(new GuidedPrompt("Is a recruitment of your own up in the Party Finder?", PromptKind.YesNo)).ConfigureAwait(false);
                 context.State["recruiting"] = answer is GuidedAnswer.Yes or GuidedAnswer.Done;

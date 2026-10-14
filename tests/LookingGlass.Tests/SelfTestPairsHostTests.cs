@@ -79,7 +79,7 @@ public sealed class SelfTestPairsHostTests : IDisposable {
         await run.RunAsync();
 
         Assert.False(ran);
-        Assert.Equal(CheckOutcome.Skipped, Result(run, "pairing").Outcome);
+        Assert.Equal(CheckOutcome.NotRun, Result(run, "pairing").Outcome);
         Assert.Equal(SelfTestWords.PartnerDidntJoin, Result(run, "ask").Why);
         // Two minutes, then it gave up; the invite still open, the channel was disbanded (nobody is left in it).
         Assert.True(this._host.Now - run.View.StartedAt >= SelfTestProtocol.PairingWithin);
@@ -135,7 +135,7 @@ public sealed class SelfTestPairsHostTests : IDisposable {
 
         await run.RunAsync();
 
-        Assert.Equal(CheckOutcome.Skipped, Result(run, "silent").Outcome);
+        Assert.Equal(CheckOutcome.NotRun, Result(run, "silent").Outcome);
         Assert.Equal(SelfTestWords.PartnerSilent, Result(run, "silent").Why);
         Assert.Equal(CheckOutcome.Passed, Result(run, "after").Outcome);
         Assert.Equal([PartnerVerb.ReportWindows, PartnerVerb.StillThere, PartnerVerb.ReportWindows, PartnerVerb.Bye],
@@ -300,7 +300,8 @@ public sealed class SelfTestPairsHostTests : IDisposable {
                 this._host.Logins++;
             }
         };
-        run = this.NewRun(Check("relog", new SelfTestStep { Title = SelfTestSteps.Relog, Kind = StepKind.CarryOnAfter, Run = _ => Task.FromResult(StepResult.Pass()) }));
+        run = this.NewRun(Check("relog", new SelfTestStep { Title = SelfTestSteps.Relog, Kind = StepKind.CarryOnAfter, Run = _ => Task.FromResult(StepResult.Pass()) },
+            new SelfTestStep { Title = "back", Kind = StepKind.Automatic, Run = _ => Task.FromResult(StepResult.Pass()) }));
 
         await run.RunAsync();
 

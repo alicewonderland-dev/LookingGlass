@@ -31,7 +31,7 @@ public static class PairingSuite {
 
                 return StepResult.Pass();
             }, timeout: TimeSpan.FromMinutes(5)),
-            Auto("Where your partner is", null, async context => {
+            SetupAuto("Where your partner is", null, async context => {
                 if (!context.Partner.Paired) {
                     return StepResult.Skip(context.Partner.Lacks ?? SelfTestWords.PartnerDidntJoin);
                 }

@@ -68,8 +68,11 @@ private) rather than doing something it shouldn't: report it.
 
 ## A run
 
-- [ ] 13. A run shows each check as it goes: passed, FAILED (with why), skipped
-      (with why), stopped. A guided step shows "Needs you (step n of m)", what
+- [ ] 13. A run shows each check as it goes: passed, FAILED (with why), not
+      run (with why: none of its real steps could run), skipped (with why),
+      stopped. A check passes only if at least one of its real steps passed:
+      making a test channel, a recruitment, a relog or "the rest" never make
+      it pass. A guided step shows "Needs you (step n of m)", what
       to do, and **Done** / **It didn't work** / **Skip this step** (or
       **Yes** / **No** / **Skip this step**). Where the runner can see the
       change (Tab, the info bar), it goes on by itself, saying what it sees
@@ -134,9 +137,11 @@ private) rather than doing something it shouldn't: report it.
 - [ ] 24. A name@world typed for "Inviting someone who isn't registered" is in
       neither the report nor `/xllog`.
 - [ ] 25. `/xllog`'s `[selftest]` lines have the checklist steps and passed,
-      failed, skipped or stopped, nothing else.
-- [ ] 26. **Run the failed ones again** runs only the checks that failed (with
-      a new test channel), and its report lists only those.
+      failed, not run, skipped or stopped, nothing else.
+- [ ] 26. **Run the failed ones again** runs only the checks that failed or
+      stopped, and those not run where another try could help (you skipped,
+      the name given uses LookingGlass; not "needs ChatTwo" and the like), with
+      a new test channel, and its report lists only those.
 
 ## Pacing (owner)
 

@@ -249,7 +249,7 @@ public static partial class HistorySuite {
     private static SelfTestCheck LotsOfHistory() => new() {
         Id = "chat-log-8-9", Title = "Lots of history, and new messages while reading", Steps = "chat-log 8-9 (group 2)", Mode = CheckMode.Guided, Needs = Needs,
         StepList = [
-            Auto("250 simulated lines (nothing is sent)", "8", async context => {
+            SetupAuto("250 simulated lines (nothing is sent)", "8", async context => {
                 await HistoryOnAsync(context, unencrypted: await context.SettingIsAsync(SelfTestSetting.KeepHistoryUnencrypted).ConfigureAwait(false)).ConfigureAwait(false);
                 var sky = await context.TestChannelAsync(0).ConfigureAwait(false);
                 // Off game chat, so the lines don't fill it.

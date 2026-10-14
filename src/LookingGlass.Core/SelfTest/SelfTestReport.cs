@@ -90,6 +90,9 @@ public static class SelfTestReport {
             case CheckOutcome.Skipped:
                 line.Append(SelfTestWords.Skipped).Append(": ").Append(record.Why ?? SelfTestWords.YouSkipped);
                 break;
+            case CheckOutcome.NotRun:
+                line.Append(SelfTestWords.NotRunWord).Append(": ").Append(record.Why ?? SelfTestWords.NothingRan);
+                break;
             case CheckOutcome.Stopped:
                 line.Append(record.Why ?? SelfTestWords.StoppedByYou);
                 if (record.At is { } stoppedAt) {
@@ -112,12 +115,30 @@ public static class SelfTestReport {
             CheckOutcome.Passed => SelfTestWords.Passed,
             CheckOutcome.Failed => SelfTestWords.Failed,
             CheckOutcome.Skipped => SelfTestWords.Skipped,
+            CheckOutcome.NotRun => SelfTestWords.NotRunWord,
             _ => SelfTestWords.StoppedWord,
         };
         return record.Step != null && record.Outcome == CheckOutcome.Failed
             ? $"[selftest] {steps}: {outcome} (step {record.Step})"
             : $"[selftest] {steps}: {outcome}";
     }
+
+    /// <summary>
+    /// Whether "Run the failed ones again" offers a check: one that failed or was stopped, and one not run unless every
+    /// reason is something a second run doesn't change by itself (ChatTwo on or off, the tester's own history, the game's
+    /// version, another data centre, a partner blocked before).
+    /// </summary>
+    public static bool WorthRunningAgain(CheckRecord record) => record.Outcome switch {
+        CheckOutcome.Failed or CheckOutcome.Stopped => true,
+        CheckOutcome.NotRun => (record.Why ?? "").Split("; ").Any(why => !Lasting.Contains(why)),
+        _ => false,
+    };
+
+    /// <summary>Reasons a check can't run that a second run doesn't change by itself.</summary>
+    private static readonly HashSet<string> Lasting = [
+        SelfTestWords.NeedsChatTwo, SelfTestWords.NeedsChatTwoOff, SelfTestWords.NeedsPartner, SelfTestWords.HistoryWasYours, SelfTestWords.NeedsGateHooks,
+        SelfTestWords.NeedsStranger, SelfTestWords.NeedsAnotherCharacter, SelfTestWords.NeedsOtherDataCentre, SelfTestWords.PartnerWasBlocked,
+    ];
 
     /// <summary>
     /// Takes out of <paramref name="text"/> every one of <paramref name="forbidden"/> (ignoring case, as whole words where

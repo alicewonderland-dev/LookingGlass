@@ -40,6 +40,7 @@ public static partial class SelfTestWords {
     public const string Failed = "failed";
     public const string Skipped = "skipped";
     public const string StoppedWord = "stopped";
+    public const string NotRunWord = "not run";
     public const string NoteLabel = "Note (optional, no names)";
 
     /// <summary>The start screen's consent: what a run does, before anything happens.</summary>
@@ -175,6 +176,7 @@ public static partial class SelfTestWords {
     public const string RunSpent = "skipped: the run used all it may of this";
     public const string SomethingWentWrong = "something went wrong in the self-test itself";
     public const string TimedOut = "didn't happen in time";
+    public const string NothingRan = "nothing in it could run";
     public const string NotSay = "the game's chat channel wasn't Say, so nothing was typed";
     public const string NotPrivate = "you weren't in a private place, so nothing was typed";
     public const string Disconnected = "stopped: not connected for five minutes";
@@ -226,7 +228,7 @@ public static partial class SelfTestWords {
     /// <summary>Every fixed text above, for the tests.</summary>
     public static IReadOnlyList<string> All() => [
         WindowTitle, ReportTitle, OpenButton, Start, StopAndCleanUp, NeedsYou, Done, DidntWork, SkipStep, Yes, No, CopyReport, RunFailedAgain,
-        CheckAgain, CarryOn, Close, TwoPlayers, WhichOnes, Remove, Passed, Failed, Skipped, StoppedWord, NoteLabel, .. Consent, Intro,
+        CheckAgain, CarryOn, Close, TwoPlayers, WhichOnes, Remove, Passed, Failed, Skipped, StoppedWord, NotRunWord, NoteLabel, .. Consent, Intro,
         NoNamesInReport, HistoryAsk, HistoryDelete, HistoryKeep, StayHere, HouseVisitors, HandChanges, ClosingDoesntStop, TwoPlayersLater, NoteReminder, LeftoverHeading,
         LeftoverExplained, .. PrivatePlaces, OnlyInPrivate, PausedLeft, WaitingSomeoneNear, PausedDisconnected, PausedOtherCharacter, ChatTwoToSay, WaitingSay, WaitingPlace,
         WaitingToCarryOn, InterruptedRun, InterruptedRunChannelLeft, .. SelfTestPacer.HourMost.Keys.Select(action => WaitBeforeStart(TimeSpan.FromMinutes(20), action)),
@@ -237,7 +239,7 @@ public static partial class SelfTestWords {
     public static IReadOnlyList<string> Reasons() => [
         YouSkipped, YouSaidNo, NeedsChatTwo, NeedsChatTwoOff, NeedsPartner, NeedsStranger, NeedsAnotherCharacter, NeedsStrikingDummy,
         NeedsConnection, NeedsChannelRoom, NeedsGateHooks, HistoryWasYours, ServerSlowDown, StoppedByYou, StoppedLeft, RunSpent,
-        SomethingWentWrong, TimedOut, NotSay, NotPrivate, Disconnected, GaveUpWaiting, OtherCharacter, Registered, .. PairReasons(),
+        SomethingWentWrong, TimedOut, NothingRan, NotSay, NotPrivate, Disconnected, GaveUpWaiting, OtherCharacter, Registered, .. PairReasons(),
     ];
 
     /// <summary>The words simple mode never uses (the plain-language tests' list): to check what the plugin printed during a run.</summary>

@@ -34,7 +34,7 @@ public static class LocalTogetherSuite {
         Id = "local-chat-3d", Title = "Receiving before accepting", Steps = "local-chat 3d", Mode = CheckMode.Automatic, Needs = Needs,
         StepList = [
             Together(),
-            Auto("Your partner hasn't accepted local chat", "3d", async context => {
+            SetupAuto("Your partner hasn't accepted local chat", "3d", async context => {
                 await context.Partner.AskAsync(context, PartnerVerb.WithdrawLocal).ConfigureAwait(false);
                 return StepResult.Pass();
             }),
@@ -42,7 +42,7 @@ public static class LocalTogetherSuite {
                 var marker = await SayLocalAsync(context).ConfigureAwait(false);
                 return StepResult.Expect(Arrived(await PartnerSawAsync(context, marker).ConfigureAwait(false)), "your partner didn't get your local line before accepting");
             }, types: true),
-            Auto("Their acceptance back", "3d", async context => {
+            SetupAuto("Their acceptance back", "3d", async context => {
                 await context.Partner.AskAsync(context, PartnerVerb.RestoreLocal).ConfigureAwait(false);
                 return StepResult.Pass();
             }),
@@ -56,7 +56,7 @@ public static class LocalTogetherSuite {
         StepList = [
             Together(),
             CarryOn("Go to the title screen, then come back in with this character. Don't open your friends list afterwards.", "4"),
-            Guided("Your partner relogs too", "4", context => context.Partner.AskPlayerAsync(context, PartnerAsk.Relog, "partner relogged")),
+            SetupGuided("Your partner relogs too", "4", context => context.Partner.AskPlayerAsync(context, PartnerAsk.Relog, "partner relogged")),
             Auto("Before either friends list is open", "4", async context => {
                 var mark = context.Host.Mark();
                 var marker = await SayLocalAsync(context).ConfigureAwait(false);
@@ -101,7 +101,7 @@ public static class LocalTogetherSuite {
         Id = "local-chat-7a", Title = "A long friends list", Steps = "local-chat 7a", Mode = CheckMode.Guided, Needs = Needs,
         StepList = [
             Together(),
-            Guided("Only with a long list", "7a", async context => await context.AskAsync(new GuidedPrompt(
+            SetupGuided("Only with a long list", "7a", async context => await context.AskAsync(new GuidedPrompt(
                     "Does your friends list have more than one page, with your partner near its end?", PromptKind.YesNo)).ConfigureAwait(false) is GuidedAnswer.Yes
                 ? StepResult.Pass()
                 : StepResult.SkipCheck("needs a friends list longer than one page, with your partner near its end")),
@@ -111,7 +111,7 @@ public static class LocalTogetherSuite {
                 var reached = Arrived(await PartnerSawAsync(context, marker).ConfigureAwait(false));
                 return StepResult.Pass() with { Did = reached ? "the friend near the list's end got it at once" : "the friend near the list's end didn't get it at once" };
             }, types: true),
-            Ask("Scroll through the list", "7a", new GuidedPrompt("Open your friends list again and scroll through all of it, then close it.") { Short = "scrolled" }),
+            SetupAsk("Scroll through the list", "7a", new GuidedPrompt("Open your friends list again and scroll through all of it, then close it.") { Short = "scrolled" }),
             Auto("After scrolling", "7a", async context => {
                 var marker = await SayLocalAsync(context).ConfigureAwait(false);
                 return StepResult.Expect(Arrived(await PartnerSawAsync(context, marker).ConfigureAwait(false)), "after scrolling the whole list, your partner still didn't get it");
@@ -129,7 +129,7 @@ public static class LocalTogetherSuite {
                 var (sent, arrived) = await PartnerLocalAsync(context, 1).ConfigureAwait(false);
                 return StepResult.Expect(sent == 1 && arrived == 1, "your partner's local line didn't show for you");
             }),
-            Ask("Target your partner", "8", new GuidedPrompt("Target your partner (click their character).") { Short = "targeted" }),
+            SetupAsk("Target your partner", "8", new GuidedPrompt("Target your partner (click their character).") { Short = "targeted" }),
             Auto("An item link and <t>", "8", async context => {
                 await context.Partner.AskAsync(context, PartnerVerb.ReportReceived).ConfigureAwait(false);
                 await SayLocalAsync(context, TestLink.ItemInMiddle).ConfigureAwait(false);
@@ -157,7 +157,7 @@ public static class LocalTogetherSuite {
                         Did = distance is { } yalms ? $"out of range at {(int) Math.Round(yalms)} yalms" : "out of sight",
                     };
             }),
-            Auto("The rest", "10-11", _ => Task.FromResult(StepResult.Pass("the exact distances (10), and another zone (11): your partner would have to leave the house"))),
+            Rest("10-11", "the exact distances (10), and another zone (11): your partner would have to leave the house"),
         ],
     };
 
@@ -184,7 +184,7 @@ public static class LocalTogetherSuite {
                 await context.Partner.AnswerOfAsync(context, mark, number, PartnerVerb.Disconnect).ConfigureAwait(false);
                 return StepResult.Expect(nobody, "you weren't told none of your friends near you uses LookingGlass");
             }, types: true, timeout: TimeSpan.FromMinutes(5)),
-            Auto("The rest", "14", _ => Task.FromResult(StepResult.Pass("with a friend without LookingGlass and your partner both near (three players)"))),
+            Rest("14", "with a friend without LookingGlass and your partner both near (three players)"),
         ],
     };
 
@@ -312,7 +312,7 @@ public static class LocalTogetherSuite {
                 return StepResult.All((context.Host.LogCounts().ForbiddenHits == 0, "your /xllog held a name or a test line"),
                     (theirs.Int("forbidden") == 0, "your partner's /xllog held a name or a test line"));
             }),
-            Auto("The rest", "25", _ => Task.FromResult(StepResult.Pass("the server's side (the owner checks it)"))),
+            Rest("25", "the server's side (the owner checks it)"),
         ],
     };
 

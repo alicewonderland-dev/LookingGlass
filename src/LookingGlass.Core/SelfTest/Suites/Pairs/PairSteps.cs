@@ -103,7 +103,7 @@ internal static class PairSteps {
     /// house or apartment (in sight of each other), and, for local chat, on each other's friends list. Otherwise the check
     /// is skipped, with why.
     /// </summary>
-    public static SelfTestStep Together(bool friends = true) => Auto("You're both inside the same house or apartment", null, async context => {
+    public static SelfTestStep Together(bool friends = true) => SetupAuto("You're both inside the same house or apartment", null, async context => {
         var hello = context.Partner.Hello;
         if (!hello.TryGetValue("private", out var place) || place != "yes") {
             return StepResult.SkipCheck(SelfTestWords.PartnerNotPrivate);
@@ -124,7 +124,7 @@ internal static class PairSteps {
     public static async Task<bool> PartyOfTwoAsync(StepContext context) => await context.Host.PartyAsync().ConfigureAwait(false) is (2, true);
 
     /// <summary>A step that gets the two testers into a party of their own (skipping the rest of the check if not).</summary>
-    public static SelfTestStep PartyOfTwo(string? checklist) => Guided("A party of just the two of you", checklist, async context => {
+    public static SelfTestStep PartyOfTwo(string? checklist) => SetupGuided("A party of just the two of you", checklist, async context => {
         if (await PartyOfTwoAsync(context).ConfigureAwait(false)) {
             return StepResult.Pass();
         }
@@ -182,7 +182,7 @@ internal static class PairSteps {
     /// relog, and its answer is read after. The step after this one reads <c>State["away"]</c> for how many were sent.
     /// </summary>
     public static SelfTestStep[] RelogWhileThePartnerSends(string? checklist, int count, Func<StepContext, Task<string>>? channel = null, string? also = null) => [
-        Auto("Your partner sends once you're away", checklist, async context => {
+        SetupAuto("Your partner sends once you're away", checklist, async context => {
             var target = channel != null ? await channel(context).ConfigureAwait(false) : context.Partner.ChannelId!;
             context.State["away-mark"] = context.Host.Mark();
             var args = new List<string> { count.ToString(CultureInfo.InvariantCulture) };
@@ -200,7 +200,7 @@ internal static class PairSteps {
             return StepResult.Pass();
         }),
         CarryOn(Relog, checklist),
-        Auto("What your partner sent while you were away", checklist, async context => {
+        SetupAuto("What your partner sent while you were away", checklist, async context => {
             var mark = (long) context.State["away-mark"];
             var answer = await context.Partner.AnswerOfAsync(context, mark, (int) context.State["away-number"], PartnerVerb.SendWhileAway).ConfigureAwait(false);
             var sent = answer.Int("sent") ?? 0;

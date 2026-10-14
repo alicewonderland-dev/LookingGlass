@@ -88,7 +88,7 @@ public static class PairMessagesSuite {
                 return StepResult.All((same, "after the change, your partner's check code is different"), (mine != before, "the check code didn't move on"),
                     (Seq(mine) > Seq(before), "the number at the start didn't go up"), (members == 2, "the member list isn't the two of you"));
             }),
-            Auto("The rest", "19", _ => Task.FromResult(StepResult.Pass("hovering the check code (its words are checked with the settings)"))),
+            Rest("19", "hovering the check code (its words are checked with the settings)"),
         ],
     };
 
@@ -118,7 +118,7 @@ public static class PairPartyFinderSuite {
     private const SelfTestNeeds Needs = PairSteps.Needs | SelfTestNeeds.Typing | SelfTestNeeds.ChatTwoOff;
 
     /// <summary>The host sends its listing to the test channel by hand: whether a party finder link went.</summary>
-    private static SelfTestStep SendIt(string checklist) => Guided("Send your recruitment's link", checklist, async context => {
+    private static SelfTestStep SendIt(string checklist) => SetupGuided("Send your recruitment's link", checklist, async context => {
         var channel = context.Partner.ChannelId!;
         await context.ChangeSettingAsync(SelfTestSetting.WindowsOnly, false).ConfigureAwait(false);
         var up = await context.AskAsync(new GuidedPrompt(
@@ -158,7 +158,7 @@ public static class PairPartyFinderSuite {
         Id = "chat-links-28", Title = "A listing that has ended", Steps = "chat-links 28", Mode = CheckMode.Guided, Needs = Needs,
         StepList = [
             SendIt("28"),
-            Ask("End it", "28", new GuidedPrompt("End your recruitment now.") { Short = "ended" }),
+            SetupAsk("End it", "28", new GuidedPrompt("End your recruitment now.") { Short = "ended" }),
             Guided("They click the old link: no error", "28", async context => {
                 var before = await context.Partner.AskAsync(context, PartnerVerb.ReportLog).ConfigureAwait(false);
                 var clicked = await context.Partner.AskPlayerAsync(context, PartnerAsk.ClickLink, "the game's own answer").ConfigureAwait(false);
@@ -174,7 +174,7 @@ public static class PairPartyFinderSuite {
     private static SelfTestCheck OtherDataCentre() => new() {
         Id = "chat-links-29", Title = "Another data centre", Steps = "chat-links 29", Mode = CheckMode.Guided, Needs = Needs,
         StepList = [
-            Auto("Your partner is on another data centre", "29", async context => {
+            SetupAuto("Your partner is on another data centre", "29", async context => {
                 var mine = (await context.EnvironmentAsync().ConfigureAwait(false)).DataCentre;
                 return context.Partner.Hello.TryGetValue("dc", out var theirs) && theirs != "0" && mine != 0 && theirs != mine.ToString(System.Globalization.CultureInfo.InvariantCulture)
                     ? StepResult.Pass()

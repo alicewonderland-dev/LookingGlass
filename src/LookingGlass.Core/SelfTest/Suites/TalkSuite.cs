@@ -324,7 +324,7 @@ public static class TalkSuite {
             Ask("Turned off, it said so", "35", new GuidedPrompt(
                 "When LookingGlass was turned off, did game chat say \"Stopped talking in [Local]: LookingGlass was turned off.\", and the chat box name Say again?",
                 PromptKind.YesNo) { Short = "turned off" }),
-            Auto("Talking in [Local] for the relog", "35", async context => StepResult.Expect(await context.TalkInLocalAsync().ConfigureAwait(false), "couldn't start talking in [Local]"),
+            SetupAuto("Talking in [Local] for the relog", "35", async context => StepResult.Expect(await context.TalkInLocalAsync().ConfigureAwait(false), "couldn't start talking in [Local]"),
                 types: true),
             CarryOn(Relog, "35"),
             Auto("Nothing on after the relog", "35", async context => {
