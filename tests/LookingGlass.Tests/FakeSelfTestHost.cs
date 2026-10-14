@@ -41,7 +41,28 @@ internal sealed partial class FakeSelfTestHost : ISelfTestHost, IDisposable {
 
     public int? GameChannel { get; set; } = 2;
 
-    public string? Sticky { get; set; }
+    /// <summary>Where typing goes now (the plugin's own state, at once).</summary>
+    public string? Sticky {
+        get => this._sticky;
+        set {
+            if (value != this._sticky) {
+                this._labelsFor = this._sticky;
+                this._stickyChangedAt = this.Now;
+            }
+
+            this._sticky = value;
+        }
+    }
+
+    private string? _sticky;
+    private string? _labelsFor;
+    private DateTimeOffset _stickyChangedAt;
+
+    /// <summary>How long the game takes to rename its chat box, and the info bar to follow (a few frames in game).</summary>
+    public TimeSpan LabelLag { get; set; }
+
+    /// <summary>The channel the labels show now: the one before, until <see cref="LabelLag"/> has passed.</summary>
+    private string? Labelled => this.Now - this._stickyChangedAt < this.LabelLag ? this._labelsFor : this._sticky;
 
     public List<(string Line, PlaceKind Place)> Typed { get; } = [];
 

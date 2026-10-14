@@ -174,7 +174,8 @@ public static class ColoursSuite {
                 var (first, second) = (await context.TestChannelAsync(0).ConfigureAwait(false), await context.TestChannelAsync(1).ConfigureAwait(false));
                 await context.Host.SetChannelColourAsync(first, ChannelColour.OfRow(Swatch)).ConfigureAwait(false);
                 await context.Host.SetChannelColourAsync(second, ChannelColour.Custom(Pink)).ConfigureAwait(false);
-                return await KeptAsync(context, "").ConfigureAwait(false);
+                // The settings file is written as the colour is set; read back as saved, waited for a moment.
+                return await context.SettledAsync(() => KeptAsync(context, "")).ConfigureAwait(false);
             }),
             CarryOn(Reload, "15"),
             Auto("Kept after the reload", "15", context => KeptAsync(context, " after the reload")),

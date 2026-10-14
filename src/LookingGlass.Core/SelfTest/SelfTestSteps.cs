@@ -54,6 +54,20 @@ public static class SelfTestSteps {
 public static class StepContextExtensions {
     private static readonly TimeSpan Soon = TimeSpan.FromSeconds(5);
 
+    /// <summary>How long a check waits for what the game shows a frame or more after an action (a label, a window).</summary>
+    public static readonly TimeSpan Settle = TimeSpan.FromSeconds(3);
+
+    /// <summary>
+    /// For what the game (or the plugin's windows) applies a frame or more after an action: the chat box's channel name, the
+    /// info bar, the labels' colour, a window's tabs. Checks again until it passes, at most <paramref name="within"/> (a
+    /// few seconds), and gives the last result: never read once right after the action (owner's second run, 2026-10-13).
+    /// </summary>
+    public static async Task<StepResult> SettledAsync(this StepContext context, Func<Task<StepResult>> check, TimeSpan? within = null) {
+        var result = StepResult.Fail(SelfTestWords.TimedOut);
+        await context.WaitUntilAsync(async () => (result = await check().ConfigureAwait(false)).Outcome == StepOutcome.Passed, within ?? Settle).ConfigureAwait(false);
+        return result;
+    }
+
     /// <summary>The first line printed since <paramref name="mark"/> that matches, waiting up to <paramref name="within"/>; null if none.</summary>
     public static async Task<TapLine?> PrintedAsync(this StepContext context, long mark, Func<TapLine, bool> match, TimeSpan? within = null) {
         TapLine? found = null;

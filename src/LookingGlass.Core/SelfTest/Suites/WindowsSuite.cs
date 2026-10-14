@@ -262,9 +262,12 @@ public static class WindowsSuite {
                 await ArriveAsync(context, sky).ConfigureAwait(false);
                 await ArriveAsync(context, fc).ConfigureAwait(false);
                 await context.WindowOfAsync(fc, Open).ConfigureAwait(false);
-                var windows = (await context.Host.WindowsAsync().ConfigureAwait(false)).Windows;
-                return StepResult.All((windows.Count == 1, "more than one window opened"),
-                    (windows.FirstOrDefault() is { } window && window.Tabs.SequenceEqual([sky, fc]) && window.Selected == sky, "the first channel wasn't selected with the second behind it"));
+                // A tab is added at the window's next draw: waited for.
+                return await context.SettledAsync(async () => {
+                    var windows = (await context.Host.WindowsAsync().ConfigureAwait(false)).Windows;
+                    return StepResult.All((windows.Count == 1, "more than one window opened"),
+                        (windows.FirstOrDefault() is { } window && window.Tabs.SequenceEqual([sky, fc]) && window.Selected == sky, "the first channel wasn't selected with the second behind it"));
+                }).ConfigureAwait(false);
             }),
         ],
     };

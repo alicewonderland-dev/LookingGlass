@@ -49,9 +49,10 @@ internal sealed partial class FakeSelfTestHost {
     private string TagOf(string? channelId) =>
         channelId == StickyChannel.LocalId ? LocalChat.Tag : channelId != null && this.Slots.TryGetValue(channelId, out var slot) ? $"[LGC{slot}]" : ChannelTag.Fallback;
 
-    private StickyView SimulatedSticky() => this.Sticky is { } channel
-        ? new StickyView(channel, this.TagOf(channel), $"LG {this.TagOf(channel)}", ColouredText.DefaultTag)
-        : new StickyView(null, "Say", null, null);
+    // Talking in a channel is the plugin's own state at once; the labels the game shows follow a few frames later (LabelLag).
+    private StickyView SimulatedSticky() => this.Labelled is { } labelled
+        ? new StickyView(this.Sticky, this.TagOf(labelled), $"LG {this.TagOf(labelled)}", ColouredText.DefaultTag)
+        : new StickyView(this.Sticky, "Say", null, null);
 
     /// <summary>Talking in a channel ends: said with verbose on, or always for an end the player didn't choose.</summary>
     private void SimulateEnd(StickyEnd why) {

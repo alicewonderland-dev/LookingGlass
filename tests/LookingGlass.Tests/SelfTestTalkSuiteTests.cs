@@ -83,4 +83,27 @@ public sealed class SelfTestTalkSuiteTests : IDisposable {
         // Alone, nothing reached Say.
         Assert.DoesNotContain(this._host.GameChatSince(0), line => line.Channel == GameChatKind.Say);
     }
+
+    [Fact]
+    public async Task LabelsTheGameShowsAFewFramesLaterAreWaitedFor() {
+        // The owner's second run: the chat box named [Local] 30 ms after the check had read it. Here, the labels follow
+        // half a second late: the check waits for them (a few seconds at most) instead of reading once.
+        this._host.LabelLag = TimeSpan.FromMilliseconds(500);
+
+        var run = await this.RunAsync();
+
+        var started = run.Data.Results.Single(result => result.Check == "local-chat-29");
+        Assert.True(started.Outcome == CheckOutcome.Passed, $"{started.Outcome} {started.Why}");
+    }
+
+    [Fact]
+    public async Task LabelsThatNeverFollowStillFail() {
+        this._host.LabelLag = TimeSpan.FromMinutes(10);
+
+        var run = await this.RunAsync();
+
+        var started = run.Data.Results.Single(result => result.Check == "local-chat-29");
+        Assert.Equal(CheckOutcome.Failed, started.Outcome);
+        Assert.Equal("the chat input doesn't name its channel [Local]", started.Why);
+    }
 }

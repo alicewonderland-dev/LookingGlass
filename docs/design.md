@@ -5944,6 +5944,15 @@ The owner's decisions, and why.
   isn't covered (the self-test never types with anyone else near), and
   `/p brb` while talking in local chat is a two-player check of its own (the
   partner as the whole party), in the local chat suite.
+- **What the game shows a frame later is waited for (owner's second run,
+  2026-10-13).** "local-chat 29" failed because it read the chat box's channel
+  name 30 ms after `/lgl`; the game renames it a frame or more later. Every
+  check that reads what the game (or the plugin's windows) applies after an
+  action, the chat box's name, the info bar, the labels' colour, a window's
+  tabs, a colour as saved, now checks again until it holds, a few seconds at
+  most (`SettledAsync`), instead of reading once. Reads of the plugin's own
+  state (talking in a channel or not) and of "nothing happened" stay as they
+  were.
 
 ## Open questions
 

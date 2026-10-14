@@ -65,16 +65,19 @@ public static class TalkSuite {
                 var talking = await context.TalkingInAsync(StickyChannel.LocalId).ConfigureAwait(false);
                 var started = await context.NoticeAsync(mark, StickyMessages.Entered(Local)).ConfigureAwait(false);
                 var note = await context.NoticeAsync(mark, LocalChatWords.TalkingNote).ConfigureAwait(false);
-                var sticky = await context.Host.StickyAsync().ConfigureAwait(false);
                 var environment = await context.EnvironmentAsync().ConfigureAwait(false);
                 var colour = SelfTestValues.Colour((await context.Host.ReadSettingAsync(SelfTestSetting.LocalChatColour).ConfigureAwait(false)).ToString()) ?? ColouredText.DefaultTag;
-                return StepResult.All(
-                    (talking, "/lgl alone didn't start talking in [Local]"),
-                    (started is { Tone: NoticeTone.Info, Tag: Local }, "no blue \"Now talking in [Local].\""),
-                    (note != null, "the once-only line wasn't said"),
-                    (!environment.ChatInputReadable || sticky.ChatInputLabel == Local, "the chat input doesn't name its channel [Local]"),
-                    (sticky.InfoBar?.Contains($"LG {Local}", StringComparison.Ordinal) == true, "the server info bar doesn't show \"LG [Local]\""),
-                    (sticky.ShownColour == colour, "the labels aren't in local chat's colour"));
+                // The game renames its chat box a frame or more later, and the info bar follows: waited for, a few seconds at most.
+                return await context.SettledAsync(async () => {
+                    var sticky = await context.Host.StickyAsync().ConfigureAwait(false);
+                    return StepResult.All(
+                        (talking, "/lgl alone didn't start talking in [Local]"),
+                        (started is { Tone: NoticeTone.Info, Tag: Local }, "no blue \"Now talking in [Local].\""),
+                        (note != null, "the once-only line wasn't said"),
+                        (!environment.ChatInputReadable || sticky.ChatInputLabel == Local, "the chat input doesn't name its channel [Local]"),
+                        (sticky.InfoBar?.Contains($"LG {Local}", StringComparison.Ordinal) == true, "the server info bar doesn't show \"LG [Local]\""),
+                        (sticky.ShownColour == colour, "the labels aren't in local chat's colour"));
+                }).ConfigureAwait(false);
             }, types: true),
             Auto("/lgl alone again: only the first line", "29", async context => {
                 var mark = context.Host.Mark();
