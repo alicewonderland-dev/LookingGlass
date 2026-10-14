@@ -5128,7 +5128,7 @@ virtual clock; the plugin's `SelfTest` folder and `SelfTestWindow`):
   that couldn't reach the server keeps them, and the file, for the next
   connection. A damaged file that lost whose it was can only be cleared, with
   a warning.
-- Seven suites cover the plan's one-player tasks still open (`SelfTestSuites.All`, 26 checks):
+- Seven suites cover the plan's one-player tasks still open (`SelfTestSuites.All`, 21 checks):
   those that passed in the owner's first run (2026-10-13) are no longer offered.
 - **Two players** (`SelfTest/Pairs`, `Suites/Pairs`): **Two players...** opens
   a screen to invite a partner (their name@world, or **Use my target**, and a
@@ -5984,6 +5984,18 @@ The owner's decisions, and why.
   from earlier testing (windows-only 17, 23b, 23c; channel-windows 33d, 33e).
   Windows-only 20's tab hover and 37c's flash failed in that run and are
   being fixed in the plugin; their checks stay as they are.
+- **What passed in the owner's fourth run leaves too (owner, 2026-10-13).**
+  Plugin 0.2.18, one player, in a house: custom-colours 3, 4 to 8, 9 (but the
+  invite submenu and the caught-up message), 15 (but another character), 17
+  (but being invited back), and name-colours 21 (but another character) and
+  23's first part passed; they are ticked and no longer offered. What was
+  left of them is a check of its own: another of the tester's characters
+  (name-colours 21, custom-colours 15; the tester comes in with it while the
+  run waits), and, with a partner, the invite submenu's pink and being invited
+  back to a channel left (the partner's plugin may now invite the host to its
+  one channel up to three times a run, for that). Custom-colours 16 (a colour
+  set before 0.2.8) is marked not testable: such a colour can't be produced
+  any more on current builds.
 
 ## Open questions
 

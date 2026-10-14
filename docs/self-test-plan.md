@@ -820,13 +820,16 @@ section and name, with its checklist steps. Modes:
 
 | Task | Steps | Mode | How |
 | --- | --- | --- | --- |
-| The colour is kept (name colours) | name-colours 21 | G | Needs a name colour: the tester's own (A+G: the runner sets it). The tester reloads the plugin and relogs; the runner checks the colour after each. Not run: another character. |
-| What's saved in the settings file | name-colours 23 (first part) | A | Reads the saved settings: the colour under `NameColours`, keyed by a number only. |
-| Colour test command, odd inputs | custom-colours 3 | A | Runs `/lgdebug colours #3FA7D6 00ff00` (six lines), `/lgdebug colours #nope` (a usage line), plain `/lgdebug` (the debug window opens). |
-| The colour picker | custom-colours 4-8 | G | The runner opens the test channel's Colour... menu; the tester checks the swatches, Custom..., the code box, greyed-out codes, the dark note, the recent swatch. A: the code parsing words. |
-| Pink everywhere, game chat (no ChatTwo) | custom-colours 9 (except the caught-up message) | G | The runner colours the test channel pink, sends a line with an item link in the middle, starts talking in it (the line and the info bar), opens its window; the tester compares each with the swatch shown in the step. The invite submenu part needs the partner. |
-| Colours are kept | custom-colours 15-16 | G | The runner sets a swatch on one test channel and a custom colour on another; the tester reloads and relogs; the runner checks both after each. Not run: another character, and "unchanged since before 0.2.8". |
-| Leaving drops the colour | custom-colours 17 | A | A throwaway test channel, a custom colour, left; once the list reloads, the colour is gone from the saved settings. (The clean-up does the same for the run's own channels.) Not run: being invited back. |
+| The colour is kept (name colours) | name-colours 21 (all but another character) | passed | Passed in the owner's fourth run (2026-10-13, plugin 0.2.18), no longer offered. |
+| The colour is kept: another of your characters | name-colours 21 (another character) | G | Needs another character sharing a channel with this one: the runner sets this character's name orange; the tester comes in with the other (the run waits) and looks. |
+| What's saved in the settings file | name-colours 23 (first part) | passed | Passed in the owner's fourth run (2026-10-13, plugin 0.2.18), no longer offered. |
+| Colour test command, odd inputs | custom-colours 3 | passed | Passed in the owner's fourth run (2026-10-13, plugin 0.2.18), no longer offered. |
+| The colour picker | custom-colours 4-8 | passed | Passed in the owner's fourth run (2026-10-13, plugin 0.2.18), no longer offered. |
+| Pink everywhere, game chat (no ChatTwo) | custom-colours 9 (all but the invite submenu and the caught-up message) | passed | Passed in the owner's fourth run (2026-10-13, plugin 0.2.18), no longer offered. |
+| Colours are kept | custom-colours 15 (all but another character) | passed | Passed in the owner's fourth run (2026-10-13, plugin 0.2.18), no longer offered. |
+| Colours are kept: another character's own | custom-colours 15 (another character) | G | Needs another character with channels of its own: the runner colours two test channels; the tester comes in with the other (the run waits) and looks. |
+| A colour set before 0.2.8 | custom-colours 16 | not testable | Such a colour can't be produced any more on current builds. |
+| Leaving drops the colour | custom-colours 17 (all but being invited back) | passed | Passed in the owner's fourth run (2026-10-13, plugin 0.2.18), no longer offered. |
 
 **Suite: Right-click invites** (one player)
 
@@ -925,6 +928,8 @@ group 2 tables below, since they need the partner.
 | Back to default | name-colours 20 | 2P (G) | The tester sets Default; the partner sends one line; the tester looks. A: no colour saved. |
 | Leaving and rejoining | name-colours 22 | 2P (A) | The partner leaves one test channel: the colour stays in the other; invited back: the same colour. |
 | Missed messages are pink too | custom-colours 9 (caught-up part) | 2P (G) | The host relogs; the partner sends; the tester looks at the caught-up line. |
+| Pink in the invite submenu | custom-colours 9 (the invite submenu) | 2P (G) | A pink test channel the partner isn't in; the tester right-clicks the partner and looks at the submenu. |
+| Invited back, the colour doesn't come back | custom-colours 17 (invited back) | 2P (A) | The host joins the partner's one channel, colours it, leaves (the colour goes), and is invited back by the partner's plugin: no colour. |
 
 **Suite: Right-click invites, with a partner**
 
@@ -985,7 +990,7 @@ local chat and device steps, which the report gives.
 
 ### Totals
 
-(As planned. Passed in the owner's first run, 2026-10-13, and no longer offered: chat-links 20, 21 to 23 and 30; settings 1 to 9; device-notices 1; context-invites 7 to 9 and 10. What was left of the last two, context-invites 9a and 11, are checks of their own.) (Passed in the owner's second run, 2026-10-13, plugin 0.2.18, and no longer offered: local-chat 3a to 3c, 30, 32 to 33 but `/p brb` (now a two-player check of its own), and 34 to 41.) (Passed in the owner's third run, 2026-10-13, plugin 0.2.18, and no longer offered: windows-only 1 to 2, 5, 7 to 9, 11, 13 to 16, 23, 24 and 26; channel-windows 17, 17b, 17c, 36 and 37 but a collapsed window, 33 to 33f, 6b and 37b but a channel shown in game chat. Windows-only 12's invite line is a two-player check of its own. No combat checks: no striking dummy can be placed in a private place, and the owner confirmed windows-only 17, 23b, 23c and channel-windows 33d, 33e from earlier testing.)
+(As planned. Passed in the owner's first run, 2026-10-13, and no longer offered: chat-links 20, 21 to 23 and 30; settings 1 to 9; device-notices 1; context-invites 7 to 9 and 10. What was left of the last two, context-invites 9a and 11, are checks of their own.) (Passed in the owner's second run, 2026-10-13, plugin 0.2.18, and no longer offered: local-chat 3a to 3c, 30, 32 to 33 but `/p brb` (now a two-player check of its own), and 34 to 41.) (Passed in the owner's third run, 2026-10-13, plugin 0.2.18, and no longer offered: windows-only 1 to 2, 5, 7 to 9, 11, 13 to 16, 23, 24 and 26; channel-windows 17, 17b, 17c, 36 and 37 but a collapsed window, 33 to 33f, 6b and 37b but a channel shown in game chat. Windows-only 12's invite line is a two-player check of its own. No combat checks: no striking dummy can be placed in a private place, and the owner confirmed windows-only 17, 23b, 23c and channel-windows 33d, 33e from earlier testing.) (Passed in the owner's fourth run, 2026-10-13, plugin 0.2.18, and no longer offered: custom-colours 3, 4 to 8, 9 but the invite submenu and the caught-up message, 15 but another character, 17 but being invited back; name-colours 21 but another character, and 23's first part. Custom-colours 16 (a colour set before 0.2.8) can't be tested any more.)
 
 | | Tasks | A | A+G | G | 2P (A) | 2P (G or A+G) | Not covered |
 | --- | --- | --- | --- | --- | --- | --- | --- |

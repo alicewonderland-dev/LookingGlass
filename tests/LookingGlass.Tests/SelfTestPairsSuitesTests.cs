@@ -25,7 +25,7 @@ public sealed class SelfTestPairsSuitesTests : IDisposable {
     /// <summary>Every two-player task the plan covers, by its checklist steps, as the report names them.</summary>
     private static readonly string[] Covered = [
         "local-chat 3d", "local-chat 4-7", "local-chat 7a", "local-chat 8-11", "local-chat 14 (first part)", "local-chat 15-16", "local-chat 17-18", "local-chat 19-23",
-        "local-chat 25 (players)", "local-chat 47", "local-chat 32 (/p brb)", "windows-only 12 (the invite line)",
+        "local-chat 25 (players)", "local-chat 47", "local-chat 32 (/p brb)", "windows-only 12 (the invite line)", "custom-colours 9 (the invite submenu)", "custom-colours 17 (invited back)",
         "chat-links 16-17", "chat-links 19",
         "channel-windows 17b, 17d; windows-only 3, 6", "channel-windows 33c (second part)", "channel-windows 33f (second part)", "channel-windows 36b (group 1)",
         "windows-only 3-4, 6, 10", "windows-only 15b, 25", "windows-only 18-19", "windows-only 22",

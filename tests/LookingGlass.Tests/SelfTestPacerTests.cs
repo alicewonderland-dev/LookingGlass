@@ -119,7 +119,7 @@ public sealed class SelfTestPacerTests {
         var partner = Pacer(SelfTestRole.Partner);
         Assert.Equal(80, partner.MostOf(SelfTestAction.ChannelMessage));
         Assert.Equal(3, partner.MostOf(SelfTestAction.Reconnect));
-        Assert.Equal(1, partner.MostOf(SelfTestAction.Invite));
+        Assert.Equal(SelfTestProtocol.MostInvitesToHost, partner.MostOf(SelfTestAction.Invite));
         Assert.Equal(0, partner.MostOf(SelfTestAction.Rename));
         for (var i = 0; i < 80; i++) {
             await partner.WaitAsync(SelfTestAction.ChannelMessage, TestContext.Current.CancellationToken);
