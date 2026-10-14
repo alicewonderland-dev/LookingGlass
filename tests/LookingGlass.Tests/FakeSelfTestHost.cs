@@ -400,7 +400,18 @@ internal sealed partial class FakeSelfTestHost : ISelfTestHost, IDisposable {
 
     public Task ShowSettingsAsync(bool open) => Task.CompletedTask;
 
-    public Task<WindowsView> WindowsAsync() => Task.FromResult(new WindowsView([], new Dictionary<string, int>(), new Dictionary<string, int>()));
+    /// <summary>The windows the plugin has open, if a test says (none by default).</summary>
+    public Func<WindowsView>? OpenWindows { get; set; }
+
+    public Task<WindowsView> WindowsAsync() => Task.FromResult(this.OpenWindows?.Invoke() ?? new WindowsView([], new Dictionary<string, int>(), new Dictionary<string, int>()));
+
+    /// <summary>Each flash shown again: the channel and the pulses.</summary>
+    public List<(string Channel, int Pulses)> FlashedAgain { get; } = [];
+
+    public Task FlashAgainAsync(string channelId, int pulses) {
+        this.FlashedAgain.Add((channelId, pulses));
+        return Task.CompletedTask;
+    }
 
     public Task OpenWindowAsync(string channelId) => Task.CompletedTask;
 
