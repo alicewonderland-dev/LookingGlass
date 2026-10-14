@@ -42,6 +42,25 @@ public static class WindowsOnly {
     public const string GameChatItemTooltip =
         "\"" + SettingName + "\" is on, so no channel shows in game chat now (warnings still do). Change it in Settings, under Chat.";
 
+    /// <summary>A tab's hover while this is on: no channel shows in game chat now, whatever its own choice.</summary>
+    private static readonly Wording TabHoverWindowsOnly = new(NoticeKind.General,
+        "Not shown in game chat: \"" + SettingName + "\" is on. Change it in Settings, under Chat.",
+        "Not shown in game chat: only windows show messages (change it in Settings, under Chat).");
+
+    /// <summary>A tab's hover for a channel turned off game chat on its own ("Show in game chat", in the tab's right-click menu).</summary>
+    private static readonly Wording TabHoverChannelOff = new(NoticeKind.General,
+        "Not shown in game chat: its \"Show in game chat\" is off. Right-click the tab to change it.",
+        "Not shown in game chat. Right-click the tab to change it.");
+
+    /// <summary>
+    /// The line a channel window's tab adds to its hover when the channel's messages aren't shown in game chat, saying why
+    /// and where to change it: while this setting is on, for every channel (whatever its own "Show in game chat" says);
+    /// else for a channel turned off there on its own. Null for a channel whose messages go to game chat.
+    /// </summary>
+    /// <param name="showsInGameChat">The channel's own "Show in game chat" (see <see cref="GameChatChannels.Shows"/>).</param>
+    public static Wording? TabHoverLine(bool windowsOnly, bool showsInGameChat) =>
+        windowsOnly ? TabHoverWindowsOnly : showsInGameChat ? null : TabHoverChannelOff;
+
     /// <summary>The words for each way of opening, for the settings window, after "New channels open".</summary>
     public static string NameOf(WindowOpening how) => how switch {
         WindowOpening.NewWindow => "In a new window",

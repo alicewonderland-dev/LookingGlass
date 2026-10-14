@@ -136,12 +136,53 @@ public sealed class WindowAttentionTests {
             // Each pulse rises from nothing to full and back.
             Assert.Equal(0, flash.StrengthAt(At(i * pulse), false), 3);
             Assert.Equal(1, flash.StrengthAt(At(i * pulse + pulse / 2), false), 3);
-            Assert.InRange(flash.StrengthAt(At(i * pulse + pulse / 4), false), 0.4f, 0.6f);
         }
 
         Assert.True(flash.IsRunning(At(WindowFlash.OpenedPulses * pulse - 1)));
         Assert.False(flash.IsRunning(At(WindowFlash.OpenedPulses * pulse)));
         Assert.Equal(0, flash.StrengthAt(At(WindowFlash.OpenedPulses * pulse + pulse / 2), false));
+    }
+
+    /// <summary>The flash an owner didn't see (0.2.18): pulses that were full only for a moment, a tint and border too faint.</summary>
+    [Fact]
+    public void EachPulseIsAtFullStrengthForMostOfItThenDarkBeforeTheNext() {
+        var flash = new WindowFlash();
+        flash.Start(Start, WindowFlash.OpenedPulses);
+        var pulse = WindowFlash.PulseLength.TotalMilliseconds;
+        const int samples = 1000;
+        for (var i = 0; i < WindowFlash.OpenedPulses; i++) {
+            var full = 0;
+            var dark = 0;
+            var last = -1f;
+            var rising = true;
+            for (var s = 0; s < samples; s++) {
+                var strength = flash.StrengthAt(At(i * pulse + pulse * s / samples), false);
+                Assert.InRange(strength, 0f, 1f);
+                full += strength >= 0.99f ? 1 : 0;
+                dark += strength <= 0.01f ? 1 : 0;
+                // Up once, then down once: one blink, not a flicker.
+                if (rising && strength < last) {
+                    rising = false;
+                }
+
+                Assert.True(rising || strength <= last + 1e-6f, $"pulse {i} rose again at {s}/{samples}");
+                last = strength;
+            }
+
+            // Lit for most of the pulse, so it is seen; dark for a moment at its end, so three pulses read as three.
+            Assert.True(full >= samples * 0.4, $"pulse {i} was at full strength for only {full}/{samples}");
+            Assert.True(dark >= samples * 0.1, $"pulse {i} was dark for only {dark}/{samples}");
+            // It comes on quickly.
+            Assert.True(flash.StrengthAt(At(i * pulse + pulse / 5), false) >= 0.99f);
+        }
+    }
+
+    [Fact]
+    public void TheFlashIsStrongEnoughToSee() {
+        // The title bar goes most of the way to the channel's colour, with its title still readable on it.
+        Assert.InRange(WindowFlash.TitleBarTint, 0.75f, 0.9f);
+        // A border a few pixels wide (before the global scale), not a hairline.
+        Assert.InRange(WindowFlash.BorderThickness, 3f, 5f);
     }
 
     [Fact]

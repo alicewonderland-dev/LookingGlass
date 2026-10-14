@@ -44,6 +44,11 @@ any linkshell, for A or B.
       tab**; **Close tab** works too.
 - [ ] 11. Close the last tab of a window: the window closes.
 - [ ] 12. Hover a tab: its full name, its commands (`/lgc1 or /lgc sky`).
+      **(changed, after 0.2.18)** For a channel turned off game chat (step
+      31), it also says "Not shown in game chat. Right-click the tab to change
+      it." It shows with a menu open too: open the main window's ⋮ menu, then
+      hover the tab; and with the tab's right-click menu open, once the mouse
+      has gone to the menu and back to the tab.
 - [ ] 13. The window's title is the selected tab's channel; switch tabs and
       it changes.
 
@@ -184,11 +189,15 @@ any linkshell, for A or B.
 
 ## Flash
 
-- [ ] 37c. **(new, after 0.2.13)** A window that opens by itself (step 33)
-      flashes: its title bar and border pulse three times in the channel's
-      colour (LookingGlass blue for a channel with none) over about a second and
-      a half, then look as usual. It doesn't come to the front over a window
-      you're using, and the game keeps the keyboard.
+- [ ] 37c. **(new, after 0.2.13; stronger after 0.2.18)** A window that opens
+      by itself (step 33) flashes: its title bar and border pulse three times in
+      the channel's colour (LookingGlass blue for a channel with none) over
+      about a second and a half, then look as usual. Each pulse is a clear
+      blink: the title bar turns mostly the channel's colour and a border a few
+      pixels wide lights up, then both go dark before the next. Watch where the
+      window will open before the line arrives: the flash starts as it appears.
+      It doesn't come to the front over a window you're using, and the game
+      keeps the keyboard.
 - [ ] 37d. **(new, after 0.2.13)** With **As a tab**, a tab added by itself to
       an open window: that window flashes once, in the new channel's colour.
 - [ ] 37e. **(new, after 0.2.13)** Windows you open yourself (**Open in new

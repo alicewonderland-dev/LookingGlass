@@ -3151,7 +3151,17 @@ the plugin's `ChannelWindows` opens and remembers the windows and
   channel: its nickname or (shortened) name in the channel's colour, and on
   every tab not selected, the number of messages from others since it was
   last shown ("sky  (3)", at most "99+"; see **Tab counts** below); its
-  tooltip has the full name, the channel's commands and how many are new. A tab
+  tooltip has the full name, the channel's commands and how many are new, and
+  for a channel whose messages don't go to game chat, that they don't, why and
+  where to change it (`WindowsOnly.TabHoverLine`: "Not shown in game chat:
+  only windows show messages (change it in Settings, under Chat)." while
+  windows only is on, else "Not shown in game chat. Right-click the tab to
+  change it."; advanced mode names the setting). The tooltip shows while a
+  menu is open too (the main window's ⋮ menu, or the tab's own right-click
+  menu once the mouse has left the tab and come back): ImGui's plain hover is
+  blocked by any open popup, and in 0.2.18 the tab said nothing to a tester
+  who had just looked at **Show in game chat** in a menu. A tab
+  closes with its ×, or **Close tab** in its right-click menu, and closing the
   closes with its ×, or **Close tab** in its right-click menu, and closing the
   last closes the window. Tabs can be dragged into another order. The **+**
   after them lists the channels the window doesn't have, in the channel list's
@@ -3259,17 +3269,27 @@ the plugin's `ChannelWindows` opens and remembers the windows and
   the same rule as the channel list (`TabUnread.WindowShows`, below).
 - **Flash** (`WindowFlash`, owner request 2026-10-09). A window that opens by
   itself because a line arrived (windows only, or a channel off game chat
-  that no window showed) flashes briefly: its title bar is tinted toward the
-  channel's colour (LookingGlass blue for a channel with none) and a border in
-  that colour is drawn around it, three pulses of half a second each. A
+  that no window showed) flashes briefly: its title bar is tinted most of the
+  way toward the channel's colour (85%; LookingGlass blue for a channel with
+  none) and a 3-pixel border in that colour is drawn around it, three pulses
+  of half a second each. Each pulse is a blink: it comes on within about 60
+  ms, stays at full for about a quarter of a second, fades, and is dark for
+  about a tenth of a second before the next, so three read as three. A
   window that gets a tab added by itself flashes once (one pulse), in the new
   tab's colour, so the player sees where the channel went; a flash still
   running isn't cut short by a shorter one. Neither brings the window to the
   front or takes the keyboard. With Dalamud's reduced motion setting
   (`UiBuilder.ShouldUseReducedMotion`), no pulsing: a steady, softer tint and
-  border for as long. The numbers are constants in one place, for the owner
-  to tune from what players say. A window the player opens or adds to never
-  flashes.
+  border for as long (half strength). The numbers are constants in one place
+  (`WindowFlash`), for the owner to tune from what players say. A window the
+  player opens or adds to never flashes. The title bar colours are pushed in
+  `PreDraw` (ImGui draws the title bar in `Begin`) and popped in `PostDraw`;
+  Dalamud pushes its own title bar colours (its focus fade, a blend of
+  whatever is pushed) after `PreDraw` and pops them before `PostDraw`. Fixed
+  after 0.2.18, where the owner didn't see the flash: each pulse was a smooth
+  rise and fall (full only for an instant), the tint went 60% of the way and
+  the border was 2 pixels at the pulse's strength, all while the window was
+  just appearing.
 - **Unread.** One rule for the tabs' counts and the channel list's (review
   fix, 2026-10-09): a channel is read while it is the selected tab of an open
   channel window that is drawn, whether that window has the focus or not, as
@@ -3398,7 +3418,9 @@ to make in game are in
   on: in the channel's ⋮ menu and a tab's right-click menu it shows a red cross
   (no channel shows in game chat now, whatever its own choice), greyed out,
   with one tooltip saying that only windows show messages now and to change
-  it in Settings, under Chat; a tab's tooltip says the same. It is kept as it was.
+  it in Settings, under Chat; a tab's tooltip says the same, even while a
+  menu is open (see **A window** in [Channel windows](#channel-windows)). It
+  is kept as it was.
 - **One channel at a time.** A channel turned off game chat on its own
   ("Show in game chat") follows every rule of this section by itself, whether
   this setting is on or off (owner decision, 2026-10-09): its lines but

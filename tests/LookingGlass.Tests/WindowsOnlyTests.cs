@@ -434,6 +434,49 @@ public sealed class WindowsOnlyTests {
         Assert.Equal("In a new window", WindowsOnly.NameOf(WindowOpening.NewWindow));
     }
 
+    /// <summary>
+    /// A channel window's tab says, on hover, when its channel's messages aren't shown in game chat, and why: every channel
+    /// while windows only is on (whatever its own choice), or the channel turned off there on its own. Nothing for one shown there.
+    /// </summary>
+    [Fact]
+    public void ATabsHoverSaysWhenItsChannelIsntShownInGameChat() {
+        Assert.Null(WindowsOnly.TabHoverLine(windowsOnly: false, showsInGameChat: true));
+
+        foreach (var own in new[] { true, false }) {
+            var line = WindowsOnly.TabHoverLine(windowsOnly: true, showsInGameChat: own);
+            Assert.NotNull(line);
+            foreach (var advanced in new[] { true, false }) {
+                var text = line.For(advanced);
+                Assert.StartsWith("Not shown in game chat", text);
+                // Where to change it: the setting, as the greyed "Show in game chat" item's tooltip says.
+                Assert.Contains("Settings, under Chat", text);
+            }
+
+            Assert.Contains("only windows show messages", line.Plain);
+            Assert.Contains(WindowsOnly.SettingName, line.Technical);
+        }
+
+        var off = WindowsOnly.TabHoverLine(windowsOnly: false, showsInGameChat: false);
+        Assert.NotNull(off);
+        foreach (var advanced in new[] { true, false }) {
+            Assert.StartsWith("Not shown in game chat", off.For(advanced));
+            // Where to change it: the tab's own right-click menu.
+            Assert.Contains("Right-click", off.For(advanced));
+        }
+
+        Assert.Contains("Show in game chat", off.Technical);
+        Assert.NotEqual(off, WindowsOnly.TabHoverLine(windowsOnly: true, showsInGameChat: false));
+    }
+
+    [Fact]
+    public void ATabsHoverIsInPlainWords() {
+        foreach (var (windowsOnly, shows) in new[] { (true, true), (true, false), (false, false) }) {
+            var line = WindowsOnly.TabHoverLine(windowsOnly, shows)!;
+            PlainLanguage.AssertPlain(line.Plain);
+            Assert.False(string.IsNullOrWhiteSpace(line.Technical));
+        }
+    }
+
     [Fact]
     public void AddingToTheWindowUsedLastIsTheDefault() => Assert.Equal(WindowOpening.AddToLastUsed, default(WindowOpening));
 }
