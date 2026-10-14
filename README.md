@@ -231,6 +231,8 @@ register again. If you didn't recognise one, use both.
 
 ## More
 
+- [The LookingGlass Discord](https://discord.gg/WY6hPnrNJ3): news, changes and help. The Discord
+  button at the top right of the main window (left of the envelope) opens it too.
 - [How it works](docs/design.md): the design, encryption and security model.
 - [Running a server](docs/server.md): setting up, configuring and deploying a
   server, and building the plugin. A server's operator can ban from the game
@@ -241,3 +243,6 @@ register again. If you didn't recognise one, use both.
 - License: [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0-only).
   If you run a modified version of the server for other people, you must offer
   them its source code (section 13).
+- Discord and the Discord logo are trademarks of Discord Inc. The logo on the Discord button is
+  Discord's own symbol, as Discord publishes it at discord.com/branding, and isn't covered by the
+  license above. LookingGlass isn't made, sponsored or endorsed by Discord.

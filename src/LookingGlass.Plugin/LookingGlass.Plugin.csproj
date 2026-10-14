@@ -11,6 +11,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Discord's own symbol (discord.com/branding, unedited), for the button that opens the LookingGlass Discord. -->
+    <EmbeddedResource Include="images\discord-symbol.png" LogicalName="LookingGlass.discord-symbol.png" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\LookingGlass.Core\LookingGlass.Core.csproj" />
     <ProjectReference Include="..\LookingGlass.Protocol\LookingGlass.Protocol.csproj" />
   </ItemGroup>

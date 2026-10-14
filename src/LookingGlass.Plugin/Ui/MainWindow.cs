@@ -107,15 +107,20 @@ public sealed class MainWindow : Window {
 
     // ================================================================ top line
 
+    /// <summary>The LookingGlass Discord's invite, opened by the Discord button on the top line.</summary>
+    private const string DiscordInvite = "https://discord.gg/WY6hPnrNJ3";
+
     /// <summary>
     /// The connection as a coloured dot and a word (the whole status in its tooltip), the character
-    /// in muted text, and on the right the invites envelope with a count on its corner.
+    /// in muted text, and on the right the Discord button and the invites envelope with a count on its corner.
     /// </summary>
     private void DrawTopLine(SessionSnapshot snapshot, ClientSession? session) {
         var player = this._sessions.Player;
         var scale = Widgets.Scale;
         var right = ImGui.GetCursorPosX() + ImGui.GetContentRegionAvail().X;
-        var envelope = session != null ? Widgets.GhostIconButtonWidth + 6 * scale : 0;
+        // The buttons on the right: Discord, then (with a connection) the envelope; and the gap before them.
+        var buttons = Widgets.GhostIconButtonWidth + (session != null ? 2 * scale + Widgets.GhostIconButtonWidth : 0);
+        var envelope = buttons + 6 * scale;
 
         var (state, colour, detail) = ConnectionLabel(snapshot, session != null, player != null, this._config.AdvancedMode);
         ImGui.AlignTextToFramePadding();
@@ -134,9 +139,14 @@ public sealed class MainWindow : Window {
             }
         }
 
+        ImGui.SameLine(right - buttons);
+        if (Widgets.GhostImageButton("##discord", "LookingGlass.discord-symbol.png", "Join the LookingGlass Discord")) {
+            Dalamud.Utility.Util.OpenLink(DiscordInvite);
+        }
+
         // Invites only come over a connection.
         if (session != null) {
-            ImGui.SameLine(right - envelope + 6 * scale);
+            ImGui.SameLine(0, 2 * scale);
             this.DrawInvitesButton(snapshot, session);
         }
     }

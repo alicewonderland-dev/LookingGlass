@@ -176,6 +176,32 @@ internal static class Widgets {
 
     public static float GhostIconButtonWidth => ImGui.GetFrameHeight();
 
+    /// <summary>
+    /// <see cref="GhostIconButton"/> with an image of the plugin's own (an embedded resource) for its icon, drawn as it is,
+    /// fitted inside the button: for a brand's own mark, which mustn't be recoloured. Nothing is drawn while it loads.
+    /// </summary>
+    public static bool GhostImageButton(string id, string resource, string? tooltip) {
+        var size = new Vector2(ImGui.GetFrameHeight());
+        ImGui.PushStyleColor(ImGuiCol.Button, Vector4.Zero);
+        var clicked = ImGui.Button(id, size);
+        ImGui.PopStyleColor();
+
+        var texture = Services.Textures.GetFromManifestResource(typeof(Widgets).Assembly, resource);
+        if (texture.TryGetWrap(out var wrap, out _) && wrap.Width > 0 && wrap.Height > 0) {
+            // The icon font's height, as the other ghost buttons' icons are drawn.
+            var height = ImGui.GetFontSize();
+            var fitted = new Vector2(height * wrap.Width / wrap.Height, height);
+            var min = (ImGui.GetItemRectMin() + ImGui.GetItemRectMax() - fitted) / 2;
+            ImGui.GetWindowDrawList().AddImage(wrap.Handle, min, min + fitted);
+        }
+
+        if (tooltip != null) {
+            Tooltip(tooltip);
+        }
+
+        return clicked;
+    }
+
     /// <summary>A text button with no background until hovered.</summary>
     public static bool GhostButton(string label, string? tooltip = null) {
         ImGui.PushStyleColor(ImGuiCol.Button, Vector4.Zero);

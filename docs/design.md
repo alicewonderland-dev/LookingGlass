@@ -5936,6 +5936,17 @@ The owner's decisions, and why.
   What was left of two of them is a check of its own: context-invites 9a (an
   FC login line in ChatTwo) and 11 (a character with no channels of its own).
   The party finder recruitment stays, for 24 and 25.
+- **A Discord button (owner, 2026-10-13).** A small Discord logo at the top
+  right of the main window, left of the invites envelope, opens the
+  LookingGlass Discord's invite (`https://discord.gg/WY6hPnrNJ3`) in the
+  browser; hovering says "Join the LookingGlass Discord". The owner chose
+  Discord's own symbol over a Font Awesome icon (Dalamud's icon font has no
+  brand icons): the blurple symbol from discord.com/branding, unedited and
+  never recoloured, embedded in the plugin (no download at run time) and drawn
+  at the icon font's height. Discord's brand guidelines allow its marks to say
+  you have a Discord server, digitally, without implying Discord's
+  endorsement; the README says the logo is Discord's trademark and outside
+  LookingGlass's license.
 
 ## Open questions
 
