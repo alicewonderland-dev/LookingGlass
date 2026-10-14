@@ -5128,7 +5128,7 @@ virtual clock; the plugin's `SelfTest` folder and `SelfTestWindow`):
   that couldn't reach the server keeps them, and the file, for the next
   connection. A damaged file that lost whose it was can only be cleared, with
   a warning.
-- Seven suites cover the plan's one-player tasks still open (`SelfTestSuites.All`, 34 checks):
+- Seven suites cover the plan's one-player tasks still open (`SelfTestSuites.All`, 26 checks):
   those that passed in the owner's first run (2026-10-13) are no longer offered.
 - **Two players** (`SelfTest/Pairs`, `Suites/Pairs`): **Two players...** opens
   a screen to invite a partner (their name@world, or **Use my target**, and a
@@ -5970,6 +5970,20 @@ The owner's decisions, and why.
   work: ..."), in the report, the window and the `[selftest]` line ("failed
   (step 20: tab hover)"); the steps after it, never reached, follow as "not
   asked: ...", and the tester's note as before.
+- **What passed in the owner's third run leaves too, and no combat checks
+  (owner, 2026-10-13).** Plugin 0.2.18, one player, in a house: windows-only
+  1 to 2, 5, 7 to 9, 11, 13 to 16, 23, 24 and 26, and channel-windows 17,
+  17b, 17c, 36 and 37 (but a collapsed window), 33 to 33f (the partner's parts
+  are group 2's), 6b and 37b (but a channel shown in game chat) passed; they
+  are ticked and no longer offered. What was left of them is a check of its
+  own: a collapsed window counting again (36), a channel shown in game chat
+  losing its count (37b), and windows-only 12's invite line, now a two-player
+  check (the partner invited with windows only on). The self-test does no
+  combat checks: no striking dummy can be placed inside a house, so its
+  private places can never run them; the owner confirmed the combat block
+  from earlier testing (windows-only 17, 23b, 23c; channel-windows 33d, 33e).
+  Windows-only 20's tab hover and 37c's flash failed in that run and are
+  being fixed in the plugin; their checks stay as they are.
 
 ## Open questions
 

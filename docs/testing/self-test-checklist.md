@@ -113,7 +113,7 @@ private) rather than doing something it shouldn't: report it.
       it**). Delete removes only folders nothing has written to since the test,
       never your own newer lines.
 - [ ] 20b. Press **Stop and clean up** while a step has LookingGlass
-      disconnected (windows-only 9): it connects again and cleans up.
+      disconnected (two players: chat-log 10-11 or 29): it connects again and cleans up.
       Relog onto another character in the middle of a run: it pauses ("another
       character is in") and does nothing until you come back.
 - [ ] 21. Close the game (or turn LookingGlass off in `/xlplugins`) in the

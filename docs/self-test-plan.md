@@ -801,17 +801,19 @@ section and name, with its checklist steps. Modes:
 
 | Task | Steps | Mode | How |
 | --- | --- | --- | --- |
-| The setting itself | windows-only 1-2 | G | The runner opens Settings; the tester checks the box, its "?" and the greyed choices. A: the "?" words. |
-| Your own lines, and LookingGlass's replies | windows-only 5, 7, 8, 9, 12 | A+G | A: with the setting on, `/lgc<test>` typed: not in game chat, once in the tab; `/lgc<empty number>` and `/lgc` alone answer in game chat in blue; `/lgc<test>` alone then a line: to the tab; Disconnect and `/lgc<test>`: "Not connected" in game chat. G: typing in the window's own box. The invite result line needs the partner (2P). |
-| Warnings still show in game chat | windows-only 11 | A+G | A: **Simulate warning** on the test channel: printed in game chat as a warning and added to the tab. G: light red, as the tester sees it. (This answers the task's "ask the owner how".) |
-| Which window a new channel lands in | windows-only 13-16 | A | Three test channels; Simulate incoming; the window used last set as the checklist says; positions checked against the screen, each a step down and right, none off screen, also starting near the bottom-right corner (the runner moves the first window there). |
-| Nothing pops up during combat | windows-only 17 | G | Only with a striking dummy at hand (a house's striking dummy furnishing); otherwise skipped. The runner simulates the line while the tester is in combat (it waits for combat) and checks no window until combat ends. |
+| The setting itself | windows-only 1-2 | passed | Passed in the owner's third run (2026-10-13, plugin 0.2.18), no longer offered. |
+| Your own lines, and LookingGlass's replies | windows-only 5, 7, 8, 9 | passed | Passed in the owner's third run (2026-10-13, plugin 0.2.18), no longer offered. |
+| Warnings still show in game chat | windows-only 11 | passed | Passed in the owner's third run (2026-10-13, plugin 0.2.18), no longer offered. |
+| Which window a new channel lands in | windows-only 13-16 | passed | Passed in the owner's third run (2026-10-13, plugin 0.2.18), no longer offered. |
+| Nothing pops up during combat | windows-only 17 | confirmed | Confirmed by the owner from earlier testing (2026-10-13). The self-test does no combat checks: no striking dummy can be placed in a private place. |
 | Show in game chat is locked while the setting is on | windows-only 20-21 | A+G | A: the state stays off; no "shows in game chat again" line on closing. G: the greyed red cross, its tooltip, the tab's hover. |
-| Turning the setting off | windows-only 23, 23b, 23c, 24 | A+G | A: 23 without combat. G: the combat parts (striking dummy, else not run); the relog and the title screen part (the run carries on after). |
-| No errors in the log | windows-only 26 | A | Log tap: no errors written by LookingGlass during the suite. (An error Dalamud writes about the plugin, outside its own log, isn't seen; the report says to glance at `/xllog` if something looked wrong.) |
-| Counts on every tab not selected | channel-windows 17, 17b, 17c, 36, 37 | A | Three test channels as tabs; simulated lines; counts and the hover's words; selecting a tab; `/lgc<test>` typed clears its count; a second window: no count on the hidden tab or in the channel list. Not run: 17b's "someone joining" (2P). |
-| A channel off game chat opens a window again | channel-windows 33, 33b, 33c, 33d, 33e, 33f | A+G | A: off game chat, windows closed, a simulated line opens one (or a tab), flashing, without the keyboard focus (the window's flags); `/lgc<test>` typed opens one with the line. G: the relog part; the combat parts (striking dummy, else not run). |
-| Channel list counts for channels seen only in windows | channel-windows 37b; windows-only 6b | A | Selecting in the list keeps the count; the tab clears it; channels in game chat as before; with windows only on, counts stay until the tab or talking. |
+| Turning the setting off | windows-only 23, 23b, 23c, 24 | passed | 23 and 24 passed in the owner's third run (2026-10-13, plugin 0.2.18); the combat parts (23b, 23c) confirmed by the owner from earlier testing. No longer offered. |
+| No errors in the log | windows-only 26 | passed | Passed in the owner's third run (2026-10-13, plugin 0.2.18), no longer offered. |
+| Counts on every tab not selected | channel-windows 17, 17b, 17c, 36, 37 (all but a collapsed window) | passed | Passed in the owner's third run (2026-10-13, plugin 0.2.18), no longer offered. |
+| A collapsed window counts again | channel-windows 36 (collapsing a window) | A+G | The test channel in a window of its own; the tester collapses it; a simulated line: the channel list counts it. |
+| A channel off game chat opens a window again | channel-windows 33, 33b, 33c, 33d, 33e, 33f | passed | Passed in the owner's third run (2026-10-13, plugin 0.2.18), the partner's parts of 33c and 33f in group 2; the combat parts (33d, 33e) confirmed by the owner from earlier testing. No longer offered. |
+| Channel list counts for channels seen only in windows | channel-windows 37b (all but a channel shown in game chat); windows-only 6b | passed | Passed in the owner's third run (2026-10-13, plugin 0.2.18), no longer offered. |
+| A channel shown in game chat loses its count | channel-windows 37b (that part) | G | The tester selects one of their own channels shown in game chat with a count, if any, and says whether the count goes. |
 | The flash | channel-windows 37c-37f | G | A: the flash starts with 3 pulses for a window that opened by itself, 1 for an added tab, none for one opened by the tester or at login. G: is it noticeable, or too much; reduced motion (the tester turns it on in Dalamud's settings, if they want to). |
 
 **Suite: Colours** (one player)
@@ -932,6 +934,7 @@ group 2 tables below, since they need the partner.
 | Where the invite shows: party and friends lists | context-invites 2, 4 | 2P (G) | With the partner in the party and friends list. |
 | Where the invite shows: ChatTwo | context-invites 6 (group 1) | 2P (G) | The partner's `/s hello` in ChatTwo. |
 | Inviting, and the greyed-out entries | context-invites 12-14, 16, 18 | 2P (G) | Two test channels the partner isn't in; the tester invites through the menu; the runner checks each line and the partner's invite arriving; the partner's runner accepts when asked; the block and unblock; again from ChatTwo. |
+| The invite line with windows only on | windows-only 12 (the invite line) | 2P (G) | With Show LookingGlass only in windows on, the tester invites the partner through the menu; the runner sees the "Invited" line in game chat, and the partner join. |
 
 **Suite: Party finder links, with a partner**
 
@@ -982,7 +985,7 @@ local chat and device steps, which the report gives.
 
 ### Totals
 
-(As planned. Passed in the owner's first run, 2026-10-13, and no longer offered: chat-links 20, 21 to 23 and 30; settings 1 to 9; device-notices 1; context-invites 7 to 9 and 10. What was left of the last two, context-invites 9a and 11, are checks of their own.) (Passed in the owner's second run, 2026-10-13, plugin 0.2.18, and no longer offered: local-chat 3a to 3c, 30, 32 to 33 but `/p brb` (now a two-player check of its own), and 34 to 41.)
+(As planned. Passed in the owner's first run, 2026-10-13, and no longer offered: chat-links 20, 21 to 23 and 30; settings 1 to 9; device-notices 1; context-invites 7 to 9 and 10. What was left of the last two, context-invites 9a and 11, are checks of their own.) (Passed in the owner's second run, 2026-10-13, plugin 0.2.18, and no longer offered: local-chat 3a to 3c, 30, 32 to 33 but `/p brb` (now a two-player check of its own), and 34 to 41.) (Passed in the owner's third run, 2026-10-13, plugin 0.2.18, and no longer offered: windows-only 1 to 2, 5, 7 to 9, 11, 13 to 16, 23, 24 and 26; channel-windows 17, 17b, 17c, 36 and 37 but a collapsed window, 33 to 33f, 6b and 37b but a channel shown in game chat. Windows-only 12's invite line is a two-player check of its own. No combat checks: no striking dummy can be placed in a private place, and the owner confirmed windows-only 17, 23b, 23c and channel-windows 33d, 33e from earlier testing.)
 
 | | Tasks | A | A+G | G | 2P (A) | 2P (G or A+G) | Not covered |
 | --- | --- | --- | --- | --- | --- | --- | --- |
