@@ -87,7 +87,8 @@ internal interface IChatBoxListener {
 /// <item><c>AgentChatLog.ChangeChannelName</c> (optional): the game renaming its chat input's channel; checked at once
 /// rather than at the next frame, and logged.</item>
 /// <item><c>AgentChatLog.InsertTextCommandParam</c> (optional): the game putting a link placeholder (&lt;item&gt;) in its
-/// chat input; logged only.</item>
+/// chat input; logged only (and a party finder listing's kind kept, sticky or not, for the "&lt;pfinder&gt;" diagnostic
+/// line, see <see cref="GameLinks.Placeholder"/>).</item>
 /// </list>
 /// All stay enabled while the plugin is loaded; unless talking in a channel, their detours only call the game (and count
 /// a running line). Reading the channel, the shell's saved channel (<see cref="ReadChatBox"/>) and the chat input's label
@@ -390,6 +391,7 @@ internal sealed unsafe class ChatInterop : IDisposable {
     private bool InsertParamDetour(AgentChatLog* agent, uint param, bool a3) {
         var result = this._insertParamHook!.Original(agent, param, a3);
         try {
+            GameLinks.NoteLinkInserted(param);
             if (this._listener.Active) {
                 this._listener.LinkInserted(param);
             }

@@ -2675,14 +2675,33 @@ Sticky:
   `LinkedPartyFinderLeaderName`), named by the game's own text for its link in
   the player's language (Dalamud's `SeString.CreatePartyFinderLink`, the
   `Addon` sheet's row 2265, "Looking for Party (name)"), else the leader's
-  name. Whether it is limited to the leader's home world is read from the
-  party finder's last shown listing (`AgentLookingForGroup.LastViewedListing`,
-  its "world" search area) if it is that listing, where the chat button is;
-  else, if it is the player's own recruitment (`OwnListingId`), from its
-  criteria as last set (`StoredRecruitmentInfo.LimitRecruitingToWorld`, 0
-  when on, as the FFXIVClientStructs this repository builds against has it);
-  otherwise it is taken as open to other worlds, as most listings are, which
-  only changes whether the link shows the cross-world mark.
+  name. Whether it is limited to the leader's home world (`ListingWorld` in
+  Core, from the values the plugin reads): if it is the player's own
+  recruitment (`AgentLookingForGroup.OwnListingId`), from its criteria as
+  last set (`StoredRecruitmentInfo.LimitRecruitingToWorld`, 0 when limited
+  and 1 when open, as the FFXIVClientStructs this repository builds against
+  has it and other plugins that set a recruitment use it), which the game
+  changes when the recruitment is edited; else, if it is the party finder's
+  last shown listing (`LastViewedListing`), from its "world" search area
+  (`JoinConditionFlags`, bit 3), where another player's chat button would
+  be; otherwise it is taken as open to other worlds, as most listings are,
+  which only changes whether the link shows the cross-world mark. The own
+  recruitment comes first because the last shown listing can be a copy from
+  before an edit: the owner's self-test (chat-links 24, 0.2.17) limited the
+  recruitment to the home world, then set it back to the whole data centre,
+  and the link still had no mark: the last shown listing, read first then,
+  most likely still held the listing as it was before the edit (no log line
+  said which then). Each `<pfinder>` resolved writes one `[sticky]` line, sticky or
+  not: the mark, where it came from, and the raw values (own listing or not
+  and its "limit to world" byte, last shown or not and its join conditions),
+  never the listing's id or the leader's name; with them the link kind the
+  game last put in the chat input for a listing (`TextCommandParam` 1120 or
+  1121, kept by the `InsertTextCommandParam` hook) and the chat log agent's
+  bytes just before and after `LinkedPartyFinderId` (FFXIVClientStructs
+  once named a byte right after the id, now only a stale comment): the game
+  most likely writes its own link from what that agent holds, so if one of these
+  follows the mark, it is the game's own answer, to be used instead once an
+  in-game test shows it.
   The order for each: what it points at, if the player's own game data shows
   it (the checks in Links in messages), else name only; the name from the
   player's sheet (in their language), else the game's text for it; neither:

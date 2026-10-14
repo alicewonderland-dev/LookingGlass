@@ -130,7 +130,9 @@ internal static unsafe class GameLinks {
                 // the game's own text for its link, "Looking for Party (name)", else the leader's name.
                 var id = agent->LinkedPartyFinderId;
                 var leader = TextOf(agent->LinkedPartyFinderLeaderName);
-                var listing = id is > 0 and <= uint.MaxValue ? new ChatLink.PartyFinder((uint) id, HomeWorldOnly(id)) : null;
+                var facts = ListingFactsOf(id);
+                LogListing(agent, facts);
+                var listing = id is > 0 and <= uint.MaxValue ? new ChatLink.PartyFinder((uint) id, ListingWorld.Decide(facts).HomeWorldOnly) : null;
                 return LinkText.PlaceholderLink(listing, listing != null && leader != null ? PartyFinderText(listing, leader) : null, leader);
             }
             default:
@@ -138,23 +140,41 @@ internal static unsafe class GameLinks {
         }
     }
 
+    // The link kind the game last put in the chat input for a party finder listing (TextCommandParam 1120 or 1121), or
+    // null: for the diagnostic line only. Game thread only.
+    private static uint? _lastListingKind;
+
+    /// <summary>The game put a link placeholder in the chat input (<c>AgentChatLog.InsertTextCommandParam</c>): a listing's kind is kept.</summary>
+    public static void NoteLinkInserted(uint param) {
+        if (param is 1120 or 1121) {
+            _lastListingKind = param;
+        }
+    }
+
     /// <summary>
-    /// Whether a listing is limited to its leader's home world: if it is the one the party finder showed last (where its
-    /// chat button is), its "world" search area; else if it is the player's own recruitment, its criteria as last set
-    /// ("limit recruiting to world", 0 when on, as FFXIVClientStructs has it). Otherwise it isn't known, and taken as
-    /// open to other worlds, as most listings are; that only changes whether the link shows the cross-world mark.
+    /// What the party finder agent holds about a listing (see <see cref="ListingWorld.Decide"/>, which tells from it
+    /// whether the listing is limited to its leader's home world): the player's own recruitment and its criteria as last
+    /// set, and the listing the party finder showed last and its search area. All zero if the agent can't be read.
     /// </summary>
-    private static bool HomeWorldOnly(ulong listingId) {
+    private static ListingFacts ListingFactsOf(ulong listingId) {
         var agent = AgentLookingForGroup.Instance();
-        if (agent == null) {
-            return false;
-        }
+        return agent == null ? new ListingFacts(listingId, 0, 0, 0, 0)
+            : new ListingFacts(listingId, agent->OwnListingId, agent->StoredRecruitmentInfo.LimitRecruitingToWorld,
+                agent->LastViewedListing.ListingId, (byte) agent->LastViewedListing.JoinConditionFlags);
+    }
 
-        if (agent->LastViewedListing.ListingId == listingId) {
-            return agent->LastViewedListing.JoinConditionFlags.HasFlag(AgentLookingForGroup.JoinCondition.World);
+    /// <summary>
+    /// The "&lt;pfinder&gt;" diagnostic line (<see cref="StickyDiagnostics.PartyFinderLink"/>: no id, no name). The chat
+    /// log agent's bytes just before and after the listing's id are inside the agent (FFXIVClientStructs once had an
+    /// unknown byte right after the id); logged to find out whether one is the game's own mark. Never throws.
+    /// </summary>
+    private static void LogListing(AgentChatLog* agent, ListingFacts facts) {
+        try {
+            var id = (byte*) &agent->LinkedPartyFinderId;
+            Services.Log.Information(StickyDiagnostics.PartyFinderLink(facts, _lastListingKind, *(id - 8), *(id + 8)));
+        } catch {
+            // Logging must never stop a link.
         }
-
-        return agent->OwnListingId != 0 && agent->OwnListingId == listingId && agent->StoredRecruitmentInfo.LimitRecruitingToWorld == 0;
     }
 
     /// <summary>A listing's link text as the game writes it, in the player's language (Dalamud's <c>CreatePartyFinderLink</c>), or null.</summary>
