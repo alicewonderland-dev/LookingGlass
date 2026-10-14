@@ -13,6 +13,9 @@
   <ItemGroup>
     <!-- Discord's own symbol (discord.com/branding, unedited), for the button that opens the LookingGlass Discord. -->
     <EmbeddedResource Include="images\discord-symbol.png" LogicalName="LookingGlass.discord-symbol.png" />
+    <!-- The plugin list's icon: a dev build loaded from the output folder shows images/icon.png next to the DLL; an
+         installed copy shows the IconUrl in LookingGlass.json. -->
+    <Content Include="images\icon.png" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
