@@ -965,6 +965,9 @@ public sealed class KeyLoginTests : IAsyncLifetime {
 
         await using var raw = await this._server.ConnectRawAsync();
         var challenge = await this.ChallengeAsync(raw, alice.UserId);
+        // Bob's session closed first: the login replaces it, one connection per user, and it reconnecting while this
+        // connection is still in use would replace that.
+        await bob.Session.DisposeAsync();
         Assert.NotNull((await raw.SendAsync(new ClientFrame { Authenticate = new Authenticate { DeviceToken = bob.Store.Load().DeviceToken } })).AuthenticateOk);
 
         var late = await this.CompleteAsync(raw, challenge, url, KeyLoginProof.Sign(keys, challenge, alice.UserId, url));
