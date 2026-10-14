@@ -4,61 +4,48 @@ using static LookingGlass.Core.SelfTest.SelfTestSteps;
 namespace LookingGlass.Core.SelfTest.Suites;
 
 /// <summary>
-/// "Right-click invites" (one player): context-invites-checklist.md 7 to 11, 15 and 18. The runner checks what the menus
-/// would offer for each kind of thing (from the same rules the menus use); the menus themselves are the tester's to look
-/// at. Inviting someone who isn't registered costs one lookup and sends nothing to them.
+/// "Right-click invites" (one player): context-invites-checklist.md 9a, 11, 15 and 18 (7 to 9 and 10 passed in the owner's
+/// first run, 2026-10-13, and are no longer offered). The menus are the tester's to look at. Inviting someone who isn't
+/// registered costs one lookup and sends nothing to them.
 /// </summary>
 public static class InvitesSuite {
     public const string Id = "invites";
 
-    public static SelfTestSuite Create() => new(Id, "Right-click invites", [NotShown(), NoItem(), NotRegistered()]) {
+    public static SelfTestSuite Create() => new(Id, "Right-click invites", [FcLoginLine(), NoChannelsOfYourOwn(), NotRegistered()]) {
         Changes = [SelfTestSetting.AdvancedMode],
-        Planned = new Dictionary<SelfTestAction, int> { [SelfTestAction.Lookup] = 3, [SelfTestAction.Invite] = 2, [SelfTestAction.Reconnect] = 1, [SelfTestAction.CreateChannel] = 1 },
+        Planned = new Dictionary<SelfTestAction, int> { [SelfTestAction.Lookup] = 3, [SelfTestAction.Invite] = 2, [SelfTestAction.CreateChannel] = 1 },
     };
 
-    // ---------------------------------------------------------------- context-invites 7-9a
+    // ---------------------------------------------------------------- context-invites 9a
 
-    private static SelfTestCheck NotShown() => new() {
-        Id = "context-invites-7-9a", Title = "Where it must not show", Steps = "context-invites 7-9a", Mode = CheckMode.Guided,
-        Needs = SelfTestNeeds.Connection | SelfTestNeeds.TestChannel,
+    private static SelfTestCheck FcLoginLine() => new() {
+        Id = "context-invites-9a", Title = "Where it must not show: an FC login line in ChatTwo", Steps = "context-invites 9a", Mode = CheckMode.Guided,
+        Needs = SelfTestNeeds.Connection | SelfTestNeeds.ChatTwo,
         StepList = [
-            Auto("The rules offer nothing but for another player", "7-9", async context => {
-                await context.TestChannelAsync().ConfigureAwait(false);
-                return StepResult.All(
-                    (await context.Host.InviteOffersForAsync(RightClickKind.Yourself).ConfigureAwait(false) == 0, "your own name would get the invite item"),
-                    (await context.Host.InviteOffersForAsync(RightClickKind.OneWordName).ConfigureAwait(false) == 0, "a one-word name would get the invite item"),
-                    (await context.Host.InviteOffersForAsync(RightClickKind.ItemMenu).ConfigureAwait(false) == 0, "an item's menu would get the invite item"),
-                    (await context.Host.InviteOffersForAsync(RightClickKind.AnotherPlayer).ConfigureAwait(false) > 0, "another player wouldn't get the invite item"));
-            }),
-            Ask("Your own name and character", "7", new GuidedPrompt(
-                "Right-click your own name (in chat, or your character): is there no Invite to LookingGlass?", PromptKind.YesNo) { Short = "yourself" }),
-            Ask("Not players", "8", new GuidedPrompt(
-                "Right-click what you have at hand that isn't a player: a minion, an NPC or retainer (at a summoning bell), a Trust or duty support NPC in the party list. " +
-                "Is there no Invite to LookingGlass on any of them? (Skip if none are at hand.)", PromptKind.YesNo) { Short = "not players" }),
-            Ask("Items", "9", new GuidedPrompt(
-                "Right-click an item in your inventory, and an item link in chat: is there no Invite to LookingGlass?", PromptKind.YesNo) { Short = "items" }),
-            Rest("9a", "the Free Company login line in ChatTwo (9a)"),
+            SetupGuided("A Free Company member logging in or out", "9a", async context => await context.AskAsync(new GuidedPrompt(
+                    "Is there a Free Company member's login or logout line in ChatTwo (\"... has logged in.\"), or will one come soon?", PromptKind.YesNo)).ConfigureAwait(false) is GuidedAnswer.Yes
+                ? StepResult.Pass()
+                : StepResult.SkipCheck("needs a Free Company member's login or logout line in ChatTwo")),
+            Ask("The login line, and an ordinary line", "9a", new GuidedPrompt(
+                "In ChatTwo, right-click the name in that login or logout line: is there no Invite to LookingGlass? Then right-click the same player's name in an ordinary " +
+                "line of theirs, if there is one: is it there?", PromptKind.YesNo) { Short = "FC login line" }),
         ],
     };
 
-    // ---------------------------------------------------------------- context-invites 10-11
+    // ---------------------------------------------------------------- context-invites 11
 
-    private static SelfTestCheck NoItem() => new() {
-        Id = "context-invites-10-11", Title = "No item when it can't work", Steps = "context-invites 10-11", Mode = CheckMode.Guided, Needs = SelfTestNeeds.Connection,
+    private static SelfTestCheck NoChannelsOfYourOwn() => new() {
+        Id = "context-invites-11", Title = "No item when it can't work: no channels of your own", Steps = "context-invites 11", Mode = CheckMode.Guided,
+        Needs = SelfTestNeeds.Connection,
         StepList = [
-            // One step: it connects again before it ends, whatever the answer (the next step waits for a connection).
-            Guided("Disconnected: no item", "10", async context => {
-                await context.DisconnectAsync().ConfigureAwait(false);
-                try {
-                    return await context.AskForResultAsync(new GuidedPrompt(
-                        "LookingGlass is disconnected for a moment. Right-click a player (in your friends list, or a name in chat): is Invite to LookingGlass gone?",
-                        PromptKind.YesNo) { Short = "disconnected" }).ConfigureAwait(false);
-                } finally {
-                    await context.ConnectAsync().ConfigureAwait(false);
-                }
-            }),
-            Ask("Connected: it is back", "10", new GuidedPrompt("Connected again. Right-click the same player: is Invite to LookingGlass back?", PromptKind.YesNo) { Short = "connected" }),
-            Rest("11", "a character with no channels of its own (11)"),
+            SetupGuided("Another character with no channels of its own", "11", async context => await context.AskAsync(new GuidedPrompt(
+                    "Do you have another character, registered with LookingGlass, that isn't admin or moderator of any channel (or has none)?", PromptKind.YesNo))
+                .ConfigureAwait(false) is GuidedAnswer.Yes
+                ? StepResult.Pass()
+                : StepResult.SkipCheck(SelfTestWords.NeedsAnotherCharacter)),
+            Ask("Right-click a player there", "11", new GuidedPrompt(
+                "Come in with that character (the self-test waits, and does nothing meanwhile), right-click a player: is there no Invite to LookingGlass? " +
+                "Then come back in with this character, and answer.", PromptKind.YesNo) { Short = "no channels of its own" }),
         ],
     };
 

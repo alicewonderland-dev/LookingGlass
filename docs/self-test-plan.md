@@ -829,25 +829,27 @@ section and name, with its checklist steps. Modes:
 
 | Task | Steps | Mode | How |
 | --- | --- | --- | --- |
-| Where it must not show | context-invites 7-9a | G | The tester right-clicks what the step lists that is at hand (their own name and character, a minion, items, an item link; NPCs or a retainer in a house); A: the runner checks `ContextInvites.Offers` gives nothing for each kind. The FC login line part needs ChatTwo and an FC. |
-| No item when it can't work | context-invites 10-11 | G | The runner disconnects; the tester right-clicks (the partner, or any character in sight) and says whether the item is gone; then connects. Not run: a character with no channels of its own. |
+| Where it must not show | context-invites 7-9 | passed | Passed in the owner's first run (2026-10-13), no longer offered. |
+| Where it must not show: an FC login line in ChatTwo | context-invites 9a | G | Needs ChatTwo and a Free Company member's login or logout line; the tester right-clicks it, and the same player's name in an ordinary line. |
+| No item when it can't work: disconnected | context-invites 10 | passed | Passed in the owner's first run (2026-10-13), no longer offered. |
+| No item when it can't work: no channels of your own | context-invites 11 | G | Needs another character that isn't admin or moderator of any channel: the tester comes in with it (the run waits), right-clicks a player, and comes back. |
 | Inviting someone who isn't registered | context-invites 15, 18 (that part) | A+G | The tester types the name@world of someone they know who doesn't use LookingGlass (one lookup; nothing is sent to that person); the runner invites through the same path as the menu and checks the line, in both modes. G: the same from ChatTwo's menu, if on. |
 
-**Suite: Settings** (one player)
+**Suite: Settings** (one player; both passed in the owner's first run, 2026-10-13: no longer offered)
 
 | Task | Steps | Mode | How |
 | --- | --- | --- | --- |
-| The labels and the "?"s | settings 1-9 | G | The runner opens Settings and moves it to the bottom-right corner when asked; the tester checks labels, the nine "?"s, closing them, the narrow window, a bigger font. A: the nine "?"s' words, lengths and plain words. |
-| The list in Settings (computers signed in) | device-notices 1 | G | A look only: the line for this computer, the "?", the button (not pressed). |
+| The labels and the "?"s | settings 1-9 | passed | Passed in the owner's first run (2026-10-13); the suite is no longer offered. |
+| The list in Settings (computers signed in) | device-notices 1 | passed | Passed in the owner's first run (2026-10-13). |
 
 **Suite: Party finder links** (one player; needs a recruitment of the tester's own)
 
 | Task | Steps | Mode | How |
 | --- | --- | --- | --- |
-| What the chat button puts in the input | chat-links 20 | G | The runner starts talking in the test channel; the tester clicks the chat button; the runner reads the link kind from its own hook (the "link put in the chat input" line) and asks what the input shows. |
-| Sending one, and clicking it | chat-links 21-23 | G | The tester types `/lgc<test> join ` and clicks the chat button; the runner checks one party finder link was sent, with the cross-world mark as the listing says; the tester compares with the game's own and clicks it, in chat and in the window. |
-| Home world only, and talking in the channel | chat-links 24-25 | G | As above, with the tester changing the recruitment as told; the runner checks the mark each time and the three ways of sending. |
-| No names in the log | chat-links 30 | A | Log tap: the `[sticky]` lines have counts only, no listing number and no name. |
+| What the chat button puts in the input | chat-links 20 | passed | Passed in the owner's first run (2026-10-13), no longer offered. |
+| Sending one, and clicking it | chat-links 21-23 | passed | Passed in the owner's first run (2026-10-13), no longer offered. |
+| Home world only, and talking in the channel | chat-links 24-25 | G | The tester sends the recruitment's link (the runner sets it up first), with the tester changing the recruitment as told; the runner checks the mark each time and the three ways of sending. |
+| No names in the log | chat-links 30 | passed | Passed in the owner's first run (2026-10-13), no longer offered. |
 
 **Suite: Chat history and text files** (one player)
 
@@ -977,6 +979,8 @@ log keeps names out" and "What the journal says" need the times testers ran
 local chat and device steps, which the report gives.
 
 ### Totals
+
+(As planned. Passed in the owner's first run, 2026-10-13, and no longer offered: chat-links 20, 21 to 23 and 30; settings 1 to 9; device-notices 1; context-invites 7 to 9 and 10. What was left of the last two, context-invites 9a and 11, are checks of their own.)
 
 | | Tasks | A | A+G | G | 2P (A) | 2P (G or A+G) | Not covered |
 | --- | --- | --- | --- | --- | --- | --- | --- |

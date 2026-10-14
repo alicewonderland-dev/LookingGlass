@@ -5109,7 +5109,8 @@ virtual clock; the plugin's `SelfTest` folder and `SelfTestWindow`):
   that couldn't reach the server keeps them, and the file, for the next
   connection. A damaged file that lost whose it was can only be cleared, with
   a warning.
-- Eight suites cover the plan's 45 one-player tasks (`SelfTestSuites.All`).
+- Seven suites cover the plan's one-player tasks still open (`SelfTestSuites.All`, 40 checks):
+  those that passed in the owner's first run (2026-10-13) are no longer offered.
 - **Two players** (`SelfTest/Pairs`, `Suites/Pairs`): **Two players...** opens
   a screen to invite a partner (their name@world, or **Use my target**, and a
   four-letter code to tell them) or to be one (the host's name@world and
@@ -5908,6 +5909,14 @@ The owner's decisions, and why.
   unless every reason is one a second run doesn't change (ChatTwo on or off,
   the tester's own history, the game's version, another data centre, a
   partner blocked before).
+- **What passed in the owner's first run leaves the self-test (owner, 2026-10-13).**
+  Plugin 0.2.17, one player: chat-links 20, 21 to 23 and 30, settings 1 to 9,
+  device-notices 1, and context-invites 7 to 9 and 10 passed with nothing
+  skipped. They are ticked in pending-tests.md and no longer offered (the
+  Settings suite is gone); the checklists keep their steps as the reference.
+  What was left of two of them is a check of its own: context-invites 9a (an
+  FC login line in ChatTwo) and 11 (a character with no channels of its own).
+  The party finder recruitment stays, for 24 and 25.
 
 ## Open questions
 
