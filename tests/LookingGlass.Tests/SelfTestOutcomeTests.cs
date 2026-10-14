@@ -78,6 +78,39 @@ public sealed class SelfTestOutcomeTests : IDisposable {
     }
 
     [Fact]
+    public async Task ANoNamesWhatWasAskedAndWhatWasntAskedAfterIt() {
+        // The owner's third run: "windows-only 20-21: FAILED: you said it didn't work (step 20)", with two questions at step 20.
+        static SelfTestStep Asking(string title, string shortName) => new() {
+            Title = title, Kind = StepKind.Guided, Checklist = "20",
+            Run = context => context.AskForResultAsync(new GuidedPrompt(title, PromptKind.YesNo) { Short = shortName }),
+        };
+
+        var suite = new SelfTestSuite("s", "S", [new SelfTestCheck {
+            Id = "a", Title = "a", Steps = "windows-only 20-21", Mode = CheckMode.Guided,
+            StepList = [Asking("The greyed red cross", "greyed cross"), Asking("The tab's hover", "tab hover"), Real("Closing its window says nothing", StepResult.Pass())],
+        }]);
+        var run = new SelfTestRun(this._host, [suite], new SelfTestPacer(() => this._host.Now, this._host.Delay), this._host.File,
+            SelfTestRun.NewData("K7Q2", 1, "x", this._host.Now, [suite]));
+        this._host.OnTick = () => {
+            if (run.View.Prompt is { } prompt) {
+                run.Answer(prompt.Prompt.Short == "tab hover" ? GuidedAnswer.No : GuidedAnswer.Yes, prompt.Prompt.Short == "tab hover" ? "no tooltip" : null);
+            }
+        };
+
+        await run.RunAsync();
+
+        var record = run.Data.Results.Single();
+        Assert.Equal(CheckOutcome.Failed, record.Outcome);
+        Assert.Equal("you said no to: tab hover", record.Why);
+        Assert.Equal(["closing its window says nothing"], record.NotReached);
+        var line = SelfTestReport.Line("windows-only 20-21", record, TimeZoneInfo.Utc);
+        Assert.Contains(": you said no to: tab hover (step 20); not asked: closing its window says nothing; your note: \"no tooltip\"", line, StringComparison.Ordinal);
+        Assert.Equal("[selftest] windows-only 20-21: failed (step 20: tab hover)", SelfTestReport.LogLine("windows-only 20-21", record));
+        Assert.Equal("you said it didn't work: the tab", StepContext.Judge(GuidedAnswer.DidntWork, "the tab").Why);
+        Assert.Equal(SelfTestWords.YouSaidNo, StepContext.Judge(GuidedAnswer.No, null).Why);
+    }
+
+    [Fact]
     public void NotRunIsOfferedAgainWhereRunningItAgainCouldHelp() {
         CheckRecord Of(CheckOutcome outcome, string? why = null) => new() { Check = "a", Outcome = outcome, Why = why };
 

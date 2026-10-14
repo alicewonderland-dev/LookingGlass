@@ -5963,6 +5963,13 @@ The owner's decisions, and why.
   `/lookingglass`); a "no" then fails with "/lgl is registered and shown in
   help, with its words, but you didn't see it in /xlhelp", so a missed line is
   told from a plugin bug.
+- **A "no" names its question (owner's third run, 2026-10-13).** "windows-only
+  20-21: FAILED: you said it didn't work (step 20)" didn't say which of step
+  20's two questions was answered no. A failure at a guided question now names
+  it by its short name, "you said no to: tab hover" (or "you said it didn't
+  work: ..."), in the report, the window and the `[selftest]` line ("failed
+  (step 20: tab hover)"); the steps after it, never reached, follow as "not
+  asked: ...", and the tester's note as before.
 
 ## Open questions
 

@@ -160,6 +160,12 @@ public static partial class SelfTestWords {
     // ---- Why a step failed or was skipped: fixed words, never what anyone typed.
     public const string YouSkipped = "you chose Skip";
     public const string YouSaidNo = "you said it didn't work";
+
+    /// <summary>A "No" to a named question.</summary>
+    public static string YouSaidNoTo(string asked) => $"you said no to: {asked}";
+
+    /// <summary>An "It didn't work" to a named step.</summary>
+    public static string YouSaidDidntWork(string asked) => $"you said it didn't work: {asked}";
     public const string NeedsChatTwo = "needs ChatTwo, which is off";
     public const string NeedsChatTwoOff = "needs ChatTwo to be off";
     public const string NeedsPartner = "needs a partner (choose Two players...)";
@@ -239,7 +245,7 @@ public static partial class SelfTestWords {
     public static IReadOnlyList<string> Reasons() => [
         YouSkipped, YouSaidNo, NeedsChatTwo, NeedsChatTwoOff, NeedsPartner, NeedsStranger, NeedsAnotherCharacter, NeedsStrikingDummy,
         NeedsConnection, NeedsChannelRoom, NeedsGateHooks, HistoryWasYours, ServerSlowDown, StoppedByYou, StoppedLeft, RunSpent,
-        SomethingWentWrong, TimedOut, NothingRan, Suites.TalkSuite.RegisteredButNotSeen, NotSay, NotPrivate, Disconnected, GaveUpWaiting, OtherCharacter, Registered, .. PairReasons(),
+        SomethingWentWrong, TimedOut, NothingRan, YouSaidNoTo("the greyed cross"), YouSaidDidntWork("the window's box"), Suites.TalkSuite.RegisteredButNotSeen, NotSay, NotPrivate, Disconnected, GaveUpWaiting, OtherCharacter, Registered, .. PairReasons(),
     ];
 
     /// <summary>The words simple mode never uses (the plain-language tests' list): to check what the plugin printed during a run.</summary>

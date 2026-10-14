@@ -481,6 +481,9 @@ internal sealed class SelfTestWindow : Window {
                 if (check.Result is { Outcome: CheckOutcome.Failed or CheckOutcome.Skipped or CheckOutcome.NotRun or CheckOutcome.Stopped, Why: { } why }) {
                     ImGui.Indent(40 * Widgets.Scale);
                     ImGui.TextWrapped(why);
+                    if (check.Result.NotReached.Count > 0) {
+                        ImGui.TextDisabled($"Not asked: {string.Join(", ", check.Result.NotReached)}");
+                    }
                     ImGui.Unindent(40 * Widgets.Scale);
                 }
             }

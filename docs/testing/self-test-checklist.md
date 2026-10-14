@@ -137,7 +137,9 @@ private) rather than doing something it shouldn't: report it.
 - [ ] 24. A name@world typed for "Inviting someone who isn't registered" is in
       neither the report nor `/xllog`.
 - [ ] 25. `/xllog`'s `[selftest]` lines have the checklist steps and passed,
-      failed, not run, skipped or stopped, nothing else.
+      failed, not run, skipped or stopped, nothing else. A failure at a question
+      names it ("failed (step 20: tab hover)"), and the report adds "you said no
+      to: tab hover" and the steps not asked after it.
 - [ ] 26. **Run the failed ones again** runs only the checks that failed or
       stopped, and those not run where another try could help (you skipped,
       the name given uses LookingGlass; not "needs ChatTwo" and the like), with

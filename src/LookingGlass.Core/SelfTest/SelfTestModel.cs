@@ -92,6 +92,9 @@ public sealed record StepResult(StepOutcome Outcome, string? Why = null, string?
     /// <summary>What the step did, in fixed words with numbers only (a partner's "answered 23 requests"), for the report.</summary>
     public string? Did { get; init; }
 
+    /// <summary>The guided question it answered, by its short name ("tab hover"): a failure names it.</summary>
+    public string? Asked { get; init; }
+
     /// <summary>The rest of the check isn't run after this step (a skip that ends it: "needs both of you in the same house").</summary>
     public bool EndsCheck { get; init; }
 
