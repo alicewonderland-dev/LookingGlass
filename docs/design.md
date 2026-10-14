@@ -2365,9 +2365,10 @@ colours are an addition, the swatches stay, and both can be checked in game
   colour and its "off" pops; a `RawPayload` that is a Color macro (0x13) with
   a literal colour pushes that exact colour, and `stackcolor` pops. So ChatTwo
   shows the exact colour (the inner push is on top), and the text after the
-  tag goes back to the chat channel's colour once both are popped. ChatTwo's
-  input label (`ExtraChat.OverrideChannelColour`) takes 0xRRGGBBAA directly,
-  so it gets the exact colour too.
+  tag goes back to the chat channel's colour once both are popped. The colour
+  sent with ChatTwo's input label (`ExtraChat.OverrideChannelColour`) is
+  0xRRGGBBAA, so the text typed in its input gets the exact colour too; the
+  label itself is never coloured (see The label, under ChatTwo).
 - **Everywhere else: exact.** ImGui takes any colour, so the channel list's
   bar, the dot before the channel's name, channel windows' tabs, their "add a
   channel" list and their senders' names (unless the sender has a
@@ -2978,13 +2979,31 @@ about it:
 - *The label (verified).* ChatTwo names another plugin's channel in its input
   only through the IPC message `ExtraChat.OverrideChannelColour` (made for
   ExtraChat): `{ Channel, UiColour, Rgba }`, with a null `Channel` to stop.
-  LookingGlass sends "LookingGlass [sky]" in the channel's colour while sticky,
+  LookingGlass sends "LookingGlass [sky]" with the channel's colour while sticky,
   and null when it ends (and again when `ChatTwo.Available` says ChatTwo
   reloaded). Dalamud matches the struct's fields by name. ChatTwo shows it in
   its main input only when no one-off channel, tell or tab channel takes
   precedence; pop-outs show their own channel. It changes only the label and
-  the input's colour, never where ChatTwo sends. ExtraChat sends on the same
-  IPC, hence the warning when it is loaded.
+  the colour of what is typed in the input, never where ChatTwo sends.
+  ExtraChat sends on the same IPC, hence the warning when it is loaded.
+- *The label's colour (verified from source, 2026-10-13).* ChatTwo never
+  colours the label: it draws the override's name as a text chunk with no
+  colour (`Ui/ChatLog/ChatLog.Window.cs`, `ReadChannelName`), in its plain
+  text colour, as it has since it first took this message in 2022 (commit
+  3b4eb3e). Of the two colour fields it keeps only `Rgba`
+  (`Ipc/ExtraChat.cs`, `OnOverrideChannel`) and paints it, bytes reversed for
+  ImGui, on the text typed in its input while that text isn't a command
+  (`Ui/Handler/InputHandler.cs`, `DrawInputArea`); `UiColour` is never read.
+  Checked in 1.40.9 (commit a63403c, the version installed) and 1.41.0
+  (4046d82): the same. So with ChatTwo the channel's colour shows on what is
+  typed, not on the label (the owner's self-test of 0.2.19 found the label
+  white). LookingGlass fills both fields as ExtraChat did
+  (`ChatTwoOverrideColour`): `UiColour` the row (for a custom colour, the
+  closest row, as under it in game chat) and `Rgba` the colour as
+  0xRRGGBBAA, opaque: the row's from the sheet, a custom colour exactly, the
+  default LookingGlass blue (row 37, 0x0099FFFF), local chat's as a channel's.
+  A row the sheet doesn't have goes as opaque white, never 0, which ChatTwo
+  would paint as invisible text. A coloured label needs a change in ChatTwo.
 - *"(Warning: Party)" (verified, can't be avoided today).* ChatTwo adds
   "(Warning: *its channel*)" to an override unless its own input channel is one
   of ExtraChat's (its `ExtraChatLinkshell1` to `8`). Its input can only be put
@@ -4068,7 +4087,8 @@ built around channels; it is now built into sticky mode rather than beside it:
 - **What it shows.** "Now talking in [Local]." (with **Say when I start or
   stop talking in a channel** on, as for a channel), "LG [Local]" in the
   server info bar (its tooltip names the friends near rather than a channel) and "LookingGlass
-  [Local]" in ChatTwo's input, both in local chat's colour, and `[Local]`
+  [Local]" in ChatTwo's input, both in local chat's colour (ChatTwo's on the
+  text typed there, not on its label; see The label's colour), and `[Local]`
   where the game's chat input names its channel, uncoloured, as a channel's
   tag is there (`ChatInterop.SetChannelLabel` writes plain text). The ChatTwo
   note is the channels' (once ever, whichever is talked in first). No channel
@@ -6151,8 +6171,8 @@ The owner's decisions, and why.
   ChatTwo to support them? Sticky mode already sends on
   `ExtraChat.OverrideChannelColour`, the only one ChatTwo listens to for its
   input's label; asking ChatTwo for a neutral override (one that names the
-  command to send plain text with, and adds no "(Warning: ...)") would make
-  the label exact.
+  command to send plain text with, and adds no "(Warning: ...)", and draws the
+  label in the colour sent) would make the label exact.
 - **Limits:** confirm after beta load testing.
 - **Public hosting:** who runs it, the cost, a privacy note, and an acceptable
   Lodestone volume.

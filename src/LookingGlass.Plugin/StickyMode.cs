@@ -22,7 +22,6 @@ namespace LookingGlass.Plugin;
 /// </summary>
 public sealed class StickyMode : IChatBoxListener, IDisposable {
     private const string ChatLogAddon = "ChatLog";
-    private const uint White = 0xFFFFFFFF;
 
     /// <summary>
     /// The game's channel commands (TextCommand rows), for their names in the client's language: Say, Party, Alliance,
@@ -537,8 +536,9 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
     }
 
     /// <summary>
-    /// Makes the labels match the state: while talking in a channel, its tag in ChatTwo's input and the server info bar
-    /// (sent again if the tag or colour changed, ChatTwo's now and then anyway); otherwise neither. Once a frame, and at
+    /// Makes the labels match the state: while talking in a channel, its tag in ChatTwo's input (with the channel's colour,
+    /// which ChatTwo paints on the text typed there, not on the label; see <see cref="ChatTwoOverrideColour"/>) and the
+    /// server info bar (sent again if the tag or colour changed, ChatTwo's now and then anyway); otherwise neither. Once a frame, and at
     /// every start and end. The game chat input's own name is kept in step before each draw (<see cref="OnChatLogPreDraw"/>).
     /// </summary>
     private void SyncIndicators() {
@@ -548,7 +548,8 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
 
         try {
             if (this._chatTwoLabel.ShouldSend(wanted is { } key ? $"{key.Tag}\n{key.Colour}" : null, Environment.TickCount64)) {
-                this._chatTwo.SetChannelLabel(wanted is { } shown ? $"LookingGlass {shown.Tag}" : null, wanted is { } coloured ? ChannelPalette.RgbaOf(coloured.Colour) ?? White : White);
+                this._chatTwo.SetChannelLabel(wanted is { } shown ? $"LookingGlass {shown.Tag}" : null,
+                    wanted is { } coloured ? ChannelPalette.ChatTwoColourOf(coloured.Colour) : ChatTwoOverrideColour.None);
             }
         } catch (Exception ex) {
             Services.Log.Warning(ex, "Couldn't update ChatTwo's channel name");
