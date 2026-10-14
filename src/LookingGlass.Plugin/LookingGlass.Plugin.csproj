@@ -3,7 +3,7 @@
   <PropertyGroup>
     <AssemblyName>LookingGlass</AssemblyName>
     <RootNamespace>LookingGlass.Plugin</RootNamespace>
-    <Version>0.2.18</Version>
+    <Version>0.2.19</Version>
   </PropertyGroup>
 
   <ItemGroup>
