@@ -4,20 +4,24 @@ using static LookingGlass.Core.SelfTest.SelfTestSteps;
 namespace LookingGlass.Core.SelfTest.Suites;
 
 /// <summary>
-/// "With ChatTwo" (one player, ChatTwo on): local-chat-checklist.md 42 to 46, sticky-channel-checklist.md 28,
-/// custom-colours-checklist.md 11 to 14, context-invites-checklist.md 19 to 21 and chat-links-checklist.md 26. ChatTwo's
-/// window, input and menus are the tester's to type in and look at; the runner sets things up, gives the test lines to
-/// type, and watches where each line went (local chat, Say, the test channel).
+/// "With ChatTwo" (one player, ChatTwo on): local-chat-checklist.md 42 to 46, custom-colours-checklist.md 11 to 14, and
+/// context-invites-checklist.md 18 (someone not registered, from ChatTwo's menu) and 19 (ChatTwo off and on). What passed
+/// in the owner's fifth run (2026-10-13, plugin 0.2.19) is no longer offered: sticky-channel 28, chat-links 26, and
+/// context-invites 20 to 21 (LookingGlass off and on). ChatTwo's window, input and menus are the tester's to type in and
+/// look at; the runner sets things up, gives the test lines to type, and watches where each line went (local chat, Say,
+/// the test channel).
 /// </summary>
 public static class ChatTwoSuite {
     public const string Id = "chattwo";
 
     private const uint Pink = 0xFF66CC;
 
-    public static SelfTestSuite Create() => new(Id, "With ChatTwo", [LocalChatInChatTwo(), ChatTwoNote(), PinkInChatTwo(), ChatTwoReloaded(), PartyFinderInChatTwo()]) {
-        Changes = [SelfTestSetting.LocalPrivacyAccepted, SelfTestSetting.ChatTwoNoteShown, SelfTestSetting.SayWhenTalking, SelfTestSetting.WindowsOnly],
-        Planned = new Dictionary<SelfTestAction, int> { [SelfTestAction.ChannelMessage] = 6, [SelfTestAction.CreateChannel] = 1 },
-        Note = "needs ChatTwo, 1 reload",
+    public static SelfTestSuite Create() => new(Id, "With ChatTwo", [LocalChatInChatTwo(), PinkInChatTwo(), NotRegisteredFromChatTwo(), ChatTwoOffAndOn()]) {
+        Changes = [SelfTestSetting.LocalPrivacyAccepted, SelfTestSetting.SayWhenTalking, SelfTestSetting.WindowsOnly, SelfTestSetting.AdvancedMode],
+        Planned = new Dictionary<SelfTestAction, int> {
+            [SelfTestAction.ChannelMessage] = 6, [SelfTestAction.CreateChannel] = 1, [SelfTestAction.Lookup] = 2, [SelfTestAction.Invite] = 1,
+        },
+        Note = "needs ChatTwo",
     };
 
     private const SelfTestNeeds Needs = SelfTestNeeds.Connection | SelfTestNeeds.ChatTwo | SelfTestNeeds.Typing;
@@ -112,41 +116,6 @@ public static class ChatTwoSuite {
         return result;
     });
 
-    // ---------------------------------------------------------------- sticky-channel 28
-
-    private static SelfTestCheck ChatTwoNote() => new() {
-        Id = "sticky-channel-28", Title = "The ChatTwo note when you start talking in a channel", Steps = "sticky-channel 28", Mode = CheckMode.Guided,
-        Needs = Needs | SelfTestNeeds.TestChannel,
-        StepList = [
-            ThenBackToSay("The note, once", "28", async context => {
-                var channel = await ShownChannelAsync(context).ConfigureAwait(false);
-                var command = await context.CommandOfAsync(channel).ConfigureAwait(false);
-                var tag = await context.TagOfAsync(channel).ConfigureAwait(false);
-                await context.StopTalkingAsync().ConfigureAwait(false);
-                await context.ChangeSettingAsync(SelfTestSetting.ChatTwoNoteShown, false).ConfigureAwait(false);
-                var mark = context.Host.Mark();
-                var answer = await context.AskAsync(new GuidedPrompt($"Switch ChatTwo's input to Party, then type {command} alone in it, nothing else.") {
-                    TesterTypes = true, ChatTwoOnSay = true,
-                    Watch = StepContextExtensions.Until(() => context.TalkingInAsync(channel, TimeSpan.Zero), "not talking in the test channel yet", "talking in the test channel"),
-                }).ConfigureAwait(false);
-                if (answer != GuidedAnswer.Seen) {
-                    return StepContext.Judge(answer, null) is { Outcome: StepOutcome.Skipped } skipped ? skipped : StepResult.Fail("it didn't start talking in the test channel");
-                }
-
-                var note = await context.CountPrintedAsync(mark, line => line.Text == StickyMessages.ChatTwoNote(tag)).ConfigureAwait(false);
-                // The info bar follows a frame or more later: waited for.
-                return await context.SettledAsync(async () => StepResult.All((note == 1, "the ChatTwo line didn't follow once"),
-                    ((await context.Host.StickyAsync().ConfigureAwait(false)).InfoBar?.Contains(tag, StringComparison.Ordinal) == true, "the info bar doesn't name the channel")))
-                    .ConfigureAwait(false);
-            }),
-            Ask("ChatTwo's label", "28", new GuidedPrompt("Does ChatTwo's input label read \"LookingGlass [...]\" with the test channel's tag?", PromptKind.YesNo) { Short = "the label" }),
-            SetupAuto("Back to Say", null, async context => {
-                await context.StopTalkingAsync().ConfigureAwait(false);
-                return StepResult.Pass();
-            }),
-        ],
-    };
-
     // ---------------------------------------------------------------- custom-colours 11-14
 
     private static SelfTestCheck PinkInChatTwo() => new() {
@@ -181,50 +150,106 @@ public static class ChatTwoSuite {
         ],
     };
 
-    // ---------------------------------------------------------------- context-invites 19-21
+    // ---------------------------------------------------------------- context-invites 18 (from ChatTwo's menu)
 
-    private static SelfTestCheck ChatTwoReloaded() => new() {
-        Id = "context-invites-19-21", Title = "ChatTwo turned off and on", Steps = "context-invites 19-21", Mode = CheckMode.Guided, Needs = Needs,
+    /// <summary>
+    /// Inviting someone who isn't registered, from ChatTwo's menu: what is left of context-invites 15 and 18 after the owner's
+    /// fifth run (2026-10-13, plugin 0.2.19). The tester names someone they know who doesn't use LookingGlass and whose name
+    /// is in a line in ChatTwo; the runner looks them up first (someone registered is never invited: a solo run sends nothing
+    /// to anyone), then the tester invites them from ChatTwo's menu, and the runner checks the line, in simple mode.
+    /// </summary>
+    private static SelfTestCheck NotRegisteredFromChatTwo() => new() {
+        Id = "context-invites-18-chattwo", Title = "Inviting someone who isn't registered, from ChatTwo's menu", Steps = "context-invites 18 (from ChatTwo's menu)",
+        Mode = CheckMode.AutomaticAndGuided, Needs = SelfTestNeeds.Connection | SelfTestNeeds.ChatTwo | SelfTestNeeds.TestChannel,
+        StepList = [
+            SetupGuided("Who to try", "18", async context => {
+                var (answer, input) = await context.AskForInputAsync(new GuidedPrompt(
+                    "Type the name@world of someone you know who doesn't use LookingGlass and whose name is in a line in ChatTwo (for example: Alice Liddell@Twintania), " +
+                    "then press Done. LookingGlass looks them up first; nothing is ever sent to them, and their name stays out of the report.") { Input = "Name@World" })
+                    .ConfigureAwait(false);
+                var at = input?.IndexOf('@') ?? -1;
+                if (answer == GuidedAnswer.Skip || input == null || at <= 0 || at == input.Length - 1) {
+                    context.State["ended"] = true;
+                    return StepResult.Skip(answer == GuidedAnswer.Skip ? SelfTestWords.YouSkipped : "no name@world was given");
+                }
+
+                context.Host.Forbid(input);
+                context.State["name"] = input[..at].Trim();
+                context.State["world"] = input[(at + 1)..].Trim();
+                return StepResult.Pass();
+            }),
+            // Setting up only: a lookup that passed is no pass of the check by itself.
+            SetupAuto("They aren't registered (looked up first)", "18", async context => {
+                if (Ended(context)) {
+                    return StepResult.Skip("no name@world was given");
+                }
+
+                var registered = await context.ServerAsync(SelfTestAction.Lookup,
+                    () => context.Host.IsRegisteredAsync((string) context.State["name"], (string) context.State["world"])).ConfigureAwait(false);
+                if (registered != false) {
+                    context.State["ended"] = true;
+                    return StepResult.Skip(registered == true ? SelfTestWords.Registered : "they couldn't be looked up");
+                }
+
+                return StepResult.Pass();
+            }),
+            Guided("From ChatTwo's menu: the whole line", "18", async context => {
+                if (Ended(context)) {
+                    return StepResult.Skip(SelfTestWords.Registered);
+                }
+
+                await context.ChangeSettingAsync(SelfTestSetting.AdvancedMode, false).ConfigureAwait(false);
+                var channel = await context.TestChannelAsync().ConfigureAwait(false);
+                var tag = await context.TagOfAsync(channel).ConfigureAwait(false);
+                // ChatTwo's menu looks them up and invites, as the game's does: both paced first.
+                await context.ServerAsync(SelfTestAction.Lookup, () => Task.CompletedTask).ConfigureAwait(false);
+                await context.ServerAsync(SelfTestAction.Invite, () => Task.CompletedTask).ConfigureAwait(false);
+                var mark = context.Host.Mark();
+                var answer = await context.AskAsync(new GuidedPrompt(
+                    $"In ChatTwo, right-click that person's name in one of their lines, then Integrations > Invite to LookingGlass > {tag}. Only that person.") {
+                    Watch = StepContextExtensions.Until(async () => await InviteLineAsync(context, mark, TimeSpan.Zero).ConfigureAwait(false) != null,
+                        "no line about the invite yet", "a line said how it went"),
+                }).ConfigureAwait(false);
+                if (answer != GuidedAnswer.Seen && StepContext.Judge(answer, null) is { Outcome: StepOutcome.Skipped } skipped) {
+                    return skipped;
+                }
+
+                var line = await InviteLineAsync(context, mark, answer == GuidedAnswer.Seen ? TimeSpan.Zero : TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                if (line == null) {
+                    return StepResult.Fail("no line said how the invite went");
+                }
+
+                if (line.Text.StartsWith("Invited", StringComparison.Ordinal)) {
+                    // Registered after all (since the lookup): never again; the clean-up disbands the channel, invite and all.
+                    return StepResult.Skip(SelfTestWords.Registered);
+                }
+
+                return StepResult.All((line.Tone == NoticeTone.Info, "the line wasn't blue"),
+                    (line.Text.Contains("isn't registered with LookingGlass on this server", StringComparison.Ordinal), "the line didn't say they aren't registered"),
+                    (line.Text.Contains("install it and register", StringComparison.Ordinal), "simple mode's line didn't say what they need to do"));
+            }),
+        ],
+    };
+
+    private static bool Ended(StepContext context) => context.State.TryGetValue("ended", out var ended) && (bool) ended;
+
+    /// <summary>The plugin's line about an invite since a mark: "Couldn't invite ..." or "Invited ...".</summary>
+    private static Task<TapLine?> InviteLineAsync(StepContext context, long mark, TimeSpan within) => context.PrintedAsync(mark,
+        line => line.Kind == TapKind.Notice && (line.Text.StartsWith("Couldn't invite", StringComparison.Ordinal) || line.Text.StartsWith("Invited", StringComparison.Ordinal)), within);
+
+    // ---------------------------------------------------------------- context-invites 19
+
+    /// <summary>
+    /// ChatTwo turned off and on: what is left of context-invites 19 to 21 after the owner's fifth run (2026-10-13, plugin
+    /// 0.2.19), where the tester skipped this part; LookingGlass off and on (20 to 21) passed.
+    /// </summary>
+    private static SelfTestCheck ChatTwoOffAndOn() => new() {
+        Id = "context-invites-19", Title = "ChatTwo turned off and on", Steps = "context-invites 19 (ChatTwo off and on)", Mode = CheckMode.Guided, Needs = Needs,
         StepList = [
             Ask("ChatTwo off and on", "19", new GuidedPrompt(
                 "In /xlplugins, turn ChatTwo off, then on again. Right-click a player's name in ChatTwo: is there one Invite to LookingGlass (not two)?", PromptKind.YesNo) {
                 Short = "ChatTwo off and on",
             }),
-            CarryOn(Reload, "20"),
-            Ask("LookingGlass off and on", "20-21", new GuidedPrompt(
-                "Right-click a player's name in ChatTwo again: is there one Invite to LookingGlass (not two, not none)?", PromptKind.YesNo) { Short = "LookingGlass off and on" }),
-        ],
-    };
-
-    // ---------------------------------------------------------------- chat-links 26
-
-    private static SelfTestCheck PartyFinderInChatTwo() => new() {
-        Id = "chat-links-26", Title = "Party finder: with ChatTwo", Steps = "chat-links 26", Mode = CheckMode.Guided, Needs = Needs | SelfTestNeeds.TestChannel,
-        StepList = [
-            SetupGuided("A recruitment of your own", null, async context => {
-                await ShownChannelAsync(context).ConfigureAwait(false);
-                var answer = await context.AskAsync(new GuidedPrompt("Is a recruitment of your own up in the Party Finder?", PromptKind.YesNo)).ConfigureAwait(false);
-                context.State["recruiting"] = answer is GuidedAnswer.Yes or GuidedAnswer.Done;
-                return answer is GuidedAnswer.Yes or GuidedAnswer.Done ? StepResult.Pass() : StepResult.Skip("needs a recruitment of your own");
-            }),
-            Guided("Sending it from ChatTwo", "26", async context => {
-                if (!(bool) context.State["recruiting"]) {
-                    return StepResult.Skip("needs a recruitment of your own");
-                }
-
-                var channel = await context.TestChannelAsync().ConfigureAwait(false);
-                var command = await context.CommandOfAsync(channel).ConfigureAwait(false);
-                var mark = context.Host.Mark();
-                var answer = await context.AskAsync(new GuidedPrompt(
-                    $"Click into ChatTwo's input, type {command} join  (with a space after it), click your recruitment's chat button, and press Enter. Note what the button put in ChatTwo's input.") {
-                    TesterTypes = true, ChatTwoOnSay = true,
-                    Watch = StepContextExtensions.Until(() => Task.FromResult(context.Host.PrintedSince(mark).Any(line => line.Kind == TapKind.Message && line.Own && line.ChannelId == channel
-                        && line.Links.OfType<ChatLink.PartyFinder>().Any())), "no party finder link sent yet", "a party finder link was sent"),
-                }).ConfigureAwait(false);
-                return answer == GuidedAnswer.Seen ? StepResult.Pass() : StepContext.Judge(answer, null) is { Outcome: StepOutcome.Skipped } skipped ? skipped
-                    : StepResult.Fail("no party finder link reached the test channel");
-            }),
-            Ask("Clicking it in ChatTwo", "26", new GuidedPrompt("Click the link in ChatTwo's window: does the Party Finder open on your listing?", PromptKind.YesNo) { Short = "click in ChatTwo" }),
         ],
     };
 }

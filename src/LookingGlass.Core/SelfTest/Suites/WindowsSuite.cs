@@ -7,19 +7,21 @@ namespace LookingGlass.Core.SelfTest.Suites;
 /// "Windows and counts" (one player): windows-only-checklist.md and channel-windows-checklist.md, with "a message arrives"
 /// made by a simulated incoming line in a test channel (local only, as the checklists say to do with /lgdebug). Judged
 /// from the windows the plugin has open, their tabs, places, flashes and counts, and what it printed; what only the
-/// tester's eyes can tell (a greyed menu item, a flash's look) is guided. The tester's own windows are closed for a while
-/// and opened again where they were. What passed in the owner's third run (2026-10-13, plugin 0.2.18) is no longer
-/// offered: windows-only 1 to 2, 5, 7 to 9, 11, 13 to 16, 23, 24 and 26; channel-windows 17, 17b, 17c, 36 and 37 but a
-/// collapsed window, 33 to 33f, 6b and 37b but a channel shown in game chat. No combat checks: no striking dummy can be
-/// placed in a private place (owner, 2026-10-13).
+/// tester's eyes can tell (a flash's look) is guided. The tester's own windows are closed for a while and opened again
+/// where they were. What passed in the owner's third run (2026-10-13, plugin 0.2.18) is no longer offered: windows-only 1
+/// to 2, 5, 7 to 9, 11, 13 to 16, 23, 24 and 26; channel-windows 17, 17b, 17c, 36 and 37 but a collapsed window, 33 to 33f,
+/// 6b and 37b but a channel shown in game chat. Nor what passed in the owner's fifth run (2026-10-13, plugin 0.2.19):
+/// windows-only 20 to 21, channel-windows 36 (a collapsed window) and 37b (a channel shown in game chat). Only the flash
+/// (channel-windows 37c to 37f) is left. No combat checks: no striking dummy can be placed in a private place (owner,
+/// 2026-10-13).
 /// </summary>
 public static class WindowsSuite {
     public const string Id = "windows";
 
     private static readonly TimeSpan Open = TimeSpan.FromSeconds(8);
 
-    public static SelfTestSuite Create() => new(Id, "Windows and counts", [Locked(), Collapsed(), ShownLosesItsCount(), Flash()]) {
-        Changes = [SelfTestSetting.WindowsOnly, SelfTestSetting.NewChannelsOpen, SelfTestSetting.SayWhenTalking, SelfTestSetting.ChannelWindows],
+    public static SelfTestSuite Create() => new(Id, "Windows and counts", [Flash()]) {
+        Changes = [SelfTestSetting.WindowsOnly, SelfTestSetting.NewChannelsOpen, SelfTestSetting.ChannelWindows],
         Planned = new Dictionary<SelfTestAction, int> { [SelfTestAction.CreateChannel] = 1 },
     };
 
@@ -47,77 +49,6 @@ public static class WindowsSuite {
             .FirstOrDefault(window => !before.Contains(window.LayoutId) && window.Tabs.Contains(channelId))) != null).ConfigureAwait(false);
         return opened;
     }
-
-    private static async Task<int> ListCountAsync(StepContext context, string channelId) =>
-        (await context.Host.WindowsAsync().ConfigureAwait(false)).ListCounts.GetValueOrDefault(channelId);
-
-    private static Task<bool> ListCountIsAsync(StepContext context, string channelId, int count) =>
-        context.WaitUntilAsync(async () => await ListCountAsync(context, channelId).ConfigureAwait(false) == count);
-
-    // ---------------------------------------------------------------- windows-only 20-21
-
-    private static SelfTestCheck Locked() => new() {
-        Id = "windows-only-20-21", Title = "Show in game chat is locked while the setting is on", Steps = "windows-only 20-21", Mode = CheckMode.AutomaticAndGuided, Needs = Needs,
-        StepList = [
-            Auto("A channel off game chat, then the setting on", "20", async context => {
-                await WindowsOnlyAsync(context, false).ConfigureAwait(false);
-                await CloseAllAsync(context).ConfigureAwait(false);
-                var channel = await context.TestChannelAsync().ConfigureAwait(false);
-                await context.Host.SetShowInGameChatAsync(channel, false).ConfigureAwait(false);
-                await WindowsOnlyAsync(context, true).ConfigureAwait(false);
-                return StepResult.Expect(await context.WindowOfAsync(channel, Open).ConfigureAwait(false) != null, "turning a channel off game chat opened no window for it");
-            }),
-            Ask("The greyed red cross", "20", new GuidedPrompt(
-                "Open /lookingglass. In the test channel's ⋮ menu, and in its tab's right-click menu in its window: is Show in game chat a red cross, greyed out, that can't be clicked, " +
-                "with a tooltip saying Show LookingGlass only in windows is on and to change it in Settings, under Chat?", PromptKind.YesNo) { Short = "greyed cross" }),
-            Ask("The tab's hover", "20", new GuidedPrompt("Hover the test channel's tab in its window (it shows even with a menu open): does it say it isn't shown in game chat, as only windows show messages?",
-                PromptKind.YesNo) { Short = "tab hover" }),
-            Auto("Closing its window says nothing, and it stays off", "21", async context => {
-                var channel = await context.TestChannelAsync().ConfigureAwait(false);
-                var mark = context.Host.Mark();
-                if (await context.WindowOfAsync(channel).ConfigureAwait(false) is { } window) {
-                    await context.Host.CloseWindowAsync(window.LayoutId).ConfigureAwait(false);
-                }
-
-                var again = await context.CountPrintedAsync(mark, line => line.Text.Contains("shows in game chat again", StringComparison.Ordinal)).ConfigureAwait(false);
-                return StepResult.All((again == 0, "a \"shows in game chat again\" line was said"),
-                    (!await context.Host.ShowsInGameChatAsync(channel).ConfigureAwait(false), "the channel went back to game chat"));
-            }),
-        ],
-    };
-
-    // ---------------------------------------------------------------- channel-windows 36 (a collapsed window)
-
-    private static SelfTestCheck Collapsed() => new() {
-        Id = "channel-windows-36-collapsed", Title = "A collapsed window counts again", Steps = "channel-windows 36 (collapsing a window)", Mode = CheckMode.AutomaticAndGuided,
-        Needs = Needs,
-        StepList = [
-            SetupAuto("The test channel in a window of its own", "36", async context => {
-                await WindowsOnlyAsync(context, true).ConfigureAwait(false);
-                await CloseAllAsync(context).ConfigureAwait(false);
-                return StepResult.Expect(await OpenAsync(context, await context.TestChannelAsync().ConfigureAwait(false)).ConfigureAwait(false) != null,
-                    "a window couldn't be opened");
-            }),
-            SetupAsk("Collapse it", "36", new GuidedPrompt("Double-click the test channel's window's title bar, so it collapses to its title bar.") { Short = "collapsed" }),
-            Auto("What arrives in its selected channel counts again", "36", async context => {
-                var channel = await context.TestChannelAsync().ConfigureAwait(false);
-                await ArriveAsync(context, channel).ConfigureAwait(false);
-                return StepResult.Expect(await ListCountIsAsync(context, channel, 1).ConfigureAwait(false), "a message in a collapsed window's channel wasn't counted");
-            }),
-        ],
-    };
-
-    // ---------------------------------------------------------------- channel-windows 37b (a channel shown in game chat)
-
-    private static SelfTestCheck ShownLosesItsCount() => new() {
-        Id = "channel-windows-37b-shown", Title = "A channel shown in game chat loses its count when selected", Steps = "channel-windows 37b (that part)", Mode = CheckMode.Guided,
-        Needs = SelfTestNeeds.Connection,
-        StepList = [
-            Ask("Selecting it in the channel list", "37b", new GuidedPrompt(
-                "Open /lookingglass. If one of your own channels that shows in game chat has a count in the channel list, click it: does its count go? " +
-                "(Skip if none has a count.)", PromptKind.YesNo) { Short = "shown in game chat" }),
-        ],
-    };
 
     /// <summary>The flash shown again on the window showing test channel <paramref name="index"/>: no new window, nothing sent.</summary>
     private static async Task FlashAgainAsync(StepContext context, int index, int pulses) =>

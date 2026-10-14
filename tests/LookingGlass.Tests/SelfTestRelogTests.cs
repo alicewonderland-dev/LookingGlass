@@ -79,8 +79,8 @@ public sealed class SelfTestRelogTests : IDisposable {
         Assert.NotEmpty(steps);
         Assert.All(steps, step => Assert.Equal(step.Title.Contains("title screen", StringComparison.OrdinalIgnoreCase), step.Relogs));
         // The questions answered after coming in with another character, and back, are relogs too.
-        var across = SelfTestSuites.Every().SelectMany(suite => suite.Checks).Where(check => check.Id is "name-colours-21-other" or "custom-colours-15-other").ToList();
-        Assert.Equal(2, across.Count);
+        var across = SelfTestSuites.Every().SelectMany(suite => suite.Checks).Where(check => check.Id is "name-colours-21-other" or "custom-colours-15-other" or "context-invites-11").ToList();
+        Assert.Equal(3, across.Count);
         Assert.All(across, check => Assert.Single(check.StepList, step => step.Relogs));
     }
 

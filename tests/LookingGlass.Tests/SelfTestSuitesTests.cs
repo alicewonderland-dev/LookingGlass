@@ -16,13 +16,12 @@ public sealed class SelfTestSuitesTests : IDisposable {
 
     /// <summary>Every one-player task the plan covers, by its checklist steps, as the report names them.</summary>
     private static readonly string[] Covered = [
-        "local-chat 1-3", "local-chat 29",
-        "windows-only 20-21", "channel-windows 36 (collapsing a window)", "channel-windows 37b (that part)", "channel-windows 37c-37f",
+        "channel-windows 37c-37f",
         "name-colours 21 (another character)", "custom-colours 15 (another character)",
-        "context-invites 9a", "context-invites 11", "context-invites 15, 18 (that part)",
+        "context-invites 11",
         "chat-links 24-25",
         "chat-log 26 (pressing Open folder)", "chat-log 30-35, 31b",
-        "local-chat 42-46", "sticky-channel 28", "custom-colours 11-14", "context-invites 19-21", "chat-links 26",
+        "local-chat 42-46", "custom-colours 11-14", "context-invites 18 (from ChatTwo's menu)", "context-invites 19 (ChatTwo off and on)",
     ];
 
     /// <summary>Passed in the owner's first run (2026-10-13), and so no longer offered.</summary>
@@ -37,6 +36,9 @@ public sealed class SelfTestSuitesTests : IDisposable {
         "custom-colours 3", "custom-colours 4-8", "custom-colours 9", "name-colours 21", "name-colours 23 (first part)", "custom-colours 15-16", "custom-colours 17",
         // A tester's run (2026-10-13, plugin 0.2.18).
         "chat-log 24-25", "chat-log 26-28", "chat-log 8-9 (group 2)",
+        // The owner's fifth run (2026-10-13, plugin 0.2.19).
+        "local-chat 1-3", "local-chat 29", "windows-only 20-21", "channel-windows 36 (collapsing a window)", "channel-windows 37b (that part)", "context-invites 9a",
+        "sticky-channel 28", "chat-links 26", "context-invites 15, 18 (that part)", "context-invites 19-21",
     ];
 
     [Fact]
@@ -46,11 +48,16 @@ public sealed class SelfTestSuitesTests : IDisposable {
         // No combat checks: no striking dummy can be placed in a private place (owner, 2026-10-13).
         Assert.DoesNotContain(SelfTestSuites.Every().SelectMany(suite => suite.Checks).SelectMany(check => check.StepList),
             step => step.Title.Contains("striking dummy", StringComparison.OrdinalIgnoreCase) || step.Title.Contains("combat", StringComparison.OrdinalIgnoreCase));
-        Assert.Contains("channel-windows 36 (collapsing a window)", steps);
-        Assert.Contains("channel-windows 37b (that part)", steps);
-        // What was left of them is a check of its own.
-        Assert.Contains("context-invites 9a", steps);
+        // What was left of them is a check of its own: another character (11), ChatTwo's menu (18), ChatTwo off and on (19).
         Assert.Contains("context-invites 11", steps);
+        Assert.Contains("context-invites 18 (from ChatTwo's menu)", steps);
+        Assert.Contains("context-invites 19 (ChatTwo off and on)", steps);
+        // The talking suite passed whole (fifth run): gone; the windows suite keeps only the flash, being fixed.
+        Assert.DoesNotContain(SelfTestSuites.All(), suite => suite.Id == "talk");
+        Assert.Equal(["channel-windows 37c-37f"], SelfTestSuites.All().Single(suite => suite.Id == WindowsSuite.Id).Checks.Select(check => check.Steps));
+        // ChatTwo off and on is a single question now: no reload.
+        var chatTwoOffAndOn = SelfTestSuites.All().SelectMany(suite => suite.Checks).Single(check => check.Steps == "context-invites 19 (ChatTwo off and on)");
+        Assert.DoesNotContain(chatTwoOffAndOn.StepList, step => step.Kind == StepKind.CarryOnAfter);
         // The recruitment the remaining party finder check needs is still asked for.
         var partyFinder = SelfTestSuites.All().Single(suite => suite.Id == PartyFinderSuite.Id).Checks.Single();
         Assert.Contains(partyFinder.StepList, step => step.Setup && step.Title == "A recruitment of your own");
@@ -80,6 +87,8 @@ public sealed class SelfTestSuitesTests : IDisposable {
         var pacer = new SelfTestPacer(() => this._host.Now, this._host.Delay);
         var data = SelfTestRun.NewData("K7Q2", 42, "wss://example.test/ws", this._host.Now, suites);
         var run = new SelfTestRun(this._host, suites, pacer, this._host.File, data);
+        // ChatTwo on, so the ChatTwo suite runs too (the name@world asked for is in its ChatTwo-menu invite check).
+        this._host.ChatTwo = true;
         var shown = new HashSet<string>();
         this._host.BeforeType = () => this._host.RecordIfOutside("line");
         this._host.OnTick = () => {

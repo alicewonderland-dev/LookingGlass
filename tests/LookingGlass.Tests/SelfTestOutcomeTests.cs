@@ -129,8 +129,9 @@ public sealed class SelfTestOutcomeTests : IDisposable {
     public async Task InvitingSomeoneRegisteredIsNotRunNotPassed() {
         // The owner's first run: the name given uses LookingGlass, so nothing was sent and nothing was tested.
         this._host.Registered = true;
-        var suites = new[] { InvitesSuite.Create() };
-        var data = SelfTestRun.NewData("K7Q2", 1, "x", this._host.Now, suites, ["context-invites-15-18"]);
+        this._host.ChatTwo = true;
+        var suites = new[] { ChatTwoSuite.Create() };
+        var data = SelfTestRun.NewData("K7Q2", 1, "x", this._host.Now, suites, ["context-invites-18-chattwo"]);
         var run = new SelfTestRun(this._host, suites, new SelfTestPacer(() => this._host.Now, this._host.Delay), this._host.File, data);
         this._host.OnTick = () => {
             if (run.View.Prompt is { } prompt) {
