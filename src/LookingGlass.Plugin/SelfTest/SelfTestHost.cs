@@ -501,6 +501,13 @@ internal sealed partial class SelfTestHost : ISelfTestHost, IDisposable {
         return new WindowsView(views, tabs, list);
     });
 
+    public Task FlashAgainAsync(string channelId, int pulses) => OnFramework(() => {
+        // The window showing one of the run's own test channels, flashed again: no new window, nothing sent.
+        var shown = this.Own(channelId);
+        var window = this._parts.Windows.Open.FirstOrDefault(open => open.Layout.Tabs.Contains(shown)) ?? throw new InvalidOperationException("No window shows it.");
+        window.Flash(pulses, shown);
+    });
+
     public Task OpenWindowAsync(string channelId) => OnFramework(() => this._parts.Windows.OpenNew(channelId));
 
     public Task SelectTabAsync(string layoutId, string channelId) => OnFramework(() => this.Window(layoutId).Show(channelId));

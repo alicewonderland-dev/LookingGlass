@@ -70,7 +70,7 @@ public static class WindowsSuite {
             Ask("The greyed red cross", "20", new GuidedPrompt(
                 "Open /lookingglass. In the test channel's ⋮ menu, and in its tab's right-click menu in its window: is Show in game chat a red cross, greyed out, that can't be clicked, " +
                 "with a tooltip saying Show LookingGlass only in windows is on and to change it in Settings, under Chat?", PromptKind.YesNo) { Short = "greyed cross" }),
-            Ask("The tab's hover", "20", new GuidedPrompt("Hover the test channel's tab in its window: does it say it isn't shown in game chat, as only windows show messages?",
+            Ask("The tab's hover", "20", new GuidedPrompt("Hover the test channel's tab in its window (it shows even with a menu open): does it say it isn't shown in game chat, as only windows show messages?",
                 PromptKind.YesNo) { Short = "tab hover" }),
             Auto("Closing its window says nothing, and it stays off", "21", async context => {
                 var channel = await context.TestChannelAsync().ConfigureAwait(false);
@@ -119,11 +119,18 @@ public static class WindowsSuite {
         ],
     };
 
+    /// <summary>The flash shown again on the window showing test channel <paramref name="index"/>: no new window, nothing sent.</summary>
+    private static async Task FlashAgainAsync(StepContext context, int index, int pulses) =>
+        await context.Host.FlashAgainAsync(await context.TestChannelAsync(index).ConfigureAwait(false), pulses).ConfigureAwait(false);
+
     // ---------------------------------------------------------------- channel-windows 37c-37f
 
     private static SelfTestCheck Flash() => new() {
         Id = "channel-windows-37c-37f", Title = "The flash", Steps = "channel-windows 37c-37f", Mode = CheckMode.Guided, Needs = Needs,
         StepList = [
+            SetupAsk("Ready? A window opens", "37c", new GuidedPrompt(
+                "Ready? A window will open by itself for the test channel. Watch its title bar and border: three blinks in the channel's colour (LookingGlass blue). " +
+                "Press Done when you're watching.") { Short = "ready" }),
             Auto("Three pulses for a window that opens by itself", "37c", async context => {
                 await WindowsOnlyAsync(context, false).ConfigureAwait(false);
                 await NewWindowsAsync(context, false).ConfigureAwait(false);
@@ -137,9 +144,14 @@ public static class WindowsSuite {
                 window = await context.WindowOfAsync(channel).ConfigureAwait(false);
                 return StepResult.All((window?.FlashPulses == WindowFlash.OpenedPulses, "it didn't flash three times"), (window is { TookFocus: false }, "it took the keyboard"));
             }),
-            Ask("How it looked", "37c", new GuidedPrompt(
-                "Did that window's title bar and border pulse three times in the test channel's colour (LookingGlass blue) over about a second and a half, " +
-                "then look as usual, without taking the keyboard?", PromptKind.YesNo) { Short = "three pulses" }),
+            Ask("How it looked", "37c", context => Task.FromResult(new GuidedPrompt(
+                "Did that window flash with three distinct blinks: the title bar turns mostly the test channel's colour (LookingGlass blue), with a border a few pixels wide, " +
+                "then looks as usual, without taking the keyboard? Show it again to see it once more.", PromptKind.YesNo) {
+                Short = "three blinks", Again = () => FlashAgainAsync(context, 0, WindowFlash.OpenedPulses),
+            })),
+            SetupAsk("Ready? A tab is added", "37d", new GuidedPrompt(
+                "Ready? Another test channel will be added as a tab to that window. Watch the window: one blink, in the new channel's colour. " +
+                "Press Done when you're watching.") { Short = "ready" }),
             Auto("Once for a tab added by itself", "37d", async context => {
                 var (sky, fc) = (await context.TestChannelAsync(0).ConfigureAwait(false), await context.TestChannelAsync(1).ConfigureAwait(false));
                 await context.Host.SetShowInGameChatAsync(fc, false).ConfigureAwait(false);
@@ -159,7 +171,10 @@ public static class WindowsSuite {
                 added = await context.WindowOfAsync(fc).ConfigureAwait(false);
                 return StepResult.All((added?.LayoutId == window.LayoutId, "the channel wasn't added as a tab"), (added?.FlashPulses == WindowFlash.TabAddedPulses, "the window didn't flash once"));
             }),
-            Ask("The single flash", "37d", new GuidedPrompt("Did that window flash once, in the new channel's colour, and stay where it was?", PromptKind.YesNo) { Short = "one flash" }),
+            Ask("The single flash", "37d", context => Task.FromResult(new GuidedPrompt(
+                "Did that window blink once, in the new channel's colour, and stay where it was? Show it again to see it once more.", PromptKind.YesNo) {
+                Short = "one blink", Again = () => FlashAgainAsync(context, 1, WindowFlash.TabAddedPulses),
+            })),
             Auto("No flash for a window you open", "37e", async context => {
                 var raid = await context.TestChannelAsync(2).ConfigureAwait(false);
                 var window = await OpenAsync(context, raid).ConfigureAwait(false);

@@ -146,6 +146,12 @@ public sealed record GuidedPrompt(string Text, PromptKind Kind = PromptKind.DoTh
     public bool ChatTwoOnSay { get; init; }
 
     /// <summary>
+    /// What a "Show it again" button does while the question is up (the same window flashing again): as often as the tester
+    /// wants, before answering. Nothing is sent.
+    /// </summary>
+    public Func<Task>? Again { get; init; }
+
+    /// <summary>
     /// With <see cref="TesterTypes"/>: something else that must hold while the line is asked for (a party of just the two
     /// testers, before /p), checked with the typing gate before it shows and at every poll; while it doesn't, the request is
     /// off the screen, and <see cref="HoldsWhy"/> says why.

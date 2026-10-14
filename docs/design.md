@@ -6054,6 +6054,16 @@ The owner's decisions, and why.
   one channel up to three times a run, for that). Custom-colours 16 (a colour
   set before 0.2.8) is marked not testable: such a colour can't be produced
   any more on current builds.
+- **The flash checks: ready first, and shown again (owner, 2026-10-13).** The
+  flash comes as the window appears, and its question only afterwards, so a
+  tester could miss it. Before each flash (channel-windows 37c, 37d) a
+  "Ready?" says what is about to happen and where to look (three blinks of
+  the title bar and border; one blink for an added tab), and the question
+  after it has **Show it again**, which flashes the same window again (no new
+  window, nothing sent), as often as wanted. The words follow the new look:
+  three distinct blinks, the title bar mostly the channel's colour, a border a
+  few pixels wide. The tab hover question (windows-only 20) says it shows even
+  with a menu open.
 
 ## Open questions
 

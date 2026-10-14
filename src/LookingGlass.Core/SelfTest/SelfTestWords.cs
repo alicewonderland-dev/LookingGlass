@@ -32,6 +32,7 @@ public static partial class SelfTestWords {
     public const string RunFailedAgain = "Run the failed ones again";
     public const string CheckAgain = "Check again";
     public const string CarryOn = "Carry on";
+    public const string ShowItAgain = "Show it again";
     public const string Close = "Close";
     public const string TwoPlayers = "Two players...";
     public const string WhichOnes = "Which ones?";
@@ -234,7 +235,7 @@ public static partial class SelfTestWords {
     /// <summary>Every fixed text above, for the tests.</summary>
     public static IReadOnlyList<string> All() => [
         WindowTitle, ReportTitle, OpenButton, Start, StopAndCleanUp, NeedsYou, Done, DidntWork, SkipStep, Yes, No, CopyReport, RunFailedAgain,
-        CheckAgain, CarryOn, Close, TwoPlayers, WhichOnes, Remove, Passed, Failed, Skipped, StoppedWord, NotRunWord, NoteLabel, .. Consent, Intro,
+        CheckAgain, CarryOn, ShowItAgain, Close, TwoPlayers, WhichOnes, Remove, Passed, Failed, Skipped, StoppedWord, NotRunWord, NoteLabel, .. Consent, Intro,
         NoNamesInReport, HistoryAsk, HistoryDelete, HistoryKeep, StayHere, HouseVisitors, HandChanges, ClosingDoesntStop, TwoPlayersLater, NoteReminder, LeftoverHeading,
         LeftoverExplained, .. PrivatePlaces, OnlyInPrivate, PausedLeft, WaitingSomeoneNear, PausedDisconnected, PausedOtherCharacter, ChatTwoToSay, WaitingSay, WaitingPlace,
         WaitingToCarryOn, InterruptedRun, InterruptedRunChannelLeft, .. SelfTestPacer.HourMost.Keys.Select(action => WaitBeforeStart(TimeSpan.FromMinutes(20), action)),

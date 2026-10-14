@@ -191,6 +191,12 @@ public interface ISelfTestHost {
 
     Task<WindowsView> WindowsAsync();
 
+    /// <summary>
+    /// Flashes the window showing one of the run's test channels again, as when it opened (three blinks) or got a tab (one):
+    /// the same window, no new one, nothing sent. For the flash checks' "Show it again".
+    /// </summary>
+    Task FlashAgainAsync(string channelId, int pulses);
+
     /// <summary>Opens a channel in a new window, as the channel list's menu does.</summary>
     Task OpenWindowAsync(string channelId);
 

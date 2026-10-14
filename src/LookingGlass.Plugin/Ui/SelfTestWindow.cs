@@ -512,6 +512,15 @@ internal sealed class SelfTestWindow : Window {
             ImGui.InputTextWithHint("##input", label, ref this._input, 100);
         }
 
+        if (prompt.Prompt.Again != null) {
+            // The same window flashing again (or whatever the question can show again), as often as wanted, before answering.
+            if (ImGui.Button(SelfTestWords.ShowItAgain)) {
+                run.ShowAgain();
+            }
+
+            ImGui.SameLine();
+        }
+
         if (prompt.Prompt.Kind == PromptKind.SkipOnly) {
             if (ImGui.Button(SelfTestWords.SkipStep)) {
                 this.Answer(run, GuidedAnswer.Skip);

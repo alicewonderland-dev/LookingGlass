@@ -310,6 +310,21 @@ public sealed partial class SelfTestRun {
         waiting?.TrySetResult((answer, string.IsNullOrWhiteSpace(note) ? null : note.Trim(), string.IsNullOrWhiteSpace(input) ? null : input.Trim()));
     }
 
+    /// <summary>The question up now has a "Show it again" (<see cref="GuidedPrompt.Again"/>): does it again. Safe from any thread.</summary>
+    public void ShowAgain() {
+        if (this.View.Prompt?.Prompt.Again is { } again) {
+            _ = this.AgainAsync(again);
+        }
+    }
+
+    private async Task AgainAsync(Func<Task> again) {
+        try {
+            await again().ConfigureAwait(false);
+        } catch (Exception ex) {
+            this._host.Log($"[selftest] it couldn't be shown again ({ex.GetType().Name})");
+        }
+    }
+
     /// <summary>The server refused something for a limit (seen by the plugin, for a line typed): the run stops sending.</summary>
     public void ReportRefusal() {
         this.Pacer.Refuse();
