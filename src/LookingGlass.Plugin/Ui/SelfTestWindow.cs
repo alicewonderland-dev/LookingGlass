@@ -469,6 +469,7 @@ internal sealed class SelfTestWindow : Window {
                     CheckOutcome.Passed => (SelfTestWords.Passed, Widgets.Success),
                     CheckOutcome.Failed => ("FAILED", Widgets.Error),
                     CheckOutcome.Skipped => (SelfTestWords.Skipped, Widgets.Muted),
+                    CheckOutcome.NotRun => (SelfTestWords.NotRunWord, Widgets.Muted),
                     CheckOutcome.Stopped => (SelfTestWords.StoppedWord, Widgets.Warning),
                     _ => check.Current ? (">", Widgets.Text) : (".", Widgets.Muted),
                 };
@@ -477,7 +478,7 @@ internal sealed class SelfTestWindow : Window {
                 ImGui.TextUnformatted(check.Check.Title);
                 ImGui.SameLine();
                 ImGui.TextDisabled(check.Check.Steps);
-                if (check.Result is { Outcome: CheckOutcome.Failed or CheckOutcome.Skipped or CheckOutcome.Stopped, Why: { } why }) {
+                if (check.Result is { Outcome: CheckOutcome.Failed or CheckOutcome.Skipped or CheckOutcome.NotRun or CheckOutcome.Stopped, Why: { } why }) {
                     ImGui.Indent(40 * Widgets.Scale);
                     ImGui.TextWrapped(why);
                     ImGui.Unindent(40 * Widgets.Scale);
@@ -568,7 +569,7 @@ internal sealed class SelfTestWindow : Window {
         var view = run.View;
         var results = view.Checks.Select(check => check.Result).OfType<CheckRecord>().ToList();
         ImGui.TextUnformatted($"Run {view.Code}: {results.Count(result => result.Outcome == CheckOutcome.Passed)} passed, " +
-                              $"{results.Count(result => result.Outcome == CheckOutcome.Failed)} failed, {results.Count(result => result.Outcome == CheckOutcome.Skipped)} skipped." +
+                              $"{results.Count(result => result.Outcome == CheckOutcome.Failed)} failed, {results.Count(result => result.Outcome == CheckOutcome.NotRun)} not run, {results.Count(result => result.Outcome == CheckOutcome.Skipped)} skipped." +
                               (view.CleanUp != null ? " Cleaned up." : ""));
         if (this._report is not { } cached || !ReferenceEquals(cached.View, view)) {
             cached = (view, this._service.Report() ?? "");
@@ -582,12 +583,13 @@ internal sealed class SelfTestWindow : Window {
         }
 
         ImGui.SameLine();
-        var failed = results.Where(result => result.Outcome is CheckOutcome.Failed or CheckOutcome.Stopped).Select(result => result.Check).ToList();
+        // The failed and stopped ones, and those not run where a second run could help (see SelfTestReport.WorthRunningAgain).
+        var failed = results.Where(SelfTestReport.WorthRunningAgain).Select(result => result.Check).ToList();
         // Two players: the host runs its failed ones again with the same partner (paired afresh); a partner has nothing to run again.
         var host = view.Role == SelfTestRole.Host;
         var suites = (host ? this._service.PairSuites : this._service.Suites).Where(suite => suite.Checks.Any(check => failed.Contains(check.Id))).ToList();
         var cant = view.Role == SelfTestRole.Partner ? "Your partner starts their run again."
-            : failed.Count == 0 ? "Nothing failed."
+            : failed.Count == 0 ? "Nothing to run again."
             : host ? this._service.CantStart(SelfTestSuites.ForHost(suites), SelfTestRole.Host) ?? this._service.CantPair(this._partner)
             : this._service.CantStart(suites);
         ImGui.BeginDisabled(cant != null);
@@ -605,6 +607,10 @@ internal sealed class SelfTestWindow : Window {
         }
 
         ImGui.EndDisabled();
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled)) {
+            ImGui.SetTooltip("The checks that failed or stopped, and those not run where another try could help.");
+        }
+
         ImGui.SameLine();
         if (ImGui.Button("Back to the start")) {
             this._startScreen = true;

@@ -19,7 +19,7 @@ public static class PairInvitesSuite {
     private const SelfTestNeeds Needs = PairSteps.Needs;
 
     /// <summary>The partner's player says a test line in Say (asked by their plugin), and the host sees it.</summary>
-    private static SelfTestStep TheySayHello(string checklist, PartnerAsk ask = PartnerAsk.SayHello) => Guided("Your partner says a line in Say", checklist, async context => {
+    private static SelfTestStep TheySayHello(string checklist, PartnerAsk ask = PartnerAsk.SayHello) => SetupGuided("Your partner says a line in Say", checklist, async context => {
         var mark = context.Host.GameChatSince(0).Count;
         var said = await context.Partner.AskAsync(context, PartnerVerb.Ask, SelfTestProtocol.NameOf(ask)).ConfigureAwait(false);
         if (said.Outcome != PartnerOutcome.Yes || !said.Fields.TryGetValue("line", out var line)) {
@@ -69,7 +69,7 @@ public static class PairInvitesSuite {
                         Short = "friends list",
                     }).ConfigureAwait(false);
             }),
-            Guided("The party ends", "2", context => context.Partner.AskPlayerAsync(context, PartnerAsk.LeaveParty)),
+            SetupGuided("The party ends", "2", context => context.Partner.AskPlayerAsync(context, PartnerAsk.LeaveParty)),
         ],
     };
 
@@ -90,7 +90,7 @@ public static class PairInvitesSuite {
     private static SelfTestCheck Inviting() => new() {
         Id = "context-invites-12-18", Title = "Inviting, and the greyed-out entries", Steps = "context-invites 12-14, 16, 18", Mode = CheckMode.Guided, Needs = Needs,
         StepList = [
-            Auto("Two test channels they aren't in", "12", async context => {
+            SetupAuto("Two test channels they aren't in", "12", async context => {
                 await context.TestChannelAsync(2).ConfigureAwait(false);
                 foreach (var channel in context.TestChannels.Skip(1)) {
                     if ((await context.Host.MembersAsync(channel).ConfigureAwait(false)).Any(member => member.UserId == context.Partner.UserId)) {

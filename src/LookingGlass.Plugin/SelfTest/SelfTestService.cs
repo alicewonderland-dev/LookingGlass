@@ -229,8 +229,8 @@ internal sealed partial class SelfTestService : IDisposable {
             return "Tick at least one.";
         }
 
-        var wait = new SelfTestPacer(() => DateTimeOffset.Now, Task.Delay, this.Spent(), role: role).WaitBeforeStart(Planned(suites));
-        return wait > TimeSpan.Zero ? SelfTestWords.WaitBeforeStart(wait) : null;
+        var (wait, waitingFor) = new SelfTestPacer(() => DateTimeOffset.Now, Task.Delay, this.Spent(), role: role).WaitBeforeStart(Planned(suites));
+        return waitingFor is { } action && wait > TimeSpan.Zero ? SelfTestWords.WaitBeforeStart(wait, action) : null;
     }
 
     // The window asks every frame: the files are read again at most every two seconds.

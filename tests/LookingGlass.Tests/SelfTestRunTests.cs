@@ -148,7 +148,7 @@ public sealed class SelfTestRunTests : IDisposable {
     }
 
     [Theory]
-    [InlineData(GuidedAnswer.Skip, CheckOutcome.Skipped)]
+    [InlineData(GuidedAnswer.Skip, CheckOutcome.NotRun)]
     [InlineData(GuidedAnswer.DidntWork, CheckOutcome.Failed)]
     [InlineData(GuidedAnswer.No, CheckOutcome.Failed)]
     public async Task SkipAndNoAreKept(GuidedAnswer answer, CheckOutcome outcome) {

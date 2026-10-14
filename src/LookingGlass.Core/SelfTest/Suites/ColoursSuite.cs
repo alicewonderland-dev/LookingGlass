@@ -86,7 +86,7 @@ public static class ColoursSuite {
         Id = "custom-colours-9", Title = "Pink everywhere, game chat (no ChatTwo)", Steps = "custom-colours 9", Mode = CheckMode.Guided,
         Needs = SelfTestNeeds.Connection | SelfTestNeeds.TestChannel | SelfTestNeeds.Typing | SelfTestNeeds.ChatTwoOff,
         StepList = [
-            Auto("The test channel pink, a line with an item link in the middle", "9", async context => {
+            SetupAuto("The test channel pink, a line with an item link in the middle", "9", async context => {
                 var channel = await context.TestChannelAsync().ConfigureAwait(false);
                 await context.ChangeSettingAsync(SelfTestSetting.ColourWholeLine, true).ConfigureAwait(false);
                 await context.ChangeSettingAsync(SelfTestSetting.SayWhenTalking, true).ConfigureAwait(false);
@@ -122,7 +122,7 @@ public static class ColoursSuite {
                     Swatch = Pink, Short = "list and window",
                 };
             }),
-            Auto("The rest", "9", _ => Task.FromResult(StepResult.Pass("the invite submenu (needs another player) and the caught-up message (needs a partner)"))),
+            Rest("9", "the invite submenu (needs another player) and the caught-up message (needs a partner)"),
         ],
     };
 

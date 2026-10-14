@@ -76,7 +76,7 @@ public sealed class PartnerSide {
             return this.FirstChannel() != null;
         }, InviteWithin).ConfigureAwait(false);
         if (!joined || this.FirstChannel() is not { } channel) {
-            return StepResult.Skip(SelfTestWords.NoInvite);
+            return StepResult.SkipCheck(SelfTestWords.NoInvite);
         }
 
         // The host's user ID, from the channel's verified members: lines and the member list are told apart by it too.

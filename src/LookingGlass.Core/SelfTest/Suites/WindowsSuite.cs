@@ -277,12 +277,12 @@ public static class WindowsSuite {
     private static SelfTestCheck Combat() => new() {
         Id = "windows-only-17", Title = "Nothing pops up during combat", Steps = "windows-only 17", Mode = CheckMode.Guided, Needs = Needs,
         StepList = [
-            Guided("A striking dummy", "17", async context => {
+            SetupGuided("A striking dummy", "17", async context => {
                 var answer = await context.AskAsync(new GuidedPrompt("Is a striking dummy at hand here (a house's striking dummy furnishing)?", PromptKind.YesNo)).ConfigureAwait(false);
                 context.State["dummy"] = answer is GuidedAnswer.Yes or GuidedAnswer.Done;
                 return answer is GuidedAnswer.Yes or GuidedAnswer.Done ? StepResult.Pass() : StepResult.Skip(SelfTestWords.NeedsStrikingDummy);
             }),
-            Guided("Into combat", "17", async context => {
+            SetupGuided("Into combat", "17", async context => {
                 if (!(bool) context.State["dummy"]) {
                     return StepResult.Skip(SelfTestWords.NeedsStrikingDummy);
                 }
@@ -377,7 +377,7 @@ public static class WindowsSuite {
                     (window != null, "no window opened by itself"), (window?.FlashPulses > 0, "the window didn't flash"), (window is { TookFocus: false }, "the window took the keyboard"));
                 return result.Outcome == StepOutcome.Passed ? StepResult.Pass("the combat parts (23b, 23c: need a striking dummy)") : result;
             }),
-            Auto("On again, its window closed, for the relog", "24", async context => {
+            SetupAuto("On again, its window closed, for the relog", "24", async context => {
                 await WindowsOnlyAsync(context, true).ConfigureAwait(false);
                 await CloseAllAsync(context).ConfigureAwait(false);
                 return StepResult.Pass();
@@ -497,7 +497,7 @@ public static class WindowsSuite {
                 return StepResult.All((await NotInGameChatAsync(context, mark, channel).ConfigureAwait(false), "your line showed in game chat"),
                     (window != null, "no window opened with your line"));
             }, types: true),
-            Auto("Its window open, for the relog", "33b", async context => {
+            SetupAuto("Its window open, for the relog", "33b", async context => {
                 var channel = await context.TestChannelAsync().ConfigureAwait(false);
                 context.State["mark"] = context.Host.Mark();
                 return StepResult.Expect(await context.WindowOfAsync(channel).ConfigureAwait(false) != null, "its window isn't open");

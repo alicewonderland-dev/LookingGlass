@@ -119,7 +119,7 @@ public static class PairWindowsSuite {
         Id = "channel-windows-33c", Title = "Missed messages open a window for a channel off game chat", Steps = "channel-windows 33c (second part)", Mode = CheckMode.Guided,
         Needs = Needs,
         StepList = [
-            Auto("The test channel off game chat, no window", "33c", async context => {
+            SetupAuto("The test channel off game chat, no window", "33c", async context => {
                 await WindowsOnlyAsync(context, false).ConfigureAwait(false);
                 await context.Host.SetShowInGameChatAsync(context.Partner.ChannelId!, false).ConfigureAwait(false);
                 await CloseAllWindowsAsync(context).ConfigureAwait(false);
@@ -243,7 +243,7 @@ public static class PairWindowsSuite {
     private static SelfTestCheck WhileAway() => new() {
         Id = "windows-only-15b-25", Title = "Messages from while you were away", Steps = "windows-only 15b, 25", Mode = CheckMode.Guided, Needs = Needs,
         StepList = [
-            Auto("In a new window, every window closed", "15b", async context => {
+            SetupAuto("In a new window, every window closed", "15b", async context => {
                 await ChannelWithPartnerAsync(context, 1).ConfigureAwait(false);
                 await WindowsOnlyAsync(context, true).ConfigureAwait(false);
                 await NewWindowsAsync(context, true).ConfigureAwait(false);
@@ -292,7 +292,7 @@ public static class PairWindowsSuite {
                 var window = await context.WindowOfAsync(a, WindowOpens).ConfigureAwait(false);
                 return StepResult.All((!openedDuring, "a window opened during the cutscene"), (window != null, "no window opened once it ended"));
             }),
-            Auto("The rest", "19", _ => Task.FromResult(StepResult.Pass("a loading screen (a door between private places, or a teleport, which leaves them)"))),
+            Rest("19", "a loading screen (a door between private places, or a teleport, which leaves them)"),
         ],
     };
 

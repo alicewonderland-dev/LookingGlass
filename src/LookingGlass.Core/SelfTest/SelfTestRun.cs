@@ -650,8 +650,15 @@ public sealed partial class SelfTestRun {
             };
         }
 
-        if (results.Count > 0 && results.All(entry => entry.Result.Outcome == StepOutcome.Skipped)) {
-            return new CheckRecord { Check = check.Id, Outcome = CheckOutcome.Skipped, Why = results[0].Result.Why, At = results[^1].At, Notes = notes.ToList() };
+        // A pass needs one of its real steps to have passed (owner, 2026-10-13): setup steps and notes never make one. Otherwise
+        // it is "not run", with why: the real steps' reasons first, then the setup's.
+        if (!results.Any(entry => entry.Step.Real && entry.Result.Outcome == StepOutcome.Passed)) {
+            var reasons = results.Where(entry => entry.Result.Outcome == StepOutcome.Skipped).OrderBy(entry => entry.Step.Real ? 0 : 1)
+                .Select(entry => entry.Result.Why).OfType<string>().Distinct().ToList();
+            return new CheckRecord {
+                Check = check.Id, Outcome = CheckOutcome.NotRun, Why = reasons.Count > 0 ? string.Join("; ", reasons) : SelfTestWords.NothingRan,
+                At = results.Count > 0 ? results[^1].At : null, NotRun = notRun, Confirmed = confirmed, Notes = notes.ToList(), Did = did,
+            };
         }
 
         return new CheckRecord {

@@ -149,7 +149,7 @@ public sealed class SelfTestPairsPartnerTests : IDisposable {
 
         Assert.Empty(this._host.Accepted);
         Assert.Empty(this._host.Sent);
-        Assert.Equal(CheckOutcome.Skipped, Result(run).Outcome);
+        Assert.Equal(CheckOutcome.NotRun, Result(run).Outcome);
         Assert.Equal(SelfTestWords.NoInvite, Result(run).Why);
     }
 

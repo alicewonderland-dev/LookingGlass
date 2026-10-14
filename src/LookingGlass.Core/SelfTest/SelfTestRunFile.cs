@@ -110,6 +110,9 @@ public enum CheckOutcome {
     Failed,
     Skipped,
     Stopped,
+
+    /// <summary>It started, but none of its real steps could run (each skipped, with why): never "passed".</summary>
+    NotRun,
 }
 
 /// <summary>

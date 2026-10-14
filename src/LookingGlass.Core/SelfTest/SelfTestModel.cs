@@ -168,6 +168,16 @@ public sealed record SelfTestStep {
     /// </summary>
     public bool Types { get; init; }
 
+    /// <summary>
+    /// Setting up for the check (a test channel, a recruitment, a setting, the partner in place), or a note of what isn't run:
+    /// not a check of LookingGlass itself. A check passes only if one of its real steps passed (owner, 2026-10-13); relogs and
+    /// reloads (<see cref="StepKind.CarryOnAfter"/>) count as setup too.
+    /// </summary>
+    public bool Setup { get; init; }
+
+    /// <summary>A real step: one whose passing makes its check pass.</summary>
+    public bool Real => !this.Setup && this.Kind != StepKind.CarryOnAfter;
+
     /// <summary>The checklist's step number(s), for the report ("32").</summary>
     public string? Checklist { get; init; }
 

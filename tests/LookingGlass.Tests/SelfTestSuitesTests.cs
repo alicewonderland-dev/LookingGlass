@@ -20,12 +20,28 @@ public sealed class SelfTestSuitesTests : IDisposable {
         "windows-only 1-2", "windows-only 5, 7, 8, 9, 12", "windows-only 11", "windows-only 13-16", "windows-only 17", "windows-only 20-21", "windows-only 23, 23b, 23c, 24",
         "channel-windows 17, 17b, 17c, 36, 37", "channel-windows 33, 33b, 33c, 33d, 33e, 33f", "channel-windows 37b; windows-only 6b", "channel-windows 37c-37f", "windows-only 26",
         "custom-colours 3", "custom-colours 4-8", "custom-colours 9", "name-colours 21", "name-colours 23 (first part)", "custom-colours 15-16", "custom-colours 17",
-        "context-invites 7-9a", "context-invites 10-11", "context-invites 15, 18 (that part)",
-        "chat-links 20", "chat-links 21-23", "chat-links 24-25", "chat-links 30",
+        "context-invites 9a", "context-invites 11", "context-invites 15, 18 (that part)",
+        "chat-links 24-25",
         "chat-log 24-25", "chat-log 26-28", "chat-log 30-35, 31b", "chat-log 8-9 (group 2)",
-        "settings 1-9", "device-notices 1",
         "local-chat 42-46", "sticky-channel 28", "custom-colours 11-14", "context-invites 19-21", "chat-links 26",
     ];
+
+    /// <summary>Passed in the owner's first run (2026-10-13), and so no longer offered.</summary>
+    private static readonly string[] Confirmed = [
+        "chat-links 20", "chat-links 21-23", "chat-links 30", "settings 1-9", "device-notices 1", "context-invites 7-9a", "context-invites 10-11",
+    ];
+
+    [Fact]
+    public void WhatPassedInTheOwnersFirstRunIsNoLongerOffered() {
+        var steps = SelfTestSuites.Every().SelectMany(suite => suite.Checks).Select(check => check.Steps).ToList();
+        Assert.All(Confirmed, confirmed => Assert.DoesNotContain(confirmed, steps));
+        // What was left of them is a check of its own.
+        Assert.Contains("context-invites 9a", steps);
+        Assert.Contains("context-invites 11", steps);
+        // The recruitment the remaining party finder check needs is still asked for.
+        var partyFinder = SelfTestSuites.All().Single(suite => suite.Id == PartyFinderSuite.Id).Checks.Single();
+        Assert.Contains(partyFinder.StepList, step => step.Setup && step.Title == "A recruitment of your own");
+    }
 
     [Fact]
     public void EveryCoveredTaskHasACheckAndEachCheckIsWellFormed() {

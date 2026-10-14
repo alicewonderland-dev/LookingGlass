@@ -40,6 +40,7 @@ public static partial class SelfTestWords {
     public const string Failed = "failed";
     public const string Skipped = "skipped";
     public const string StoppedWord = "stopped";
+    public const string NotRunWord = "not run";
     public const string NoteLabel = "Note (optional, no names)";
 
     /// <summary>The start screen's consent: what a run does, before anything happens.</summary>
@@ -110,9 +111,17 @@ public static partial class SelfTestWords {
     public const string InterruptedRunChannelLeft =
         "A LookingGlass self-test didn't finish. Your settings are as they were. Its test channel couldn't be removed: see /lgdebug test.";
 
-    /// <summary>Why a run can't start for a while: the last hour's runs used most of what a run may use.</summary>
-    public static string WaitBeforeStart(TimeSpan wait) =>
-        $"Wait about {Math.Max(1, (int) Math.Ceiling(wait.TotalMinutes))} minutes: the last run used most of what the self-test may use in an hour.";
+    /// <summary>Why a run can't start for a while: the last hour's runs used most of what the self-test may of something (see <see cref="SelfTestPacer.HourMost"/>).</summary>
+    public static string WaitBeforeStart(TimeSpan wait, SelfTestAction action) =>
+        $"Wait about {Math.Max(1, (int) Math.Ceiling(wait.TotalMinutes))} minutes: the self-test's runs in the last hour used most of what it may use in an hour for {HourlyName(action)}.";
+
+    /// <summary>What an hourly budget is of, in plain words.</summary>
+    public static string HourlyName(SelfTestAction action) => action switch {
+        SelfTestAction.CreateChannel => "making test channels",
+        SelfTestAction.Disband => "closing test channels for everyone",
+        SelfTestAction.Invite => "invites",
+        _ => "requests",
+    };
 
     /// <summary>A setting's name for the start screen's "Which ones?" list, as Settings names it.</summary>
     public static string SettingName(SelfTestSetting setting) => setting switch {
@@ -167,6 +176,7 @@ public static partial class SelfTestWords {
     public const string RunSpent = "skipped: the run used all it may of this";
     public const string SomethingWentWrong = "something went wrong in the self-test itself";
     public const string TimedOut = "didn't happen in time";
+    public const string NothingRan = "nothing in it could run";
     public const string NotSay = "the game's chat channel wasn't Say, so nothing was typed";
     public const string NotPrivate = "you weren't in a private place, so nothing was typed";
     public const string Disconnected = "stopped: not connected for five minutes";
@@ -218,10 +228,10 @@ public static partial class SelfTestWords {
     /// <summary>Every fixed text above, for the tests.</summary>
     public static IReadOnlyList<string> All() => [
         WindowTitle, ReportTitle, OpenButton, Start, StopAndCleanUp, NeedsYou, Done, DidntWork, SkipStep, Yes, No, CopyReport, RunFailedAgain,
-        CheckAgain, CarryOn, Close, TwoPlayers, WhichOnes, Remove, Passed, Failed, Skipped, StoppedWord, NoteLabel, .. Consent, Intro,
+        CheckAgain, CarryOn, Close, TwoPlayers, WhichOnes, Remove, Passed, Failed, Skipped, StoppedWord, NotRunWord, NoteLabel, .. Consent, Intro,
         NoNamesInReport, HistoryAsk, HistoryDelete, HistoryKeep, StayHere, HouseVisitors, HandChanges, ClosingDoesntStop, TwoPlayersLater, NoteReminder, LeftoverHeading,
         LeftoverExplained, .. PrivatePlaces, OnlyInPrivate, PausedLeft, WaitingSomeoneNear, PausedDisconnected, PausedOtherCharacter, ChatTwoToSay, WaitingSay, WaitingPlace,
-        WaitingToCarryOn, InterruptedRun, InterruptedRunChannelLeft, WaitBeforeStart(TimeSpan.FromMinutes(20)),
+        WaitingToCarryOn, InterruptedRun, InterruptedRunChannelLeft, .. SelfTestPacer.HourMost.Keys.Select(action => WaitBeforeStart(TimeSpan.FromMinutes(20), action)),
         .. Enum.GetValues<PlaceKind>().Select(Place), .. Enum.GetValues<SelfTestSetting>().Select(SettingName), .. Reasons(), CleanUp(1, 1, 7, 1, true, true, true, true), SimulatedWarning.Plain, .. PairWords(),
     ];
 
@@ -229,7 +239,7 @@ public static partial class SelfTestWords {
     public static IReadOnlyList<string> Reasons() => [
         YouSkipped, YouSaidNo, NeedsChatTwo, NeedsChatTwoOff, NeedsPartner, NeedsStranger, NeedsAnotherCharacter, NeedsStrikingDummy,
         NeedsConnection, NeedsChannelRoom, NeedsGateHooks, HistoryWasYours, ServerSlowDown, StoppedByYou, StoppedLeft, RunSpent,
-        SomethingWentWrong, TimedOut, NotSay, NotPrivate, Disconnected, GaveUpWaiting, OtherCharacter, Registered, .. PairReasons(),
+        SomethingWentWrong, TimedOut, NothingRan, NotSay, NotPrivate, Disconnected, GaveUpWaiting, OtherCharacter, Registered, .. PairReasons(),
     ];
 
     /// <summary>The words simple mode never uses (the plain-language tests' list): to check what the plugin printed during a run.</summary>

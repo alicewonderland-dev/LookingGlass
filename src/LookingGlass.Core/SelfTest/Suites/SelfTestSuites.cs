@@ -8,7 +8,7 @@ public static class SelfTestSuites {
     /// <summary>
     /// The one-player suites, made afresh (their checks hold no state between runs). Talking in a channel first (it needs the
     /// least set up), Colours after Windows (its last check leaves the run's third test channel), the history after both (it
-    /// may turn the history on), Settings and ChatTwo last.
+    /// may turn the history on), ChatTwo last. (Settings 1-9 and device-notices 1 passed in the owner's first run, 2026-10-13.)
     /// </summary>
     public static IReadOnlyList<SelfTestSuite> All() => [
         TalkSuite.Create(),
@@ -17,7 +17,6 @@ public static class SelfTestSuites {
         InvitesSuite.Create(),
         PartyFinderSuite.Create(),
         HistorySuite.Create(),
-        SettingsSuite.Create(),
         ChatTwoSuite.Create(),
     ];
 

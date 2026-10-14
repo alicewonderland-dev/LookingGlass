@@ -40,7 +40,8 @@ public sealed class SelfTestSpentException(SelfTestAction action) : Exception($"
 /// <item>The first refusal for a limit (<see cref="IsRefusal"/>) stops everything: every later <see cref="WaitAsync"/>
 /// throws <see cref="SelfTestRefusedException"/>, so nothing refused is ever asked for again.</item>
 /// <item>What was spent is kept for an hour (<see cref="Spent"/>, saved by the plugin), so a run that would take the hour
-/// past a rule's <see cref="PaceRule.RunMost"/> doesn't start (<see cref="WaitBeforeStart"/>).</item>
+/// past an hourly budget (<see cref="HourMost"/>, only for the actions whose server limit refills slowly) doesn't start
+/// (<see cref="WaitBeforeStart"/>).</item>
 /// </list>
 /// Thread-safe.
 /// </summary>
@@ -67,6 +68,31 @@ public sealed class SelfTestPacer {
         [SelfTestAction.DeviceList] = new(TimeSpan.FromSeconds(10), 1, TimeSpan.FromSeconds(10), 2),
         // Shares the channel messages' pace (see LaneOf); its own most, for the host and the partner.
         [SelfTestAction.PartnerMessage] = new(TimeSpan.FromSeconds(2), 3, TimeSpan.FromSeconds(6), 150),
+    };
+
+    /// <summary>
+    /// The hourly budget across runs (owner, 2026-10-13): only for the actions whose server limit refills slower than the
+    /// self-test's own pace could spend it over back-to-back runs. Each is less than what the server allows at once, so even
+    /// with no refill at all, an hour of runs can't empty its bucket, and the tester keeps some for themselves. The rest
+    /// have none, only their pace and their most per run, checked against the server's defaults (RequestHandler, LimitOptions):
+    /// <list type="bullet">
+    /// <item>Channel messages and protocol lines: 5 at once, then 1 a second; the self-test sends 3 in 10 seconds at most.</item>
+    /// <item>Local messages: 5 at once, then 1 a second (to one person 30, then 1 every 2 seconds); the self-test, 1 every 4.</item>
+    /// <item>Lookups: 60 at once, then 1 a second; the self-test, 1 every 2 seconds.</item>
+    /// <item>Renames: per user, 10 at once, then 1 every 10 seconds; the self-test, 1 every 20.</item>
+    /// <item>Reconnects: 60 new connections a minute per address, counted per minute, and the device's saved login (no key
+    /// login, which is counted per hour); the self-test, 1 a minute.</item>
+    /// <item>The device list: 20 at once, then 1 every 6 seconds; the self-test, 1 every 10.</item>
+    /// </list>
+    /// </summary>
+    public static readonly IReadOnlyDictionary<SelfTestAction, int> HourMost = new Dictionary<SelfTestAction, int> {
+        // Server: 10 at once, then 1 a minute; the self-test makes one every 10 seconds. Two runs' three, and two to spare.
+        [SelfTestAction.CreateChannel] = 8,
+        // Server: 5 at once, then 1 a minute; the self-test, one every 20 seconds (only when a partner stayed in).
+        [SelfTestAction.Disband] = 4,
+        // Server: to one person 20 at once, then 1 a minute; the self-test, one every 30 seconds (a host's partner, invited
+        // back after each leave).
+        [SelfTestAction.Invite] = 16,
     };
 
     /// <summary>
@@ -178,26 +204,33 @@ public sealed class SelfTestPacer {
 
     /// <summary>
     /// How long to wait before a run that may spend up to <paramref name="planned"/> can start without taking the last hour
-    /// past any action's most (for this role); zero if it can start now.
+    /// past an hourly budget (<see cref="HourMost"/>), and the action it waits for; zero (and null) if it can start now.
+    /// Actions without an hourly budget never make a run wait.
     /// </summary>
-    public TimeSpan WaitBeforeStart(IReadOnlyDictionary<SelfTestAction, int> planned) {
+    public (TimeSpan Wait, SelfTestAction? For) WaitBeforeStart(IReadOnlyDictionary<SelfTestAction, int> planned) {
         lock (this._lock) {
             var now = this._now();
             var wait = TimeSpan.Zero;
+            SelfTestAction? waitingFor = null;
             foreach (var (action, count) in planned) {
-                var most = this.MostOf(action);
+                if (!HourMost.TryGetValue(action, out var most)) {
+                    continue;
+                }
+
+                var planning = Math.Min(count, Math.Min(this.MostOf(action), most));
                 var spent = this._spent.Where(spend => spend.Action == action && now - spend.At < Hour).OrderBy(spend => spend.At).ToList();
-                var over = spent.Count + Math.Min(count, most) - most;
+                var over = spent.Count + planning - most;
                 if (over > 0 && over <= spent.Count) {
                     // Once the oldest "over" of them are an hour old, there is room.
                     var free = spent[over - 1].At + Hour - now;
                     if (free > wait) {
                         wait = free;
+                        waitingFor = action;
                     }
                 }
             }
 
-            return wait;
+            return (wait, waitingFor);
         }
     }
 

@@ -46,7 +46,7 @@ public static class PairChatTwoSuite {
         StepList = [
             Together(friends: false),
             PartyOfTwo("30"),
-            Auto("Talking in the test channel", "30", async context => {
+            SetupAuto("Talking in the test channel", "30", async context => {
                 var channel = context.Partner.ChannelId!;
                 await context.StopTalkingAsync().ConfigureAwait(false);
                 await context.TypeAsync(await context.CommandOfAsync(channel).ConfigureAwait(false)).ConfigureAwait(false);
@@ -75,7 +75,7 @@ public static class PairChatTwoSuite {
                 return answer ?? StepResult.All((saw!.Is("in", "say"), "your partner didn't see it in Say"), (saw.Is("printed", "no"), "it reached the test channel too"),
                     (still, "you stopped talking in the test channel"));
             }),
-            Auto("Back to Say", "32b", async context => {
+            SetupAuto("Back to Say", "32b", async context => {
                 await context.StopTalkingAsync().ConfigureAwait(false);
                 await context.Partner.AskPlayerAsync(context, PartnerAsk.LeaveParty).ConfigureAwait(false);
                 return StepResult.Pass("/xllog's lines for 30b (the owner reads them by the time above)");
