@@ -21,7 +21,7 @@ public sealed class SelfTestSuitesTests : IDisposable {
         "name-colours 21 (another character)", "custom-colours 15 (another character)",
         "context-invites 9a", "context-invites 11", "context-invites 15, 18 (that part)",
         "chat-links 24-25",
-        "chat-log 24-25", "chat-log 26-28", "chat-log 30-35, 31b", "chat-log 8-9 (group 2)",
+        "chat-log 26 (pressing Open folder)", "chat-log 30-35, 31b",
         "local-chat 42-46", "sticky-channel 28", "custom-colours 11-14", "context-invites 19-21", "chat-links 26",
     ];
 
@@ -35,6 +35,8 @@ public sealed class SelfTestSuitesTests : IDisposable {
         "channel-windows 17, 17b, 17c, 36, 37", "channel-windows 33, 33b, 33c, 33d, 33e, 33f", "channel-windows 37b; windows-only 6b", "windows-only 26",
         // The fourth run (2026-10-13, plugin 0.2.18).
         "custom-colours 3", "custom-colours 4-8", "custom-colours 9", "name-colours 21", "name-colours 23 (first part)", "custom-colours 15-16", "custom-colours 17",
+        // A tester's run (2026-10-13, plugin 0.2.18).
+        "chat-log 24-25", "chat-log 26-28", "chat-log 8-9 (group 2)",
     ];
 
     [Fact]
@@ -52,6 +54,10 @@ public sealed class SelfTestSuitesTests : IDisposable {
         // The recruitment the remaining party finder check needs is still asked for.
         var partyFinder = SelfTestSuites.All().Single(suite => suite.Id == PartyFinderSuite.Id).Checks.Single();
         Assert.Contains(partyFinder.StepList, step => step.Setup && step.Title == "A recruitment of your own");
+        // Pressing Open folder is all that is left of chat-log 26-28, and the history it opens is still turned on first.
+        var openFolder = SelfTestSuites.All().Single(suite => suite.Id == HistorySuite.Id).Checks.Single(check => check.Steps == "chat-log 26 (pressing Open folder)");
+        Assert.True(openFolder.StepList[0].Setup);
+        Assert.Single(openFolder.StepList, step => !step.Setup);
     }
 
     [Fact]
