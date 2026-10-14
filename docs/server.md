@@ -28,8 +28,13 @@ Dalamud's development files, which XIVLauncher installs.
 
 ```sh
 dotnet build LookingGlass.slnx -c Release
-dotnet test LookingGlass.slnx -c Release
+dotnet test --solution LookingGlass.slnx -c Release
 ```
+
+The tests use xUnit.net v3 on Microsoft.Testing.Platform, which `global.json`
+turns on for `dotnet test`. Its options differ from the older VSTest ones: to
+run one class, for example, add `--filter-class LookingGlass.Tests.CryptoTests`
+(not `--filter`); `dotnet test --help` lists them all.
 
 Without XIVLauncher, unpack Dalamud's
 [latest.zip](https://goatcorp.github.io/dalamud-distrib/latest.zip) and set
