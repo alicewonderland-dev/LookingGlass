@@ -148,9 +148,18 @@ too, and write down what you find.
       the mark is back. Then do both again, each time looking at another
       player's listing in the Party Finder just before going back to your
       recruitment window and its chat button: the mark should still be right
-      (taken from your own recruitment's settings when the Party Finder last
-      showed someone else's). (The mark is the only thing this changes;
-      report if it's wrong in any case, and which.)
+      (taken from your own recruitment's settings, whatever the Party Finder
+      showed last). (The mark is the only thing this changes; report if it's
+      wrong in any case, and which.) Each send writes a `[sticky]` line
+      "party finder link: cross-world mark yes/no, from own recruitment"
+      to `/xllog`, with the values it was decided from; for your own
+      recruitment it should always say "from own recruitment", and "limit to
+      world" 0 when limited, 1 for the whole data centre. Write down, for
+      each send, the "game's link kind" and the two "chat log bytes" next to
+      whether the game's own link (`/e `) had the mark: they may show where
+      the game keeps its own mark. Then look at another player's listing and
+      click its chat button, if it has one: the line should say "from last
+      shown listing", and the mark should match the game's own link for it.
 - [ ] 25. **Talking in the channel.** `/lgc1` on its own, then `join ` and the
       chat button, Enter → as step 21. The chat button alone, Enter → sent
       (no "Not sent" line). `/lgc sky ` and the chat button → the same.

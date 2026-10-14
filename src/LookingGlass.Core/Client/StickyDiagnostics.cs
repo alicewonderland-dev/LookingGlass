@@ -108,6 +108,33 @@ public static partial class StickyDiagnostics {
     public static string LinkInserted(string tag, uint param, ChatBoxState? chatBox) =>
         $"{Prefix} link put in the chat input: talking in {tag}, kind {param}, {StateOf(chatBox)}";
 
+    /// <summary>
+    /// A "&lt;pfinder&gt;" placeholder resolved (written whether or not talking in a channel): whether its link has the
+    /// cross-world mark and where that was taken from (<see cref="ListingWorld.Decide"/>), with the raw values read
+    /// (whether the listing is the player's own and its "limit to world" byte, whether it is the party finder's last shown
+    /// listing and its join conditions); the link kind the game last put in the chat input for a listing (1120 or 1121,
+    /// which may tell the two apart); and the chat log agent's bytes just before and after the linked listing's id, one of
+    /// which may be the game's own mark (not confirmed). Never the listing's id or its leader's name.
+    /// </summary>
+    public static string PartyFinderLink(ListingFacts facts, uint? lastKind, byte? chatLogBefore, byte? chatLogAfter) {
+        if (facts.ListingId == 0) {
+            return $"{Prefix} party finder link: no listing linked";
+        }
+
+        var (homeWorldOnly, source) = ListingWorld.Decide(facts);
+        var from = source switch {
+            ListingWorldSource.OwnRecruitment => "own recruitment",
+            ListingWorldSource.LastViewed => "last shown listing",
+            _ => "unknown (taken as open)",
+        };
+        return $"{Prefix} party finder link: cross-world mark {YesNo(!homeWorldOnly)}, from {from}; " +
+               $"own listing {YesNo(facts.IsOwn)}, limit to world {facts.LimitRecruitingToWorld}; " +
+               $"last shown {YesNo(facts.IsLastViewed)}, join conditions 0x{facts.LastViewedJoinConditions:X2}; " +
+               $"game's link kind {lastKind?.ToString() ?? "none"}; chat log bytes 0x{Hex(chatLogBefore)} 0x{Hex(chatLogAfter)}";
+
+        static string Hex(byte? value) => value is { } known ? known.ToString("X2") : "??";
+    }
+
     private static string StateOf(ChatBoxState? state) => state is { } known ? known.ToString() : "chat box unreadable";
 
     private static string SourceOf(LineSource? source) => source switch {

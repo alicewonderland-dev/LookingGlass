@@ -626,6 +626,61 @@ public sealed class ChatLinkTests {
         Assert.Null(new MessagePart.Link(new ChatLink.Item(9999), "[Potion]").Name(sheets));
     }
 
+    // What the party finder agent holds, as GameLinks reads it: "limit to world" is 0 when on, 1 when off; the join
+    // conditions' "world" search area is 1 << 3 (data centre 1 << 0).
+    private const byte Limited = 0;
+    private const byte OpenToDataCentre = 1;
+    private const byte HomeWorldView = ListingWorld.WorldCondition;
+    private const byte DataCentreView = 1;
+
+    [Fact]
+    public void TheOwnRecruitmentEditedToTheDataCentreHasTheMarkThoughTheLastShownListingIsTheOldHomeWorldOne() {
+        // chat-links 24 (2026-10-13): limited to the home world, shown, then set back to the whole data centre; the party
+        // finder's last shown listing still held the home-world view.
+        var facts = new ListingFacts(31_337, 31_337, OpenToDataCentre, 31_337, HomeWorldView);
+        Assert.Equal((false, ListingWorldSource.OwnRecruitment), ListingWorld.Decide(facts));
+    }
+
+    [Fact]
+    public void TheOwnRecruitmentLimitedToTheHomeWorldHasNoMark() {
+        Assert.Equal((true, ListingWorldSource.OwnRecruitment), ListingWorld.Decide(new ListingFacts(31_337, 31_337, Limited, 31_337, DataCentreView)));
+        Assert.Equal((true, ListingWorldSource.OwnRecruitment), ListingWorld.Decide(new ListingFacts(31_337, 31_337, Limited, 0, 0)));
+        Assert.Equal((false, ListingWorldSource.OwnRecruitment), ListingWorld.Decide(new ListingFacts(31_337, 31_337, OpenToDataCentre, 0, 0)));
+    }
+
+    [Fact]
+    public void AnotherPlayersListingGoesByTheLastShownListing() {
+        // The player's own recruitment is another listing: its criteria don't count.
+        Assert.Equal((true, ListingWorldSource.LastViewed), ListingWorld.Decide(new ListingFacts(4_242, 31_337, OpenToDataCentre, 4_242, HomeWorldView)));
+        Assert.Equal((false, ListingWorldSource.LastViewed), ListingWorld.Decide(new ListingFacts(4_242, 31_337, Limited, 4_242, DataCentreView)));
+        // Other search area flags (private, one player per job) aren't the home world.
+        Assert.Equal((false, ListingWorldSource.LastViewed), ListingWorld.Decide(new ListingFacts(4_242, 0, Limited, 4_242, 0b0010_0011)));
+        Assert.Equal((true, ListingWorldSource.LastViewed), ListingWorld.Decide(new ListingFacts(4_242, 0, Limited, 4_242, 0b0010_1010)));
+    }
+
+    [Fact]
+    public void AListingNothingIsKnownAboutIsTakenAsOpenToOtherWorlds() {
+        Assert.Equal((false, ListingWorldSource.Unknown), ListingWorld.Decide(new ListingFacts(4_242, 31_337, Limited, 5_555, HomeWorldView)));
+        // No recruitment of the player's own (0), nothing shown yet (0): nothing matches, not even a listing 0.
+        Assert.Equal((false, ListingWorldSource.Unknown), ListingWorld.Decide(new ListingFacts(4_242, 0, Limited, 0, HomeWorldView)));
+        Assert.Equal((false, ListingWorldSource.Unknown), ListingWorld.Decide(new ListingFacts(0, 0, Limited, 0, HomeWorldView)));
+    }
+
+    [Fact]
+    public void ThePartyFinderDiagnosticLineSaysWhereTheMarkCameFromWithNoIdOrName() {
+        var line = StickyDiagnostics.PartyFinderLink(new ListingFacts(31_337, 31_337, OpenToDataCentre, 31_337, HomeWorldView), 1120, 0x00, 0x01);
+        Assert.Equal("[sticky] party finder link: cross-world mark yes, from own recruitment; own listing yes, limit to world 1; " +
+                     "last shown yes, join conditions 0x08; game's link kind 1120; chat log bytes 0x00 0x01", line);
+        Assert.DoesNotContain("31337", line);
+        Assert.DoesNotContain("31_337", line);
+
+        Assert.Equal("[sticky] party finder link: cross-world mark no, from last shown listing; own listing no, limit to world 0; " +
+                     "last shown yes, join conditions 0x08; game's link kind none; chat log bytes 0x?? 0x??",
+            StickyDiagnostics.PartyFinderLink(new ListingFacts(4_242, 0, Limited, 4_242, HomeWorldView), null, null, null));
+        Assert.Contains("from unknown (taken as open)", StickyDiagnostics.PartyFinderLink(new ListingFacts(4_242, 0, Limited, 0, 0), 1121, 0, 0));
+        Assert.Equal("[sticky] party finder link: no listing linked", StickyDiagnostics.PartyFinderLink(new ListingFacts(0, 31_337, Limited, 0, 0), null, 0, 0));
+    }
+
     // ---------------------------------------------------------------- end to end
 
     [Fact]
