@@ -313,6 +313,22 @@ public sealed class StickyLocalChatTests {
         Assert.All(new[] { sending, talking, LocalChatWords.PrivacyAcceptedFor(LocalPrivacyAsked.BySending, true)!.Plain }, PlainLanguage.AssertPlain);
     }
 
+    // ---------------------------------------------------------------- Keybound Brawler
+
+    [Fact]
+    public void KeyboundBrawlerRefusesItBeforeAskingAndEndsIt() {
+        var session = new object();
+        // Refused, the privacy notice not asked for: the game needs what is typed there.
+        var start = new StickyChannel().Enter(Local, Tag, World(session) with { Territory = 1359, LocalPrivacyAccepted = false }, true, false, false);
+        Assert.False(start.Entered);
+        Assert.False(start.AskPrivacy);
+        Assert.Equal(QuietPlaces.Disabled, start.Text);
+
+        var sticky = Started(session);
+        Assert.Equal(StickyEnd.QuietPlace, sticky.Check(World(session) with { Territory = 1359 }));
+        Assert.Null(sticky.ChannelId);
+    }
+
     // ---------------------------------------------------------------- the privacy notice withdrawn
 
     [Fact]

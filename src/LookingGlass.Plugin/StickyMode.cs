@@ -59,6 +59,8 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
     // ExtraChat's warning has been given since talking in the channel started; when it was last looked for.
     private bool _extraChatWarned;
     private long _extraChatLookedAt;
+    // The one line on arriving where LookingGlass sends nothing (see QuietPlaces).
+    private readonly QuietPlaceVisit _quietVisit = new();
     private bool _disposed;
 
     internal StickyMode(Configuration config, PlayerTracker player, SessionManager sessions, ChatOutput chat, ChannelSender sender, LocalSender local) {
@@ -442,6 +444,15 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
         // Whatever happened, the labels say what is so: the tag while talking in a channel, never once it has stopped.
         this.SyncIndicators();
 
+        // After the check: if talking in a channel just ended there, its line said it already.
+        try {
+            if (this._quietVisit.ShouldSay(Services.ClientState.TerritoryType)) {
+                this._chat.Notice(NoticeTone.Info, QuietPlaces.Disabled);
+            }
+        } catch (Exception ex) {
+            Services.Log.Error(ex, "Couldn't say that LookingGlass sends nothing in this zone");
+        }
+
         // Listing the plugins isn't free: every few seconds is soon enough.
         if (Environment.TickCount64 - this._extraChatLookedAt >= 3000) {
             this.WarnIfExtraChatLoaded();
@@ -523,6 +534,15 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
         this._loggedChatBox = null;
         this._labelHeldBack = false;
         try {
+            if (why == StickyEnd.QuietPlace) {
+                // Its line (always said) is the zone's one line: this visit's turn is taken.
+                this._quietVisit.ShouldSay(Services.ClientState.TerritoryType);
+            }
+        } catch (Exception ex) {
+            Services.Log.Error(ex, "Couldn't read where the player is");
+        }
+
+        try {
             this.SyncIndicators();
         } finally {
             try {
@@ -582,6 +602,8 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
             ChatBox = ChatInterop.ReadChatBox(),
             // A setting: withdrawn while talking in local chat, it ends (StickyEnd.PrivacyWithdrawn).
             LocalPrivacyAccepted = this._local.PrivacyAccepted,
+            // Arriving where the game needs what is typed ends it (StickyEnd.QuietPlace).
+            Territory = Services.ClientState.TerritoryType,
         };
 
     /// <summary>The tag shown while talking in the channel: [Local] for local chat, never looked up as a channel.</summary>

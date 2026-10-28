@@ -40,6 +40,12 @@ public sealed class LocalSender(SessionManager sessions, ChatOutput chat, Func<b
     /// diagnostic log); null if nothing is sent.
     /// </returns>
     internal (LinkedText Message, bool LeftOut, int TextCommands)? Send(TypedLine typed, string? stickyTag = null) {
+        // Where the game needs what is typed (see QuietPlaces): before anything, the privacy notice included. Said once on
+        // arriving there (see QuietPlaceVisit), not for every line.
+        if (ChannelSender.InQuietPlace()) {
+            return null;
+        }
+
         // A link alone is something to send.
         if (!ChatBoxLine.HasSomethingToSend(typed.Text)) {
             this.Tell(LocalChatWords.Usage);

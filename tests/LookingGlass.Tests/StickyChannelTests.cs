@@ -830,7 +830,68 @@ public sealed class StickyChannelTests {
         { StickyEnd.Unloading, false },
         // Local chat's privacy notice withdrawn (Settings or its window), not a channel command.
         { StickyEnd.PrivacyWithdrawn, false },
+        // Arriving in Keybound Brawler, where the game needs what is typed: being there, not a channel command.
+        { StickyEnd.QuietPlace, false },
     };
+
+    // ---------------------------------------------------------------- where LookingGlass sends nothing
+
+    [Fact]
+    public void OnlyKeyboundBrawlerItselfIsQuiet() {
+        // The minigame's instance (ContentFinderCondition 1095), not its lobby (Keybound Square, 1360), the Gold Saucer
+        // (144), or a loading screen (0).
+        Assert.True(QuietPlaces.IsQuiet(1359));
+        Assert.All(new uint[] { 0, 144, 1360 }, territory => Assert.False(QuietPlaces.IsQuiet(territory)));
+        Assert.Equal("Outgoing LookingGlass messages are disabled in this zone.", QuietPlaces.Disabled);
+        PlainLanguage.AssertPlain(QuietPlaces.Disabled);
+    }
+
+    [Fact]
+    public void ItIsSaidOnceOnEachArrival() {
+        var visit = new QuietPlaceVisit();
+        Assert.False(visit.ShouldSay(1360));
+        Assert.False(visit.ShouldSay(0));
+        Assert.True(visit.ShouldSay(1359));
+        // Every frame after: not again.
+        Assert.False(visit.ShouldSay(1359));
+        Assert.False(visit.ShouldSay(1359));
+
+        // Out (the loading screen counts) and back in: said again.
+        Assert.False(visit.ShouldSay(0));
+        Assert.False(visit.ShouldSay(1360));
+        Assert.True(visit.ShouldSay(1359));
+        Assert.False(visit.ShouldSay(1359));
+    }
+
+    [Fact]
+    public void ItCantStartInKeyboundBrawler() {
+        var session = new object();
+        AssertRefused(World(session) with { Territory = 1359 }, QuietPlaces.Disabled);
+        // Before anything else: not "not connected" either.
+        AssertRefused(World(null) with { Territory = 1359 }, QuietPlaces.Disabled);
+
+        // Its lobby is fine.
+        Assert.True(new StickyChannel().Enter("aaa", Tag, World(session) with { Territory = 1360 }, true, false, false).Entered);
+    }
+
+    [Fact]
+    public void ArrivingInKeyboundBrawlerEndsItAndSaysSo() {
+        var session = new object();
+        var sticky = Started(session);
+        Assert.Null(sticky.Check(World(session) with { Territory = 1360 }));
+        // The loading screen in between.
+        Assert.Null(sticky.Check(World(session) with { Territory = 0 }));
+
+        Assert.Equal(StickyEnd.QuietPlace, sticky.Check(World(session) with { Territory = 1359 }));
+        Assert.Null(sticky.ChannelId);
+        Assert.Equal(StickyRoute.Game, StickyRoute.For(sticky.ChannelId, Tag, "hello", NoPrefixes));
+
+        // Not the player's choice of a channel command: always said, verbose or not.
+        // The zone's one line, with why the tag went away.
+        Assert.Equal("Stopped talking in [sky]: sending is disabled in this zone.", StickyMessages.Ended(Tag, StickyEnd.QuietPlace));
+        Assert.True(StickyMessages.SayEnded(StickyEnd.QuietPlace, verbose: false));
+        PlainLanguage.AssertPlain(StickyMessages.Ended(Tag, StickyEnd.QuietPlace));
+    }
 
     [Fact]
     public void EveryWayItEndsIsClassifiedOnPurpose() {

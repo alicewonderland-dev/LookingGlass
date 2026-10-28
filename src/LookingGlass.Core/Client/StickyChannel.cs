@@ -363,6 +363,9 @@ public enum StickyEnd {
     /// until it is accepted again.
     /// </summary>
     PrivacyWithdrawn,
+
+    /// <summary>The player arrived where LookingGlass sends nothing (see <see cref="QuietPlaces"/>): the game needs what is typed.</summary>
+    QuietPlace,
 }
 
 /// <summary>What sticky mode sees of the world, once a frame and when asked to start.</summary>
@@ -378,6 +381,9 @@ public sealed record StickyWorld(object? Session, ulong ContentId, SessionSnapsh
 
     /// <summary>The player accepted what local chat tells the server. Read while talking in local chat too: withdrawn, it ends.</summary>
     public bool LocalPrivacyAccepted { get; init; }
+
+    /// <summary>Where the player is (a <c>TerritoryType</c> row), or 0 if unknown: in a <see cref="QuietPlaces"/> one, it can't start, and ends.</summary>
+    public uint Territory { get; init; }
 }
 
 /// <summary>The outcome of asking to talk in a channel.</summary>
@@ -424,6 +430,11 @@ public sealed class StickyChannel {
     public StickyStart Enter(string channelId, string tag, StickyWorld world, bool inputHooked, bool chatTwo, bool chatTwoTell) {
         var local = IsLocal(channelId);
         var unavailable = local ? StickyMessages.LocalUnavailable : StickyMessages.Unavailable;
+        // Where the game needs what is typed: refused before anything else, the privacy notice included.
+        if (QuietPlaces.IsQuiet(world.Territory)) {
+            return new StickyStart(false, QuietPlaces.Disabled);
+        }
+
         // As /lgl <message>: until the privacy notice is accepted, ask, before anything else is looked at.
         if (inputHooked && local && LocalChat.FirstStep(world.LocalPrivacyAccepted) == LocalChatStep.AskFirst) {
             return new StickyStart(false, LocalChatWords.PrivacyAskedToTalk.Plain) { AskPrivacy = true };
@@ -458,6 +469,7 @@ public sealed class StickyChannel {
         StickyEnd? end = world.ContentId != this._contentId ? StickyEnd.LoggedOut
             : world.Session == null ? StickyEnd.Disconnected
             : !ReferenceEquals(world.Session, this._session) ? StickyEnd.SessionEnded
+            : QuietPlaces.IsQuiet(world.Territory) ? StickyEnd.QuietPlace
             : IsLocal(channelId) && !world.LocalPrivacyAccepted ? StickyEnd.PrivacyWithdrawn
             // Local chat is in no channel list, and is never looked for there.
             : !IsLocal(channelId) && world.Snapshot is { State: ConnectionState.Ready, ChannelsLoaded: true } && MembershipRefusal(world.Snapshot, channelId, "") != null ? StickyEnd.NotInChannel
@@ -624,6 +636,8 @@ public static class StickyMessages {
         StickyEnd.NotInChannel => $"Stopped talking in {tag}: you're no longer in it.",
         StickyEnd.Unloading => $"Stopped talking in {tag}: LookingGlass was turned off.",
         StickyEnd.PrivacyWithdrawn => $"Stopped talking in {tag}: you withdrew the privacy notice.",
+        // The zone's one line (see QuietPlaceVisit), with why talking in the channel stopped.
+        StickyEnd.QuietPlace => $"Stopped talking in {tag}: sending is disabled in this zone.",
         _ => $"Stopped talking in {tag}.",
     };
 
@@ -636,7 +650,7 @@ public static class StickyMessages {
     public static bool ChosenByThePlayer(StickyEnd why) => why switch {
         StickyEnd.ChannelSwitched or StickyEnd.ChatBoxSwitched or StickyEnd.Stopped => true,
         StickyEnd.LoggedOut or StickyEnd.Disconnected or StickyEnd.SessionEnded or StickyEnd.NotInChannel
-            or StickyEnd.ChannelUnknown or StickyEnd.Unloading or StickyEnd.PrivacyWithdrawn => false,
+            or StickyEnd.ChannelUnknown or StickyEnd.Unloading or StickyEnd.PrivacyWithdrawn or StickyEnd.QuietPlace => false,
         _ => false,
     };
 
