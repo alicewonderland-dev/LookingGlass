@@ -2796,7 +2796,23 @@ channel with `/lgcM` doesn't end it at all (see below).
 - *(own)* the game makes a one-off switch, saving the channel it is on to go
   back to (`StickyEnd.ChatBoxSwitched`, below);
 - the game's chat channel can't be read any more;
-- the plugin is turned off or updated.
+- the plugin is turned off or updated;
+- they arrive in Keybound Brawler (`StickyEnd.QuietPlace`, below), "sending
+  is disabled in this zone".
+
+**Where LookingGlass sends nothing** (2026-10-28). Keybound Brawler, the Gold
+Saucer minigame (territory 1359, `ContentFinderCondition` 1095), is played by
+typing, and sticky mode kept those lines from the game. `QuietPlaces` lists
+such zones. On each arrival one line says "Outgoing LookingGlass messages are
+disabled in this zone." (`QuietPlaceVisit`; if sticky mode was on, its stop
+line says it instead, so there is still one line). There sticky mode can't
+start (the same line, before anything else, local chat's privacy notice
+included), and every send path sends nothing, without a "Not sent" line each
+time (`ChannelSender`, `LocalSender`: /lgc, /lgl, a channel window, which keeps
+what was typed). No channel window opens by itself there, as in combat
+(`ChannelWindows.GameBusy`): the channels wait and open once the player
+leaves. Messages still arrive. The minigame's lobby, Keybound Square (1360), is
+not one: the problem is only in the instance it queues you into.
 
 **One-off switches (the reviewer's reading of the game's code).** Besides its
 channel (`ChatType`), the shell keeps `RaptureShellModule.TempChatType` and

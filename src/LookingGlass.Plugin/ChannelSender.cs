@@ -36,6 +36,12 @@ public sealed class ChannelSender(SessionManager sessions, ChatOutput chat) {
     internal (LinkedText Message, bool LeftOut, int TextCommands)? Send(string channelId, TypedLine typed, string? stickyTag = null, Action? sent = null,
         Action<NoticeTone, string>? tell = null, Action? notSent = null) {
         tell ??= (tone, text) => chat.Notice(tone, text);
+        // Said once on arriving there (see QuietPlaceVisit), not for every line. A channel window keeps what was typed.
+        if (InQuietPlace()) {
+            notSent?.Invoke();
+            return null;
+        }
+
         var session = sessions.Session;
         if (session == null || session.Snapshot.State != ConnectionState.Ready) {
             tell(NoticeTone.Info, stickyTag == null
@@ -88,5 +94,18 @@ public sealed class ChannelSender(SessionManager sessions, ChatOutput chat) {
         });
 
         return (message, leftOut, replaced);
+    }
+
+    /// <summary>
+    /// The player is in a zone where LookingGlass sends nothing (see <see cref="QuietPlaces"/>). Where can't be read: not,
+    /// as nothing there needs it. Framework thread.
+    /// </summary>
+    internal static bool InQuietPlace() {
+        try {
+            return QuietPlaces.IsQuiet(Services.ClientState.TerritoryType);
+        } catch (Exception ex) {
+            Services.Log.Debug(ex, "Couldn't read where the player is");
+            return false;
+        }
     }
 }

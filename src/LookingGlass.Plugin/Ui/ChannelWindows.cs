@@ -128,11 +128,13 @@ public sealed class ChannelWindows(WindowSystem system, Configuration config, Se
     }
 
     /// <summary>
-    /// In combat, a cutscene or a loading screen: no window opens by itself then, as one appearing mid-fight would be
-    /// in the way. The channels wait (their lines are kept meanwhile), and open once it's over.
+    /// In combat, a cutscene, a loading screen or a zone where the game needs what is typed (see <see cref="QuietPlaces"/>):
+    /// no window opens by itself then, as one appearing mid-fight would be in the way. The channels wait (their lines are
+    /// kept meanwhile), and open once it's over.
     /// </summary>
     private static bool GameBusy() => Services.Condition.Any(ConditionFlag.InCombat, ConditionFlag.OccupiedInCutSceneEvent,
-        ConditionFlag.WatchingCutscene, ConditionFlag.WatchingCutscene78, ConditionFlag.BetweenAreas, ConditionFlag.BetweenAreas51);
+        ConditionFlag.WatchingCutscene, ConditionFlag.WatchingCutscene78, ConditionFlag.BetweenAreas, ConditionFlag.BetweenAreas51) ||
+        ChannelSender.InQuietPlace();
 
     /// <summary>
     /// A window for each channel waiting that no window shows, once the game isn't busy (<see cref="GameBusy"/>), found as
