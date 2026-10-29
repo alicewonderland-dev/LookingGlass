@@ -18,7 +18,8 @@ namespace LookingGlass.Plugin.Ui;
 /// the windows follow at the next <see cref="Update"/>.
 /// </para>
 /// </summary>
-public sealed class ChannelWindows(WindowSystem system, Configuration config, SessionManager sessions, ChannelSender sender) : IDisposable {
+/// <param name="runLine">Runs a command typed in a window as the game's chat box would; false if it can't be (framework thread).</param>
+public sealed class ChannelWindows(WindowSystem system, Configuration config, SessionManager sessions, ChannelSender sender, Func<string, bool> runLine) : IDisposable {
     private readonly List<ChannelWindow> _open = new();
     // Layouts the player opened this session (not reopened at login): their windows appear where the mouse is.
     private readonly HashSet<string> _opened = new();
@@ -42,6 +43,9 @@ public sealed class ChannelWindows(WindowSystem system, Configuration config, Se
     internal SessionManager Sessions => sessions;
 
     internal ChannelSender Sender => sender;
+
+    /// <summary>Runs a command typed in a window (see <see cref="WindowCommands"/>); false if it can't be. Framework thread.</summary>
+    internal Func<string, bool> RunLine => runLine;
 
     internal Configuration Config => config;
 

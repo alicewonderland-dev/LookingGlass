@@ -3365,7 +3365,17 @@ the plugin's `ChannelWindows` opens and remembers the windows and
 - **Sticky mode is separate.** Talking in a channel from the chat box
   (`/lgc3` with no message) works as before, and windows don't change it. The
   window is the leak-proof way to talk in a channel: nothing the game, ChatTwo
-  or another plugin does can send what is typed there to game chat.
+  or another plugin does can send a message typed there to game chat.
+- **Commands typed in a window run in the game.** A line that starts with "/"
+  is never sent to the channel: it goes through the gate
+  (`ShellCommandModule.ExecuteCommandInner`, `ChatInterop.RunLine`) exactly as
+  if typed in the game's chat box (`LineSource.Game`), so /sit sits, /p hello
+  says it in party, /lgc2 hi sends to channel 2, and while talking in a
+  channel the line is judged as one typed in the game is. It isn't added to
+  the game's input history. A line the game's chat box couldn't hold (over 500
+  UTF-8 bytes, or not plain text, `WindowCommands.Refusal`) isn't run; the
+  window puts it back and says why. What the game says back shows in game
+  chat. Before 0.2.22 such a line was sent to the channel as a message.
 - **Simple and advanced mode** apply as everywhere: the warnings and notices
   in the mode's words, switching at once; nothing technical in simple mode.
 

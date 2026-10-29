@@ -287,7 +287,7 @@ internal sealed class ChannelPane(SessionManager sessions, UiActions actions, Mo
                 windows.OpenNew(channel.Id);
             }
 
-            Widgets.Tooltip("Chat here in a window of its own. What you type there only ever goes to this channel.",
+            Widgets.Tooltip("Chat here in a window of its own. Messages you type there only ever go to this channel (a line starting with / runs as a game command, as in game chat).",
                 "Right-click a channel in the list to add it to a window that's open.");
             var inGameChat = sessions.ShowsInGameChat(channel.Id);
             // While only windows show messages, no channel shows in game chat: a red cross, greyed out, as it can't change
