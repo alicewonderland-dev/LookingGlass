@@ -739,7 +739,7 @@ public sealed class MainWindow : Window {
         }
 
         var hovered = ImGui.IsItemHovered();
-        // Right-click: channel windows (pop-out chat), where what is typed only ever goes to that channel.
+        // Right-click: channel windows (pop-out chat), where a message typed only ever goes to that channel.
         if (!channel.OldKeyMembership && ImGui.BeginPopupContextItem($"##row-menu-{channel.Id}")) {
             ImGui.TextColored(Widgets.Muted, Widgets.Ellipsize(displayName, 240 * scale));
             ImGui.Separator();

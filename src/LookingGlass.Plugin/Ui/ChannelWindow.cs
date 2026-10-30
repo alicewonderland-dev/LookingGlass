@@ -747,7 +747,10 @@ public sealed class ChannelWindow : Window {
         return 0;
     }
 
-    /// <summary>Sends what was typed to this tab's channel, as /lgc would. A failure shows in the tab, in blue.</summary>
+    /// <summary>
+    /// Sends what was typed to this tab's channel, as /lgc would; or runs it in the game if it is a command (see
+    /// <see cref="WindowCommands"/>). A failure shows in the tab, in blue.
+    /// </summary>
     private void Send(string channelId, TabState state) {
         var text = state.Draft.Trim();
         if (text.Length == 0) {
@@ -759,6 +762,11 @@ public sealed class ChannelWindow : Window {
         var history = this.Sessions.History;
         // A "Not sent" that comes after a relog belongs to the session it was typed in, and is dropped.
         var generation = history.Generation;
+        if (WindowCommands.IsCommand(text)) {
+            this.RunCommand(channelId, state, text, generation);
+            return;
+        }
+
         var sender = this._windows.Sender;
         _ = Services.Framework.RunOnFrameworkThread(() => {
             try {
@@ -768,6 +776,33 @@ public sealed class ChannelWindow : Window {
                 Services.Log.Error(ex, "Couldn't send from a channel window");
                 history.AddFeedback(channelId, NoticeTone.Warning, $"Not sent: {StickyMessages.SomethingWentWrongReason}", generation);
                 state.PutBack = text;
+            }
+        });
+    }
+
+    /// <summary>
+    /// Runs a command typed in the input box in the game, as its own chat box would: nothing goes to the channel. What the
+    /// game says back shows in game chat. One that can't be run is put back, and the tab says why.
+    /// </summary>
+    private void RunCommand(string channelId, TabState state, string line, int generation) {
+        var history = this.Sessions.History;
+        if (WindowCommands.Refusal(line) is { } refusal) {
+            history.AddFeedback(channelId, NoticeTone.Info, refusal, generation);
+            state.PutBack = line;
+            return;
+        }
+
+        var runLine = this._windows.RunLine;
+        _ = Services.Framework.RunOnFrameworkThread(() => {
+            try {
+                if (!runLine(line)) {
+                    history.AddFeedback(channelId, NoticeTone.Info, WindowCommands.Unavailable, generation);
+                    state.PutBack = line;
+                }
+            } catch (Exception ex) {
+                Services.Log.Error(ex, "Couldn't run a command from a channel window");
+                history.AddFeedback(channelId, NoticeTone.Warning, $"Not run: {StickyMessages.SomethingWentWrongReason}", generation);
+                state.PutBack = line;
             }
         });
     }

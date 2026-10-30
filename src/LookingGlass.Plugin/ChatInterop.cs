@@ -187,6 +187,25 @@ internal sealed unsafe class ChatInterop : IDisposable {
             throw new InvalidOperationException("A line can't be typed now.");
         }
 
+        Execute(line);
+    }
+
+    /// <summary>
+    /// Runs a command typed in a channel window as the game's chat box would (see <see cref="TypeLine"/>): judged at the gate
+    /// as typed in the game if it is hooked, so talking in a channel treats it as it would there (/p hello a one-off to
+    /// the party). Not added to the input history. Game thread, outside any other line.
+    /// </summary>
+    /// <returns>False if it can't be run: the game's function wasn't found in this game version, or a line is being run.</returns>
+    public bool RunLine(string line) {
+        if (ShellCommandModule.Addresses.ExecuteCommandInner.Value == 0 || this._linesRunning > 0) {
+            return false;
+        }
+
+        Execute(Encoding.UTF8.GetBytes(line));
+        return true;
+    }
+
+    private static void Execute(byte[] line) {
         var shell = RaptureShellModule.Instance();
         var ui = UIModule.Instance();
         if (shell == null || ui == null) {

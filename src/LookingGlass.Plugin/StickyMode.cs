@@ -130,6 +130,9 @@ public sealed class StickyMode : IChatBoxListener, IDisposable {
     /// </summary>
     internal void TypeLine(byte[] line) => this._interop.TypeLine(line);
 
+    /// <summary>A command typed in a channel window, run as the game's chat box would (see <see cref="ChatInterop.RunLine"/>). Framework thread.</summary>
+    internal bool RunLine(string line) => this._interop.RunLine(line);
+
     /// <summary>Stops talking in a channel, if on, as clicking the info bar does (the self-test's clean-up). Framework thread.</summary>
     internal void StopTalking() => this.Leave(StickyEnd.Stopped);
 
